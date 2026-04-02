@@ -2460,6 +2460,11 @@ MaterialPacket {
   // ── Phase transition ──────────────────────────────────────────────────────
   meltingPoint: number                  // °C — CALPHAD weighted average + eutectic corrections
   boilingPoint: number                  // °C — Clausius-Clapeyron relation from vapor pressure
+  latentHeatFusion: number           // J/kg — energy to melt at melting point (no temp change)
+                                      // Clausius-Clapeyron: L = T × ΔV × (dP/dT)
+                                      // Used by: §3.2 phase transitions (melting/freezing duration)
+  latentHeatVaporization: number     // J/kg — energy to boil at boiling point (no temp change)
+                                      // Used by: §3.2 phase transitions (boiling duration)
 
   // ── Mechanical ────────────────────────────────────────────────────────────
   density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
@@ -2506,6 +2511,11 @@ MaterialPacket {
   acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
                                         // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
                                         // Metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001
+  dampingLossTangent: number         // dimensionless — internal friction of the material
+                                      // Determines how quickly vibrations decay (Q factor)
+                                      // Low = rings long (metals: 0.0001-0.001)
+                                      // High = dies quickly (wood: 0.01-0.05, rubber: 0.1-0.5)
+                                      // Used by: §3.3 sound engine (Q = 1 / (2 × dampingLossTangent))
 
   // ── Chemical ──────────────────────────────────────────────────────────────
   standardEnthalpy: number              // J/mol — formation enthalpy (ΔH_f°)
@@ -2536,7 +2546,7 @@ MaterialPacket {
 }
 ```
 
-**Total: 33 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+**Total: 36 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
 
 Every derived property is **calculated**, not looked up. The calculation uses real material science:
 
@@ -2544,6 +2554,8 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 |----------|------------------|--------|---------|
 | Melting point | Weighted average + eutectic corrections from binary phase diagrams | CALPHAD method | Phase transitions, smelting |
 | Boiling point | Clausius-Clapeyron from vapor pressure curves | Thermodynamics | Evaporation, boiling |
+| Latent heat (fusion) | Clausius-Clapeyron: L = T × ΔV × (dP/dT), weighted by composition | Thermodynamics | §3.2 Phase transition duration (melting/freezing) |
+| Latent heat (vaporization) | Clausius-Clapeyron from boiling point + entropy of vaporization | Thermodynamics | §3.2 Phase transition duration (boiling) |
 | Density | `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law | SPH, buoyancy, weight |
 | Hardness | Hall-Petch for grain size + solid solution strengthening | Metallurgy | Tool quality, Mohs scale |
 | Tensile strength | Empirical relation to hardness + crystal structure correction | Materials science | §3.4 beam spans, breaking |
@@ -2562,6 +2574,7 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
 | Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
 | Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
+| Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
 | Standard enthalpy | Tabulated per element, computed for compounds via Hess's law | Thermochemistry | Reaction engine ΔG |
 | Standard entropy | Tabulated per element, computed for compounds | Thermochemistry | Reaction engine ΔG |
 | Activation energy | Tabulated per reaction type, estimated from bond strengths | Reaction kinetics | Arrhenius equation |
@@ -2840,6 +2853,39 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
      — Particles get zero initial velocity (they start motionless, then flow under gravity)
   3. The SPH simulation takes over — particles flow, pool, splash
 ```
+
+// ── Latent Heat ──────────────────────────────────────────────────────
+// Phase transitions are NOT instant. Melting absorbs energy without
+// raising temperature. Freezing releases energy without lowering it.
+//
+// When a material reaches its melting point, it does not instantly become liquid.
+// It must absorb latentHeatFusion (J/kg) while staying at exactly the melting
+// temperature. Only after all latent heat is absorbed does it finish transitioning.
+//
+// Implementation: each MaterialPacket in transition has a phaseProgress (0→1).
+//   Each tick: absorbed = heatInput × dt
+//   phaseProgress += absorbed / (mass × latentHeatFusion)
+//   Temperature stays at meltingPoint until phaseProgress reaches 1.0
+//   Then: packet transitions and temperature can rise again.
+//
+// Same for boiling (latentHeatVaporization) and freezing (releases latent heat).
+//
+// Typical values (computed from composition by property calculator):
+//   Water: latentHeatFusion = 334 kJ/kg, latentHeatVaporization = 2260 kJ/kg
+//   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
+//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6090 kJ/kg
+//   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
+//
+// Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
+//   247,000 J of sustained heat input before it becomes liquid.
+//   At a typical furnace heat rate of ~500 W: ~8 game-minutes of smelting.
+//   Without latent heat, melting would be instant — unrealistically fast.
+//
+// Casting effect: a mold full of molten copper releases latent heat as it
+//   solidifies. The center of the casting stays liquid longer because the
+//   released latent heat must escape through the already-solidified outer shell.
+//   This creates shrinkage cavities — real metallurgical defects that affect
+//   the quality of the cast object.
 
 **Freezing (liquid → solid):**
 ```
@@ -3643,6 +3689,54 @@ MeshCollision:
   For rigid objects (finished pot, stone mold): computed once at creation.
 ```
 
+#### Fluid-Structure Coupling — Water Pushes on Walls
+
+The fluid simulation and structural physics are not independent. Fluid exerts force on any solid surface it contacts. Without this coupling, dams have no load on them, bridge piers feel no river current, and underground structures don't experience buoyancy.
+
+**Hydrostatic pressure on walls and dams:**
+Every solid block in contact with fluid receives a horizontal force:
+  F = ρ_fluid × g × h × A
+  where h = depth of the fluid above the block's center, A = contact area
+
+A dam holding back 5m of water: F = 1000 × 9.81 × 5 × 1 = 49,050 N per m² of wall.
+This force is applied as a lateral load to the structural system (§3.4).
+The dam's structural integrity check must resist this — if the dam is too thin
+or unbuttressed, it fails and the water is released as a flood (see below).
+
+**Hydrodynamic force on submerged structures:**
+Moving fluid pushes on submerged objects:
+  F = 0.5 × ρ × v² × Cd × A
+  where v = fluid velocity, Cd = drag coefficient (~1.2 for flat surfaces)
+
+A bridge pier in a river flowing at 2 m/s: F = 0.5 × 1000 × 4 × 1.2 × 1 = 2400 N/m².
+Not enough to destroy a stone pier, but enough to erode a wooden one over time.
+
+**Buoyancy on submerged foundations:**
+Structures below the water table experience uplift:
+  F_buoyancy = ρ_water × g × V_submerged
+A basement 3m × 3m × 2m deep below water table:
+  F_up = 1000 × 9.81 × 18 = 176,580 N (18 tonnes pushing up)
+If the building above isn't heavy enough, the basement floats up.
+
+**Dam break → flood wave:**
+When a structural failure releases contained water, the shallow water equations
+describe the resulting flood:
+  ∂A/∂t + ∂Q/∂x = 0  (continuity)
+  ∂Q/∂t + ∂(Q²/A)/∂x + gA × ∂h/∂x = gA(S₀ - Sf)  (momentum)
+
+For the game's grid-based regional water (Scale 3), a simplified kinematic wave
+model is sufficient: when a dam block is removed, the grid cell behind it
+instantly has its waterVolume redistributed to downhill cells, with flow velocity
+determined by the height difference. MPM particles are spawned at the breach
+point for the dramatic visual of water rushing through.
+
+Implementation: the structural system notifies the fluid system when a block
+that was retaining water is removed. The fluid system then:
+  1. Queries waterVolume in grid cells adjacent to the removed block
+  2. Spawns MPM particles at the breach with velocity from √(2gh)
+  3. Reduces waterVolume in the upstream cells
+  4. The MPM particles flow downhill, joining the environment-scale simulation
+
 #### Particle Network Streaming
 
 The world is consistent. Every player sees the same lava flow, the same river, the same puddle. But streaming 400,000 particle positions to every client every frame is impossible. The solution mirrors human perception: you can only see what is in front of you, and distant things have less detail.
@@ -4165,6 +4259,38 @@ ForceSystem {
   //     Stacked (unbonded) blocks can slide under lateral force:
   //       frictionResistance = block.load × frictionCoefficient
   //       if lateralForce > frictionResistance → block slides off
+  //
+  //   BUCKLING (slender column failure):
+  //     Tall, thin columns fail by sideways bowing, NOT by crushing.
+  //     Euler's critical load: P_cr = π² × E × I / (K × L)²
+  //     where:
+  //       E = Young's modulus (Pa)
+  //       I = second moment of area (m⁴) — for a 1m square: I = 1/12 = 0.083
+  //       K = effective length factor: 1.0 for pinned-pinned, 0.5 for fixed-fixed,
+  //           2.0 for cantilever (flag pole), 0.7 for fixed-pinned
+  //       L = column height (m)
+  //
+  //     Slenderness ratio: λ = K×L / r where r = √(I/A) is radius of gyration
+  //       λ < 30: stocky — crushing governs (use compressive strength check)
+  //       λ > 100: slender — buckling governs (use Euler)
+  //       30-100: intermediate — use Rankine-Gordon: 1/P_fail = 1/P_crush + 1/P_euler
+  //
+  //     Example: 1m × 1m stone column, 10m tall (pinned-pinned):
+  //       I = 0.083 m⁴, r = 0.289 m, λ = 10/0.289 = 34.6 → intermediate
+  //       P_euler = π² × 40×10⁹ × 0.083 / 100 = 328,000 kN
+  //       P_crush = 200×10⁶ × 1 = 200,000 kN
+  //       Governs: crushing (P_crush < P_euler)
+  //
+  //     Same column at 20m tall:
+  //       λ = 20/0.289 = 69.2 → intermediate
+  //       P_euler = 328,000 / 4 = 82,000 kN ← now buckling governs
+  //       Column fails at 82,000 kN (41% of crushing capacity)
+  //
+  //     This is why real buildings use wide bases and why Gothic cathedrals
+  //     need flying buttresses — tall stone columns buckle before they crush.
+  //
+  //     Implementation: for each column (vertical run of blocks with no lateral support),
+  //     compute λ. If λ > 30, also check Euler. Take the lower of P_crush and P_euler.
 
   // ── Phase 4: Cascade collapse ──────────────────────────────────────────
   //
@@ -4524,6 +4650,35 @@ StructuralDecay {
   // Historical example: The Great Fire of London (1666) destroyed 13,000 houses
   //   because they were all timber-framed. The rebuilding used stone and brick.
   //   In-game: a player who builds everything from wood risks total loss from one fire.
+
+  // ── Thermal stress ─────────────────────────────────────────────────────
+  //
+  // When a block is heated unevenly (one face hot, opposite face cold),
+  // differential thermal expansion creates internal stress:
+  //
+  //   σ_thermal = E × α × ΔT
+  //   where:
+  //     E = Young's modulus (Pa)
+  //     α = thermal expansion coefficient (1/°C)
+  //     ΔT = temperature difference across the block (°C)
+  //
+  //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
+  //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
+  //     This happens when: fire on one side of a stone wall, sun on south face
+  //
+  //   Thermal shock resistance parameter: R = σ_t × k / (E × α)
+  //     Glass: R = 40 → shatters when quenched from >80°C temperature difference
+  //     Copper: R = 12,000 → survives quenching from 500°C+ (safe for quench hardening)
+  //     Ceramic: R = 200 → survives moderate thermal shock but not extreme
+  //
+  //   Gameplay effect: dropping a hot ceramic pot into cold water SHATTERS it.
+  //   Quenching hot copper in water is SAFE. This emerges from the R parameter
+  //   without any special "pottery breaks in water" rule.
+  //
+  //   Daily thermal cycling (sun-facing walls heat during day, cool at night)
+  //   causes cumulative fatigue damage. Over many game-years, south-facing stone
+  //   walls develop surface cracks. This accelerates freeze-thaw damage because
+  //   cracks let water in deeper.
 }
 ```
 
