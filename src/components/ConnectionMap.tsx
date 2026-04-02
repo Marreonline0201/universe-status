@@ -71,49 +71,50 @@ interface NodeDef {
   section: string
   group: NodeGroup
   description: string
+  physics?: string
 }
 
 const NODE_DEFS: NodeDef[] = [
   // Tick stages
-  { id: 'temp-propagation', label: 'Stage 1: Temperature', section: '3.0', group: 'tick', description: "Fourier's law heat transfer between adjacent packets" },
-  { id: 'phase-transitions', label: 'Stage 2: Phase Transitions', section: '3.0', group: 'tick', description: 'Solid<>liquid<>gas based on melting/boiling points' },
-  { id: 'reaction-engine', label: 'Stage 3: Reactions', section: '3.1', group: 'tick', description: 'Gibbs free energy check, stoichiometry' },
-  { id: 'fluid-stage', label: 'Stage 4: Fluid Sim', section: '3.2', group: 'tick', description: 'SPH/MPM particle forces' },
-  { id: 'structural-stage', label: 'Stage 5: Structural', section: '3.4', group: 'tick', description: 'Load path check on modified structures' },
-  { id: 'rigid-body', label: 'Stage 6: Rigid Body', section: '3.0', group: 'tick', description: 'Gravity, collision for loose objects' },
-  { id: 'sound-stage', label: 'Stage 7: Sound Events', section: '3.3', group: 'tick', description: 'Convert physics events to SoundEvent descriptors' },
-  { id: 'broadcast', label: 'Stage 8: Broadcast', section: '3.5', group: 'tick', description: 'Package and send via WebSocket' },
+  { id: 'temp-propagation', label: 'Stage 1: Temperature', section: '3.0', group: 'tick', description: "Fourier's law heat transfer between adjacent packets", physics: "q = -k * A * dT/dx (Fourier's law)\nThermal conductivity k from composition\nExplicit Euler: T_new = T + dt * alpha * laplacian(T)\nalpha = k / (rho * Cp)" },
+  { id: 'phase-transitions', label: 'Stage 2: Phase Transitions', section: '3.0', group: 'tick', description: 'Solid<>liquid<>gas based on melting/boiling points', physics: "Checks T vs T_melt and T_boil each tick\nLatent heat absorbed during transition\nphaseProgress 0->1 before state change" },
+  { id: 'reaction-engine', label: 'Stage 3: Reactions', section: '3.1', group: 'tick', description: 'Gibbs free energy check, stoichiometry', physics: "dG = dH - T*dS < 0 for spontaneous\nArrhenius rate: k = A * exp(-Ea/RT)\nStoichiometric ratio check before proceeding" },
+  { id: 'fluid-stage', label: 'Stage 4: Fluid Sim', section: '3.2', group: 'tick', description: 'SPH/MPM particle forces', physics: "SPH: 5 forces at 60Hz for crafting\nMPM: P2G/G2P at 30Hz for environment\n4-8 substeps per frame" },
+  { id: 'structural-stage', label: 'Stage 5: Structural', section: '3.4', group: 'tick', description: 'Load path check on modified structures', physics: "Only re-checks dirty regions\nBFS from ground -> top-down load spread\nCascade collapse in batched waves" },
+  { id: 'rigid-body', label: 'Stage 6: Rigid Body', section: '3.0', group: 'tick', description: 'Gravity, collision for loose objects', physics: "Verlet integration for position\nGJK/EPA for narrow-phase collision\nRestitution from material elasticity" },
+  { id: 'sound-stage', label: 'Stage 7: Sound Events', section: '3.3', group: 'tick', description: 'Convert physics events to SoundEvent descriptors', physics: "Collects impact, break, flow, bubble events\nPackages as SoundEvent descriptors\nEnergy threshold filters trivial events" },
+  { id: 'broadcast', label: 'Stage 8: Broadcast', section: '3.5', group: 'tick', description: 'Package and send via WebSocket', physics: "Delta-compressed state updates\nSpatial LOD based on player distance\nPriority queue for bandwidth" },
 
   // Material System 3.1
-  { id: 'property-calc', label: 'Property Calculator', section: '3.1', group: 'material', description: 'Composition -> 33+ derived properties' },
-  { id: 'reaction-rules', label: 'Reaction Engine', section: '3.1', group: 'material', description: 'delta-G < 0 check, activation energy, stoichiometry' },
+  { id: 'property-calc', label: 'Property Calculator', section: '3.1', group: 'material', description: 'Composition -> 33+ derived properties', physics: "Computes 36+ properties from elemental composition:\n\u2022 Melting point: CALPHAD binary phase diagrams\n\u2022 Viscosity: Andrade \u03bc=A\u00b7e^(Ea/RT)\n\u2022 Strength: Fleischer solid solution \u0394\u03c3=B\u00b7c^(1/2)\n\u2022 Fracture toughness: K_IC from bonding energy\n\u2022 Work hardening: Hollomon \u03c3=K\u00d7\u03b5^n\n\u2022 Latent heat: Clausius-Clapeyron" },
+  { id: 'reaction-rules', label: 'Reaction Engine', section: '3.1', group: 'material', description: 'delta-G < 0 check, activation energy, stoichiometry', physics: "dG = dH - T*dS (Gibbs free energy)\nArrhenius: k = A * exp(-Ea/(R*T))\nMass conservation via stoichiometric matrix\nExothermic reactions heat neighbors" },
 
   // Fluid System 3.2
-  { id: 'sph-solver', label: 'SPH Solver (crafting)', section: '3.2', group: 'fluid', description: '5 forces, 100-5k particles, 60Hz' },
-  { id: 'mpm-solver', label: 'MPM Solver (environment)', section: '3.2', group: 'fluid', description: 'Particle<>grid transfer, 5k-200k particles, 30Hz' },
-  { id: 'phase-system', label: 'Phase Transition System', section: '3.2', group: 'fluid', description: 'Spawns/merges particles at melting/boiling points' },
-  { id: 'optical-pipeline', label: 'Optical Properties', section: '3.2', group: 'fluid', description: 'Beer-Lambert absorption, Fresnel, Planck emission' },
-  { id: 'secondary-particles', label: 'Secondary Particles', section: '3.2', group: 'fluid', description: 'Spray (Weber), foam (vorticity), bubbles (reactions)' },
-  { id: 'particle-network', label: 'Particle Streaming', section: '3.2', group: 'fluid', description: 'Delta compression, spatial LOD, ~97 KB/s' },
-  { id: 'tier-rendering', label: 'Three-Tier Rendering', section: '3.2', group: 'fluid', description: 'Marching cubes / Screen-space / Raw points' },
-  { id: 'redistribution', label: 'Redistribution', section: '3.2', group: 'fluid', description: 'Split/merge for even spacing' },
+  { id: 'sph-solver', label: 'SPH Solver (crafting)', section: '3.2', group: 'fluid', description: '5 forces, 100-5k particles, 60Hz', physics: "5 forces per particle per tick:\n\u2022 Pressure: Tait P=B\u00b7((\u03c1/\u03c1\u2080)^\u03b3-1)\n\u2022 Viscosity: F=\u03bc\u00b7\u2207\u00b2v (Newtonian) or Cross model (non-Newtonian)\n\u2022 Gravity: F=m\u00b7g\u00b7(-normalize(pos))\n\u2022 Surface tension: F=\u03c3\u00b7\u03ba\u00b7n\u0302\n\u2022 Terrain collision: push to surface + friction" },
+  { id: 'mpm-solver', label: 'MPM Solver (environment)', section: '3.2', group: 'fluid', description: 'Particle<>grid transfer, 5k-200k particles, 30Hz', physics: "P2G scatter -> grid force solve -> G2P gather\n\u2022 ~2700 FLOPs per particle per substep\n\u2022 27 grid nodes per particle (quadratic B-spline)\n\u2022 Affine velocity matrix C tracks local deformation\n\u2022 4-8 substeps per frame at 30Hz" },
+  { id: 'phase-system', label: 'Phase Transition System', section: '3.2', group: 'fluid', description: 'Spawns/merges particles at melting/boiling points', physics: "Melting: spawn N particles, N=mass/particleMass\nFreezing: merge cluster -> solid MaterialPacket\nLatent heat: phaseProgress 0->1, absorbs L (J/kg)\nStefan solidification front: dx/dt=k(T_m-T_b)/(\u03c1Lx)\nMartensite: coolingRate > critical -> hard/brittle" },
+  { id: 'optical-pipeline', label: 'Optical Properties', section: '3.2', group: 'fluid', description: 'Beer-Lambert absorption, Fresnel, Planck emission', physics: "Beer-Lambert: I(\u03bb)=I\u2080\u00b7exp(-\u03b1(\u03bb)\u00b7d)\nArago-Biot: n_mix=\u03a3(x_i\u00b7n_i)\nFresnel: reflectance at interfaces\nPlanck blackbody: \u03bb_peak=2898/T(K)\n40 bytes per particle cached" },
+  { id: 'secondary-particles', label: 'Secondary Particles', section: '3.2', group: 'fluid', description: 'Spray (Weber), foam (vorticity), bubbles (reactions)', physics: "Weber number We=\u03c1v\u00b2d/\u03c3 > 12 -> spray\nVorticity threshold -> foam generation\nMinnaert: f = 3.26/radius for bubble sound\nLifetime based on surface tension" },
+  { id: 'particle-network', label: 'Particle Streaming', section: '3.2', group: 'fluid', description: 'Delta compression, spatial LOD, ~97 KB/s', physics: "Delta compression: only changed particles sent\nSpatial LOD: far particles at 1/4 rate\nQuantized positions: 12-bit per axis\n~97 KB/s total bandwidth" },
+  { id: 'tier-rendering', label: 'Three-Tier Rendering', section: '3.2', group: 'fluid', description: 'Marching cubes / Screen-space / Raw points', physics: "Tier 1: Marching cubes (nearby, high quality)\nTier 2: Screen-space fluid rendering (mid)\nTier 3: Raw point sprites (distant)\nAuto-selects based on camera distance" },
+  { id: 'redistribution', label: 'Redistribution', section: '3.2', group: 'fluid', description: 'Split/merge for even spacing', physics: "Split: particle too large -> 2 children\nMerge: overlapping particles -> 1 parent\nConserves mass, momentum, energy\nMaintains uniform particle spacing" },
 
   // Sound System 3.3
-  { id: 'modal-synth', label: 'Modal Synthesis', section: '3.3', group: 'sound', description: 'f = beta^2/(2piL^2) * sqrt(EI/rhoA)' },
-  { id: 'noise-synth', label: 'Noise Synthesis', section: '3.3', group: 'sound', description: 'Rain, fire, wind, water flow, thunder' },
-  { id: 'voice-synth', label: 'Voice Synthesis', section: '3.3', group: 'sound', description: 'NPC speech, animal calls' },
+  { id: 'modal-synth', label: 'Modal Synthesis', section: '3.3', group: 'sound', description: 'f = beta^2/(2piL^2) * sqrt(EI/rhoA)', physics: "f_n = \u03b2_n\u00b2/(2\u03c0L\u00b2) \u00d7 \u221a(EI/\u03c1A)\n\u2022 Free-free: \u03b2\u2081=4.73 (dropped object)\n\u2022 Clamped-free: \u03b2\u2081=1.875 (wall-mounted)\n\u2022 Q = 1/(2\u00b7dampingLossTangent)\n\u2022 Doppler: f_obs = f_src \u00d7 (343+v_l)/(343+v_s)" },
+  { id: 'noise-synth', label: 'Noise Synthesis', section: '3.3', group: 'sound', description: 'Rain, fire, wind, water flow, thunder', physics: "Procedural noise shaped by physics params:\nRain: drop size -> frequency, intensity -> density\nFire: crackle rate from combustion energy\nWind: Strouhal vortex shedding f=St*v/d\nThunder: distance -> delay and low-pass" },
+  { id: 'voice-synth', label: 'Voice Synthesis', section: '3.3', group: 'sound', description: 'NPC speech, animal calls', physics: "Formant synthesis for vocal tract\nF1/F2 vowel space mapping\nGlottal pulse model for pitch" },
 
   // Structural System 3.4
-  { id: 'load-path', label: 'Load Path Algorithm', section: '3.4', group: 'structural', description: 'BFS connectivity + top-down load accumulation' },
-  { id: 'beam-analysis', label: 'Beam Bending', section: '3.4', group: 'structural', description: 'sigma = 3wL^2/(4bh^2), tensile failure' },
-  { id: 'arch-analysis', label: 'Arch Thrust', section: '3.4', group: 'structural', description: 'T = wL^2/(8h), abutment checks' },
-  { id: 'foundation', label: 'Foundation', section: '3.4', group: 'structural', description: 'Terzaghi bearing capacity, sinking rate' },
-  { id: 'decay-system', label: 'Decay System', section: '3.4', group: 'structural', description: 'Rain, freeze-thaw, fire damage' },
+  { id: 'load-path', label: 'Load Path Algorithm', section: '3.4', group: 'structural', description: 'BFS connectivity + top-down load accumulation', physics: "Phase 1: BFS connectivity from ground\nPhase 2: top-down load (1:4 spreading)\nPhase 3: \u03c3_c=F/A, \u03c3_t=3wL\u00b2/(4bh\u00b2), P_cr=\u03c0\u00b2EI/(KL)\u00b2\nPhase 4: cascade collapse in batched waves\nEarth pressure: \u03c3_h=K_a\u00b7\u03b3\u00b7z\nTriangulation: m=b+r-2j" },
+  { id: 'beam-analysis', label: 'Beam Bending', section: '3.4', group: 'structural', description: 'sigma = 3wL^2/(4bh^2), tensile failure', physics: "\u03c3 = 3wL\u00b2/(4bh\u00b2) for simply supported\n\u03b4 = 5wL\u2074/(384EI) for deflection\nL/360 = acceptable, L/180 = visible sag\nFailure when \u03c3 > \u03c3_tensile" },
+  { id: 'arch-analysis', label: 'Arch Thrust', section: '3.4', group: 'structural', description: 'T = wL^2/(8h), abutment checks', physics: "Thrust T = wL\u00b2/(8h)\nAbutment must resist horizontal thrust\nFunicular shape: y = 4h*x*(L-x)/L\u00b2\nVoussoir arch: hinge analysis" },
+  { id: 'foundation', label: 'Foundation', section: '3.4', group: 'structural', description: 'Terzaghi bearing capacity, sinking rate', physics: "q_ult = cN_c + \u03b3DN_q + 0.5\u03b3BN_\u03b3\nSinking rate from consolidation\nSettlement: \u03b4 = qB(1-\u03bd\u00b2)/E\nRankine earth pressure for retaining walls" },
+  { id: 'decay-system', label: 'Decay System', section: '3.4', group: 'structural', description: 'Rain, freeze-thaw, fire damage', physics: "Rain: absorption rate * exposure time\nFreeze-thaw: 9% expansion in cracks\nFire: strength reduction curve vs temperature\nGalvanic: corrosion rate from electrode potential" },
 
   // Networking 3.5
-  { id: 'authority', label: 'Server Authority', section: '3.5', group: 'network', description: 'All physics server-computed' },
-  { id: 'video-mode', label: 'Video Mode', section: '3.5', group: 'network', description: 'H.264 stream for precision craft' },
-  { id: 'state-mode', label: 'State Mode', section: '3.5', group: 'network', description: 'Client renders from position data' },
+  { id: 'authority', label: 'Server Authority', section: '3.5', group: 'network', description: 'All physics server-computed', physics: "Server is single source of truth\nClient sends inputs, receives state\nAnti-cheat: server validates all actions" },
+  { id: 'video-mode', label: 'Video Mode', section: '3.5', group: 'network', description: 'H.264 stream for precision craft', physics: "H.264 encode at server, decode at client\nTriggered when >200 particles within 10m\nLow latency: ~50ms encode+transmit" },
+  { id: 'state-mode', label: 'State Mode', section: '3.5', group: 'network', description: 'Client renders from position data', physics: "Position + velocity + material sent per entity\nClient-side interpolation between ticks\nExtrapolation for network jitter" },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
@@ -129,90 +130,90 @@ interface EdgeDef {
 
 const EDGE_DEFS: EdgeDef[] = [
   // Connection A: 3.1 -> 3.2 (properties feed fluid)
-  { id: 'A1', source: 'property-calc', target: 'sph-solver', label: 'Viscosity, density, surface tension', data: 'Material-dependent SPH forces', severity: 'exists' },
-  { id: 'A2', source: 'property-calc', target: 'mpm-solver', label: 'Same properties for MPM', data: 'Viscosity, density for grid transfer', severity: 'exists' },
-  { id: 'A3', source: 'property-calc', target: 'phase-system', label: 'Melting/boiling points', data: 'Triggers particle spawn/merge', severity: 'exists' },
-  { id: 'A4', source: 'property-calc', target: 'optical-pipeline', label: 'Composition -> optical properties', data: 'Beer-Lambert, Arago-Biot, Planck', severity: 'exists' },
-  { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'MISSING: Latent heat', data: '334 kJ/kg for ice, 2260 kJ/kg for water -- transitions should absorb/release heat', severity: 'missing' },
-  { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'Non-Newtonian viscosity', data: 'Mud, clay, blood are shear-thinning (Cross model)', severity: 'exists' },
+  { id: 'A1', source: 'property-calc', target: 'sph-solver', label: 'Viscosity, density, surface tension', data: 'Andrade viscosity \u03bc=A\u00b7e^(Ea/RT), E\u00f6tv\u00f6s surface tension, Vegard density. Each particle reads these from its MaterialPacket composition every sim tick.', severity: 'exists' },
+  { id: 'A2', source: 'property-calc', target: 'mpm-solver', label: 'Same properties for MPM', data: 'Same material-dependent properties transferred to MPM grid via P2G scatter. Grid forces computed from averaged properties.', severity: 'exists' },
+  { id: 'A3', source: 'property-calc', target: 'phase-system', label: 'Melting/boiling points', data: 'Property calculator computes T_melt and T_boil from CALPHAD binary phase diagrams. Phase system checks temperature each tick.', severity: 'exists' },
+  { id: 'A4', source: 'property-calc', target: 'optical-pipeline', label: 'Composition -> optical properties', data: 'Beer-Lambert: I(\u03bb)=I\u2080\u00b7exp(-\u03b1(\u03bb)\u00b7d). Arago-Biot: n_mix=\u03a3(x_i\u00b7n_i). Planck blackbody: \u03bb_peak=2898/T(K). 40 bytes per particle cached.', severity: 'exists' },
+  { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'MISSING: Latent heat', data: 'L_fusion and L_vaporization computed from Clausius-Clapeyron. Phase transitions track phaseProgress 0\u21921, absorbing/releasing energy without temperature change.', severity: 'missing' },
+  { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'Non-Newtonian viscosity', data: 'Cross model: \u03bc=\u03bc_\u221e+(\u03bc\u2080-\u03bc_\u221e)/(1+(K\u00b7\u03b3\u0307)\u207f). Clay \u03bc\u2080=100 Pa\u00b7s (stiff) \u2192 \u03bc_\u221e=0.1 Pa\u00b7s (flows when worked). Shear rate \u03b3\u0307 from SPH velocity Laplacian.', severity: 'exists' },
 
   // Connection B: 3.1 -> 3.3 (properties feed sound)
-  { id: 'B1', source: 'property-calc', target: 'modal-synth', label: "Young's modulus, density", data: 'E and rho determine modal frequencies', severity: 'exists' },
-  { id: 'B2', source: 'property-calc', target: 'modal-synth', label: 'Boundary conditions + damping', data: 'Boundary detection for modal frequencies, Q factor from loss tangent', severity: 'exists' },
+  { id: 'B1', source: 'property-calc', target: 'modal-synth', label: "Young's modulus, density", data: 'f_n = \u03b2_n\u00b2/(2\u03c0L\u00b2) \u00d7 \u221a(EI/\u03c1A). Young\u2019s modulus E and density \u03c1 read from MaterialPacket. Higher E = higher pitch, higher \u03c1 = lower pitch.', severity: 'exists' },
+  { id: 'B2', source: 'property-calc', target: 'modal-synth', label: 'Boundary conditions + damping', data: 'Q = 1/(2\u00d7dampingLossTangent). Metal tan(\u03b4)\u22480.001 \u2192 Q=500 (rings long). Wood tan(\u03b4)\u22480.03 \u2192 Q=17 (dies fast). Boundary conditions change \u03b2_n values.', severity: 'exists' },
 
   // Connection C: 3.1 -> 3.4 (properties feed structural)
-  { id: 'C1', source: 'property-calc', target: 'load-path', label: 'Compressive/tensile/shear strength', data: 'Block stress vs material capacity', severity: 'exists' },
-  { id: 'C2', source: 'property-calc', target: 'beam-analysis', label: 'Tensile strength, E, density', data: 'Beam bending stress check', severity: 'exists' },
-  { id: 'C3', source: 'property-calc', target: 'decay-system', label: 'Water absorption, flammability', data: 'Rain/fire damage rates', severity: 'exists' },
-  { id: 'C4', source: 'property-calc', target: 'load-path', label: 'MISSING: Fatigue (Basquin)', data: 'Cyclic loading below yield still causes failure', severity: 'missing' },
-  { id: 'C5', source: 'property-calc', target: 'load-path', label: 'MISSING: Fracture toughness', data: 'Cracked blocks weaker than intact -- Griffith-Irwin', severity: 'missing' },
-  { id: 'C6', source: 'property-calc', target: 'load-path', label: 'MISSING: Buckling (Euler)', data: 'Tall columns fail before compressive strength', severity: 'missing' },
+  { id: 'C1', source: 'property-calc', target: 'load-path', label: 'Compressive/tensile/shear strength', data: '\u03c3_c=F/A compressive, \u03c3_t=3wL\u00b2/(4bh\u00b2) tensile bending, \u03c4=VQ/(Ib) shear. Each block checked against material-specific strength from PropertyCalculator.', severity: 'exists' },
+  { id: 'C2', source: 'property-calc', target: 'beam-analysis', label: 'Tensile strength, E, density', data: '\u03c3_bend = M*y/I where M from load, I from geometry. E determines deflection \u03b4=5wL\u2074/(384EI). Density \u03c1 contributes self-weight load w=\u03c1*A*g.', severity: 'exists' },
+  { id: 'C3', source: 'property-calc', target: 'decay-system', label: 'Water absorption, flammability', data: 'Absorption coefficient \u03b1_w determines rain damage rate. Flash point and heat of combustion set fire propagation. Freeze-thaw susceptibility from porosity.', severity: 'exists' },
+  { id: 'C4', source: 'property-calc', target: 'load-path', label: 'MISSING: Fatigue (Basquin)', data: '\u03c3_a = \u03c3\'_f \u00b7 (2N_f)^b. Cyclic loading below yield still causes failure after N cycles. S-N curve from material group.', severity: 'missing' },
+  { id: 'C5', source: 'property-calc', target: 'load-path', label: 'MISSING: Fracture toughness', data: 'K_I = \u03c3\u221a(\u03c0a). Failure when K_I \u2265 K_IC (Griffith-Irwin). Cracked blocks weaker than intact. Crack propagation direction from max tensile stress.', severity: 'missing' },
+  { id: 'C6', source: 'property-calc', target: 'load-path', label: 'MISSING: Buckling (Euler)', data: 'P_cr = \u03c0\u00b2EI/(KL)\u00b2. Tall slender columns fail at P_cr << \u03c3_c*A. K=0.5 (fixed-fixed) to K=2.0 (cantilever). Eccentricity amplifies buckling.', severity: 'missing' },
 
   // Connection E: 3.2 -> 3.1 (solidification back to materials)
-  { id: 'E1', source: 'phase-system', target: 'property-calc', label: 'Frozen particles -> solid MaterialPacket', data: 'Mass-weighted composition average', severity: 'exists' },
-  { id: 'E2', source: 'phase-system', target: 'property-calc', label: 'Microstructure (martensite)', data: 'Cooling rate -> grain size -> properties (martensite in steel)', severity: 'exists' },
+  { id: 'E1', source: 'phase-system', target: 'property-calc', label: 'Frozen particles -> solid MaterialPacket', data: 'Frozen particles merge: mass = \u03a3m_i, composition = mass-weighted average, position = center of mass, shape = convex hull.', severity: 'exists' },
+  { id: 'E2', source: 'phase-system', target: 'property-calc', label: 'Microstructure (martensite)', data: 'Cooling rate > critical \u2192 martensite (HV 600, brittle). Slow cool \u2192 pearlite (HV 200, tough). Tempering at 200-600\u00b0C adjusts hardness/toughness trade-off.', severity: 'exists' },
 
   // Connection F: 3.2 -> 3.3 (fluid events -> sound)
-  { id: 'F1', source: 'sph-solver', target: 'noise-synth', label: 'Splash events (v > 0.5 m/s)', data: 'Impact energy + liquid material -> noise descriptor', severity: 'exists' },
-  { id: 'F2', source: 'sph-solver', target: 'noise-synth', label: 'Pour/flow sounds', data: 'Flow speed + channel geometry -> frequency', severity: 'exists' },
-  { id: 'F3', source: 'secondary-particles', target: 'noise-synth', label: 'Bubble sounds', data: 'Minnaert frequency: f = 3.26/radius', severity: 'exists' },
+  { id: 'F1', source: 'sph-solver', target: 'noise-synth', label: 'Splash events (v > 0.5 m/s)', data: 'Impact energy E=0.5*m*v\u00b2 + liquid material type \u2192 noise descriptor. Weber number We=\u03c1v\u00b2d/\u03c3 determines splash vs. smooth entry.', severity: 'exists' },
+  { id: 'F2', source: 'sph-solver', target: 'noise-synth', label: 'Pour/flow sounds', data: 'Flow speed + channel geometry \u2192 turbulence spectrum. Reynolds Re=\u03c1vd/\u03bc determines laminar (quiet) vs turbulent (noisy) transition.', severity: 'exists' },
+  { id: 'F3', source: 'secondary-particles', target: 'noise-synth', label: 'Bubble sounds', data: 'Minnaert frequency: f = 3.26/radius (Hz for radius in meters). Each bubble oscillation \u2192 short tonal ping. Cluster of bubbles \u2192 broadband fizz.', severity: 'exists' },
 
   // Connection G: 3.2 -> 3.4 (MISSING: fluid loads on structures)
-  { id: 'G1', source: 'sph-solver', target: 'load-path', label: 'MISSING: Hydrostatic pressure', data: 'P = rho*g*h on dams/walls -- 5m water = 50 kPa', severity: 'missing' },
-  { id: 'G2', source: 'mpm-solver', target: 'load-path', label: 'MISSING: Hydrodynamic force', data: 'F = 0.5*rho*v^2*Cd*A on bridge piers', severity: 'missing' },
-  { id: 'G3', source: 'mpm-solver', target: 'foundation', label: 'MISSING: Buoyancy uplift', data: 'Submerged foundations experience uplift', severity: 'missing' },
+  { id: 'G1', source: 'sph-solver', target: 'load-path', label: 'MISSING: Hydrostatic pressure', data: 'P = \u03c1*g*h on dams/walls. 5m water = 49 kPa lateral. Triangular pressure distribution. Resultant at h/3 from base.', severity: 'missing' },
+  { id: 'G2', source: 'mpm-solver', target: 'load-path', label: 'MISSING: Hydrodynamic force', data: 'F = 0.5*\u03c1*v\u00b2*C_d*A on bridge piers. C_d\u22481.2 for bluff bodies. Vortex shedding at St\u22480.2 causes oscillating lateral force.', severity: 'missing' },
+  { id: 'G3', source: 'mpm-solver', target: 'foundation', label: 'MISSING: Buoyancy uplift', data: 'F_buoyancy = \u03c1_water*g*V_submerged. Submerged foundations lose effective weight. Reduces bearing capacity. Can float empty basements.', severity: 'missing' },
 
   // Connection H: 3.2 -> 3.5 (particles to network)
-  { id: 'H1', source: 'particle-network', target: 'broadcast', label: 'PARTICLE_UPDATE messages', data: 'Delta-compressed, spatial LOD, 97 KB/s', severity: 'exists' },
-  { id: 'H2', source: 'sph-solver', target: 'video-mode', label: 'Active particle count trigger', data: '>200 particles within 10m -> video mode', severity: 'exists' },
+  { id: 'H1', source: 'particle-network', target: 'broadcast', label: 'PARTICLE_UPDATE messages', data: 'Delta-compressed positions (12-bit quantized), spatial LOD (far = 1/4 rate). ~97 KB/s total. Priority queue by player proximity.', severity: 'exists' },
+  { id: 'H2', source: 'sph-solver', target: 'video-mode', label: 'Active particle count trigger', data: '>200 particles within 10m of player \u2192 switch to H.264 video mode. Server renders fluid, streams frames. ~50ms latency.', severity: 'exists' },
 
   // Connection I: 3.3 -> 3.5 (sound to network)
-  { id: 'I1', source: 'sound-stage', target: 'broadcast', label: 'SOUND_EVENT messages', data: 'Descriptors sent to client for synthesis', severity: 'exists' },
-  { id: 'I2', source: 'modal-synth', target: 'broadcast', label: 'Doppler effect', data: 'f_obs = f_src * (v+v_l)/(v+v_s) for moving sources', severity: 'exists' },
-  { id: 'I3', source: 'noise-synth', target: 'broadcast', label: 'Freq-dependent absorption', data: 'Distant sounds lose high frequencies', severity: 'exists' },
+  { id: 'I1', source: 'sound-stage', target: 'broadcast', label: 'SOUND_EVENT messages', data: 'SoundEvent descriptors (type, energy, position, material) sent to client. Client synthesizes audio locally. ~200 bytes per event.', severity: 'exists' },
+  { id: 'I2', source: 'modal-synth', target: 'broadcast', label: 'Doppler effect', data: 'f_obs = f_src \u00d7 (343+v_listener)/(343+v_source). Applied per-mode. Moving train: approach +semitone, recede -semitone at 30 m/s.', severity: 'exists' },
+  { id: 'I3', source: 'noise-synth', target: 'broadcast', label: 'Freq-dependent absorption', data: 'Atmospheric absorption: \u03b1(f) \u221d f\u00b2. At 100m: 1kHz loses 0.5dB, 10kHz loses 10dB. Distant sounds become muffled/bassy.', severity: 'exists' },
 
   // Connection J: 3.4 -> 3.3 (structural events -> sound)
-  { id: 'J1', source: 'load-path', target: 'modal-synth', label: 'Block breaking -> crack/crash sound', data: 'storedEnergy -> modal descriptor', severity: 'exists' },
-  { id: 'J2', source: 'load-path', target: 'noise-synth', label: 'Cascade collapse -> staggered impacts', data: 'Multiple events over 0.5s', severity: 'exists' },
+  { id: 'J1', source: 'load-path', target: 'modal-synth', label: 'Block breaking -> crack/crash sound', data: 'storedEnergy (J) \u2192 modal descriptor. E_elastic = \u03c3\u00b2V/(2E). Higher stored energy = louder crack. Material determines spectral shape.', severity: 'exists' },
+  { id: 'J2', source: 'load-path', target: 'noise-synth', label: 'Cascade collapse -> staggered impacts', data: 'Each wave of cascade collapse \u2192 separate impact event. Staggered over 0.1-2s depending on structure size. Creates rolling rumble effect.', severity: 'exists' },
 
-  // Connection K: 3.4 -> 3.2 (MISSING: collapse displaces fluid)
-  { id: 'K1', source: 'load-path', target: 'mpm-solver', label: 'Progressive collapse -> flood', data: 'Structural failure releases contained water, progressive collapse dynamics', severity: 'exists' },
-  { id: 'K2', source: 'load-path', target: 'sph-solver', label: 'Debris into water -> splash', data: 'Collapsing structure displaces liquid', severity: 'exists' },
+  // Connection K: 3.4 -> 3.2 (collapse displaces fluid)
+  { id: 'K1', source: 'load-path', target: 'mpm-solver', label: 'Progressive collapse -> flood', data: 'Structural failure releases contained water. Failed blocks become boundary conditions for MPM. Dam break: v_front \u2248 2\u221a(g*h).', severity: 'exists' },
+  { id: 'K2', source: 'load-path', target: 'sph-solver', label: 'Debris into water -> splash', data: 'Collapsing blocks enter SPH domain as moving boundaries. Displaced volume V \u2192 splash energy E \u221d \u03c1*g*V*h_drop. Secondary wave generation.', severity: 'exists' },
 
   // Connection L: Temperature -> 3.4 (thermal structural damage)
-  { id: 'L1', source: 'temp-propagation', target: 'decay-system', label: 'Fire weakens materials', data: 'Wood burns, stone spalls at 500C', severity: 'exists' },
-  { id: 'L2', source: 'temp-propagation', target: 'decay-system', label: 'Freeze-thaw cycles', data: 'Water in cracks expands 9%', severity: 'exists' },
-  { id: 'L3', source: 'temp-propagation', target: 'load-path', label: 'MISSING: Thermal stress', data: 'sigma = E*alpha*deltaT -- heated stone walls crack', severity: 'missing' },
+  { id: 'L1', source: 'temp-propagation', target: 'decay-system', label: 'Fire weakens materials', data: 'Steel: 50% strength at 550\u00b0C, collapse at 700\u00b0C. Wood: ignition at 300\u00b0C, charring rate 0.6mm/min. Stone: spalling at 500\u00b0C from steam pressure.', severity: 'exists' },
+  { id: 'L2', source: 'temp-propagation', target: 'decay-system', label: 'Freeze-thaw cycles', data: 'Water in cracks expands 9% on freezing. Pressure up to 200 MPa in confined pores. Each cycle widens cracks. Damage \u221d n_cycles \u00d7 saturation.', severity: 'exists' },
+  { id: 'L3', source: 'temp-propagation', target: 'load-path', label: 'MISSING: Thermal stress', data: '\u03c3_thermal = E\u00b7\u03b1\u00b7\u0394T. Granite \u03b1=8\u00d710\u207b\u2076/K, \u0394T=500K \u2192 \u03c3=200 MPa (near tensile limit). Constrained expansion cracks walls and pavements.', severity: 'missing' },
 
   // Connection M: 3.4 -> rigid body
-  { id: 'M1', source: 'load-path', target: 'rigid-body', label: 'Failed blocks -> debris', data: 'Compound rigid bodies with tumble', severity: 'exists' },
+  { id: 'M1', source: 'load-path', target: 'rigid-body', label: 'Failed blocks -> debris', data: 'Failed blocks spawn as compound rigid bodies. Initial velocity from stored elastic energy. Tumble from asymmetric force distribution.', severity: 'exists' },
 
   // Connection N: Reactions -> 3.2 (gas -> bubbles)
-  { id: 'N1', source: 'reaction-rules', target: 'secondary-particles', label: 'Gas products in liquid -> bubbles', data: 'CO2, H2 from reactions', severity: 'exists' },
+  { id: 'N1', source: 'reaction-rules', target: 'secondary-particles', label: 'Gas products in liquid -> bubbles', data: 'CO\u2082, H\u2082, SO\u2082 from reactions in liquid \u2192 bubble nucleation. Bubble radius from ideal gas law: r=(3nRT/(4\u03c0P))^(1/3). Rise velocity from Stokes drag.', severity: 'exists' },
 
   // Connection O: 3.2 optical -> 3.5
-  { id: 'O1', source: 'optical-pipeline', target: 'tier-rendering', label: 'Per-particle shading data', data: 'absorptionRGB + refractiveIndex + emission', severity: 'exists' },
-  { id: 'O2', source: 'tier-rendering', target: 'state-mode', label: 'Rendered fluid surfaces', data: 'Marching cubes or SSFR to client GPU', severity: 'exists' },
+  { id: 'O1', source: 'optical-pipeline', target: 'tier-rendering', label: 'Per-particle shading data', data: 'absorptionRGB (Beer-Lambert), refractiveIndex (Arago-Biot), emission (Planck). 40 bytes/particle. Updated when composition changes.', severity: 'exists' },
+  { id: 'O2', source: 'tier-rendering', target: 'state-mode', label: 'Rendered fluid surfaces', data: 'Marching cubes mesh or screen-space fluid rendering (SSFR). Depth + thickness + normal buffers sent to client compositing pass.', severity: 'exists' },
 
   // Pipeline connections (tick stages)
-  { id: 'P1', source: 'temp-propagation', target: 'phase-transitions', label: 'Updated temperatures', data: 'Packets may cross melting/boiling points', severity: 'exists' },
-  { id: 'P2', source: 'phase-transitions', target: 'reaction-engine', label: 'New compositions from phase changes', data: 'Liquid may react differently than solid', severity: 'exists' },
-  { id: 'P3', source: 'reaction-engine', target: 'fluid-stage', label: 'Transformed packets + spawned particles', data: 'New compositions, gas products', severity: 'exists' },
-  { id: 'P4', source: 'fluid-stage', target: 'structural-stage', label: 'Fluid forces on structures', data: 'Currently only indirect via temperature', severity: 'partial' },
-  { id: 'P5', source: 'structural-stage', target: 'rigid-body', label: 'Broken blocks', data: 'Debris objects for physics sim', severity: 'exists' },
-  { id: 'P6', source: 'rigid-body', target: 'sound-stage', label: 'Impact events', data: 'Every collision generates sound descriptor', severity: 'exists' },
-  { id: 'P7', source: 'sound-stage', target: 'broadcast', label: 'All events packaged', data: 'WebSocket to all clients', severity: 'exists' },
+  { id: 'P1', source: 'temp-propagation', target: 'phase-transitions', label: 'Updated temperatures', data: 'Fourier heat diffusion may push packets past T_melt or T_boil thresholds. Dirty-flagged packets checked by phase system.', severity: 'exists' },
+  { id: 'P2', source: 'phase-transitions', target: 'reaction-engine', label: 'New compositions from phase changes', data: 'Phase change alters reaction accessibility. Molten metals expose new surfaces. Evaporation concentrates dissolved solutes.', severity: 'exists' },
+  { id: 'P3', source: 'reaction-engine', target: 'fluid-stage', label: 'Transformed packets + spawned particles', data: 'New compositions from reactions feed SPH/MPM. Gas products spawn as bubble particles. Exothermic heat feeds back to temperature.', severity: 'exists' },
+  { id: 'P4', source: 'fluid-stage', target: 'structural-stage', label: 'Fluid forces on structures', data: 'Currently only indirect via temperature. Direct hydrostatic/hydrodynamic loads are a missing science gap (G1/G2).', severity: 'partial' },
+  { id: 'P5', source: 'structural-stage', target: 'rigid-body', label: 'Broken blocks', data: 'Failed blocks ejected as rigid body debris. Conservation of momentum: m*v = F*dt from collapse impulse.', severity: 'exists' },
+  { id: 'P6', source: 'rigid-body', target: 'sound-stage', label: 'Impact events', data: 'Every collision \u2192 SoundEvent. Energy E=0.5*m*v\u00b2*(1-e\u00b2) dissipated as sound. Material pair determines spectral character.', severity: 'exists' },
+  { id: 'P7', source: 'sound-stage', target: 'broadcast', label: 'All events packaged', data: 'All SoundEvent descriptors + state deltas + particle updates bundled into WebSocket frame. Priority-sorted by player relevance.', severity: 'exists' },
 
   // Connection Q: Newly filled science gaps (sprint 2026-04)
-  { id: 'Q1', source: 'property-calc', target: 'load-path', label: 'Work hardening', data: 'Plastic deformation increases yield strength in metals', severity: 'exists' },
-  { id: 'Q2', source: 'property-calc', target: 'decay-system', label: 'Galvanic corrosion', data: 'Dissimilar metals in contact corrode at electrochemical potential difference', severity: 'exists' },
-  { id: 'Q3', source: 'sph-solver', target: 'decay-system', label: 'Capillary action', data: 'Capillary: rising damp in walls', severity: 'exists' },
-  { id: 'Q4', source: 'sph-solver', target: 'property-calc', label: 'Sedimentation / settling', data: 'Settling: heavy particles deposit as MaterialPackets', severity: 'exists' },
-  { id: 'Q5', source: 'mpm-solver', target: 'noise-synth', label: 'Hydraulic jump', data: 'Hydraulic jump: turbulent roar at Fr transitions', severity: 'exists' },
-  { id: 'Q6', source: 'modal-synth', target: 'load-path', label: 'Structure-borne sound', data: 'Structure-borne: sound propagates through structural BFS graph', severity: 'exists' },
-  { id: 'Q7', source: 'foundation', target: 'mpm-solver', label: 'Lateral earth pressure', data: 'Earth pressure: soil pushes on retaining walls, connects to water table', severity: 'exists' },
-  { id: 'Q8', source: 'load-path', target: 'load-path', label: 'Frame triangulation', data: 'Triangulation: kinematic criterion m=b+r-2j for frame stability', severity: 'exists' },
-  { id: 'Q9', source: 'beam-analysis', target: 'tier-rendering', label: 'Deflection limits', data: 'Deflection: visible beam sag at delta > L/180', severity: 'exists' },
+  { id: 'Q1', source: 'property-calc', target: 'load-path', label: 'Work hardening', data: 'Hollomon: \u03c3=K\u00d7\u03b5^n. workHardeningState 0\u21921 tracks accumulated plastic strain. Annealing at T>0.4\u00d7T_melt resets to 0.', severity: 'exists' },
+  { id: 'Q2', source: 'property-calc', target: 'decay-system', label: 'Galvanic corrosion', data: 'corrosionMultiplier = 1+3\u00d7|E_cathode-E_anode|/1.5V. Iron(-0.44V)+copper(+0.34V) \u2192 2.56\u00d7 faster iron corrosion.', severity: 'exists' },
+  { id: 'Q3', source: 'sph-solver', target: 'decay-system', label: 'Capillary action', data: 'Jurin: h=2\u03c3cos\u03b8/(\u03c1gr). Water rises ~13cm in stone pores. Carries dissolved minerals \u2192 salt weathering when water evaporates.', severity: 'exists' },
+  { id: 'Q4', source: 'sph-solver', target: 'property-calc', label: 'Sedimentation / settling', data: 'Stokes: v=2(\u03c1_p-\u03c1_f)gr\u00b2/(9\u03bc). Gold dust settles at 0.85 m/s. Clay particles take days. Enables gold panning.', severity: 'exists' },
+  { id: 'Q5', source: 'mpm-solver', target: 'noise-synth', label: 'Hydraulic jump', data: 'Fr=v/\u221a(gd). Fr>1\u2192Fr<1 transition = turbulent roller. Energy dissipated = (d\u2082-d\u2081)\u00b3/(4d\u2081d\u2082). Loud roar + spray.', severity: 'exists' },
+  { id: 'Q6', source: 'modal-synth', target: 'load-path', label: 'Structure-borne sound', data: 'v_sound=\u221a(E/\u03c1). Steel: 5960 m/s vs air 343 m/s. Sound through walls arrives 17\u00d7 faster. BFS through structural graph.', severity: 'exists' },
+  { id: 'Q7', source: 'foundation', target: 'mpm-solver', label: 'Lateral earth pressure', data: 'Rankine: \u03c3_h=K_a\u00d7\u03b3\u00d7z. K_a=(1-sin\u03c6)/(1+sin\u03c6). Soft clay K_a=1.0 \u2192 full overburden pressure. Add \u03c1_water\u00d7g\u00d7z_water if saturated.', severity: 'exists' },
+  { id: 'Q8', source: 'load-path', target: 'load-path', label: 'Frame triangulation', data: 'm=b+r-2j. m<0 = mechanism (collapses). Rectangle: m=-1 (unstable). Add diagonal: m=0 (stable). Mortared joints = rigid (no triangulation needed).', severity: 'exists' },
+  { id: 'Q9', source: 'beam-analysis', target: 'tier-rendering', label: 'Deflection limits', data: '\u03b4=5wL\u2074/(384EI). L/360=acceptable, L/180=visible sag, L/100=doors won\'t close. Ponding: \u03b4_pond=\u03b4\u2080/(1-qL\u2074/(\u03c0\u2074EI)).', severity: 'exists' },
 ]
 
 // Compute edge counts
@@ -1065,6 +1066,27 @@ export function ConnectionMap() {
                 }}>
                   {selectedNodeData.description}
                 </div>
+
+                {/* Physics detail / key formulas */}
+                {selectedNodeData.physics && (
+                  <div style={{
+                    fontSize: 10,
+                    color: 'rgba(0,220,255,0.7)',
+                    lineHeight: 1.6,
+                    marginBottom: 12,
+                    padding: '8px 10px',
+                    background: 'rgba(0,180,255,0.04)',
+                    borderRadius: 3,
+                    border: '1px solid rgba(0,180,255,0.1)',
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    whiteSpace: 'pre-line' as const,
+                  }}>
+                    <div style={{ fontSize: 9, letterSpacing: 1.5, color: 'rgba(0,180,255,0.3)', marginBottom: 6 }}>
+                      KEY FORMULAS
+                    </div>
+                    {selectedNodeData.physics}
+                  </div>
+                )}
 
                 {/* Stats bar */}
                 <div style={{
