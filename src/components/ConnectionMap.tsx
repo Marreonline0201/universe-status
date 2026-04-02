@@ -1,19 +1,20 @@
 // ── ConnectionMap ────────────────────────────────────────────────────────────
-// Interactive force-directed graph of all cross-system connections.
+// Interactive force-directed graph of Chapter 3 internal physics connections.
 // No external deps — force simulation implemented from scratch.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type NodeGroup = 'core' | 'world' | 'crafting' | 'player'
-type EdgeSeverity = 'critical' | 'moderate' | 'internal'
+type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick'
+type EdgeSeverity = 'exists' | 'partial' | 'missing'
 
 interface GraphNode {
   id: string
   label: string
   section: string
   group: NodeGroup
+  description: string
   x: number
   y: number
   vx: number
@@ -22,7 +23,7 @@ interface GraphNode {
 }
 
 interface GraphEdge {
-  id: number
+  id: string
   source: string
   target: string
   label: string
@@ -33,29 +34,33 @@ interface GraphEdge {
 // ── Color constants ──────────────────────────────────────────────────────────
 
 const GROUP_COLORS: Record<NodeGroup, string> = {
-  core: '#00d4ff',
-  world: '#00ff88',
-  crafting: '#ff6b35',
-  player: '#ffd700',
+  material: '#f4a261',
+  fluid: '#00d4ff',
+  sound: '#06d6a0',
+  structural: '#ef476f',
+  network: '#a78bfa',
+  tick: '#ffd700',
 }
 
 const GROUP_LABELS: Record<NodeGroup, string> = {
-  core: 'Core Engine',
-  world: 'World Systems',
-  crafting: 'Crafting',
-  player: 'Player',
+  material: 'Material System 3.1',
+  fluid: 'Fluid Simulation 3.2',
+  sound: 'Sound Engine 3.3',
+  structural: 'Structural Physics 3.4',
+  network: 'Networking 3.5',
+  tick: 'Physics Tick Stages',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
-  critical: '#ff6b6b',
-  moderate: '#ffd166',
-  internal: 'rgba(0,180,255,0.2)',
+  exists: '#06d6a0',
+  partial: '#ffd166',
+  missing: '#ff6b6b',
 }
 
 const SEVERITY_LABELS: Record<EdgeSeverity, string> = {
-  critical: 'Critical',
-  moderate: 'Moderate',
-  internal: 'Internal (Fluid)',
+  exists: 'Existing',
+  partial: 'Partial',
+  missing: 'Missing Science',
 }
 
 // ── Node definitions ─────────────────────────────────────────────────────────
@@ -65,55 +70,56 @@ interface NodeDef {
   label: string
   section: string
   group: NodeGroup
+  description: string
 }
 
 const NODE_DEFS: NodeDef[] = [
-  // Core Engine
-  { id: 'physics-tick', label: 'Unified Physics Tick', section: '3.0', group: 'core' },
-  { id: 'material-system', label: 'Material System', section: '3.1', group: 'core' },
-  { id: 'reaction-engine', label: 'Reaction Engine', section: '3.1', group: 'core' },
-  { id: 'fluid-sim', label: 'Fluid Simulation', section: '3.2', group: 'core' },
-  { id: 'sph-crafting', label: 'SPH Crafting', section: '3.2', group: 'core' },
-  { id: 'mpm-environment', label: 'MPM Environment', section: '3.2', group: 'core' },
-  { id: 'particle-redis', label: 'Particle Redistribution', section: '3.2', group: 'core' },
-  { id: 'optical-pipeline', label: 'Optical Properties', section: '3.2', group: 'core' },
-  { id: 'secondary-particles', label: 'Secondary Particles', section: '3.2', group: 'core' },
-  { id: 'phase-transitions', label: 'Phase Transitions', section: '3.2', group: 'core' },
-  { id: 'scale-transitions', label: 'Scale Transitions', section: '3.2', group: 'core' },
-  { id: 'network-streaming', label: 'Network Streaming', section: '3.2', group: 'core' },
-  { id: 'tier-rendering', label: 'Three-Tier Rendering', section: '3.2', group: 'core' },
-  { id: 'sound-engine', label: 'Sound Engine', section: '3.3', group: 'core' },
-  { id: 'structural', label: 'Structural Physics', section: '3.4', group: 'core' },
-  { id: 'networking', label: 'Networking', section: '3.5', group: 'core' },
-  { id: 'temp-propagation', label: 'Temperature', section: '3.0', group: 'core' },
-  { id: 'shelter-map', label: 'Shelter Detection', section: '3.0', group: 'core' },
+  // Tick stages
+  { id: 'temp-propagation', label: 'Stage 1: Temperature', section: '3.0', group: 'tick', description: "Fourier's law heat transfer between adjacent packets" },
+  { id: 'phase-transitions', label: 'Stage 2: Phase Transitions', section: '3.0', group: 'tick', description: 'Solid<>liquid<>gas based on melting/boiling points' },
+  { id: 'reaction-engine', label: 'Stage 3: Reactions', section: '3.1', group: 'tick', description: 'Gibbs free energy check, stoichiometry' },
+  { id: 'fluid-stage', label: 'Stage 4: Fluid Sim', section: '3.2', group: 'tick', description: 'SPH/MPM particle forces' },
+  { id: 'structural-stage', label: 'Stage 5: Structural', section: '3.4', group: 'tick', description: 'Load path check on modified structures' },
+  { id: 'rigid-body', label: 'Stage 6: Rigid Body', section: '3.0', group: 'tick', description: 'Gravity, collision for loose objects' },
+  { id: 'sound-stage', label: 'Stage 7: Sound Events', section: '3.3', group: 'tick', description: 'Convert physics events to SoundEvent descriptors' },
+  { id: 'broadcast', label: 'Stage 8: Broadcast', section: '3.5', group: 'tick', description: 'Package and send via WebSocket' },
 
-  // World Systems
-  { id: 'weather', label: 'Weather System', section: '4.6', group: 'world' },
-  { id: 'farming', label: 'Farming System', section: '4.4', group: 'world' },
-  { id: 'animals', label: 'Animal System', section: '4.3', group: 'world' },
-  { id: 'geology', label: 'Geology & Biomes', section: '4.1', group: 'world' },
-  { id: 'organisms', label: 'Organism Ecosystem', section: '4.2', group: 'world' },
-  { id: 'settlement', label: 'Settlement Economy', section: '5.2', group: 'world' },
-  { id: 'npc-brain', label: 'NPC Brain / SLM', section: '5.3', group: 'world' },
+  // Material System 3.1
+  { id: 'property-calc', label: 'Property Calculator', section: '3.1', group: 'material', description: 'Composition -> 33+ derived properties' },
+  { id: 'reaction-rules', label: 'Reaction Engine', section: '3.1', group: 'material', description: 'delta-G < 0 check, activation energy, stoichiometry' },
 
-  // Crafting
-  { id: 'crafting', label: 'Crafting System', section: '6.4', group: 'crafting' },
-  { id: 'precision-craft', label: 'Precision Craft', section: '6.4', group: 'crafting' },
-  { id: 'sdf-collision', label: 'SDF Collision', section: '3.2', group: 'crafting' },
+  // Fluid System 3.2
+  { id: 'sph-solver', label: 'SPH Solver (crafting)', section: '3.2', group: 'fluid', description: '5 forces, 100-5k particles, 60Hz' },
+  { id: 'mpm-solver', label: 'MPM Solver (environment)', section: '3.2', group: 'fluid', description: 'Particle<>grid transfer, 5k-200k particles, 30Hz' },
+  { id: 'phase-system', label: 'Phase Transition System', section: '3.2', group: 'fluid', description: 'Spawns/merges particles at melting/boiling points' },
+  { id: 'optical-pipeline', label: 'Optical Properties', section: '3.2', group: 'fluid', description: 'Beer-Lambert absorption, Fresnel, Planck emission' },
+  { id: 'secondary-particles', label: 'Secondary Particles', section: '3.2', group: 'fluid', description: 'Spray (Weber), foam (vorticity), bubbles (reactions)' },
+  { id: 'particle-network', label: 'Particle Streaming', section: '3.2', group: 'fluid', description: 'Delta compression, spatial LOD, ~97 KB/s' },
+  { id: 'tier-rendering', label: 'Three-Tier Rendering', section: '3.2', group: 'fluid', description: 'Marching cubes / Screen-space / Raw points' },
+  { id: 'redistribution', label: 'Redistribution', section: '3.2', group: 'fluid', description: 'Split/merge for even spacing' },
 
-  // Player
-  { id: 'player-health', label: 'Player Health', section: '7.2', group: 'player' },
-  { id: 'player-inventory', label: 'Player Inventory', section: '7.3', group: 'player' },
-  { id: 'player-combat', label: 'Combat System', section: '7.5', group: 'player' },
-  { id: 'player-movement', label: 'Player Movement', section: '7.5', group: 'player' },
-  { id: 'world-persistence', label: 'World Persistence', section: '7.12', group: 'player' },
+  // Sound System 3.3
+  { id: 'modal-synth', label: 'Modal Synthesis', section: '3.3', group: 'sound', description: 'f = beta^2/(2piL^2) * sqrt(EI/rhoA)' },
+  { id: 'noise-synth', label: 'Noise Synthesis', section: '3.3', group: 'sound', description: 'Rain, fire, wind, water flow, thunder' },
+  { id: 'voice-synth', label: 'Voice Synthesis', section: '3.3', group: 'sound', description: 'NPC speech, animal calls' },
+
+  // Structural System 3.4
+  { id: 'load-path', label: 'Load Path Algorithm', section: '3.4', group: 'structural', description: 'BFS connectivity + top-down load accumulation' },
+  { id: 'beam-analysis', label: 'Beam Bending', section: '3.4', group: 'structural', description: 'sigma = 3wL^2/(4bh^2), tensile failure' },
+  { id: 'arch-analysis', label: 'Arch Thrust', section: '3.4', group: 'structural', description: 'T = wL^2/(8h), abutment checks' },
+  { id: 'foundation', label: 'Foundation', section: '3.4', group: 'structural', description: 'Terzaghi bearing capacity, sinking rate' },
+  { id: 'decay-system', label: 'Decay System', section: '3.4', group: 'structural', description: 'Rain, freeze-thaw, fire damage' },
+
+  // Networking 3.5
+  { id: 'authority', label: 'Server Authority', section: '3.5', group: 'network', description: 'All physics server-computed' },
+  { id: 'video-mode', label: 'Video Mode', section: '3.5', group: 'network', description: 'H.264 stream for precision craft' },
+  { id: 'state-mode', label: 'State Mode', section: '3.5', group: 'network', description: 'Client renders from position data' },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
 
 interface EdgeDef {
-  id: number
+  id: string
   source: string
   target: string
   label: string
@@ -122,104 +128,132 @@ interface EdgeDef {
 }
 
 const EDGE_DEFS: EdgeDef[] = [
-  // Critical (1-15)
-  { id: 1, source: 'physics-tick', target: 'sound-engine', label: 'Sound Event Generation', data: 'Physical events (collision, fracture, fluid splash) emit SoundEvent descriptors with material type, energy, and contact geometry', severity: 'critical' },
-  { id: 2, source: 'weather', target: 'shelter-map', label: 'Weather Shelter Detection', data: 'precipitationType + windVector + temperature feed into shelter voxel map which calculates exposure factor per grid cell', severity: 'critical' },
-  { id: 201, source: 'shelter-map', target: 'player-health', label: 'Shelter -> Health', data: 'Exposure factor modulates hypothermia rate, wetness accumulation, and wind-chill damage on the player health model', severity: 'critical' },
-  { id: 202, source: 'shelter-map', target: 'sound-engine', label: 'Shelter -> Sound', data: 'Shelter enclosure value drives acoustic occlusion, reverb wet/dry mix, and rain-on-roof ambience layers', severity: 'critical' },
-  { id: 3, source: 'animals', target: 'material-system', label: 'Death -> MaterialPacket', data: 'Animal death decomposes the creature into MaterialPackets (hide, bone, sinew, fat) with quality grades based on health at death', severity: 'critical' },
-  { id: 301, source: 'animals', target: 'player-inventory', label: 'Animal -> Inventory', data: 'Butchering action converts MaterialPackets into inventory items; yield depends on tool sharpness and player skill', severity: 'critical' },
-  { id: 4, source: 'animals', target: 'farming', label: 'Animal Manure', data: 'Grazing animals produce manure at rate proportional to feed quality; manure decomposes into soil nitrogen/phosphorus over time', severity: 'critical' },
-  { id: 5, source: 'npc-brain', target: 'reaction-engine', label: 'NPC Crafting API', data: 'NPC SLM selects recipe + inputs, submits CraftRequest to reaction engine which validates stoichiometry and returns products', severity: 'critical' },
-  { id: 501, source: 'crafting', target: 'reaction-engine', label: 'Player Crafting API', data: 'Player crafting UI submits identical CraftRequest; reaction engine is the shared backend for both NPC and player crafting', severity: 'critical' },
-  { id: 6, source: 'npc-brain', target: 'structural', label: 'NPC Building', data: 'NPC building planner emits PlaceBlock commands with material + orientation; structural system validates load-bearing and snapping', severity: 'critical' },
-  { id: 601, source: 'npc-brain', target: 'world-persistence', label: 'NPC -> Persistence', data: 'NPC-placed structures are serialized to world persistence with NPC ownership tags for settlement tracking', severity: 'critical' },
-  { id: 7, source: 'temp-propagation', target: 'structural', label: 'Fire Spread', data: 'Temperature field above ignition threshold triggers combustion state on structural blocks; burn rate depends on material flammability', severity: 'critical' },
-  { id: 8, source: 'weather', target: 'fluid-sim', label: 'Rain -> Water', data: 'precipitationRate per cell spawns SPH water particles at terrain surface; intensity maps to particle emission rate', severity: 'critical' },
-  { id: 801, source: 'weather', target: 'farming', label: 'Rain -> Soil', data: 'precipitationRate feeds soil moisture model; excess triggers runoff erosion; drought flags reduce crop growth multiplier', severity: 'critical' },
-  { id: 9, source: 'fluid-sim', target: 'weather', label: 'Evaporation -> Humidity', data: 'Water surface area and temperature drive Penman-Monteith evaporation; vapor mass feeds humidity field which seeds cloud formation and rain', severity: 'critical' },
-  { id: 10, source: 'precision-craft', target: 'crafting', label: 'Precision -> Functional Props', data: 'Precision minigame score maps to functional property bonuses (sharpness, durability, thermal conductivity) on the crafted item', severity: 'critical' },
-  { id: 11, source: 'precision-craft', target: 'player-combat', label: 'Sharpness', data: 'Blade sharpness value from precision crafting modifies base damage, armor penetration, and bleed chance in combat calculations', severity: 'critical' },
-  { id: 12, source: 'player-combat', target: 'player-inventory', label: 'Combat -> Durability', data: 'Each strike reduces weapon/armor durability based on material hardness differential; breakage destroys the item slot', severity: 'critical' },
-  { id: 13, source: 'player-combat', target: 'player-health', label: 'Combat -> Bleed Rate', data: 'Wound depth and weapon type determine bleed rate (mL/s); blood loss drives stamina drain, vision blur, and eventual unconsciousness', severity: 'critical' },
-  { id: 14, source: 'settlement', target: 'npc-brain', label: 'Barter Exchange Rate', data: 'Settlement economy calculates supply/demand price ratios; NPC brain uses these as utility weights when deciding trade offers', severity: 'critical' },
-  { id: 15, source: 'npc-brain', target: 'player-inventory', label: 'Player-NPC Trade', data: 'Trade negotiation resolves item transfer between NPC inventory and player inventory with settlement price as reference', severity: 'critical' },
-  { id: 1501, source: 'npc-brain', target: 'settlement', label: 'NPC -> Settlement', data: 'NPC economic actions (buying, selling, building) feed back into settlement supply/demand model and population metrics', severity: 'critical' },
+  // Connection A: 3.1 -> 3.2 (properties feed fluid)
+  { id: 'A1', source: 'property-calc', target: 'sph-solver', label: 'Viscosity, density, surface tension', data: 'Material-dependent SPH forces', severity: 'exists' },
+  { id: 'A2', source: 'property-calc', target: 'mpm-solver', label: 'Same properties for MPM', data: 'Viscosity, density for grid transfer', severity: 'exists' },
+  { id: 'A3', source: 'property-calc', target: 'phase-system', label: 'Melting/boiling points', data: 'Triggers particle spawn/merge', severity: 'exists' },
+  { id: 'A4', source: 'property-calc', target: 'optical-pipeline', label: 'Composition -> optical properties', data: 'Beer-Lambert, Arago-Biot, Planck', severity: 'exists' },
+  { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'MISSING: Latent heat', data: '334 kJ/kg for ice, 2260 kJ/kg for water -- transitions should absorb/release heat', severity: 'missing' },
+  { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'MISSING: Non-Newtonian viscosity', data: 'Mud, clay, blood are shear-thinning (Cross model)', severity: 'missing' },
 
-  // Moderate (16-31)
-  { id: 16, source: 'weather', target: 'structural', label: 'Wind Force', data: 'Wind velocity field applies lateral force to tall/exposed structures; exceeding structural integrity triggers collapse', severity: 'moderate' },
-  { id: 17, source: 'weather', target: 'npc-brain', label: 'Weather -> NPC Brain', data: 'Weather state (storm, cold, heat) modifies NPC behavior urgency: seek shelter, delay travel, prioritize firewood gathering', severity: 'moderate' },
-  { id: 18, source: 'weather', target: 'structural', label: 'Lightning', data: 'Lightning strike selects tallest conductive point in cell; delivers thermal pulse that can ignite wood and damage stone', severity: 'moderate' },
-  { id: 1801, source: 'weather', target: 'player-health', label: 'Lightning -> Health', data: 'Direct lightning strike applies massive electrical damage; nearby strikes cause stun and temporary hearing loss', severity: 'moderate' },
-  { id: 19, source: 'weather', target: 'player-movement', label: 'Snow -> Speed', data: 'Snow depth reduces player movement speed logarithmically; ice surface zeroes friction coefficient causing sliding', severity: 'moderate' },
-  { id: 20, source: 'farming', target: 'organisms', label: 'Pest System', data: 'Crop monoculture above threshold attracts pest organisms; organism population dynamics model handles pest reproduction and spread', severity: 'moderate' },
-  { id: 21, source: 'weather', target: 'farming', label: 'Soil Erosion', data: 'Heavy rain on bare/sloped soil removes topsoil layer; erosion rate depends on slope angle, soil type, and vegetation cover', severity: 'moderate' },
-  { id: 22, source: 'player-inventory', target: 'player-health', label: 'Clothing Warmth', data: 'Equipped clothing thermal resistance value offsets environmental cold exposure; wet clothing loses 60% insulation', severity: 'moderate' },
-  { id: 23, source: 'player-inventory', target: 'player-movement', label: 'Swimming Buoyancy', data: 'Total equipped weight modifies buoyancy and swim speed; heavy armor causes sinking; leather/cloth items become waterlogged', severity: 'moderate' },
-  { id: 24, source: 'sound-engine', target: 'player-health', label: 'Sleep Wake', data: 'Ambient noise level above threshold interrupts player sleep state; sleep quality affects next-day stamina recovery rate', severity: 'moderate' },
-  { id: 25, source: 'fluid-sim', target: 'networking', label: 'Video Mode Check', data: 'Fluid particle count triggers LOD decision: below threshold sends full particle state, above sends velocity field summary', severity: 'moderate' },
-  { id: 26, source: 'networking', target: 'tier-rendering', label: 'ENVIRONMENT_STATE', data: 'Network layer delivers authoritative ENVIRONMENT_STATE snapshots to rendering tier for client-side interpolation', severity: 'moderate' },
-  { id: 27, source: 'geology', target: 'fluid-sim', label: 'Volcanic Eruption', data: 'Volcanic event injects high-temperature fluid particles (lava) with extreme viscosity; cools to basalt material over time', severity: 'moderate' },
-  { id: 2701, source: 'geology', target: 'settlement', label: 'Geology -> Settlement', data: 'Geological resource deposits (ore veins, clay beds, fertile valleys) drive NPC settlement location preferences and trade goods', severity: 'moderate' },
-  { id: 28, source: 'geology', target: 'organisms', label: 'Biome -> Spawning', data: 'Biome type (temperature, rainfall, altitude, soil) determines organism spawn tables and population carrying capacity', severity: 'moderate' },
-  { id: 29, source: 'crafting', target: 'player-health', label: 'Cooking -> Calories', data: 'Cooked food items carry calorie, protein, vitamin values; eating updates player nutrition model affecting health regen', severity: 'moderate' },
-  { id: 30, source: 'npc-brain', target: 'npc-brain', label: 'NPC Fitness', data: 'NPC evaluates own skill tree, health, inventory, and social standing to compute fitness score guiding long-term goal selection', severity: 'moderate' },
-  { id: 31, source: 'world-persistence', target: 'npc-brain', label: 'Structural Decay', data: 'Structural integrity decay notifications prompt NPC repair/rebuild decisions; abandoned structures eventually collapse', severity: 'moderate' },
+  // Connection B: 3.1 -> 3.3 (properties feed sound)
+  { id: 'B1', source: 'property-calc', target: 'modal-synth', label: "Young's modulus, density", data: 'E and rho determine modal frequencies', severity: 'exists' },
+  { id: 'B2', source: 'property-calc', target: 'modal-synth', label: 'MISSING: Damping loss tangent', data: "Needed for Q factor -- not in MaterialPacket's 33 properties", severity: 'missing' },
 
-  // Internal (fluid system)
-  { id: 100, source: 'fluid-sim', target: 'sph-crafting', label: 'Fluid -> SPH', data: 'Fluid simulation dispatches crafting-context particles to SPH solver for high-fidelity small-scale interactions', severity: 'internal' },
-  { id: 101, source: 'fluid-sim', target: 'mpm-environment', label: 'Fluid -> MPM', data: 'Environment-scale fluid (rivers, rain pools) routed to MPM solver for terrain-coupled large-scale flow', severity: 'internal' },
-  { id: 102, source: 'sph-crafting', target: 'tier-rendering', label: 'SPH -> Render', data: 'SPH particle positions and material IDs sent to rendering tier for real-time fluid surface reconstruction', severity: 'internal' },
-  { id: 103, source: 'mpm-environment', target: 'tier-rendering', label: 'MPM -> Render', data: 'MPM grid velocities and density field sent to rendering for environment water/mud/lava visualization', severity: 'internal' },
-  { id: 104, source: 'particle-redis', target: 'sph-crafting', label: 'Redis -> SPH', data: 'Particle redistribution balances SPH workload across spatial partitions based on particle density', severity: 'internal' },
-  { id: 105, source: 'particle-redis', target: 'mpm-environment', label: 'Redis -> MPM', data: 'Particle redistribution balances MPM grid chunks across compute nodes for even load distribution', severity: 'internal' },
-  { id: 106, source: 'material-system', target: 'optical-pipeline', label: 'Material -> Optical', data: 'Material properties (refractive index, absorption spectrum, scattering coefficient) feed optical property calculations', severity: 'internal' },
-  { id: 107, source: 'optical-pipeline', target: 'tier-rendering', label: 'Optical -> Render', data: 'Per-material optical parameters (BRDF, subsurface profile, emission) sent to rendering for physically-based shading', severity: 'internal' },
-  { id: 108, source: 'fluid-sim', target: 'secondary-particles', label: 'Fluid -> Secondary', data: 'High-energy fluid events (splashes, spray) spawn secondary particles for visual effects (foam, mist, droplets)', severity: 'internal' },
-  { id: 109, source: 'phase-transitions', target: 'fluid-sim', label: 'Phase -> Fluid', data: 'Phase transition events (melting, freezing, boiling) change particle solver assignment and material properties', severity: 'internal' },
-  { id: 110, source: 'scale-transitions', target: 'fluid-sim', label: 'Scale -> Fluid', data: 'Scale transition system promotes/demotes particles between SPH and MPM solvers based on interaction context', severity: 'internal' },
-  { id: 111, source: 'sph-crafting', target: 'sdf-collision', label: 'SPH -> SDF', data: 'SPH particles query signed distance field for tool/container collision boundaries during crafting', severity: 'internal' },
-  { id: 112, source: 'fluid-sim', target: 'network-streaming', label: 'Fluid -> Network', data: 'Fluid state snapshots compressed and queued for network streaming to connected clients', severity: 'internal' },
-  { id: 113, source: 'network-streaming', target: 'tier-rendering', label: 'Stream -> Render', data: 'Received fluid state deltas applied to client-side rendering buffers for interpolated display', severity: 'internal' },
-  { id: 114, source: 'material-system', target: 'phase-transitions', label: 'Material -> Phase', data: 'Material melting/boiling points and latent heat values drive phase transition threshold calculations', severity: 'internal' },
-  { id: 115, source: 'reaction-engine', target: 'secondary-particles', label: 'Reaction -> Secondary', data: 'Chemical reactions (combustion, acid dissolution) emit secondary particles (smoke, sparks, gas bubbles)', severity: 'internal' },
+  // Connection C: 3.1 -> 3.4 (properties feed structural)
+  { id: 'C1', source: 'property-calc', target: 'load-path', label: 'Compressive/tensile/shear strength', data: 'Block stress vs material capacity', severity: 'exists' },
+  { id: 'C2', source: 'property-calc', target: 'beam-analysis', label: 'Tensile strength, E, density', data: 'Beam bending stress check', severity: 'exists' },
+  { id: 'C3', source: 'property-calc', target: 'decay-system', label: 'Water absorption, flammability', data: 'Rain/fire damage rates', severity: 'exists' },
+  { id: 'C4', source: 'property-calc', target: 'load-path', label: 'MISSING: Fatigue (Basquin)', data: 'Cyclic loading below yield still causes failure', severity: 'missing' },
+  { id: 'C5', source: 'property-calc', target: 'load-path', label: 'MISSING: Fracture toughness', data: 'Cracked blocks weaker than intact -- Griffith-Irwin', severity: 'missing' },
+  { id: 'C6', source: 'property-calc', target: 'load-path', label: 'MISSING: Buckling (Euler)', data: 'Tall columns fail before compressive strength', severity: 'missing' },
+
+  // Connection E: 3.2 -> 3.1 (solidification back to materials)
+  { id: 'E1', source: 'phase-system', target: 'property-calc', label: 'Frozen particles -> solid MaterialPacket', data: 'Mass-weighted composition average', severity: 'exists' },
+  { id: 'E2', source: 'phase-system', target: 'property-calc', label: 'MISSING: Microstructure', data: 'Cooling rate -> grain size -> properties (martensite in steel)', severity: 'missing' },
+
+  // Connection F: 3.2 -> 3.3 (fluid events -> sound)
+  { id: 'F1', source: 'sph-solver', target: 'noise-synth', label: 'Splash events (v > 0.5 m/s)', data: 'Impact energy + liquid material -> noise descriptor', severity: 'exists' },
+  { id: 'F2', source: 'sph-solver', target: 'noise-synth', label: 'Pour/flow sounds', data: 'Flow speed + channel geometry -> frequency', severity: 'exists' },
+  { id: 'F3', source: 'secondary-particles', target: 'noise-synth', label: 'Bubble sounds', data: 'Minnaert frequency: f = 3.26/radius', severity: 'exists' },
+
+  // Connection G: 3.2 -> 3.4 (MISSING: fluid loads on structures)
+  { id: 'G1', source: 'sph-solver', target: 'load-path', label: 'MISSING: Hydrostatic pressure', data: 'P = rho*g*h on dams/walls -- 5m water = 50 kPa', severity: 'missing' },
+  { id: 'G2', source: 'mpm-solver', target: 'load-path', label: 'MISSING: Hydrodynamic force', data: 'F = 0.5*rho*v^2*Cd*A on bridge piers', severity: 'missing' },
+  { id: 'G3', source: 'mpm-solver', target: 'foundation', label: 'MISSING: Buoyancy uplift', data: 'Submerged foundations experience uplift', severity: 'missing' },
+
+  // Connection H: 3.2 -> 3.5 (particles to network)
+  { id: 'H1', source: 'particle-network', target: 'broadcast', label: 'PARTICLE_UPDATE messages', data: 'Delta-compressed, spatial LOD, 97 KB/s', severity: 'exists' },
+  { id: 'H2', source: 'sph-solver', target: 'video-mode', label: 'Active particle count trigger', data: '>200 particles within 10m -> video mode', severity: 'exists' },
+
+  // Connection I: 3.3 -> 3.5 (sound to network)
+  { id: 'I1', source: 'sound-stage', target: 'broadcast', label: 'SOUND_EVENT messages', data: 'Descriptors sent to client for synthesis', severity: 'exists' },
+  { id: 'I2', source: 'modal-synth', target: 'broadcast', label: 'MISSING: Doppler effect', data: 'f_obs = f_src * (v+v_l)/(v+v_s) for moving sources', severity: 'missing' },
+  { id: 'I3', source: 'noise-synth', target: 'broadcast', label: 'MISSING: Freq-dependent absorption', data: 'Distant sounds lose high frequencies', severity: 'missing' },
+
+  // Connection J: 3.4 -> 3.3 (structural events -> sound)
+  { id: 'J1', source: 'load-path', target: 'modal-synth', label: 'Block breaking -> crack/crash sound', data: 'storedEnergy -> modal descriptor', severity: 'exists' },
+  { id: 'J2', source: 'load-path', target: 'noise-synth', label: 'Cascade collapse -> staggered impacts', data: 'Multiple events over 0.5s', severity: 'exists' },
+
+  // Connection K: 3.4 -> 3.2 (MISSING: collapse displaces fluid)
+  { id: 'K1', source: 'load-path', target: 'mpm-solver', label: 'MISSING: Dam break -> flood', data: 'Structural failure releases contained water', severity: 'missing' },
+  { id: 'K2', source: 'load-path', target: 'sph-solver', label: 'MISSING: Debris into water -> splash', data: 'Collapsing structure displaces liquid', severity: 'missing' },
+
+  // Connection L: Temperature -> 3.4 (thermal structural damage)
+  { id: 'L1', source: 'temp-propagation', target: 'decay-system', label: 'Fire weakens materials', data: 'Wood burns, stone spalls at 500C', severity: 'exists' },
+  { id: 'L2', source: 'temp-propagation', target: 'decay-system', label: 'Freeze-thaw cycles', data: 'Water in cracks expands 9%', severity: 'exists' },
+  { id: 'L3', source: 'temp-propagation', target: 'load-path', label: 'MISSING: Thermal stress', data: 'sigma = E*alpha*deltaT -- heated stone walls crack', severity: 'missing' },
+
+  // Connection M: 3.4 -> rigid body
+  { id: 'M1', source: 'load-path', target: 'rigid-body', label: 'Failed blocks -> debris', data: 'Compound rigid bodies with tumble', severity: 'exists' },
+
+  // Connection N: Reactions -> 3.2 (gas -> bubbles)
+  { id: 'N1', source: 'reaction-rules', target: 'secondary-particles', label: 'Gas products in liquid -> bubbles', data: 'CO2, H2 from reactions', severity: 'exists' },
+
+  // Connection O: 3.2 optical -> 3.5
+  { id: 'O1', source: 'optical-pipeline', target: 'tier-rendering', label: 'Per-particle shading data', data: 'absorptionRGB + refractiveIndex + emission', severity: 'exists' },
+  { id: 'O2', source: 'tier-rendering', target: 'state-mode', label: 'Rendered fluid surfaces', data: 'Marching cubes or SSFR to client GPU', severity: 'exists' },
+
+  // Pipeline connections (tick stages)
+  { id: 'P1', source: 'temp-propagation', target: 'phase-transitions', label: 'Updated temperatures', data: 'Packets may cross melting/boiling points', severity: 'exists' },
+  { id: 'P2', source: 'phase-transitions', target: 'reaction-engine', label: 'New compositions from phase changes', data: 'Liquid may react differently than solid', severity: 'exists' },
+  { id: 'P3', source: 'reaction-engine', target: 'fluid-stage', label: 'Transformed packets + spawned particles', data: 'New compositions, gas products', severity: 'exists' },
+  { id: 'P4', source: 'fluid-stage', target: 'structural-stage', label: 'Fluid forces on structures', data: 'Currently only indirect via temperature', severity: 'partial' },
+  { id: 'P5', source: 'structural-stage', target: 'rigid-body', label: 'Broken blocks', data: 'Debris objects for physics sim', severity: 'exists' },
+  { id: 'P6', source: 'rigid-body', target: 'sound-stage', label: 'Impact events', data: 'Every collision generates sound descriptor', severity: 'exists' },
+  { id: 'P7', source: 'sound-stage', target: 'broadcast', label: 'All events packaged', data: 'WebSocket to all clients', severity: 'exists' },
 ]
+
+// Compute edge counts
+const EDGE_COUNTS = {
+  exists: EDGE_DEFS.filter(e => e.severity === 'exists').length,
+  partial: EDGE_DEFS.filter(e => e.severity === 'partial').length,
+  missing: EDGE_DEFS.filter(e => e.severity === 'missing').length,
+}
 
 // ── Force simulation ─────────────────────────────────────────────────────────
 
-const REPULSION_K = 4000
-const SPRING_K = 0.008
-const SPRING_REST = 120
-const CENTER_GRAVITY = 0.01
-const DAMPING = 0.92
-const MAX_ITERATIONS = 300
+const REPULSION_K = 5000
+const SPRING_K = 0.006
+const SPRING_REST = 140
+const CENTER_GRAVITY = 0.008
+const DAMPING = 0.91
+const MAX_ITERATIONS = 400
 const DT = 1.0
+
+// Group-based initial placement angles (radians)
+const GROUP_ANGLE: Record<NodeGroup, number> = {
+  tick: 0,                    // top center (pipeline)
+  material: Math.PI * 0.35,   // upper right
+  fluid: Math.PI * 0.7,       // right
+  sound: Math.PI * 1.1,       // lower left
+  structural: Math.PI * 1.5,  // left
+  network: Math.PI * 1.85,    // upper left
+}
 
 function initNodes(width: number, height: number): GraphNode[] {
   const cx = width / 2
   const cy = height / 2
-  // Spread nodes by group in initial positions
-  const groupAngle: Record<NodeGroup, number> = {
-    core: 0,
-    world: Math.PI * 0.5,
-    crafting: Math.PI,
-    player: Math.PI * 1.5,
-  }
-  const groupCounts: Record<NodeGroup, number> = { core: 0, world: 0, crafting: 0, player: 0 }
-  const groupTotals: Record<NodeGroup, number> = { core: 0, world: 0, crafting: 0, player: 0 }
+  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0 }
+  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0 }
   for (const nd of NODE_DEFS) groupTotals[nd.group]++
 
   return NODE_DEFS.map(nd => {
-    const angle = groupAngle[nd.group] + (groupCounts[nd.group] / Math.max(1, groupTotals[nd.group])) * Math.PI * 0.4 - Math.PI * 0.2
-    const radius = 150 + Math.random() * 100
+    const baseAngle = GROUP_ANGLE[nd.group]
+    const spread = Math.PI * 0.35
+    const idx = groupCounts[nd.group]
+    const total = Math.max(1, groupTotals[nd.group])
+    const angle = baseAngle + (idx / total) * spread - spread / 2
+    const radius = 160 + Math.random() * 80
     groupCounts[nd.group]++
     return {
       id: nd.id,
       label: nd.label,
       section: nd.section,
       group: nd.group,
-      x: cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 60,
-      y: cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 60,
+      description: nd.description,
+      x: cx + Math.cos(angle) * radius + (Math.random() - 0.5) * 50,
+      y: cy + Math.sin(angle) * radius + (Math.random() - 0.5) * 50,
       vx: 0,
       vy: 0,
       pinned: false,
@@ -232,7 +266,6 @@ function stepSimulation(nodes: GraphNode[], edges: GraphEdge[], width: number, h
   const cy = height / 2
   const n = nodes.length
 
-  // Reset forces
   const fx = new Float64Array(n)
   const fy = new Float64Array(n)
 
@@ -253,7 +286,7 @@ function stepSimulation(nodes: GraphNode[], edges: GraphEdge[], width: number, h
     }
   }
 
-  // Index map for quick lookup
+  // Index map
   const idxMap = new Map<string, number>()
   for (let i = 0; i < n; i++) idxMap.set(nodes[i].id, i)
 
@@ -289,7 +322,6 @@ function stepSimulation(nodes: GraphNode[], edges: GraphEdge[], width: number, h
     nodes[i].vy = (nodes[i].vy + fy[i] * DT) * DAMPING
     nodes[i].x += nodes[i].vx * DT
     nodes[i].y += nodes[i].vy * DT
-    // Keep in bounds with padding
     nodes[i].x = Math.max(60, Math.min(width - 60, nodes[i].x))
     nodes[i].y = Math.max(60, Math.min(height - 60, nodes[i].y))
   }
@@ -309,7 +341,7 @@ export function ConnectionMap() {
   const [, forceRender] = useState(0)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
-  const [selectedEdge, setSelectedEdge] = useState<number | null>(null)
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
   const [hiddenGroups, setHiddenGroups] = useState<Set<NodeGroup>>(new Set())
 
   // Zoom/pan state
@@ -406,7 +438,6 @@ export function ConnectionMap() {
     const my = e.clientY - rect.top
     const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9
     const newScale = Math.max(0.2, Math.min(4, transform.scale * zoomFactor))
-    // Zoom toward cursor
     const newX = mx - (mx - transform.x) * (newScale / transform.scale)
     const newY = my - (my - transform.y) * (newScale / transform.scale)
     setTransform({ x: newX, y: newY, scale: newScale })
@@ -415,8 +446,6 @@ export function ConnectionMap() {
   // Pan / drag handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
-    // Check if we're clicking on a node (handled by node mousedown)
-    // This handles background pan
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     panRef.current = {
@@ -430,7 +459,6 @@ export function ConnectionMap() {
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (dragNodeRef.current.active && dragNodeRef.current.nodeId) {
-      // Dragging a node
       const rect = containerRef.current?.getBoundingClientRect()
       if (!rect) return
       const mx = e.clientX - rect.left
@@ -464,7 +492,6 @@ export function ConnectionMap() {
       const node = nodesRef.current.find(n => n.id === dragNodeRef.current.nodeId)
       if (node) {
         node.pinned = false
-        // Re-run simulation a bit to let it settle
         iterRef.current = Math.max(0, iterRef.current - 50)
       }
       dragNodeRef.current = { active: false, nodeId: null, offsetX: 0, offsetY: 0 }
@@ -481,14 +508,13 @@ export function ConnectionMap() {
 
   const handleNodeClick = useCallback((e: React.MouseEvent, nodeId: string) => {
     e.stopPropagation()
-    // Only register click if we didn't drag
     if (!dragNodeRef.current.active) {
       setSelectedNode(prev => prev === nodeId ? null : nodeId)
       setSelectedEdge(null)
     }
   }, [])
 
-  const handleEdgeClick = useCallback((e: React.MouseEvent, edgeId: number) => {
+  const handleEdgeClick = useCallback((e: React.MouseEvent, edgeId: string) => {
     e.stopPropagation()
     setSelectedEdge(prev => prev === edgeId ? null : edgeId)
     setSelectedNode(null)
@@ -567,15 +593,46 @@ export function ConnectionMap() {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        {/* Legend */}
+        {/* Stats bar at top */}
         <div style={{
           position: 'absolute',
           top: 10,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 25,
+          display: 'flex',
+          gap: 16,
+          padding: '6px 18px',
+          background: 'rgba(4,8,20,0.92)',
+          border: '1px solid rgba(0,180,255,0.12)',
+          borderRadius: 4,
+          fontSize: 11,
+          fontFamily: "'IBM Plex Mono', monospace",
+          letterSpacing: 0.5,
+        }}>
+          <span style={{ color: SEVERITY_COLORS.exists }}>
+            {EDGE_COUNTS.exists} existing
+          </span>
+          <span style={{ color: 'rgba(100,130,160,0.3)' }}>|</span>
+          <span style={{ color: SEVERITY_COLORS.partial }}>
+            {EDGE_COUNTS.partial} partial
+          </span>
+          <span style={{ color: 'rgba(100,130,160,0.3)' }}>|</span>
+          <span style={{ color: SEVERITY_COLORS.missing }}>
+            {EDGE_COUNTS.missing} missing science gaps
+          </span>
+        </div>
+
+        {/* Legend — node groups */}
+        <div style={{
+          position: 'absolute',
+          top: 48,
           left: 10,
           zIndex: 20,
           display: 'flex',
           gap: 6,
           flexWrap: 'wrap',
+          maxWidth: 520,
         }}>
           {(Object.keys(GROUP_COLORS) as NodeGroup[]).map(group => {
             const hidden = hiddenGroups.has(group)
@@ -613,26 +670,27 @@ export function ConnectionMap() {
             )
           })}
           {/* Edge severity legend */}
-          <div style={{ width: '100%', display: 'flex', gap: 6, marginTop: 2 }}>
+          <div style={{ width: '100%', display: 'flex', gap: 10, marginTop: 4 }}>
             {(Object.keys(SEVERITY_COLORS) as EdgeSeverity[]).map(sev => (
               <div key={sev} style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 4,
+                gap: 5,
                 fontSize: 9,
                 color: 'rgba(150,185,220,0.55)',
                 letterSpacing: 1,
               }}>
                 <span style={{
-                  width: 16,
+                  width: 20,
                   height: 2,
-                  background: SEVERITY_COLORS[sev],
                   display: 'inline-block',
                   borderRadius: 1,
-                  ...(sev === 'internal' ? {
-                    backgroundImage: `repeating-linear-gradient(90deg, ${SEVERITY_COLORS[sev]} 0px, ${SEVERITY_COLORS[sev]} 4px, transparent 4px, transparent 7px)`,
+                  ...(sev === 'missing' ? {
+                    backgroundImage: `repeating-linear-gradient(90deg, ${SEVERITY_COLORS[sev]} 0px, ${SEVERITY_COLORS[sev]} 4px, transparent 4px, transparent 8px)`,
                     background: 'none',
-                  } : {}),
+                  } : {
+                    background: SEVERITY_COLORS[sev],
+                  }),
                 }} />
                 {SEVERITY_LABELS[sev]}
               </div>
@@ -640,7 +698,7 @@ export function ConnectionMap() {
           </div>
         </div>
 
-        {/* Iteration / status label */}
+        {/* Title label */}
         <div style={{
           position: 'absolute',
           bottom: 6,
@@ -649,20 +707,22 @@ export function ConnectionMap() {
           letterSpacing: 2,
           color: 'rgba(0,180,255,0.2)',
           zIndex: 20,
+          fontFamily: "'IBM Plex Mono', monospace",
         }}>
-          CONNECTION MAP {iterRef.current >= MAX_ITERATIONS ? '// SETTLED' : `// SIMULATING ${iterRef.current}/${MAX_ITERATIONS}`}
+          CHAPTER 3 PHYSICS // INTERNAL CONNECTIONS {iterRef.current >= MAX_ITERATIONS ? '// SETTLED' : `// SIMULATING ${iterRef.current}/${MAX_ITERATIONS}`}
         </div>
 
         {/* Zoom indicator */}
         <div style={{
           position: 'absolute',
           bottom: 6,
-          right: (selectedNodeData || selectedEdgeData) ? 330 : 10,
+          right: (selectedNodeData || selectedEdgeData) ? 340 : 10,
           fontSize: 9,
           letterSpacing: 1,
           color: 'rgba(0,180,255,0.2)',
           zIndex: 20,
           transition: 'right 0.2s',
+          fontFamily: "'IBM Plex Mono', monospace",
         }}>
           {Math.round(transform.scale * 100)}%
         </div>
@@ -687,14 +747,14 @@ export function ConnectionMap() {
         >
           <defs>
             {/* Arrow markers for each severity */}
-            <marker id="arrow-critical" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill={SEVERITY_COLORS.critical} opacity="0.7" />
+            <marker id="arrow-exists" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={SEVERITY_COLORS.exists} opacity="0.7" />
             </marker>
-            <marker id="arrow-moderate" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill={SEVERITY_COLORS.moderate} opacity="0.7" />
+            <marker id="arrow-partial" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={SEVERITY_COLORS.partial} opacity="0.7" />
             </marker>
-            <marker id="arrow-internal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="rgba(0,180,255,0.3)" opacity="0.7" />
+            <marker id="arrow-missing" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={SEVERITY_COLORS.missing} opacity="0.7" />
             </marker>
             <marker id="arrow-highlight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <polygon points="0 0, 8 3, 0 6" fill="rgba(255,255,255,0.9)" />
@@ -714,26 +774,6 @@ export function ConnectionMap() {
               )
               const isDimmed = hoveredNode !== null && !isHoverHighlighted
 
-              // Self-loop for npc-brain -> npc-brain
-              if (edge.source === edge.target) {
-                const loopR = 25
-                return (
-                  <g key={edge.id}>
-                    <path
-                      d={`M ${s.x} ${s.y - 14} C ${s.x - loopR} ${s.y - loopR - 20}, ${s.x + loopR} ${s.y - loopR - 20}, ${s.x} ${s.y - 14}`}
-                      fill="none"
-                      stroke={isHoverHighlighted ? 'rgba(255,255,255,0.9)' : SEVERITY_COLORS[edge.severity]}
-                      strokeWidth={isHoverHighlighted ? 2.5 : 1}
-                      strokeDasharray={edge.severity === 'internal' ? '4,3' : '0'}
-                      opacity={isDimmed ? 0.03 : isHoverHighlighted ? 1 : 0.5}
-                      style={{ transition: 'opacity 0.2s', cursor: 'pointer' }}
-                      markerEnd={isHoverHighlighted ? 'url(#arrow-highlight)' : `url(#arrow-${edge.severity})`}
-                      onClick={(e) => handleEdgeClick(e, edge.id)}
-                    />
-                  </g>
-                )
-              }
-
               // Offset line endpoints so arrows stop at node circle edge
               const dx = t.x - s.x
               const dy = t.y - s.y
@@ -744,8 +784,11 @@ export function ConnectionMap() {
               const nodeRadius = 14
               const x1 = s.x + nx * nodeRadius
               const y1 = s.y + ny * nodeRadius
-              const x2 = t.x - nx * (nodeRadius + 6) // extra space for arrow
+              const x2 = t.x - nx * (nodeRadius + 6)
               const y2 = t.y - ny * (nodeRadius + 6)
+
+              const isMissing = edge.severity === 'missing'
+              const isPartial = edge.severity === 'partial'
 
               return (
                 <line
@@ -753,9 +796,9 @@ export function ConnectionMap() {
                   x1={x1} y1={y1}
                   x2={x2} y2={y2}
                   stroke={isHoverHighlighted ? 'rgba(255,255,255,0.9)' : SEVERITY_COLORS[edge.severity]}
-                  strokeWidth={isHoverHighlighted ? 2.5 : edge.severity === 'internal' ? 0.6 : 1}
-                  strokeDasharray={edge.severity === 'internal' ? '4,3' : '0'}
-                  opacity={isDimmed ? 0.03 : isHoverHighlighted ? 1 : edge.severity === 'internal' ? 0.3 : 0.5}
+                  strokeWidth={isHoverHighlighted ? 2.5 : isMissing ? 1.2 : isPartial ? 1 : 0.8}
+                  strokeDasharray={isMissing ? '6,4' : '0'}
+                  opacity={isDimmed ? 0.04 : isHoverHighlighted ? 1 : isMissing ? 0.65 : 0.5}
                   style={{ transition: 'opacity 0.2s', cursor: 'pointer' }}
                   markerEnd={isHoverHighlighted ? 'url(#arrow-highlight)' : `url(#arrow-${edge.severity})`}
                   onClick={(e) => handleEdgeClick(e, edge.id)}
@@ -824,7 +867,7 @@ export function ConnectionMap() {
                     fill={isHovered ? nodeColor : 'rgba(180,210,240,0.5)'}
                     fontWeight={isHovered ? 600 : 400}
                   >
-                    {node.label.length > 18 ? node.label.slice(0, 16) + '..' : node.label}
+                    {node.label.length > 22 ? node.label.slice(0, 20) + '..' : node.label}
                   </text>
                 </g>
               )
@@ -837,6 +880,7 @@ export function ConnectionMap() {
           const nd = NODE_DEFS.find(n => n.id === tooltip.nodeId)
           if (!nd) return null
           const connections = getNodeConnections(tooltip.nodeId)
+          const missingCount = connections.filter(c => c.severity === 'missing').length
           return (
             <div style={{
               position: 'absolute',
@@ -851,15 +895,31 @@ export function ConnectionMap() {
               color: 'rgba(220,235,255,0.9)',
               fontFamily: "'IBM Plex Mono', monospace",
               pointerEvents: 'none',
-              maxWidth: 280,
+              maxWidth: 320,
               boxShadow: `0 0 12px ${GROUP_COLORS[nd.group]}22`,
             }}>
               <div style={{ color: GROUP_COLORS[nd.group], fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
                 {nd.label}
               </div>
-              <div style={{ color: 'rgba(150,185,220,0.55)', fontSize: 9, marginBottom: 6 }}>
+              <div style={{ color: 'rgba(150,185,220,0.55)', fontSize: 9, marginBottom: 4 }}>
                 Section {nd.section} / {GROUP_LABELS[nd.group]}
               </div>
+              <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 9, marginBottom: 6, lineHeight: 1.4 }}>
+                {nd.description}
+              </div>
+              {missingCount > 0 && (
+                <div style={{
+                  color: SEVERITY_COLORS.missing,
+                  fontSize: 9,
+                  marginBottom: 4,
+                  padding: '3px 6px',
+                  background: 'rgba(255,107,107,0.08)',
+                  borderRadius: 2,
+                  border: '1px solid rgba(255,107,107,0.15)',
+                }}>
+                  {missingCount} missing science gap{missingCount > 1 ? 's' : ''}
+                </div>
+              )}
               {connections.length > 0 && (
                 <div style={{ borderTop: '1px solid rgba(0,180,255,0.1)', paddingTop: 4 }}>
                   <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.4)', marginBottom: 3, letterSpacing: 1 }}>
@@ -876,7 +936,7 @@ export function ConnectionMap() {
                         opacity: 0.8,
                         lineHeight: 1.6,
                       }}>
-                        {dir} {otherNode?.label ?? other}
+                        {c.severity === 'missing' ? '[!] ' : ''}{dir} {otherNode?.label ?? other}
                       </div>
                     )
                   })}
@@ -895,7 +955,7 @@ export function ConnectionMap() {
       {/* Detail panel (right side) */}
       {(selectedNodeData || selectedEdgeData) && (
         <div style={{
-          width: 320,
+          width: 330,
           flexShrink: 0,
           background: 'rgba(2,5,14,0.95)',
           borderLeft: '1px solid rgba(0,180,255,0.13)',
@@ -941,6 +1001,9 @@ export function ConnectionMap() {
             const connections = getNodeConnections(selectedNodeData.id)
             const outgoing = connections.filter(c => c.source === selectedNodeData.id)
             const incoming = connections.filter(c => c.target === selectedNodeData.id)
+            const existsCount = connections.filter(c => c.severity === 'exists').length
+            const partialCount = connections.filter(c => c.severity === 'partial').length
+            const missingCount = connections.filter(c => c.severity === 'missing').length
             const color = GROUP_COLORS[selectedNodeData.group]
 
             return (
@@ -956,9 +1019,21 @@ export function ConnectionMap() {
                 <div style={{
                   fontSize: 10,
                   color: 'rgba(150,185,220,0.55)',
-                  marginBottom: 12,
+                  marginBottom: 6,
                 }}>
                   Section {selectedNodeData.section} / {GROUP_LABELS[selectedNodeData.group]}
+                </div>
+                <div style={{
+                  fontSize: 10,
+                  color: 'rgba(180,210,240,0.65)',
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                  padding: '6px 8px',
+                  background: 'rgba(0,180,255,0.03)',
+                  borderRadius: 3,
+                  border: '1px solid rgba(0,180,255,0.06)',
+                }}>
+                  {selectedNodeData.description}
                 </div>
 
                 {/* Stats bar */}
@@ -976,18 +1051,34 @@ export function ConnectionMap() {
                     <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>TOTAL</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: '#ff6b6b' }}>{connections.filter(c => c.severity === 'critical').length}</div>
-                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>CRIT</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: SEVERITY_COLORS.exists }}>{existsCount}</div>
+                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>EXISTS</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: '#ffd166' }}>{connections.filter(c => c.severity === 'moderate').length}</div>
-                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>MOD</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: SEVERITY_COLORS.partial }}>{partialCount}</div>
+                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>PARTIAL</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: 'rgba(0,180,255,0.4)' }}>{connections.filter(c => c.severity === 'internal').length}</div>
-                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>INT</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: SEVERITY_COLORS.missing }}>{missingCount}</div>
+                    <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.4)', letterSpacing: 1 }}>MISSING</div>
                   </div>
                 </div>
+
+                {/* Missing science alert */}
+                {missingCount > 0 && (
+                  <div style={{
+                    padding: '8px 10px',
+                    marginBottom: 12,
+                    background: 'rgba(255,107,107,0.06)',
+                    border: '1px solid rgba(255,107,107,0.15)',
+                    borderRadius: 3,
+                    fontSize: 10,
+                    color: SEVERITY_COLORS.missing,
+                    lineHeight: 1.5,
+                  }}>
+                    This node has {missingCount} missing science connection{missingCount > 1 ? 's' : ''} that need implementation.
+                  </div>
+                )}
 
                 {/* Outgoing connections */}
                 {outgoing.length > 0 && (
@@ -1009,17 +1100,17 @@ export function ConnectionMap() {
                           style={{
                             padding: '6px 8px',
                             marginBottom: 3,
-                            background: 'rgba(0,180,255,0.03)',
+                            background: c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)',
                             borderLeft: `2px solid ${SEVERITY_COLORS[c.severity]}`,
                             borderRadius: '0 3px 3px 0',
                             cursor: 'pointer',
                             transition: 'background 0.15s',
                           }}
-                          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,180,255,0.08)' }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,180,255,0.03)' }}
+                          onMouseEnter={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.1)' : 'rgba(0,180,255,0.08)' }}
+                          onMouseLeave={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)' }}
                         >
                           <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity] }}>
-                            {c.label}
+                            {c.severity === 'missing' ? '[!] ' : ''}{c.label}
                           </div>
                           <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 2 }}>
                             -&gt; {targetNode?.label ?? c.target}
@@ -1051,17 +1142,17 @@ export function ConnectionMap() {
                           style={{
                             padding: '6px 8px',
                             marginBottom: 3,
-                            background: 'rgba(0,180,255,0.03)',
+                            background: c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)',
                             borderLeft: `2px solid ${SEVERITY_COLORS[c.severity]}`,
                             borderRadius: '0 3px 3px 0',
                             cursor: 'pointer',
                             transition: 'background 0.15s',
                           }}
-                          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,180,255,0.08)' }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,180,255,0.03)' }}
+                          onMouseEnter={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.1)' : 'rgba(0,180,255,0.08)' }}
+                          onMouseLeave={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)' }}
                         >
                           <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity] }}>
-                            {c.label}
+                            {c.severity === 'missing' ? '[!] ' : ''}{c.label}
                           </div>
                           <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 2 }}>
                             &lt;- {sourceNode?.label ?? c.source}
@@ -1080,6 +1171,7 @@ export function ConnectionMap() {
             const sourceNode = NODE_DEFS.find(n => n.id === selectedEdgeData.source)
             const targetNode = NODE_DEFS.find(n => n.id === selectedEdgeData.target)
             const color = SEVERITY_COLORS[selectedEdgeData.severity]
+            const isMissing = selectedEdgeData.severity === 'missing'
 
             return (
               <div style={{ padding: '12px' }}>
@@ -1089,7 +1181,7 @@ export function ConnectionMap() {
                   color,
                   marginBottom: 4,
                 }}>
-                  {selectedEdgeData.label}
+                  {isMissing ? '[!] ' : ''}{selectedEdgeData.label}
                 </div>
                 <div style={{
                   fontSize: 9,
@@ -1100,6 +1192,22 @@ export function ConnectionMap() {
                 }}>
                   {SEVERITY_LABELS[selectedEdgeData.severity]} CONNECTION
                 </div>
+
+                {/* Missing science banner */}
+                {isMissing && (
+                  <div style={{
+                    padding: '8px 10px',
+                    marginBottom: 12,
+                    background: 'rgba(255,107,107,0.08)',
+                    border: '1px dashed rgba(255,107,107,0.3)',
+                    borderRadius: 3,
+                    fontSize: 10,
+                    color: SEVERITY_COLORS.missing,
+                    lineHeight: 1.5,
+                  }}>
+                    SCIENCE GAP -- This connection needs to be implemented. The underlying physics is described below.
+                  </div>
+                )}
 
                 {/* Source -> Target visual */}
                 <div style={{
@@ -1132,8 +1240,13 @@ export function ConnectionMap() {
                       {sourceNode?.label ?? selectedEdgeData.source}
                     </div>
                   </div>
-                  <div style={{ color, fontSize: 14, flexShrink: 0 }}>
-                    -&gt;
+                  <div style={{
+                    color,
+                    fontSize: 14,
+                    flexShrink: 0,
+                    ...(isMissing ? { opacity: 0.6 } : {}),
+                  }}>
+                    {isMissing ? '- ->' : '->'}
                   </div>
                   <div style={{ flex: 1, textAlign: 'center' }}>
                     <div style={{
@@ -1164,15 +1277,15 @@ export function ConnectionMap() {
                   color: 'rgba(0,180,255,0.3)',
                   marginBottom: 6,
                 }}>
-                  DATA FLOW
+                  {isMissing ? 'MISSING SCIENCE' : 'DATA FLOW'}
                 </div>
                 <div style={{
                   fontSize: 11,
                   lineHeight: 1.6,
-                  color: 'rgba(200,220,240,0.75)',
+                  color: isMissing ? 'rgba(255,170,170,0.8)' : 'rgba(200,220,240,0.75)',
                   padding: '8px 10px',
-                  background: 'rgba(0,180,255,0.03)',
-                  border: '1px solid rgba(0,180,255,0.06)',
+                  background: isMissing ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)',
+                  border: `1px solid ${isMissing ? 'rgba(255,107,107,0.1)' : 'rgba(0,180,255,0.06)'}`,
                   borderRadius: 3,
                   marginBottom: 12,
                 }}>
