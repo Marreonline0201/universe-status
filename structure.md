@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (31 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (40 connections)
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -3864,7 +3864,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 31 connections total (15 critical + 16 moderate).
+for every connection. 40 connections total (16 critical + 24 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -6038,7 +6038,117 @@ NPCMaintenanceSystem {
 }
 ```
 
+##### Connection 32: Work Hardening → Tool Quality (moderate)
 
+When a player hammers metal, the workHardeningState increases (Hollomon: σ = K × ε^n).
+The tool's effective strength increases with each hammer blow during crafting.
+Annealing (heating above 0.4 × T_melt) resets workHardeningState to 0, softening the metal
+for further shaping. This creates the historical blacksmithing cycle: shape → harden → anneal → reshape.
+
+Source: Material System (§3.1) workHardeningState property
+Target: Crafting System (§6.3) — tool quality depends on accumulated work hardening
+Data: workHardeningState (0-1) modifies tensileStrength and hardness of the crafted object
+Trigger: each hammer strike during precision craft mode
+
+##### Connection 33: Martensite → Fluid Quenching (critical)
+
+Steel quenched in liquid forms martensite (extremely hard, brittle).
+The cooling rate depends on the quenching fluid's heat extraction rate:
+  Water: ~200°C/s (fastest — martensite guaranteed for plain carbon steel)
+  Oil: ~40°C/s (intermediate — martensite for alloy steels only)
+  Air: ~5°C/s (slowest — pearlite for most steels)
+
+The fluid simulation (§3.2) determines the cooling rate through heat transfer
+between the hot steel MaterialPacket and surrounding SPH particles.
+The material system (§3.1) then checks: if coolingRate > criticalCoolingRate(composition),
+martensite forms. Otherwise pearlite.
+
+Source: Fluid Simulation (§3.2) — fluid temperature and heat transfer coefficient
+Target: Material System (§3.1) — determines martensite vs. pearlite transformation
+Data: coolingRate (°C/s) computed from fluid properties at the quenching point
+Trigger: when a MaterialPacket above 727°C is immersed in liquid
+
+##### Connection 34: Galvanic Corrosion → Structural Bond Decay (moderate)
+
+When two different metals are in contact at a structural connection (e.g., copper
+fitting on an iron beam), the more anodic metal corrodes faster.
+corrosionMultiplier = 1.0 + 3.0 × |E_cathode - E_anode| / 1.5V
+
+Source: Material System (§3.1) — electrode potentials from element table
+Target: Structural Physics (§3.4) — bondStrength decay rate modified by corrosionMultiplier
+Data: corrosionMultiplier applied to the existing rain damage rate for metal connections
+Trigger: periodic decay check (once per game-day) for exposed metal-to-metal connections
+
+##### Connection 35: Capillary Action → Structural Rising Damp (moderate)
+
+Water rises in porous building materials through capillary action.
+Jurin's law: h = 2σ cos(θ) / (ρ g r), where r is the pore diameter.
+Water rises ~13cm in typical stone pores. This carries dissolved minerals
+upward. When water evaporates at the wall surface, minerals crystallize
+and exert pressure on pore walls (salt weathering), accelerating decay.
+
+Source: Fluid Simulation (§3.2) — water in contact with porous blocks
+Target: Structural Physics (§3.4) — accelerated decay in the capillary rise zone
+Data: capillaryHeight computed from surface tension + pore size → damage zone extends upward
+Trigger: when block base is in contact with water (rain puddle, water table)
+
+##### Connection 36: Fatigue → Tool Degradation (moderate)
+
+Tools accumulate fatigue damage with each use (Basquin: N_f = C × σ_a^(-b)).
+fatigueAccumulation tracks damage from 0 to 1. At 1.0: tool breaks.
+This is irreversible — unlike work hardening, fatigue damage cannot be annealed away.
+A copper pickaxe fails after ~10,000 strikes. Steel lasts 5-10× longer.
+
+Source: Material System (§3.1) — fatigueAccumulation property
+Target: Crafting/Combat (§6.3, §7.5) — each use increments fatigue
+Data: fatigueAccumulation += 1/N_f(σ_applied) per strike/use
+Trigger: every tool use event (mining, combat, crafting)
+
+##### Connection 37: Ductility → Seasonal Structural Risk (moderate)
+
+BCC metals (iron, steel) undergo a brittle-ductile transition at low temperatures.
+Below the BDTT (-20°C to +20°C for iron), ductility drops from ~0.2 to ~0.02.
+Fracture toughness drops 50-80%. Structures and tools that are fine in summer
+may fail catastrophically in deep winter.
+
+Source: Weather System (§4.6) — temperature
+Target: Material System (§3.1) → Structural Physics (§3.4) — modified failure behavior
+Data: temperature below BDTT reduces ductility and fractureToughness of BCC metals
+Trigger: temperature check per material, per game-day
+
+##### Connection 38: Creep → High-Temperature Structural Deformation (moderate)
+
+Metal structures near furnaces or lava slowly deform under constant load
+(Norton creep law: dε/dt = A × σ^n × exp(-Q/RT)).
+This only matters above 0.4 × T_melt: iron above 451°C, lead above -33°C (always!).
+
+Source: Temperature Propagation (§3.0 Stage 1) — block temperature
+Target: Structural Physics (§3.4) — accumulated creep strain → permanent deformation
+Data: creep strain computed per game-day for blocks above 0.4 × T_melt under load
+Trigger: periodic decay check, same as freeze-thaw
+
+##### Connection 39: Helmholtz Resonance → Wind Sound (moderate)
+
+Enclosed spaces with narrow openings act as resonators when wind blows across the opening.
+f = (v_sound / 2π) × √(A / (V × L_neck))
+Furnace chimneys produce a deep rumble (~30 Hz). Cave mouths moan in storms.
+Bottles hum when wind blows across them.
+
+Source: Structural Physics (§3.4) — enclosed volume + opening geometry (from connectivity graph)
+Target: Sound Engine (§3.3) — continuous tone at f_helmholtz, volume ∝ windSpeed²
+Data: cavity volume V, opening area A, neck length L → frequency and amplitude
+Trigger: wind speed > 0.5 m/s across an opening of a detected enclosed space
+
+##### Connection 40: Precipitation Hardening → Material Quality over Time (moderate)
+
+Certain alloys (Cu-Be, Al-Cu) become harder when held at a specific temperature.
+Avrami equation: f(t) = 1 - exp(-(k×t)^n).
+Under-aging = no effect. Optimal aging = maximum hardness. Over-aging = softens.
+
+Source: Temperature Propagation (§3.0 Stage 1) — sustained temperature on alloy
+Target: Material System (§3.1) — hardness and strength modified by aging progress
+Data: aging progress computed from time-at-temperature using Avrami kinetics
+Trigger: each game-hour for MaterialPackets at 0.3-0.6 × T_melt
 
 
 ---

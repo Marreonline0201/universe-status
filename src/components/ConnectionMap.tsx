@@ -134,7 +134,7 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'A2', source: 'property-calc', target: 'mpm-solver', label: 'Same properties for MPM', data: 'Same material-dependent properties transferred to MPM grid via P2G scatter. Grid forces computed from averaged properties.', severity: 'exists' },
   { id: 'A3', source: 'property-calc', target: 'phase-system', label: 'Melting/boiling points', data: 'Property calculator computes T_melt and T_boil from CALPHAD binary phase diagrams. Phase system checks temperature each tick.', severity: 'exists' },
   { id: 'A4', source: 'property-calc', target: 'optical-pipeline', label: 'Composition -> optical properties', data: 'Beer-Lambert: I(\u03bb)=I\u2080\u00b7exp(-\u03b1(\u03bb)\u00b7d). Arago-Biot: n_mix=\u03a3(x_i\u00b7n_i). Planck blackbody: \u03bb_peak=2898/T(K). 40 bytes per particle cached.', severity: 'exists' },
-  { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'MISSING: Latent heat', data: 'L_fusion and L_vaporization computed from Clausius-Clapeyron. Phase transitions track phaseProgress 0\u21921, absorbing/releasing energy without temperature change.', severity: 'missing' },
+  { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'Latent heat', data: 'L_fusion and L_vaporization computed from Clausius-Clapeyron. Phase transitions track phaseProgress 0\u21921, absorbing/releasing energy without temperature change.', severity: 'exists' },
   { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'Non-Newtonian viscosity', data: 'Cross model: \u03bc=\u03bc_\u221e+(\u03bc\u2080-\u03bc_\u221e)/(1+(K\u00b7\u03b3\u0307)\u207f). Clay \u03bc\u2080=100 Pa\u00b7s (stiff) \u2192 \u03bc_\u221e=0.1 Pa\u00b7s (flows when worked). Shear rate \u03b3\u0307 from SPH velocity Laplacian.', severity: 'exists' },
 
   // Connection B: 3.1 -> 3.3 (properties feed sound)
@@ -145,9 +145,9 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'C1', source: 'property-calc', target: 'load-path', label: 'Compressive/tensile/shear strength', data: '\u03c3_c=F/A compressive, \u03c3_t=3wL\u00b2/(4bh\u00b2) tensile bending, \u03c4=VQ/(Ib) shear. Each block checked against material-specific strength from PropertyCalculator.', severity: 'exists' },
   { id: 'C2', source: 'property-calc', target: 'beam-analysis', label: 'Tensile strength, E, density', data: '\u03c3_bend = M*y/I where M from load, I from geometry. E determines deflection \u03b4=5wL\u2074/(384EI). Density \u03c1 contributes self-weight load w=\u03c1*A*g.', severity: 'exists' },
   { id: 'C3', source: 'property-calc', target: 'decay-system', label: 'Water absorption, flammability', data: 'Absorption coefficient \u03b1_w determines rain damage rate. Flash point and heat of combustion set fire propagation. Freeze-thaw susceptibility from porosity.', severity: 'exists' },
-  { id: 'C4', source: 'property-calc', target: 'load-path', label: 'MISSING: Fatigue (Basquin)', data: '\u03c3_a = \u03c3\'_f \u00b7 (2N_f)^b. Cyclic loading below yield still causes failure after N cycles. S-N curve from material group.', severity: 'missing' },
-  { id: 'C5', source: 'property-calc', target: 'load-path', label: 'MISSING: Fracture toughness', data: 'K_I = \u03c3\u221a(\u03c0a). Failure when K_I \u2265 K_IC (Griffith-Irwin). Cracked blocks weaker than intact. Crack propagation direction from max tensile stress.', severity: 'missing' },
-  { id: 'C6', source: 'property-calc', target: 'load-path', label: 'MISSING: Buckling (Euler)', data: 'P_cr = \u03c0\u00b2EI/(KL)\u00b2. Tall slender columns fail at P_cr << \u03c3_c*A. K=0.5 (fixed-fixed) to K=2.0 (cantilever). Eccentricity amplifies buckling.', severity: 'missing' },
+  { id: 'C4', source: 'property-calc', target: 'load-path', label: 'Fatigue (Basquin)', data: '\u03c3_a = \u03c3\'_f \u00b7 (2N_f)^b. Cyclic loading below yield still causes failure after N cycles. S-N curve from material group.', severity: 'exists' },
+  { id: 'C5', source: 'property-calc', target: 'load-path', label: 'Fracture toughness', data: 'K_I = \u03c3\u221a(\u03c0a). Failure when K_I \u2265 K_IC (Griffith-Irwin). Cracked blocks weaker than intact. Crack propagation direction from max tensile stress.', severity: 'exists' },
+  { id: 'C6', source: 'property-calc', target: 'load-path', label: 'Buckling (Euler)', data: 'P_cr = \u03c0\u00b2EI/(KL)\u00b2. Tall slender columns fail at P_cr << \u03c3_c*A. K=0.5 (fixed-fixed) to K=2.0 (cantilever). Eccentricity amplifies buckling.', severity: 'exists' },
 
   // Connection E: 3.2 -> 3.1 (solidification back to materials)
   { id: 'E1', source: 'phase-system', target: 'property-calc', label: 'Frozen particles -> solid MaterialPacket', data: 'Frozen particles merge: mass = \u03a3m_i, composition = mass-weighted average, position = center of mass, shape = convex hull.', severity: 'exists' },
@@ -159,9 +159,9 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'F3', source: 'secondary-particles', target: 'noise-synth', label: 'Bubble sounds', data: 'Minnaert frequency: f = 3.26/radius (Hz for radius in meters). Each bubble oscillation \u2192 short tonal ping. Cluster of bubbles \u2192 broadband fizz.', severity: 'exists' },
 
   // Connection G: 3.2 -> 3.4 (MISSING: fluid loads on structures)
-  { id: 'G1', source: 'sph-solver', target: 'load-path', label: 'MISSING: Hydrostatic pressure', data: 'P = \u03c1*g*h on dams/walls. 5m water = 49 kPa lateral. Triangular pressure distribution. Resultant at h/3 from base.', severity: 'missing' },
-  { id: 'G2', source: 'mpm-solver', target: 'load-path', label: 'MISSING: Hydrodynamic force', data: 'F = 0.5*\u03c1*v\u00b2*C_d*A on bridge piers. C_d\u22481.2 for bluff bodies. Vortex shedding at St\u22480.2 causes oscillating lateral force.', severity: 'missing' },
-  { id: 'G3', source: 'mpm-solver', target: 'foundation', label: 'MISSING: Buoyancy uplift', data: 'F_buoyancy = \u03c1_water*g*V_submerged. Submerged foundations lose effective weight. Reduces bearing capacity. Can float empty basements.', severity: 'missing' },
+  { id: 'G1', source: 'sph-solver', target: 'load-path', label: 'Hydrostatic pressure', data: 'P = \u03c1*g*h on dams/walls. 5m water = 49 kPa lateral. Triangular pressure distribution. Resultant at h/3 from base.', severity: 'exists' },
+  { id: 'G2', source: 'mpm-solver', target: 'load-path', label: 'Hydrodynamic force', data: 'F = 0.5*\u03c1*v\u00b2*C_d*A on bridge piers. C_d\u22481.2 for bluff bodies. Vortex shedding at St\u22480.2 causes oscillating lateral force.', severity: 'exists' },
+  { id: 'G3', source: 'mpm-solver', target: 'foundation', label: 'Buoyancy uplift', data: 'F_buoyancy = \u03c1_water*g*V_submerged. Submerged foundations lose effective weight. Reduces bearing capacity. Can float empty basements.', severity: 'exists' },
 
   // Connection H: 3.2 -> 3.5 (particles to network)
   { id: 'H1', source: 'particle-network', target: 'broadcast', label: 'PARTICLE_UPDATE messages', data: 'Delta-compressed positions (12-bit quantized), spatial LOD (far = 1/4 rate). ~97 KB/s total. Priority queue by player proximity.', severity: 'exists' },
@@ -183,7 +183,7 @@ const EDGE_DEFS: EdgeDef[] = [
   // Connection L: Temperature -> 3.4 (thermal structural damage)
   { id: 'L1', source: 'temp-propagation', target: 'decay-system', label: 'Fire weakens materials', data: 'Steel: 50% strength at 550\u00b0C, collapse at 700\u00b0C. Wood: ignition at 300\u00b0C, charring rate 0.6mm/min. Stone: spalling at 500\u00b0C from steam pressure.', severity: 'exists' },
   { id: 'L2', source: 'temp-propagation', target: 'decay-system', label: 'Freeze-thaw cycles', data: 'Water in cracks expands 9% on freezing. Pressure up to 200 MPa in confined pores. Each cycle widens cracks. Damage \u221d n_cycles \u00d7 saturation.', severity: 'exists' },
-  { id: 'L3', source: 'temp-propagation', target: 'load-path', label: 'MISSING: Thermal stress', data: '\u03c3_thermal = E\u00b7\u03b1\u00b7\u0394T. Granite \u03b1=8\u00d710\u207b\u2076/K, \u0394T=500K \u2192 \u03c3=200 MPa (near tensile limit). Constrained expansion cracks walls and pavements.', severity: 'missing' },
+  { id: 'L3', source: 'temp-propagation', target: 'load-path', label: 'Thermal stress', data: '\u03c3_thermal = E\u00b7\u03b1\u00b7\u0394T. Granite \u03b1=8\u00d710\u207b\u2076/K, \u0394T=500K \u2192 \u03c3=200 MPa (near tensile limit). Constrained expansion cracks walls and pavements.', severity: 'exists' },
 
   // Connection M: 3.4 -> rigid body
   { id: 'M1', source: 'load-path', target: 'rigid-body', label: 'Failed blocks -> debris', data: 'Failed blocks spawn as compound rigid bodies. Initial velocity from stored elastic energy. Tumble from asymmetric force distribution.', severity: 'exists' },
@@ -214,6 +214,14 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'Q7', source: 'foundation', target: 'mpm-solver', label: 'Lateral earth pressure', data: 'Rankine: \u03c3_h=K_a\u00d7\u03b3\u00d7z. K_a=(1-sin\u03c6)/(1+sin\u03c6). Soft clay K_a=1.0 \u2192 full overburden pressure. Add \u03c1_water\u00d7g\u00d7z_water if saturated.', severity: 'exists' },
   { id: 'Q8', source: 'load-path', target: 'load-path', label: 'Frame triangulation', data: 'm=b+r-2j. m<0 = mechanism (collapses). Rectangle: m=-1 (unstable). Add diagonal: m=0 (stable). Mortared joints = rigid (no triangulation needed).', severity: 'exists' },
   { id: 'Q9', source: 'beam-analysis', target: 'tier-rendering', label: 'Deflection limits', data: '\u03b4=5wL\u2074/(384EI). L/360=acceptable, L/180=visible sag, L/100=doors won\'t close. Ponding: \u03b4_pond=\u03b4\u2080/(1-qL\u2074/(\u03c0\u2074EI)).', severity: 'exists' },
+
+  // Connection R: Newly filled science gaps (sprint 2026-04, batch 2)
+  { id: 'R1', source: 'property-calc', target: 'load-path', label: 'Creep deformation', data: 'Norton: d\u03b5/dt=A\u00b7\u03c3\u207f\u00b7exp(-Q/RT). Blocks above 0.4\u00d7T_melt slowly deform under sustained load. Lead creeps at room temp.', severity: 'exists' },
+  { id: 'R2', source: 'property-calc', target: 'load-path', label: 'Ductility / brittle transition', data: 'BCC metals (iron) become brittle below BDTT (-20 to +20\u00b0C). Ductility drops to 0.02, K_IC drops 50-80%. Winter structural failures.', severity: 'exists' },
+  { id: 'R3', source: 'property-calc', target: 'property-calc', label: 'Precipitation hardening', data: 'Avrami: f(t)=1-exp(-(kt)\u207f). Cu-Be aged at 315\u00b0C: HV 100\u2192400. Over-aging softens. Temperature-time optimization.', severity: 'exists' },
+  { id: 'R4', source: 'property-calc', target: 'temp-propagation', label: 'Corrected specific heat', data: 'Debye correction: C_v=3R\u00b7f(T/\u03b8_D). Carbon \u03b8_D=2230K \u2192 C_p much lower than Dulong-Petit. Kopp-Neumann for compounds.', severity: 'exists' },
+  { id: 'R5', source: 'property-calc', target: 'temp-propagation', label: 'Non-metal thermal conductivity', data: 'Slack model for crystalline. Clay \u03ba\u22481.0 W/mK (good insulator), granite \u03ba\u22482.5, wood \u03ba\u22480.15-0.35. Determines furnace wall performance.', severity: 'exists' },
+  { id: 'R6', source: 'structural-stage', target: 'noise-synth', label: 'Helmholtz resonance', data: 'f=(v/2\u03c0)\u221a(A/(V\u00b7L)). Chimney: 30Hz rumble. Bottle: 106Hz hum. Cave mouth: infrasonic unease. Wind-driven.', severity: 'exists' },
 ]
 
 // Compute edge counts
