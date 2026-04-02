@@ -440,19 +440,26 @@ export function ConnectionMap() {
     }
   }, [transform])
 
-  // Mouse wheel zoom
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const mx = e.clientX - rect.left
-    const my = e.clientY - rect.top
-    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9
-    const newScale = Math.max(0.2, Math.min(4, transform.scale * zoomFactor))
-    const newX = mx - (mx - transform.x) * (newScale / transform.scale)
-    const newY = my - (my - transform.y) * (newScale / transform.scale)
-    setTransform({ x: newX, y: newY, scale: newScale })
-  }, [transform])
+  // Mouse wheel zoom — use native listener with { passive: false } to allow preventDefault
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9
+      setTransform(prev => {
+        const newScale = Math.max(0.2, Math.min(4, prev.scale * zoomFactor))
+        const newX = mx - (mx - prev.x) * (newScale / prev.scale)
+        const newY = my - (my - prev.y) * (newScale / prev.scale)
+        return { x: newX, y: newY, scale: newScale }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
 
   // Pan / drag handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -598,7 +605,6 @@ export function ConnectionMap() {
           overflow: 'hidden',
           cursor: panRef.current.active ? 'grabbing' : 'grab',
         }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
