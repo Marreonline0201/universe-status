@@ -1,7 +1,7 @@
 # Universe Sim — Structure & Design Document
 
-**Last Updated**: 2026-04-01
-**Report Version**: 29
+**Last Updated**: 2026-04-02
+**Report Version**: 30
 
 ---
 
@@ -18,6 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (31 connections)
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -245,13 +246,3630 @@ Both methods use material properties from the MaterialPacket (viscosity, surface
 
 The sections below describe each stage's physics in detail.
 
-#### Cross-System Connections — The Complete Data Flow Between Every System
+The cross-system connections between Chapter 3's physics systems and the rest of the
+game (weather, animals, farming, NPCs, player systems) are documented in §3.6
+(Cross-System Connections).
 
-Every system in the game sends data to other systems. This section specifies the exact data structures, trigger conditions, conversion formulas, algorithms, and edge cases for every connection. 31 connections total (15 critical + 16 moderate).
+### 3.1 Emergent Material System — Nothing Is Pre-Defined
+
+#### The Principle
+
+The universe does not have a recipe list. Helium was not "designed" — it emerged when hydrogen atoms were forced together under extreme temperature and pressure inside a star. Bronze was not "invented" — it is what happens when copper and tin atoms mix above 950°C and cool together. Glass was not "planned" — it is what happens when silicon dioxide melts at 1700°C and cools too quickly to crystallize.
+
+The game should work the same way. **No material is pre-defined. Every material is the result of rules applied to simpler materials under specific conditions.** The system doesn't know what "bronze" is. It knows what happens when a packet of mostly-copper meets a packet of mostly-tin at high temperature. The result has properties calculated from the inputs — and those properties happen to match what humans call bronze.
+
+This means:
+- The developer never writes `{ name: "bronze", hardness: 3.5, meltingPoint: 950 }` as a static entry
+- Instead, the system computes: "a Cu₀.₈₈Sn₀.₁₂ alloy at 25°C has Mohs hardness ≈ 3.5, melting point ≈ 950°C" from the component properties and known alloy rules
+- A player who mixes copper and zinc instead gets a different result — brass — without anyone coding brass
+- A player who mixes copper, tin, AND a small amount of phosphorus gets phosphor bronze — harder, more elastic — also without anyone coding it
+
+The game builds its material universe the same way the real universe did: from the bottom up.
+
+#### What Is a Material Packet
+
+The fundamental unit is not an atom (too expensive) or a named material (too rigid). It is a **material packet** — a chunk of matter with a composition, mass, temperature, and phase.
+
+```
+MaterialPacket {
+  // --- Identity: what is this made of? ---
+  composition: Map<Element, number>    // element → mass fraction (sums to 1.0)
+                                        // e.g., { Cu: 0.88, Sn: 0.12 }
+
+  // --- Physical state ---
+  mass: number                          // kg
+  temperature: number                   // °C
+  phase: 'solid' | 'liquid' | 'gas' | 'plasma'
+  pressure: number                      // Pa (default: 101325 = 1 atm)
+
+  // --- Derived (computed from composition + state, never stored manually) ---
+  // Every property below is CALCULATED from composition using real formulas.
+  // Nothing is looked up from a table. The property calculator runs the formula
+  // each time a property is needed (cached per temperature change).
+
+  // ── Phase transition ──────────────────────────────────────────────────────
+  meltingPoint: number                  // °C — CALPHAD weighted average + eutectic corrections
+  boilingPoint: number                  // °C — Clausius-Clapeyron relation from vapor pressure
+  latentHeatFusion: number           // J/kg — energy to melt at melting point (no temp change)
+                                      // Clausius-Clapeyron: L = T × ΔV × (dP/dT)
+                                      // Used by: §3.2 phase transitions (melting/freezing duration)
+  latentHeatVaporization: number     // J/kg — energy to boil at boiling point (no temp change)
+                                      // Used by: §3.2 phase transitions (boiling duration)
+
+  // ── Mechanical ────────────────────────────────────────────────────────────
+  density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
+  hardness: number                      // Mohs scale — Hall-Petch + solid solution strengthening
+  tensileStrength: number               // Pa — maximum pull force before snap
+  compressiveStrength: number           // Pa — maximum squeeze force before crush
+  shearStrength: number                 // Pa — maximum sideways force before shear
+  youngsModulus: number                 // Pa (elasticity) — how much it flexes before breaking
+                                        // Used by: §3.3 sound (pitch: f₀ = (1/2L)√(E/ρ))
+                                        //          §3.4 structural (span limits, beam deflection)
+  frictionCoefficient: number           // dimensionless — surface friction (μ)
+                                        // Used by: §3.4 structural (stacked block stability)
+
+  // ── Thermal ───────────────────────────────────────────────────────────────
+  thermalConductivity: number           // W/(m·K) — how fast heat moves through material
+  specificHeatCapacity: number          // J/(kg·K) — energy needed to raise 1kg by 1°C
+                                        // Used by: temperature propagation, cooling rate
+                                        // Water: 4186, iron: 449, granite: 790, wood: 1700
+  thermalExpansion: number              // 1/K — how much material expands when heated
+                                        // Used by: structural stress from temperature changes
+  emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
+                                        // Used by: radiative heat loss, fire radiation
+  ignitionTemperature: number           // °C — minimum temp for combustion (organic materials only)
+                                        // Wood: ~300°C, paper: ~230°C, coal: ~450°C, metal: N/A
+  combustionEnergy: number              // J/kg — energy released when burned
+                                        // Used by: fire system, furnace temperature calculation
+                                        // Wood: ~15 MJ/kg, charcoal: ~30 MJ/kg, coal: ~25 MJ/kg
+  flammability: number                  // 0-1 — ease of ignition (modified by moisture)
+                                        // Used by: fire starting success rate
+
+  // ── Electrical ────────────────────────────────────────────────────────────
+  electricalConductivity: number        // S/m — Matthiessen's rule
+
+  // ── Fluid (liquid/gas phase only) ─────────────────────────────────────────
+  viscosity: number                     // Pa·s — resistance to flow
+                                        // Used by: §3.2 SPH (F_viscosity = μ · ∇²v)
+                                        // Water: 0.001, honey: 2-10, lava: 100-10⁶
+                                        // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
+  surfaceTension: number                // N/m — surface cohesion
+                                        // Used by: §3.2 SPH (surface tension force, droplet formation)
+                                        // Water: 0.072, mercury: 0.49, molten iron: 1.87
+
+  // ── Mechanical (deformation state) ────────────────────────────────────────
+  workHardeningState: number            // 0-1 — accumulated plastic strain from mechanical deformation
+                                        // 0 = fully annealed (soft). 1 = fully cold-worked (hard).
+                                        // Increases when: metal is hammered, bent, drawn, rolled
+                                        // Resets to 0 when: heated above recrystallization temperature (~0.4 × T_melt in K)
+                                        // Effect on strength: σ_yield = σ_0 × (1 + K × workHardeningState^n)
+                                        //   K = strain hardening coefficient (0.5-1.5 for metals)
+                                        //   n = strain hardening exponent (0.1 for steel, 0.5 for copper)
+                                        // Used by: §3.4 structural strength, §6.3 crafting (hammering improves tools)
+
+  // ── Acoustic ──────────────────────────────────────────────────────────────
+  acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
+                                        // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
+                                        // Metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001
+  dampingLossTangent: number         // dimensionless — internal friction of the material
+                                      // Determines how quickly vibrations decay (Q factor)
+                                      // Low = rings long (metals: 0.0001-0.001)
+                                      // High = dies quickly (wood: 0.01-0.05, rubber: 0.1-0.5)
+                                      // Used by: §3.3 sound engine (Q = 1 / (2 × dampingLossTangent))
+
+  // ── Chemical ──────────────────────────────────────────────────────────────
+  standardEnthalpy: number              // J/mol — formation enthalpy (ΔH_f°)
+                                        // Used by: reaction engine (ΔG = ΔH - TΔS)
+  standardEntropy: number               // J/(mol·K) — formation entropy (S°)
+  activationEnergy: number              // J/mol — energy barrier for reactions (Ea)
+                                        // Used by: Arrhenius equation k = A·e^(-Ea/RT)
+
+  // ── Environmental interaction ─────────────────────────────────────────────
+  porosity: number                      // 0-1 — how porous (affects water absorption, strength)
+                                        // Used by: §4.6 weather (material moisture model)
+                                        //          §3.4 structural (freeze-thaw damage)
+                                        // Stone: 0.01-0.05, wood: 0.3-0.6, clay brick: 0.15-0.25
+  waterAbsorption: number               // 0-1 — max moisture the material can hold
+                                        // Used by: §4.6 weather (rain → material gets wet)
+                                        // Wood: 0.8, cloth: 0.9, stone: 0.05, metal: 0.0
+
+  // ── Visual ────────────────────────────────────────────────────────────────
+  color: [number, number, number]       // RGB — Drude model for metals, absorption for non-metals
+  crystalStructure: string              // FCC, BCC, HCP, amorphous — Hume-Rothery rules
+  opacity: number                       // 0-1 — transparency (glass: 0.1, metal: 1.0, water: 0.3)
+  reflectivity: number                  // 0-1 — surface reflectance (polished metal: 0.9, wood: 0.1)
+
+  // ── Biological (organic materials only) ───────────────────────────────────
+  calorieContent: number                // kcal/kg — nutritional energy (0 for non-food materials)
+  nutrientContent: { N: number, P: number, K: number }  // fertilizer value when applied to soil
+                                        // Used by: §4.4 farming (manure, bone meal, wood ash)
+}
+```
+
+**Total: 36 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+
+Every derived property is **calculated**, not looked up. The calculation uses real material science:
+
+| Property | How it's computed | Source | Used by |
+|----------|------------------|--------|---------|
+| Melting point | Weighted average + eutectic corrections from binary phase diagrams | CALPHAD method | Phase transitions, smelting |
+| Boiling point | Clausius-Clapeyron from vapor pressure curves | Thermodynamics | Evaporation, boiling |
+| Latent heat (fusion) | Clausius-Clapeyron: L = T × ΔV × (dP/dT), weighted by composition | Thermodynamics | §3.2 Phase transition duration (melting/freezing) |
+| Latent heat (vaporization) | Clausius-Clapeyron from boiling point + entropy of vaporization | Thermodynamics | §3.2 Phase transition duration (boiling) |
+| Density | `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law | SPH, buoyancy, weight |
+| Hardness | Hall-Petch for grain size + solid solution strengthening | Metallurgy | Tool quality, Mohs scale |
+| Tensile strength | Empirical relation to hardness + crystal structure correction | Materials science | §3.4 beam spans, breaking |
+| Compressive strength | ~10× tensile for stone, ~1× for metals, from crystal bonding | Materials science | §3.4 stacking, foundations |
+| Shear strength | ~0.6× tensile for metals, ~0.15× compressive for stone | Materials science | §3.4 lateral force, wind |
+| Young's modulus | Bonding energy per unit cell × packing density | Solid state physics | §3.3 sound pitch, §3.4 deflection |
+| Friction coefficient | Surface roughness from crystal structure + hardness | Tribology | §3.4 stacked blocks, sliding |
+| Thermal conductivity | Wiedemann-Franz law (metals), phonon model (non-metals) | Solid state physics | Heat transfer, insulation |
+| Specific heat capacity | Dulong-Petit law (3R per mole) + corrections for bonding | Thermochemistry | Temperature change rate |
+| Thermal expansion | Grüneisen parameter from bonding strength | Solid state physics | Structural thermal stress |
+| Emissivity | Surface roughness + composition → Kirchhoff's law | Radiative physics | Heat radiation, fire glow |
+| Ignition temperature | Bond dissociation energy of weakest organic bond | Combustion chemistry | Fire starting |
+| Combustion energy | Hess's law: sum of bond energies (products - reactants) | Thermochemistry | Fire heat, furnace temp |
+| Flammability | Ignition temp × surface area × moisture correction | Fire science | Fire success rate |
+| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | Future: electric circuits |
+| Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
+| Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
+| Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
+| Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
+| Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
+| Standard enthalpy | Tabulated per element, computed for compounds via Hess's law | Thermochemistry | Reaction engine ΔG |
+| Standard entropy | Tabulated per element, computed for compounds | Thermochemistry | Reaction engine ΔG |
+| Activation energy | Tabulated per reaction type, estimated from bond strengths | Reaction kinetics | Arrhenius equation |
+| Porosity | Packing efficiency from crystal structure + grain size | Materials science | Weather damage, absorption |
+| Water absorption | Porosity × surface wettability (contact angle) | Surface chemistry | Rain effect on materials |
+| Color | Drude model (metals), band gap absorption (non-metals) | Optical physics | Rendering |
+| Crystal structure | Hume-Rothery rules: size ratio, electronegativity, valence | Crystallography | Many properties depend on this |
+| Opacity | Band gap energy → photon absorption spectrum | Optical physics | Rendering transparency |
+| Reflectivity | Fresnel equations from refractive index | Optical physics | Rendering, mirror surfaces |
+| Calorie content | Combustion energy × digestibility factor (organic only) | Nutrition science | §7.2 food, §4.4 farming |
+| Nutrient content | Element composition → N/P/K extraction | Soil science | §4.4 fertilizer value |
+
+#### Specific Heat Capacity — Dulong-Petit Is Wrong for Light Elements
+
+The current model uses Dulong-Petit: C_v = 3R = 25 J/(mol·K) for all elements.
+This is only accurate for heavy elements above their Debye temperature.
+
+Corrections needed:
+  Carbon (diamond): actual C_p = 6.1 J/(mol·K) vs. predicted 25 — 4× WRONG
+  Silicon: actual C_p = 20 vs. predicted 25 — 20% wrong
+  Water: actual C_p = 75.3 vs. predicted 25 — 3× WRONG
+  Wood (cellulose): actual C_p varies widely, not predictable from Dulong-Petit
+
+The Debye correction factor:
+  C_v = 3R × f(T/θ_D)
+  where θ_D is the Debye temperature (K) per element:
+    Carbon: 2230K, Silicon: 645K, Iron: 470K, Copper: 343K, Lead: 105K, Gold: 170K
+
+  At T >> θ_D: f → 1 (Dulong-Petit correct — this is why it works for lead/gold at room temp)
+  At T << θ_D: f → 0 (specific heat drops toward zero — carbon barely heats up)
+  At T ≈ θ_D: f ≈ 0.8 (moderate correction)
+
+For compounds (water, wood, ceramic), use Kopp-Neumann rule:
+  C_p(compound) = Σ (x_i × C_p_i)
+  where x_i is the mole fraction of each element.
+
+Gameplay effect: with Dulong-Petit only, carbon/glass/stone heat up and cool
+too slowly (overpredicted heat capacity). With the correction, they respond
+to temperature changes faster, which affects:
+  - How quickly a stone furnace reaches operating temperature
+  - How fast glass cools (and whether it shatters from thermal shock)
+  - How quickly charcoal ignites
+
+#### Non-Metal Thermal Conductivity — Stone, Clay, Wood Need Formulas
+
+Wiedemann-Franz works for metals (κ = L × σ_electrical × T).
+For non-metals (stone, clay, wood, glass, ceramic), use:
+
+Crystalline non-metals (stone, mineral, ceramic):
+  Slack model: κ = 0.849 × 3 × (4/n)^(1/3) × M_avg / (θ_D³ × γ²) × (1/T)
+  where n = atoms per unit cell, M_avg = average atomic mass,
+  θ_D = Debye temperature, γ = Grüneisen parameter (~1.5-2.5)
+
+Simplified lookup for game materials:
+  Granite: κ ≈ 2.5 W/(m·K)     (moderate insulator)
+  Limestone: κ ≈ 1.5 W/(m·K)   (decent insulator)
+  Clay (fired): κ ≈ 1.0 W/(m·K) (good insulator — why clay furnaces work)
+  Sandstone: κ ≈ 2.3 W/(m·K)
+  Marble: κ ≈ 2.7 W/(m·K)      (why marble feels cold — conducts heat from hand)
+
+Amorphous materials (glass, mud, unfired clay):
+  κ ≈ 0.5-1.5 W/(m·K) (lower than crystalline — phonon scattering from disorder)
+  Glass: κ ≈ 1.0 W/(m·K)
+  Mud/unfired clay: κ ≈ 0.6 W/(m·K)
+
+Wood (anisotropic):
+  Along grain: κ ≈ 0.35 W/(m·K) (poor conductor)
+  Across grain: κ ≈ 0.15 W/(m·K) (excellent insulator)
+  This is why wooden handles don't burn your hand on a hot tool.
+
+Compare metals: Copper κ ≈ 400, Iron κ ≈ 80, Lead κ ≈ 35.
+Non-metals are 10-1000× worse conductors. This determines:
+  - How fast furnace walls heat up (clay walls: slow → good insulation)
+  - How fast stone buildings lose heat in winter
+  - Why wooden doors don't transfer cold from outside
+
+#### Work Hardening — Hammered Metal Gets Harder
+
+When metals are plastically deformed (hammered, bent, drawn through a die), dislocations in the crystal lattice multiply and tangle, resisting further deformation. The Hollomon equation describes this:
+
+```
+σ = K × ε^n
+where ε is the accumulated plastic strain (tracked as workHardeningState 0→1),
+K is the strength coefficient, n is the strain hardening exponent.
+```
+
+Cold-worked copper (workHardeningState = 0.8) has ~2× the yield strength of annealed copper (0.0). This is the foundation of blacksmithing: hammer a blade to harden it.
+
+Annealing (heating above ~0.4 × T_melt in Kelvin) recrystallizes the grain structure, resetting workHardeningState to 0. This softens the metal for further shaping. The cycle: shape → harden → anneal → reshape → harden → final product.
+
+This connects to sound (§3.3): as a metal workpiece hardens, its Young's modulus and density change slightly, so the pitch of each hammer strike shifts higher with successive blows. An experienced player can hear when the metal is fully work-hardened.
+
+#### Fatigue — Repeated Use Wears Things Out
+
+Materials fail under cyclic loading BELOW their static strength.
+The Basquin relation: N_f = C × σ_a^(-b)
+  N_f = number of cycles to failure
+  σ_a = stress amplitude per cycle (Pa)
+  b = fatigue exponent (0.05-0.12 for metals, 0.15-0.25 for ceramics)
+  C = material constant
+
+Example: iron tool with tensileStrength = 400 MPa
+  Used at 50% of tensile (200 MPa stress per use):
+    N_f = 10^12 × (200×10^6)^(-0.1) ≈ 50,000 uses before failure
+  Used at 80% of tensile (320 MPa):
+    N_f ≈ 5,000 uses — wears out 10× faster
+
+Implementation: each MaterialPacket tracks fatigueAccumulation (0→1).
+  Each stress event: fatigueAccumulation += 1/N_f(σ_applied)
+  When fatigueAccumulation reaches 1.0: material fails (crack initiates).
+  Fatigue damage is NOT reversible — unlike work hardening, you cannot anneal away fatigue cracks.
+
+MaterialPacket addition:
+  fatigueAccumulation: number  // 0-1, accumulated fatigue damage. Irreversible.
+
+Gameplay: tools gradually degrade. A well-used copper pickaxe develops micro-cracks
+after ~10,000 strikes. It doesn't break suddenly — the player notices reduced effectiveness
+as cracks grow (fracture toughness decreases). Eventually it snaps mid-use.
+A steel tool lasts 5-10× longer than copper because steel has a higher fatigue limit.
+
+#### Fracture Toughness — Cracked Materials Are Weaker
+
+A material with a crack fails at LOWER stress than an intact one.
+Griffith-Irwin stress intensity factor:
+  K_I = σ × √(π × a)
+  where a = crack length (m), σ = applied stress (Pa)
+
+Failure when K_I ≥ K_IC (critical stress intensity / fracture toughness):
+  Glass: K_IC ≈ 0.7 MPa·√m (shatters easily — a tiny scratch is catastrophic)
+  Ceramic: K_IC ≈ 3 MPa·√m
+  Cast iron: K_IC ≈ 15 MPa·√m (shatters on impact — low toughness)
+  Wrought iron: K_IC ≈ 50 MPa·√m (bends, doesn't shatter — high toughness)
+  Steel: K_IC ≈ 50-150 MPa·√m (depending on heat treatment)
+  Copper: K_IC ≈ 100 MPa·√m
+
+Effective strength of a cracked block:
+  σ_failure = K_IC / √(π × a)
+  A 1mm crack in glass: σ_failure = 0.7 / √(π×0.001) = 12.5 MPa (vs. 50 MPa intact — 75% weaker)
+  A 1mm crack in steel: σ_failure = 100 / √(π×0.001) = 1785 MPa (still very strong)
+
+This is why glass is fragile and steel is tough — it's about how much a crack
+weakens the material, not absolute strength.
+
+MaterialPacket additions:
+  fractureToughness: number     // MPa·√m — K_IC, computed from composition
+  crackLength: number           // m — accumulated from fatigue, freeze-thaw, impacts. Starts at 0.
+
+Connection to fatigue: fatigue creates micro-cracks (crackLength increases slowly).
+Connection to freeze-thaw (§3.4): water in cracks freezes → crack grows 9% per cycle.
+Connection to structural (§3.4): stress check uses effective strength, not nominal strength.
+
+#### Ductility — Bend or Shatter
+
+Ductility is the amount a material can deform before breaking:
+  Metals: 5-40% elongation before failure (ductile — bends, stretches)
+  Ceramics: <0.1% (brittle — shatters with no warning)
+  Glass: 0% (perfectly brittle)
+  Wood: 1-5% (semi-ductile along grain, brittle across grain)
+
+MaterialPacket addition:
+  ductility: number              // 0-1 — fraction of elongation before fracture
+                                  // 0 = perfectly brittle (glass), 1 = extremely ductile (gold)
+
+Brittle-Ductile Transition Temperature (BDTT):
+BCC metals (iron, chromium, tungsten) become brittle below a critical temperature:
+  Iron/steel BDTT: -20°C to +20°C (depending on carbon content + impurities)
+  Tungsten BDTT: +400°C (brittle at room temperature!)
+
+  if (temperature < BDTT):
+    ductility drops to ~0.02 (almost brittle)
+    fractureToughness drops by 50-80%
+
+Historical example: Liberty ships in WWII cracked in half in cold North Atlantic
+water because the steel's BDTT was near the ocean temperature.
+In-game: iron tools and structures become unreliable in deep winter at high latitudes.
+An iron bridge that holds fine in summer might shatter under load at -10°C.
+
+FCC metals (copper, gold, aluminum) have NO brittle transition — they stay ductile
+at all temperatures. This is an advantage of copper tools in cold climates.
+
+#### Creep — Slow Deformation Under Sustained Load at High Temperature
+
+At temperatures above ~0.4 × T_melting (in Kelvin), materials deform slowly
+under constant load, even if the stress is below yield strength.
+Norton creep law:
+  dε/dt = A × σ^n × exp(-Q_c / RT)
+  where:
+    dε/dt = strain rate (per second)
+    σ = applied stress (Pa)
+    n = stress exponent (3-8 for metals)
+    Q_c = activation energy for creep (kJ/mol)
+    R = gas constant (8.314 J/mol·K)
+    T = temperature (K)
+
+This matters at temperatures above ~0.4 × T_melt:
+  Lead (T_melt = 600K): creeps above 240K = -33°C (creeps at room temperature!)
+  Copper (T_melt = 1358K): creeps above 543K = 270°C
+  Iron (T_melt = 1811K): creeps above 724K = 451°C
+  Ice (T_melt = 273K): creeps above 109K = ALWAYS (glaciers are creeping ice)
+
+Gameplay effects:
+  Lead roofing slowly sags over game-years (lead creeps at room temp)
+  Iron/steel structures near furnaces or lava slowly deform
+  Metal tools left in a hot forge for too long permanently bend
+  Ice formations slowly flow downhill (glacier behavior)
+
+Implementation: for blocks above 0.4 × T_melt, apply creep strain each game-day.
+  Accumulated creep strain → permanent deformation → visual sag → eventual failure.
+  Not computed per tick (too slow). Computed per game-day decay cycle.
+
+#### Martensite Transformation — How Steel Gets Hard
+
+The single most important material transformation in human technological history. Carbon steel (Fe + 0.1-2.0% C) has dramatically different properties depending on cooling rate:
+
+**Fast cooling (quenching in water/oil):**
+Above 727°C, carbon dissolves in iron (austenite phase, FCC crystal structure). Fast cooling traps carbon in the lattice — atoms can't rearrange. Result: martensite (BCT crystal structure) — extremely hard (HV 600-800) but brittle.
+
+```
+Implemented as: if coolingRate > criticalCoolingRate(composition):
+  workHardeningState = 0.95  // near-maximum hardness
+  ductility = 0.02           // almost no ductility — shatters on impact
+  tensileStrength *= 2.5     // dramatic increase
+```
+
+**Slow cooling (air cool or furnace cool):**
+Carbon has time to separate into iron + iron carbide (Fe₃C) layers. Result: pearlite — softer (HV 200-300) but much tougher.
+
+```
+Implemented as: if coolingRate < criticalCoolingRate(composition):
+  workHardeningState unchanged
+  ductility = 0.2-0.4       // good ductility
+  tensileStrength unchanged
+```
+
+**Tempering:** reheating quenched martensite to 200-600°C for a period reduces brittleness while retaining most hardness. The trade-off is controlled by tempering temperature:
+- 200°C: HV 550, still brittle (springs, files)
+- 400°C: HV 400, moderate toughness (tools, blades)
+- 600°C: HV 250, very tough (structural steel)
+
+The criticalCoolingRate depends on carbon content and alloying elements:
+- Plain carbon steel (0.8% C): ~200°C/sec (must quench in water)
+- Alloy steel (+ Cr, Mo, Ni): ~10°C/sec (can air-harden)
+
+This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The fluid's temperature and heat extraction rate (depends on fluid type: water extracts ~10× faster than oil, oil ~5× faster than air) determines whether martensite forms. A player who quenches in oil instead of water gets a different result — because the physics is different.
+
+This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
+
+#### Precipitation Hardening — Heat-Treating Alloys for Maximum Hardness
+
+Certain alloys become dramatically harder when held at a specific temperature
+for a specific time. This is "aging" or "precipitation hardening."
+
+The Avrami equation describes the transformation progress:
+  f(t) = 1 - exp(-(k×t)^n)
+  where:
+    f = fraction transformed (0→1)
+    t = time at aging temperature (seconds)
+    k = rate constant (depends on temperature — Arrhenius: k = k₀ × exp(-Q/RT))
+    n = Avrami exponent (1-4, depends on nucleation mechanism)
+
+Example: Cu-2%Be alloy (beryllium bronze)
+  Freshly cast: HV 100 (soft)
+  Aged at 315°C for 2 hours: HV 400 (4× harder!)
+  Over-aged at 315°C for 10 hours: HV 250 (softens again — precipitates coarsen)
+
+The player discovers: holding a copper-beryllium ingot at ~300°C for a while
+makes it extremely hard. Too short = no effect. Too long = softens again.
+The optimal time emerges from the physics, not from a recipe.
+
+Other age-hardenable alloys: Al-Cu (duralumin), Cu-Be, Ni superalloys.
+NOT age-hardenable: pure metals, simple bronze (Cu-Sn), brass (Cu-Zn).
+
+Implementation: when a MaterialPacket is held at 0.3-0.6 × T_melt for extended time,
+  compute f(t) from Avrami. If the alloy composition supports precipitation
+  (specific solute pairs that form intermetallic precipitates), hardness increases
+  according to f. Over-aging (t >> optimal) reduces hardness as precipitates coarsen.
+
+#### How Materials Combine: The Reaction Engine
+
+When two packets meet under conditions, the **reaction engine** determines what happens. It does not look up recipes. It checks thermodynamics.
+
+**Step 1 — Can a reaction happen?**
+Check Gibbs free energy: `ΔG = ΔH - TΔS`
+- If `ΔG < 0`: reaction is spontaneous (it wants to happen)
+- If `ΔG > 0`: reaction needs energy input
+- If `ΔG ≈ 0`: equilibrium (both forms coexist)
+
+The enthalpy (ΔH) and entropy (ΔS) values come from the elements' standard formation energies — tabulated from real chemistry, stored per element.
+
+**Step 2 — Is there enough energy?**
+- Temperature must be above activation energy threshold (Arrhenius: `k = A·e^(-Ea/RT)`)
+- Some reactions need a catalyst to lower Ea (e.g., iron catalyst for ammonia synthesis)
+- Some need specific atmosphere (reducing = carbon/CO present, oxidizing = oxygen present)
+
+**Step 3 — What comes out?**
+The output packet's composition is computed from stoichiometry:
+- Conservation of mass: total mass in = total mass out
+- Conservation of elements: every atom that goes in comes out (just rearranged)
+- Energy balance: exothermic reactions heat the output, endothermic reactions cool it
+
+**Step 4 — What are the output's properties?**
+All properties are recalculated from the new composition using the formulas above. The system doesn't know it made "bronze" — it made a Cu-Sn solid solution with computed properties.
+
+#### Example: A Player Discovers Bronze
+
+```
+1. Player has: packet A (composition: {Cu: 1.0}, mass: 1.0kg, temp: 25°C, phase: solid)
+              packet B (composition: {Sn: 1.0}, mass: 0.12kg, temp: 25°C, phase: solid)
+
+2. Player puts both in a bloomery and heats to 1100°C
+
+3. Reaction engine:
+   - Cu melting point: 1085°C → packet A transitions to liquid
+   - Sn melting point: 232°C → packet B already liquid
+   - Two liquids in contact → check miscibility: Cu-Sn are fully miscible in liquid phase
+   - Packets merge: new packet {Cu: 0.89, Sn: 0.11}, mass: 1.12kg, temp: 1100°C, phase: liquid
+
+4. Player removes from heat, packet cools below solidus (~950°C for this composition)
+   - Phase → solid
+   - Crystal structure: FCC (Hume-Rothery: Sn atoms substitute into Cu lattice, size ratio 0.93 ≈ OK)
+   - Hardness: higher than pure Cu (solid solution strengthening)
+   - Color: slightly more golden than pure copper
+
+5. The game has created "bronze" without ever defining bronze.
+```
+
+#### Example: Stellar Nucleosynthesis (The Universe Creates Elements)
+
+The same system works at cosmic scale. During world generation, the simulation can model how the planet's elements formed:
+
+```
+1. Primordial hydrogen cloud collapses under gravity
+2. Core temperature reaches 15,000,000°C, pressure reaches 250 billion atm
+3. Reaction engine: H + H → check ΔG at these conditions → fusion is spontaneous
+4. Output: He packet + energy (E = Δm·c²)
+5. As He accumulates, triple-alpha process: He + He + He → C at 100,000,000°C
+6. C + He → O, then Ne, Mg, Si... up to Fe (where fusion becomes endergonic)
+7. Supernova: extreme conditions create everything heavier than iron via neutron capture
+```
+
+This isn't simulated in real-time during gameplay — it runs once during world generation to establish the planet's elemental abundances. But it uses the same reaction engine. The planet's composition is DERIVED, not hardcoded.
+
+#### The Compounding Rule: 1 + 1 = 2
+
+Materials don't just react — they aggregate. Two dirt packets combine into one larger dirt packet. This is simple mass addition with composition averaging:
+
+```
+packet A: {Si: 0.33, O: 0.47, Al: 0.08, Fe: 0.05, ...}, mass: 0.5kg
+packet B: {Si: 0.30, O: 0.50, Al: 0.10, Fe: 0.04, ...}, mass: 0.3kg
+
+Result: weighted composition average, mass: 0.8kg
+  Si: (0.33×0.5 + 0.30×0.3) / 0.8 = 0.319
+  O:  (0.47×0.5 + 0.50×0.3) / 0.8 = 0.481
+  ... etc.
+```
+
+This means:
+- Two packets in contact as liquids merge by mass-weighted composition averaging
+- Splitting a packet divides mass but keeps the same composition
+- Impurities naturally accumulate or dilute through liquid mixing
+- Ore quality varies by location (different packets have different trace elements)
+- Purification is the process of separating a mixed packet into purer sub-packets
+- Inventory stacking does NOT merge composition — two ore chunks share a slot but remain separate objects (see §7.3). Merging requires melting both into liquid.
+
+#### What This Replaces
+
+The current `MaterialRegistry.ts` with 118 pre-defined materials becomes:
+1. **Element table** — 118 entries with REAL measured properties (atomic mass, melting point, density, electronegativity, standard formation enthalpy). This is the only static data. It comes from the periodic table — nature's constants.
+2. **Reaction engine** — thermodynamic rules that compute what happens when packets interact
+3. **Property calculator** — derives all material properties from composition using material science formulas
+4. **Packet store** — every object in the world is a packet (or a collection of packets)
+
+The Tier 2 (minerals) and Tier 3 (processed materials) lists in §6.1–6.2 are no longer definitions — they become **expected emergent results**. They describe what SHOULD emerge when the rules are correct. If the reaction engine, given real Cu and Sn properties, doesn't produce something with bronze-like properties at the right temperature, the rules have a bug — not a missing recipe.
+
+#### Computational Cost
+
+This is feasible on current hardware because:
+- Packets are coarse-grained (not individual atoms — a packet might represent 1 gram to 1 ton of material)
+- Property calculations are simple arithmetic (weighted averages, polynomial fits) — microseconds each
+- Reactions only fire when packets are brought together by a player or NPC action — not continuously
+- The element table (118 entries × ~20 properties) fits in < 10 KB
+- Phase diagram lookups can use pre-computed binary tables for common pairs (Cu-Sn, Fe-C, etc.) — ~500 pairs covers 95% of cases
+- Rare or novel combinations fall back to ideal solution approximations (less accurate but always produces a result)
+
+**Estimated per-reaction cost:** < 0.1ms on a single CPU core. A player performing 10 crafting actions per minute costs essentially nothing.
+
+**Where it gets expensive:** fluid simulation (§3.2), where millions of packets move and interact continuously. That is a separate problem addressed in the next section.
+
+---
+
+
+### 3.2 Fluid Simulation — How Liquids Work
+
+#### Why Liquid Is the Hardest Problem
+
+Solids are easy. A solid material packet sits where you put it. It has a position, a shape, and it doesn't move unless something pushes it. The game only needs to track one object.
+
+Liquids are fundamentally different. A liquid has no fixed shape — it takes the shape of whatever contains it. It flows downhill. It pools in valleys. It splashes when it hits something. It mixes with other liquids. It evaporates when heated, condenses when cooled. Every drop interacts with every nearby drop, the terrain, gravity, temperature, and wind — simultaneously, continuously, at every moment.
+
+The reason liquid is hard is not that the physics is complicated (the equations are well understood). It is that liquid requires simulating **many small pieces moving independently**. A solid copper ingot is one object. Molten copper is thousands of tiny pieces flowing, colliding, merging, and separating. That transition — from one thing to many things — is the core computational challenge.
+
+#### The Physical Truth: What Melting Actually Is
+
+At the atomic level, melting is the breakdown of structure:
+
+- **Solid**: atoms are locked in a crystal lattice. Each atom vibrates around a fixed position but cannot leave. The lattice gives the material its rigid shape. This is why solids hold their form.
+- **Liquid**: atoms have enough kinetic energy to break free from the lattice. They can slide past each other, but intermolecular forces (van der Waals, hydrogen bonds, metallic bonds) keep them close together. This is why liquids flow but don't fly apart.
+- **Gas**: atoms have enough energy to overcome all intermolecular forces. They fly freely in all directions, filling any container. This is why gas expands to fill a room.
+
+The game simulates this by **fragmenting a material packet into sub-packets when it crosses its melting point**. The sub-packets are the "freed atoms" — they inherit the parent's composition and temperature, but now they can move independently. When they cool below the melting point, they lock back together into a solid.
+
+This is not a metaphor. This is literally what melting is, at a coarser grain size.
+
+#### The Simulation Model: Smoothed Particle Hydrodynamics (SPH)
+
+SPH is a method for simulating fluids using particles instead of a grid. Each particle represents a small volume of liquid. The particles interact with their neighbors to produce realistic fluid behavior: flow, pressure, viscosity, surface tension, and splashing.
+
+**Why SPH and not a grid?** Grid-based methods (like the existing `fluid.worker.ts`) divide space into fixed cells. They work well for large, slow-moving bodies of water (oceans, lakes). But they cannot handle:
+- Pouring liquid from one container to another
+- A waterfall breaking into droplets
+- Molten metal being cast into a mold
+- Rain hitting the ground and splashing
+- Two different liquids mixing at their boundary
+
+SPH handles all of these because the particles move with the fluid — they go wherever the liquid goes, naturally adapting to any shape or motion.
+
+**Each SPH particle stores:**
+
+```
+SPHParticle {
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 33 properties.
+  packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
+                                        // viscosity, surfaceTension, density etc. come from packet
+
+  // --- SPH physics state (unique to particles, not in MaterialPacket) ---
+  x, y, z: number                      // position on the sphere surface (world space)
+  vx, vy, vz: number                   // velocity (m/s)
+  sphDensity: number                   // kg/m³ (computed from neighbors each tick — NOT the same as packet.density)
+  pressure: number                      // Pa (computed from sphDensity via Tait equation)
+  sleeping: boolean                     // true if settled (skip force calculations)
+
+  // Derived properties used by SPH forces are read directly from packet:
+  //   packet.viscosity     → F_viscosity = μ · ∇²v
+  //   packet.surfaceTension → F_surface = σ · κ · n̂
+  //   packet.density       → restDensity (ρ₀) for Tait equation
+}
+```
+
+**The five forces on every particle, every tick:**
+
+**1. Pressure force** — particles in high-density regions push outward toward low-density regions. This prevents liquid from compressing into a single point and makes it spread out to fill containers.
+
+Formula: `F_pressure = -∇P / ρ`
+
+Pressure is computed from density using the Tait equation of state:
+`P = B · ((ρ/ρ₀)^γ - 1)` where B is a stiffness constant, ρ₀ is rest density, γ ≈ 7 for water.
+
+This is the same equation used in real computational fluid dynamics. It produces the correct behavior: water is nearly incompressible (high B), so even small density increases create large pressure forces that push particles apart.
+
+**2. Viscosity force** — particles drag on their neighbors, resisting relative motion. High viscosity = honey, lava. Low viscosity = water, alcohol. Zero viscosity = superfluid helium (unreachable in-game).
+
+Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dynamic viscosity μ)
+
+**The viscosity comes from the material's composition** via the Andrade/Arrhenius equation in the property calculator (§3.1). These are **expected computed results**, not hardcoded values — the property calculator should produce these when given the correct composition:
+- Water (H₂O): expected μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
+- Molten copper: expected μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
+- Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
+- Honey (sugar solution): expected μ ≈ 2–10 Pa·s — long sugar molecules tangle
+- Lava (basaltic): expected μ ≈ 10–100 Pa·s — silicate networks partially intact
+
+Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
+
+**Non-Newtonian Viscosity — Mud Is Not Water**
+
+The Andrade/Arrhenius model gives viscosity as a function of temperature only. This is correct for simple liquids (water, molten metals, oils). But many gameplay-relevant materials are non-Newtonian — their viscosity depends on shear rate (how fast you stir/deform them):
+
+*Shear-thinning (pseudoplastic) — viscosity DROPS under stress:*
+The Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)`
+- μ₀ = zero-shear viscosity (thick when still)
+- μ_∞ = infinite-shear viscosity (thin when stirred fast)
+- γ̇ = shear rate (velocity gradient in the fluid)
+- K = time constant, n = flow index (<1 for shear-thinning)
+
+Clay slurry: μ₀ = 100 Pa·s (stiff), μ_∞ = 0.1 Pa·s (flows when worked). This is why clay is "workable" — stiff until you knead it, then flows into shape. In the SPH solver, clay particles near the player's hands have high shear rate → low viscosity. Clay particles at rest have zero shear rate → high viscosity → holds its shape.
+
+Blood: μ₀ = 0.05 Pa·s at low shear, μ_∞ = 0.003 Pa·s at high shear. Slow blood pooling is thicker than fast-flowing arterial blood.
+
+Mud: μ₀ = 500+ Pa·s (solid-like), μ_∞ = 1 Pa·s (flows like water when agitated). Walking on mud: shear rate from footstep → mud liquefies under foot → sinks in. This is quicksand behavior: struggling increases shear rate → more liquefaction. Staying still: mud re-solidifies (thixotropy).
+
+*Shear-thickening (dilatant) — viscosity INCREASES under stress:*
+Cornstarch/water (oobleck), wet sand: flows slowly when poured, becomes rigid under sudden impact. Not critical for gameplay but interesting for armor padding.
+
+The SPH viscosity force already computes velocity differences between neighbors. The shear rate γ̇ is simply the magnitude of the velocity gradient tensor, which can be estimated from the SPH velocity Laplacian already being computed. The only change: replace constant μ with μ(γ̇) from the Cross model.
+
+MaterialPacket additions for non-Newtonian fluids:
+```
+  isNonNewtonian: boolean            // true for clay, mud, blood, pitch, etc.
+  zeroShearViscosity: number         // Pa·s — viscosity when undisturbed (μ₀)
+  infShearViscosity: number          // Pa·s — viscosity under fast shear (μ_∞)
+  crossTimeConstant: number          // s — transition shear rate (K)
+  crossFlowIndex: number             // dimensionless — typically 0.3-0.8 (n)
+```
+
+**3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
+
+Formula: `F_gravity = m · g · down_direction`
+
+On a sphere, the "down" direction is toward the planet center: `down = -normalize(position)`. The component of gravity along the terrain surface drives horizontal flow. The component into the terrain is balanced by the terrain's normal force (the ground pushes back).
+
+**4. Surface tension** — particles at the liquid's surface are pulled inward by their neighbors, minimizing surface area. This is what makes water droplets spherical and allows insects to walk on water.
+
+Formula: `F_surface = σ · κ · n̂` where σ is surface tension coefficient, κ is surface curvature, n̂ is surface normal.
+
+Surface tension is computed from composition:
+- Water: σ ≈ 0.073 N/m (hydrogen bonds pull surface inward)
+- Molten iron: σ ≈ 1.8 N/m (strong metallic bonds)
+- Mercury: σ ≈ 0.5 N/m (why mercury forms perfect spherical droplets)
+- Ethanol: σ ≈ 0.022 N/m (weak intermolecular forces)
+
+When two different liquids meet, the difference in surface tension drives **Marangoni flow** — liquid flows from low surface tension to high. This is why soap breaks water tension (soap has lower σ, water flows away from it, creating the spreading pattern).
+
+**5. Terrain collision** — particles cannot pass through the ground. When a particle's position would be below the terrain surface, it is pushed to the surface and its velocity component into the terrain is zeroed (with friction applied to the tangential component).
+
+This is what makes liquid pool in valleys, flow along riverbeds, and fill containers. The terrain acts as a rigid boundary that shapes the flow.
+
+#### The SPH Algorithm (per tick)
+
+```
+for each particle i:
+  1. Find neighbors within kernel radius h (~2× particle spacing)
+     — use spatial hash grid for O(1) neighbor lookup
+
+  2. Compute density:  ρᵢ = Σⱼ mⱼ · W(rᵢⱼ, h)
+     where W is a smoothing kernel (cubic spline) and rᵢⱼ = |posᵢ - posⱼ|
+
+  3. Compute pressure: Pᵢ = B · ((ρᵢ/ρ₀)^γ - 1)
+
+  4. Compute forces:
+     F_pressure  = -Σⱼ mⱼ · (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) · ∇W(rᵢⱼ, h)
+     F_viscosity = μ · Σⱼ mⱼ · (vⱼ - vᵢ) / ρⱼ · ∇²W(rᵢⱼ, h)
+     F_gravity   = m · g · (-normalize(posᵢ))
+     F_surface   = σ · curvature · surface_normal  (only for surface particles)
+
+  5. Integrate:
+     vᵢ += dt · (F_pressure + F_viscosity + F_gravity + F_surface) / mᵢ
+     posᵢ += dt · vᵢ
+
+  6. Terrain collision:
+     if (length(posᵢ) < PLANET_RADIUS + terrainHeight(posᵢ)):
+       push particle to surface, apply friction
+
+  7. Temperature exchange:
+     — particles exchange heat with neighbors (Fourier's law: Q = k·A·ΔT/d)
+     — particles exchange heat with terrain and air
+     — if temperature crosses melting point → phase transition (see below)
+```
+
+**The kernel function W** is the mathematical smoothing function that defines "how much influence does a neighbor have." Closer neighbors have more influence. The standard choice is the cubic spline kernel, which is smooth, compact (zero outside radius h), and computationally cheap.
+
+#### Phase Transitions: Solid ↔ Liquid ↔ Gas
+
+Phase transitions connect the fluid simulation to the material packet system (§3.1). They are the bridge between the static world of solids and the dynamic world of fluids.
+
+**Melting (solid → liquid):**
+```
+When a solid material packet reaches temperature ≥ meltingPoint(composition):
+  1. The solid packet is removed from the world
+  2. N SPH particles are spawned at its position
+     — N = mass / particleMass (particleMass is a resolution parameter, e.g., 0.01 kg)
+     — Each particle inherits: composition, temperature, mass/N
+     — Particles are placed in a tight cluster matching the solid's shape
+     — Particles get zero initial velocity (they start motionless, then flow under gravity)
+  3. The SPH simulation takes over — particles flow, pool, splash
+```
+
+// ── Latent Heat ──────────────────────────────────────────────────────
+// Phase transitions are NOT instant. Melting absorbs energy without
+// raising temperature. Freezing releases energy without lowering it.
+//
+// When a material reaches its melting point, it does not instantly become liquid.
+// It must absorb latentHeatFusion (J/kg) while staying at exactly the melting
+// temperature. Only after all latent heat is absorbed does it finish transitioning.
+//
+// Implementation: each MaterialPacket in transition has a phaseProgress (0→1).
+//   Each tick: absorbed = heatInput × dt
+//   phaseProgress += absorbed / (mass × latentHeatFusion)
+//   Temperature stays at meltingPoint until phaseProgress reaches 1.0
+//   Then: packet transitions and temperature can rise again.
+//
+// Same for boiling (latentHeatVaporization) and freezing (releases latent heat).
+//
+// Typical values (computed from composition by property calculator):
+//   Water: latentHeatFusion = 334 kJ/kg, latentHeatVaporization = 2260 kJ/kg
+//   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
+//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6090 kJ/kg
+//   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
+//
+// Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
+//   247,000 J of sustained heat input before it becomes liquid.
+//   At a typical furnace heat rate of ~500 W: ~8 game-minutes of smelting.
+//   Without latent heat, melting would be instant — unrealistically fast.
+//
+// Casting effect: a mold full of molten copper releases latent heat as it
+//   solidifies. The center of the casting stays liquid longer because the
+//   released latent heat must escape through the already-solidified outer shell.
+//   This creates shrinkage cavities — real metallurgical defects that affect
+//   the quality of the cast object.
+
+**Freezing (liquid → solid):**
+```
+When a cluster of SPH particles cools below meltingPoint(composition):
+  1. Identify connected clusters of cold particles (particles within kernel radius of each other)
+  2. Each cluster merges into a single solid packet:
+     — mass = sum of particle masses
+     — composition = mass-weighted average of particle compositions
+     — position = center of mass of the cluster
+     — shape = convex hull of particle positions (or simplified bounding shape)
+  3. The solid packet is placed in the world; particles are removed
+```
+
+**Solidification Front — Casting Freezes From Outside In**
+
+Real freezing does not happen simultaneously throughout a liquid body. It starts at the coldest surfaces (mold walls, exposed air) and progresses inward as a moving front. The Stefan problem describes this:
+
+```
+dx/dt = k × (T_melt - T_boundary) / (ρ × L × x)
+where:
+  x = thickness of solid shell (m)
+  k = thermal conductivity of the solid (W/m·K)
+  T_melt = melting point (°C)
+  T_boundary = temperature at the cold surface (°C)
+  ρ = density (kg/m³)
+  L = latent heat of fusion (J/kg) — from latentHeatFusion property
+```
+
+The solidification front moves as √(time) — fast at first, then slowing as the insulating solid shell thickens and heat must travel farther to escape.
+
+For a 10cm copper casting in a stone mold (T_boundary = 200°C):
+- After 1 second: solid shell ~3mm thick
+- After 10 seconds: ~9mm thick
+- After 60 seconds: ~23mm thick
+- Center solidifies last — after ~2 minutes
+
+Why this matters for gameplay:
+
+1. **Shrinkage cavities:** the last liquid to freeze (center) has no liquid left to fill the space as it contracts. A void forms — a real metallurgical defect. Well-designed molds have a "riser" (extra reservoir) that feeds liquid to the center as it shrinks. Players who don't add a riser get castings with internal voids — weaker, more likely to crack under stress.
+
+2. **Cooling rate determines microstructure:** surface (fast-cooled) is fine-grained and hard. Center (slow-cooled) is coarse-grained and softer. For steel, this connects to martensite (§3.1): the surface may be martensite (hard) while the center is pearlite (soft) — a single casting with two different property zones.
+
+3. **Directional solidification:** if the mold is cooled from the bottom, the solidification front moves upward, pushing dissolved gases ahead of it → fewer bubbles. This is a real casting technique (chill plates at the base).
+
+Implementation: for freezing SPH particle clusters, don't merge all at once. Instead, identify surface particles (fewest neighbors) → freeze those first. Each tick, freeze the next layer of particles adjacent to already-frozen particles. The rate follows the Stefan formula. Center particles freeze last. Frozen particles that contract more than their neighbors create void particles (tracked as defects in the resulting solid MaterialPacket).
+
+**Boiling (liquid → gas):**
+```
+When a particle reaches temperature ≥ boilingPoint(composition):
+  1. Particle expands: kernel radius increases, restDensity drops dramatically
+  2. Upward buoyancy force added (hot gas rises)
+  3. If particle rises above terrain + threshold → convert to gas system
+     — Gas particles have much larger spacing, lower interaction frequency
+     — Eventually fade out at high altitude (absorbed into atmosphere model)
+```
+
+**Condensation (gas → liquid):**
+```
+When gas-phase particles cool below boilingPoint:
+  1. Particles contract: kernel radius shrinks, restDensity increases
+  2. Surface tension kicks in → droplets form
+  3. Droplets fall under gravity → rain
+```
+
+**Sublimation and deposition** (solid ↔ gas, skipping liquid) also emerge naturally. Dry ice (solid CO₂) sublimates because its phase diagram has no liquid phase at 1 atm. The simulation checks: at current pressure, does a liquid phase exist between solid and gas? If not, the solid transitions directly to gas particles.
+
+#### Multi-Scale Fluid System
+
+One simulation method cannot efficiently handle all scales of liquid in the game. A raindrop and an ocean are both water, but simulating an ocean with SPH particles would require billions of particles. Instead, the game uses different methods at different scales, with smooth transitions between them.
+
+**Scale 1 — Crafting (SPH particles, 100–5,000 particles)**
+
+This is the most interactive scale. The player directly manipulates liquid:
+- Melting ore in a bloomery → molten metal flows into a channel
+- Pouring molten copper into a stone mold → casting
+- Mixing two chemicals in a clay pot → the liquids swirl together
+- Boiling water → steam rises, water level drops
+- Quenching hot steel → dramatic sizzle, steam cloud
+
+SPH runs at 60 Hz. 5,000 particles × 50 neighbors × 5 forces = 1,250,000 operations per tick. At ~10 FLOPs each = 12.5 MFLOP per tick. A single CPU core does 1–5 GFLOP/s in Rust with SIMD. Cost: < 1% of one core.
+
+**Scale 2 — Local environment (MLS-MPM particles, 5,000–200,000 particles)**
+
+Environmental liquid near the player:
+- Rain hitting the ground and forming puddles
+- A small waterfall or creek
+- Blood pooling from a killed animal
+- Spilled liquid from a broken container
+- A hot spring with steam
+- Lava flows from volcanic eruptions (up to 200,000 particles)
+
+MLS-MPM (Moving Least Squares Material Point Method) replaces SPH at this scale. MPM is 3× faster than SPH at the same particle count because it avoids the expensive neighbor search — particles transfer to a background grid, the grid solves forces, then transfers back to particles. MLS-MPM runs at 30 Hz. The particle-to-grid and grid-to-particle transfers cost ~2,700 FLOPs per particle per timestep. At 200,000 active particles: ~540 MFLOP per tick — well within a single Rust core with SIMD, or ~2ms on a mid-range GPU via WebGPU compute.
+
+Old cap was 50,000 for eruptions, 20,000 for environment. New cap is 200,000 per system, 400,000 total across all systems. This is achievable because:
+- Rust with SIMD processes 4–8 particles per instruction
+- Sleep system keeps 80–95% of particles dormant at any time
+- MLS-MPM avoids the O(n²) neighbor search that makes SPH expensive at scale
+- GPU compute path (WebGPU) unlocks 10× headroom when available
+
+**Scale 3 — Regional (grid-based, Eulerian)**
+
+Rivers, lakes, and large water bodies. Too many particles for SPH — switch to a grid where each cell tracks water volume and flow direction.
+
+```
+GridCell {
+  waterVolume: number     // m³ of water in this cell
+  flowX, flowZ: number    // velocity of water flow (m/s)
+  temperature: number     // °C
+  composition: Map<Element, number>   // dissolved minerals, pollutants
+  depth: number           // computed: waterVolume / cellArea
+}
+```
+
+Rules per tick (0.5–1 Hz — slow, large scale):
+- Water flows from high cells to low cells (terrain height + water depth)
+- Flow rate depends on slope (Manning's equation: `v = (1/n) · R^(2/3) · S^(1/2)` where n is roughness, R is hydraulic radius, S is slope)
+- Evaporation removes water based on temperature and humidity
+- Rain adds water based on weather system (§4.6)
+- Rivers defined by RiverSystem.ts are permanent flow paths with base flow rates
+
+This extends the existing `fluid.worker.ts` and `RiverSystem.ts`. The grid is the same 3D grid already initialized in the worker — it just needs water-specific logic added.
+
+**Scale 4 — Global (mathematical model, no particles or grid)**
+
+Ocean currents, tides, deep water temperature. These are too large and slow for real-time simulation. Instead, they are modeled as:
+- Ocean surface: Gerstner wave shader (already built — `OceanShader.ts`)
+- Currents: pre-computed flow field based on continent positions and Coriolis effect
+- Tides: sinusoidal sea level variation driven by moon position (simple formula)
+- Deep ocean temperature: latitude-based gradient (cold at poles, warm at equator)
+
+No per-frame simulation cost. Just math evaluated when needed.
+
+#### Scale Transitions
+
+The critical engineering challenge is smooth transitions between scales. A raindrop (SPH) must be able to join a puddle (SPH), which grows into a stream (grid), which feeds a river (grid), which reaches the ocean (shader). Going backward must also work: a player scoops water from a river (grid → SPH packet).
+
+**SPH → Grid (particle absorption):**
+```
+When an SPH particle enters a grid cell that already contains water:
+  1. Add particle's mass to cell's waterVolume
+  2. Add particle's momentum to cell's flow velocity (momentum-conserving)
+  3. Mix particle's composition into cell's composition (mass-weighted average)
+  4. Mix particle's temperature into cell's temperature
+  5. Remove the SPH particle
+```
+
+Trigger condition: particle velocity < threshold AND particle is in a cell with waterVolume > threshold. This means fast-moving water (waterfalls, splashes) stays as particles. Slow, settled water becomes grid cells.
+
+**Grid → SPH (particle emission):**
+```
+When a player interacts with a grid cell (scoop, dig channel, break dam):
+  1. Remove requested mass from cell's waterVolume
+  2. Spawn N SPH particles with that mass, inheriting cell's composition and temperature
+  3. Particles get initial velocity matching the cell's flow direction
+```
+
+Also triggered when water flows over a cliff edge (waterfall): grid cells at the edge emit SPH particles that fall freely until they hit water below (absorbed back into grid) or terrain (splash → pool → eventually grid again).
+
+**Grid → Shader (ocean boundary):**
+```
+Grid cells at the ocean boundary do not store water — they connect to the ocean.
+River grid cells that reach sea level feed their flow volume into the ocean's
+total water budget (affecting sea level over very long timescales).
+The ocean shader reads sea level from the simulation state.
+```
+
+#### Mixing and Reactions in Liquid
+
+When two SPH particles of different composition are neighbors, they can mix and react — using the same reaction engine from §3.1.
+
+**Diffusion (passive mixing):**
+Each tick, neighboring particles exchange a small fraction of their composition proportional to their contact area and the diffusion coefficient. Over time, two adjacent liquids homogenize. Stirring (player action or turbulent flow) increases the mixing rate by bringing distant particles into contact.
+
+```
+mixRate = D · dt · W(rᵢⱼ, h) / distance
+particle_i.composition += mixRate · (particle_j.composition - particle_i.composition)
+particle_j.composition += mixRate · (particle_i.composition - particle_j.composition)
+```
+
+where D is the diffusion coefficient (depends on temperature and the materials involved).
+
+**Reactions in liquid phase:**
+When two particles' mixed composition satisfies a reaction condition (§3.1 reaction engine — Gibbs free energy check), the reaction fires:
+- Acid dissolves metal: HCl particles + Fe particles → FeCl₂ solution + H₂ gas bubbles
+- Salt dissolves in water: NaCl solid particles near H₂O particles → Na⁺ and Cl⁻ dissolve into water composition
+- Oil and water refuse to mix: if immiscible (ΔG of mixing > 0), particles repel at the interface instead of diffusing
+
+**Density-driven layering:**
+Denser liquid sinks, lighter liquid floats. Oil floats on water. Molten slag floats on molten iron (this is how real smelting separates metal from waste). The SPH pressure force naturally produces this layering because denser particles create higher pressure at the bottom.
+
+#### Capillary Action — Liquid Climbs Upward
+
+In narrow channels, surface tension pulls liquid upward against gravity. Jurin's law determines the height:
+
+```
+h = 2σ × cos(θ) / (ρ × g × r)
+where:
+  σ = surface tension (N/m) — from MaterialPacket
+  θ = contact angle (0° = perfect wetting, 90° = non-wetting, >90° = hydrophobic)
+  ρ = liquid density (kg/m³)
+  r = channel/pore radius (m)
+```
+
+Contact angle depends on the liquid-surface pair:
+- Water on clean glass: θ ≈ 0° (spreads flat — hydrophilic)
+- Water on waxed surface: θ ≈ 110° (beads up — hydrophobic)
+- Mercury on glass: θ ≈ 140° (repelled — mercury is depressed, not elevated)
+- Water on stone: θ ≈ 20-40° (partial wetting)
+- Oil on cloth: θ ≈ 0° (perfect wetting — oil wicks into everything)
+
+Gameplay effects:
+- Oil lamp wicks: oil (σ ≈ 0.03 N/m, θ ≈ 0° on cloth) rises ~15cm in cloth fibers (r ≈ 0.01mm): h = 2×0.03×1 / (800×9.81×0.00001) = 0.76m — easily sufficient
+- Rising damp in walls: water rises in stone pores (r ≈ 0.1mm): h = 2×0.073×cos(30°) / (1000×9.81×0.0001) = 0.13m — rises ~13cm into the wall. This connects to structural decay (§3.4): the damp zone weakens mortar
+- Cloth absorbing blood/water: thin fibers (r ≈ 0.01mm) wick liquid rapidly
+- Sap transport in trees: capillary + transpiration pull moves water from roots to leaves
+
+Implementation: not simulated as individual SPH particles in pores (too small). Instead, tracked as a material property: when a porous block contacts liquid, the block's waterAbsorption rate is multiplied by a capillary factor:
+```
+capillaryFactor = 2σ × cos(θ) / (ρ × g × poreDiameter)
+absorptionRate = porosity × capillaryFactor × contactArea
+```
+
+This connects to structural decay (§3.4): rising damp carries dissolved minerals upward. When water evaporates at the wall surface, minerals crystallize and exert pressure on the pore walls (salt weathering). This is a major real-world cause of stone building deterioration.
+
+#### Sedimentation — Heavy Particles Sink, Light Particles Float
+
+Suspended solids in liquid settle at a rate determined by Stokes' law:
+
+```
+v_settle = (2/9) × (ρ_particle - ρ_fluid) × g × r² / μ
+where:
+  ρ_particle = density of the suspended solid (kg/m³)
+  ρ_fluid = density of the liquid (kg/m³)
+  r = particle radius (m) — from the suspended solid's grain size
+  μ = fluid viscosity (Pa·s)
+```
+
+Settling speeds for common situations:
+- Gold dust (ρ=19300) in water: r=0.5mm → v = 0.85 m/s — settles almost instantly
+- Sand (ρ=2650) in water: r=1mm → v = 0.36 m/s — settles in seconds
+- Silt (ρ=2650) in water: r=0.01mm → v = 0.000036 m/s — takes hours to settle
+- Clay (ρ=2650) in water: r=0.001mm → v = 0.00000036 m/s — takes DAYS (muddy water stays cloudy)
+
+Gameplay effects:
+- Gold panning: swirl water + gravel → gold settles first (highest density) → lighter sand washes away. This is discoverable because the physics is correct.
+- Water clarification: fill a vessel, let it sit → sediment drops, clear water on top. Time depends on grain size: sandy water clears in minutes, clay water takes days.
+- Alluvial deposits: where rivers slow (bends, deltas), sediment drops out. Heavy materials (gold, magnetite) deposit first at the inner bend. Light materials (clay) deposit last, farther downstream. This creates naturally rich mining locations that players can discover by understanding the relationship between river speed and material density.
+
+Implementation: for SPH particles representing suspensions (muddy water, ore slurry), apply a settling velocity to the solid component:
+```
+Each tick: particle.z -= v_settle × dt (relative to the fluid)
+When a settled particle reaches the bottom of a container or terrain:
+  it is removed from the fluid and deposited as a MaterialPacket.
+The deposited material's composition reflects whatever settled there.
+```
+
+#### What the Player Sees — Three-Tier Rendering Pipeline
+
+The visual representation of fluid is NOT hardcoded per material. In the real world, you don't see "water is blue" — you see light being absorbed, scattered, and refracted by matter. The renderer computes optical properties from the same MaterialPacket that drives viscosity and density. Three rendering methods handle different scales:
+
+**Tier 1: Marching Cubes — Crafting Scale (100–5,000 particles)**
+
+When a player is melting, pouring, or mixing at a craft arrangement, they are close. Quality matters. Particle count is low enough for real mesh extraction.
+
+```
+How it works:
+  1. Overlay a 3D grid on the crafting region (32³ = ~33,000 vertices)
+     Grid cell size = half the particle spacing (~0.03m for crafting)
+
+  2. At each grid vertex, compute a scalar field:
+     φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
+     This sums the "influence" of every nearby particle using the SPH kernel.
+     Where many particles overlap, φ is high. Where there are gaps, φ is low.
+
+  3. Extract the isosurface where φ = threshold (~0.6):
+     — For each grid cell, classify its 8 corners as inside/outside
+     — Look up triangle configuration from the 256-entry marching cubes table
+     — Interpolate vertex positions along edges where φ crosses the threshold
+     — Compute normals from ∇φ (gradient of the scalar field)
+
+  4. Result: a smooth, watertight triangle mesh (typically 5,000–20,000 triangles)
+     This mesh has NO individual particle bumps — it is a continuous surface.
+     Topology changes (drops splitting, streams merging) happen automatically.
+
+  5. Shade the mesh using optical properties derived from composition (see below).
+
+Performance at crafting scale:
+  Scalar field computation: ~0.3ms (1000 particles × ~10 neighbors per vertex)
+  Marching cubes traversal: ~0.1ms
+  Mesh rendering: ~0.2ms (5k–20k triangles, trivial for GPU)
+  Total: ~0.6ms — negligible
+```
+
+Why marching cubes here and not screen-space: player is inches away — mesh quality is noticeably better. Low particle count makes mesh extraction cheap. Produces a real 3D mesh that catches light and shadows correctly. Handles transparency naturally (can ray-march through the mesh for thickness).
+
+**Tier 2: Screen-Space Fluid Rendering (SSFR) — Environment Scale (5,000–200,000 particles)**
+
+For rain puddles, lava flows, streams, blood pools — anything with many particles where the player is not scrutinizing individual droplets. This is the technique used by NVIDIA Flex and Unreal Engine 5.
+
+The core idea: render particles as depth sprites, then blur the depth buffer to "connect the dots" into a smooth continuous surface. The blur cost is per-pixel (screen resolution), not per-particle — so 200,000 particles render at the same cost as 5,000.
+
+```
+The pipeline (5 GPU passes):
+
+  Pass 1 — Depth Sprites (0.3–0.8ms):
+    Render each particle as a camera-facing point sprite.
+    In the fragment shader, compute the sphere's depth per pixel:
+      depth(x,y) = particle_z - R · √(1 - x² - y²)
+    Write to a depth-only render target. Overlapping particles resolve via depth test.
+    Result: a bumpy depth buffer of individual sphere shapes.
+
+  Pass 2 — Bilateral Blur (0.5–1.5ms, two sub-passes):
+    A bilateral Gaussian filter smooths the depth buffer:
+      smoothed(p) = Σ w(q) · depth(q) / Σ w(q)
+      w(q) = G_spatial(||p-q||) · G_range(|depth(p) - depth(q)|)
+
+    G_spatial: standard Gaussian blur (σ = 5–10 pixels, kernel radius 10–20 px)
+    G_range: preserves edges — if two pixels have very different depths,
+             they are at a fluid boundary. Do not blur across it.
+
+    Done as two separable 1D passes (horizontal + vertical) for efficiency.
+
+    Result: individual particle bumps vanish. The depth buffer now shows a
+    smooth, continuous fluid surface — even though the particles underneath
+    are discrete points. This is where "connecting the dots" happens.
+
+  Pass 3 — Thickness (0.2–0.5ms):
+    How thick is the fluid along each view ray? Needed for transparency/color.
+    Render particles again with ADDITIVE blending and NO depth test.
+    Each sprite contributes its thickness: t(x,y) = 2R · √(1 - x² - y²)
+    Overlapping particles' thicknesses sum up naturally.
+    Result: a screen-space thickness map.
+
+  Pass 4 — Normal Reconstruction (0.1–0.2ms):
+    Compute surface normals from the smoothed depth via finite differences:
+      ∂z/∂x = (depth(x+1,y) - depth(x-1,y)) / 2
+      ∂z/∂y = (depth(x,y+1) - depth(x,y-1)) / 2
+      normal = normalize(cross(dpdx, dpdy))
+
+  Pass 5 — Compositing (0.3–0.5ms):
+    Full-screen pass that combines everything:
+    — Fresnel reflection: F = F₀ + (1-F₀)(1 - N·V)⁵
+    — Refraction: offset background UV by normal.xy × thickness
+    — Beer's Law absorption: color = exp(-absorption × thickness)
+      Water absorbs red (stays blue), lava absorbs blue (stays orange)
+    — Specular highlights from scene lights
+    — Composite over the scene at the smoothed depth
+
+Total GPU cost: 1.5–3.5ms at 1080p — INDEPENDENT of particle count.
+```
+
+**Tier 3: Raw Points + Shaders — Visual-Only Effects**
+
+Rain, snow, ash, sparks, embers, wind particles. These are not physics fluid — they are visual atmosphere. No smooth surface needed. GPU billboard particle system (THREE.Points). No physics interaction, no SPH, no fluid behavior. Already implemented in WeatherRenderer.tsx. 10,000+ particles at near-zero GPU cost. No change needed.
+
+**Tier Selection — Per Fluid Body, Per Frame**
+
+Tiers are assigned per fluid body (connected component of particles), not per particle:
+
+```
+TierSelection (per fluid body, per frame):
+  if body.context == PRECISION_CRAFT:
+    tier = MARCHING_CUBES    // player is crafting, close up, small count
+  else if body.particleCount <= 5000 AND body.closestDistanceToCamera < 3.0m:
+    tier = MARCHING_CUBES    // small body AND player is very close
+  else:
+    tier = SCREEN_SPACE      // everything else
+
+  // Tier 3 is separate — weather particles never form fluid bodies.
+```
+
+**Tier Transition — Smooth Crossfade**
+
+When a fluid body changes tier (player walks away from a craft arrangement, approaches a puddle), a 20-frame crossfade prevents visual popping:
+
+```
+TierTransition:
+  When targetTier != currentTier:
+    blendWeight increases by 0.05 per frame (~0.33 seconds crossfade)
+    Both rendering methods run simultaneously during the blend
+    Old tier fades out (opacity = 1 - blend), new tier fades in (opacity = blend)
+
+  Hysteresis prevents flickering at boundaries:
+    MARCHING_CUBES entry:  distance < 3.0m AND count < 5,000
+    MARCHING_CUBES exit:   distance > 4.0m OR count > 6,000
+    The gap prevents rapid switching when hovering near the threshold.
+
+  Fluid bodies are recomputed every 10 frames (~6× per second at 60fps)
+  via union-find on the particle neighbor graph. Between recomputations,
+  new particles inherit the body ID of their nearest neighbor.
+```
+
+**Grid cells (regional):**
+- Water surface mesh generated from grid cells with waterVolume > 0
+- Surface height = terrain height + water depth
+- Uses the existing OceanShader.ts material (Gerstner waves scaled down for rivers/lakes)
+- River foam where flow speed is high (reuse the foam noise from OceanShader.ts)
+
+**Ocean (global):**
+- Unchanged from current implementation: sphere mesh + Gerstner wave vertex displacement + Fresnel + caustics
+
+#### Terrain Interaction: The Container Problem
+
+Liquid needs surfaces to contain it. The terrain height field on the sphere is the primary container. But natural terrain has features that matter for fluid:
+
+**Concavities (valleys, bowls, craters):**
+Water pools wherever the terrain forms a local minimum — a point lower than all its neighbors. The grid-based simulation finds these automatically: water flows into the cell and has nowhere lower to go, so it accumulates. Water depth rises until it reaches the lowest outflow point (the rim of the bowl), then spills over and continues flowing.
+
+**Player-made containers:**
+When a player digs (removes terrain) or builds (adds terrain), they modify the height field. A trench becomes a channel. A ring of piled dirt becomes a dam. A clay pot (crafted object with concave interior) becomes a vessel. The fluid system treats all of these the same way: particles cannot penetrate solid surfaces, so they pool inside whatever shape the surface creates.
+
+**Porosity:**
+Not all terrain is waterproof. Sand absorbs water (high porosity). Clay blocks water (low porosity). Rock is somewhere in between. The grid simulation can model this:
+```
+absorption = porosity · waterVolume · dt
+waterVolume -= absorption
+groundwaterLevel += absorption  // water table rises
+```
+
+This produces springs (groundwater pressure pushes water to the surface where terrain is lower than the water table) and explains why clay-lined channels hold water better than dirt channels.
+
+#### The Complete Water Cycle
+
+When all scales work together, the full hydrological cycle emerges:
+
+```
+EVAPORATION: Ocean + lakes + rivers lose water (temperature + surface area + wind)
+  ↓ water vapor enters atmosphere
+CLOUD FORMATION: Vapor rises, cools below dew point, condenses
+  ↓ water droplets aggregate into clouds (weather system §4.6)
+PRECIPITATION: Clouds release water as rain (liquid) or snow (solid)
+  ↓ SPH particles fall from sky (Scale 1-2)
+SURFACE FLOW: Rain hits terrain, flows downhill
+  ↓ SPH particles merge into grid cells (Scale 2 → Scale 3)
+RIVERS: Grid cells with persistent flow form rivers
+  ↓ matches RiverSystem.ts flow paths
+LAKES: Water accumulates in terrain concavities
+  ↓ grid cells fill up, overflow feeds downstream rivers
+OCEAN: Rivers discharge into the ocean (Scale 3 → Scale 4)
+  ↓ ocean level adjusts over long timescales
+GROUNDWATER: Some rain absorbs into porous terrain
+  ↓ feeds springs, wells, and maintains river base flow in dry season
+```
+
+No part of this cycle is scripted. It all follows from the physics: gravity pulls water down, heat drives evaporation, cooling drives condensation, terrain shape determines where water collects and flows. The weather system (§4.6) provides precipitation. The fluid simulation handles everything after the raindrop forms.
+
+#### Lava: Liquid Rock
+
+Volcanic eruptions produce lava — molten rock flowing on the surface. In this system, lava is not a special case. It is a material packet (composition: silicate minerals) that has been heated above its melting point (~700–1200°C depending on composition).
+
+```
+MAGMA CHAMBER: high-temperature material packets deep underground (world generation)
+  ↓ volcanic event (triggered by tectonic simulation or random with geological probability)
+ERUPTION: packets surface → temperature > melting point → fragment into SPH particles
+  ↓ particles flow downhill (very high viscosity — basaltic: μ ≈ 100 Pa·s, rhyolitic: μ ≈ 10⁶ Pa·s)
+COOLING: particles lose heat to air and terrain → temperature drops
+  ↓ viscosity increases exponentially as temperature drops (Arrhenius)
+SOLIDIFICATION: temperature crosses solidus → particles freeze into solid terrain
+  ↓ new rock with composition determined by the original magma
+```
+
+Basaltic lava (low silica) flows fast and far — like Hawaiian eruptions. Rhyolitic lava (high silica) barely moves — it piles up into domes. The difference is entirely from composition → viscosity. The simulation handles both with the same code.
+
+Lava flowing over water produces instant steam (boiling) + rapid cooling of the lava surface → obsidian (amorphous glass, because cooling was too fast for crystals to form). This emergent behavior falls out naturally from the phase transition and heat exchange rules.
+
+#### Performance Budget
+
+**Simulation (Rust, single dedicated core):**
+
+| Scale | Method | Particle/cell count | Tick rate | Rust CPU cost per tick |
+|-------|--------|-------------------|-----------|----------------------|
+| Crafting | SPH | 100–5,000 | 60 Hz | ~0.5 ms |
+| Local env | MLS-MPM | 5,000–200,000 | 30 Hz | ~2.0 ms (50k active) / ~8.0 ms (200k active peak) |
+| Regional | Grid | 10,000–50,000 cells | 1 Hz | ~2.0 ms |
+| Global | Math | 0 | On demand | < 0.1 ms |
+| Redistribution | Amortized | — | Per tick | ~0.3 ms |
+| **Total sustained** | | **~400,000 max** | | **~10% of one CPU core** |
+| **Total peak (eruption)** | | **200k active** | | **~34% of one CPU core** |
+
+**GPU compute path (WebGPU, when available):**
+
+| Scale | GPU cost per tick | Notes |
+|-------|------------------|-------|
+| Crafting SPH (5,000) | ~0.1 ms | Trivially fast on GPU |
+| Environment MPM (200,000, 4 substeps) | ~4 ms | Memory-bound, not compute-bound |
+| **Total GPU compute** | **~4.1 ms** | Leaves >12ms for rendering at 60 FPS |
+
+**Rendering (GPU):**
+
+| Component | GPU cost | Notes |
+|-----------|---------|-------|
+| Marching cubes mesh (crafting, ≤5k particles) | ~0.6 ms | 32³ grid + 5k-20k triangles |
+| Screen-space fluid (environment, any count) | ~2.5 ms at 1080p | Fixed cost regardless of particle count |
+| Weather particles (visual-only) | ~0.3 ms | Existing THREE.Points |
+| Secondary particles (spray/foam/bubbles) | ~0.1 ms | Visual-only points |
+| **Total rendering** | **~3.5 ms** | Fits comfortably in 16ms frame budget |
+
+**Memory:**
+
+| Component | Size |
+|-----------|------|
+| Particle data (400k max × 64 bytes) | ~25 MB |
+| Optical properties (400k × 40 bytes) | ~16 MB |
+| Spatial hash table | ~5 MB |
+| Marching cubes grid (32³) | ~0.5 MB |
+| Screen-space buffers (1080p: depth + thickness + normals) | ~16 MB |
+| Secondary particles (5,000 × 30 bytes) | ~0.15 MB |
+| **Total memory** | **~63 MB** |
+
+**All particle simulation runs on the server** (consistent with §3.5 server-authoritative physics). The server computes particle positions, velocities, and phase transitions. Results are streamed to clients via the particle network streaming protocol (see below). The client renders particles but never simulates them — it cannot invent fluid behavior that the server did not compute. This prevents cheating and ensures all players see the same fluid.
+
+#### Critical Optimizations
+
+The SPH algorithm is simple. Making it run at 60 Hz in a browser is the engineering challenge. These optimizations are not optional improvements — they are the architectural foundation without which the system cannot function at interactive frame rates.
+
+**1. Spatial Hash Grid — O(n²) → O(n)**
+
+The most important single optimization. SPH requires every particle to find its neighbors within kernel radius h. Naive approach: check every particle against every other particle. With 5,000 particles, that's 25,000,000 distance checks per tick — impossible at 60 Hz.
+
+Spatial hash grid: divide the world into cells of size h. Each particle hashes its position to a cell index. To find neighbors, only check the particle's own cell and the 26 adjacent cells (3×3×3 neighborhood). Average neighbor check drops from n to ~50 particles.
+
+```
+// Hash function: position → cell index
+function hashCell(x, y, z, cellSize) {
+  const ix = Math.floor(x / cellSize)
+  const iy = Math.floor(y / cellSize)
+  const iz = Math.floor(z / cellSize)
+  return (ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)
+}
+
+// Each tick:
+// 1. Clear hash table
+// 2. Insert all particles by position hash
+// 3. For each particle, query only 27 neighboring cells
+```
+
+Cost reduction: 5,000 particles goes from 25M distance checks → ~250K. That's a 100× speedup. This is the difference between "impossible" and "trivial."
+
+**2. Sleep/Wake System — Skip Settled Particles**
+
+A particle that hasn't moved significantly for N consecutive ticks is "sleeping." Skip all force calculations for sleeping particles. They cost zero CPU until disturbed.
+
+```
+if (particle.velocity < SLEEP_THRESHOLD for 30 consecutive ticks):
+  particle.sleeping = true
+  // skip all SPH calculations for this particle
+
+if (any neighbor of sleeping particle moves significantly):
+  particle.sleeping = false  // wake up
+```
+
+In practice, 80–95% of fluid particles are sleeping at any moment. A puddle that settled 10 seconds ago has zero ongoing cost. Only the actively flowing portion of a liquid body costs CPU.
+
+**3. Flat Typed Arrays — Avoid JavaScript Object Overhead**
+
+Do NOT store particles as JavaScript objects (`{ x, y, z, vx, vy, vz, ... }`). Object access in JS involves property lookup, hidden class checks, and potential garbage collection pauses.
+
+Instead: store all particle data in flat `Float32Array` buffers. One contiguous array for positions, one for velocities, one for densities.
+
+```
+// Bad — JS objects, GC pressure, cache misses
+particles = [{ x: 1, y: 2, z: 3, vx: 0, ... }, ...]
+
+// Good — flat typed arrays, SIMD-friendly, zero GC
+const STRIDE = 3
+posX = new Float32Array(MAX_PARTICLES)  // or interleaved: pos = new Float32Array(MAX * 3)
+posY = new Float32Array(MAX_PARTICLES)
+posZ = new Float32Array(MAX_PARTICLES)
+velX = new Float32Array(MAX_PARTICLES)
+velY = new Float32Array(MAX_PARTICLES)
+velZ = new Float32Array(MAX_PARTICLES)
+```
+
+Benefits:
+- CPU cache-friendly (sequential memory access)
+- Enables SIMD auto-vectorization (V8 can process 4 floats at once)
+- Zero garbage collection (no object allocation per tick)
+- Direct transfer to GPU via SharedArrayBuffer (zero-copy)
+- ~3–5× faster than object-based approach in V8
+
+**4. Web Workers + SharedArrayBuffer — Off Main Thread, Zero Copy**
+
+The fluid simulation must NEVER run on the main thread. It runs in a dedicated Web Worker. The renderer (main thread) reads particle positions to draw them.
+
+With `SharedArrayBuffer`, the worker writes particle positions directly into shared memory. The main thread reads from the same memory to render. No copying, no message passing, no serialization.
+
+```
+// Main thread: create shared buffer
+const sharedBuf = new SharedArrayBuffer(MAX_PARTICLES * 3 * 4)  // xyz, float32
+const positions = new Float32Array(sharedBuf)
+
+// Send to worker once at startup
+worker.postMessage({ type: 'init', buffer: sharedBuf })
+
+// Worker: write positions every tick (no postMessage needed)
+positions[i * 3 + 0] = particleX
+positions[i * 3 + 1] = particleY
+positions[i * 3 + 2] = particleZ
+
+// Renderer: read positions every frame (same memory, zero copy)
+geometry.attributes.position.array = positions
+geometry.attributes.position.needsUpdate = true
+```
+
+Cost: effectively zero for data transfer. The only synchronization needed is an `Atomics.store/load` on a tick counter so the renderer knows when new data is ready.
+
+**5. Physics LOD — Distance-Based Quality Reduction**
+
+Particles far from the player don't need full-accuracy physics:
+
+| Distance from player | Tick rate | Neighbor search | Notes |
+|---|---|---|---|
+| 0–20 m | 60 Hz | Full (27 cells) | Player is watching closely |
+| 20–50 m | 15 Hz | Reduced (7 cells — face neighbors only) | Visible but not scrutinized |
+| 50–100 m | 2 Hz | Minimal (own cell only) | Background movement |
+| > 100 m | Convert to grid | No SPH | Too far to see individual particles |
+
+This reduces the effective particle count by ~60% in typical gameplay (most fluid is not right next to the player).
+
+**6. Particle Redistribution — Keeping Particles Evenly Spaced**
+
+SPH works best when particles are roughly uniformly spaced. During simulation, particles naturally clump in convergent flows and spread out in divergent flows. This causes density estimation errors (pressure oscillations), visual artifacts (gaps in the rendered surface), and wasted computation (too many particles in one spot). The redistribution system fixes this.
+
+**Splitting — one particle becomes two:**
+```
+Trigger conditions (any one):
+  — Particle spacing exceeds 1.5× target spacing for its zone
+  — Particle enters a high-resolution zone (closer to camera)
+  — Local vorticity exceeds threshold (turbulent region needs detail)
+
+How splitting works:
+  Parent particle (mass m, velocity v, position x):
+  → 2 child particles, each mass m/2
+  → Positions: x ± ε (offset along velocity gradient direction)
+  → Velocities: both inherit parent's velocity
+  → Smoothing radius: h_child = h_parent × 0.794 (= 2^(-1/3) in 3D)
+  → Composition, temperature: inherited exactly
+  → Mass is EXACTLY conserved: m_parent = m_child1 + m_child2
+```
+
+**Merging — two particles become one:**
+```
+Trigger conditions (both required):
+  — Two particles closer than 0.3× smoothing radius h
+  — Both particles are in a low-resolution zone (far from camera)
+
+How merging works:
+  Two particles (m₁, v₁, x₁) + (m₂, v₂, x₂):
+  → 1 merged particle:
+     mass = m₁ + m₂                           (exact conservation)
+     position = (m₁x₁ + m₂x₂) / (m₁+m₂)     (center of mass)
+     velocity = (m₁v₁ + m₂v₂) / (m₁+m₂)      (momentum conservation)
+     composition = mass-weighted average
+     temperature = mass-weighted average
+  → Kinetic energy is NOT conserved — merging dissipates the relative
+     velocity energy, acting as artificial viscosity. Acceptable because
+     merging only happens far from the camera where precision is irrelevant.
+```
+
+**Adaptive resolution zones (camera-based LOD for particles):**
+
+| Zone | Distance | Particle radius | Relative to base | Particles needed (same volume) |
+|------|----------|----------------|------------------|-------------------------------|
+| 0 (near) | 0–5 m | 0.02 m | 1× (base) | 1× |
+| 1 (mid) | 5–15 m | 0.04 m | 2× | 1/8× |
+| 2 (far) | 15–40 m | 0.08 m | 4× | 1/64× |
+| 3 (distant) | 40 m+ | 0.16 m | 8× | 1/512× |
+
+Each doubling of radius = 8× the volume per particle = 8× fewer particles needed. Zone 3 needs 512× fewer particles than Zone 0 for the same volume of fluid. A lava flow covering 100m would need 2 million uniform particles. With adaptive resolution: ~100k–200k. Same visual quality near the camera. 10–50× particle count reduction for large-scale phenomena.
+
+**Transition bands** (width ~5× particle spacing) between zones prevent sharp boundaries. Both resolutions coexist in the band. Particles gradually split (approaching camera) or merge (moving away). Forces between different-sized particles use averaged smoothing radius: `h_ij = (h_i + h_j) / 2`. This maintains Newton's third law across resolution boundaries.
+
+**Hysteresis** prevents split/merge oscillation: split when particle is > 1.5× target size for zone, merge when < 0.5× target size. The gap (0.5× to 1.5×) is the stable band — no action taken.
+
+**7. Hybrid Rendering: Real Physics + Visual Approximations**
+
+The most important optimization is knowing **when NOT to simulate**. Real SPH/MPM physics only runs during active interaction moments. Everything else uses cheap visual approximations:
+
+| Situation | Physics method | Visual method |
+|---|---|---|
+| Player melting/pouring metal | Real SPH (500-5,000 particles) | Tier 1: Marching cubes mesh |
+| Player mixing chemicals | Real SPH + diffusion | Tier 1: Marching cubes with composition-driven color |
+| Rain falling | None | Tier 3: GPU billboard particle system (no physics) |
+| Rain puddles forming | Heightfield (add volume to grid cell) | Puddle decal texture + animated ripple shader |
+| River | Grid flow (volume + direction) | River mesh + scaled-down Gerstner waves from OceanShader |
+| Waterfall | None (visual) + MPM at base (splash) | Tier 3 particle trail + Tier 2 SSFR at splash zone |
+| Lake | Grid cell (single water volume number) | Flat mesh at water height + wave shader + edge foam |
+| Ocean | None | Pure Gerstner wave shader (already built in OceanShader.ts) |
+| Lava (active flow front) | Real MPM (5,000-200,000 particles) | Tier 2: SSFR with emissive glow + heat distortion |
+| Lava (cooled) | None | Terrain with volcanic rock texture |
+| Blood | None | Decal projected onto terrain surface |
+| Water carried in pot | Just a number (mass + composition) | Sloshing animation shader on the pot model |
+
+The SPH/MPM system activates only when needed (phase transition triggers it) and deactivates when particles settle (sleep system) or cool into solids (merge back into material packets). During a typical gameplay session, SPH/MPM is actively running for maybe 10% of the time — during smelting, pouring, or weather events. The other 90% costs zero.
+
+#### Optical Property Pipeline — Composition to Light
+
+In the real world, the appearance of any liquid is fully determined by its atomic composition and temperature. There is no color lookup table. Light enters the medium, gets absorbed at wavelength-dependent rates, scatters off suspended particles, and reflects at interfaces where refractive index changes. The renderer computes all optical properties from the same MaterialPacket that drives viscosity and density.
+
+**Step 1: Composition → Absorption Spectrum (Beer-Lambert Law)**
+
+`I(λ) = I₀ · exp(-α(λ) · d)` — light intensity decreases exponentially with distance through the medium.
+
+Each element/compound contributes to the absorption coefficient α(λ). This is real physics:
+- Pure water: absorbs red (α_red ≈ 0.45/m), passes blue (α_blue ≈ 0.02/m) → this is WHY water looks blue-green in thick layers
+- Dissolved iron (Fe³⁺): absorbs blue/green (α_blue ≈ 50/m) → this is WHY rusty water looks orange-brown
+- Dissolved copper sulfate (CuSO₄): absorbs red (α_red ≈ 80/m) → this is WHY copper sulfate solution looks blue
+- Carbon suspension (soot, charcoal): absorbs everything uniformly → this is WHY ink and crude oil look black
+
+The renderer stores absorption as RGB (not full spectrum — 3 channels is enough for visual accuracy, same approximation used in film VFX):
+
+```
+absorptionRGB(composition) = Σ (concentration_i × species_i.absorptionRGB)
+```
+
+Computed once when composition changes, not every frame. The property calculator (§3.1) already computes viscosity this way. Absorption coefficients are just another column in the element property table.
+
+**Step 2: Composition → Refractive Index**
+
+How much light bends at the fluid surface. Determines how distorted objects look through the liquid and how much reflection you see at glancing angles (Fresnel).
+
+Using the Arago-Biot mixing rule: `n_mix = Σ (volumeFraction_i × n_i)`
+
+- Water: n = 1.333
+- Molten glass (SiO₂): n = 1.458
+- Ethanol: n = 1.361
+- Molten iron: n = 2.87 (highly reflective — metallic)
+- Oil: n = 1.47
+
+High n → more reflection, more refraction distortion, more "glassy." Metallic liquids (n > 2): mostly reflective, almost no transparency.
+
+**Step 3: Composition → Scattering**
+
+Suspended particles scatter light, making liquid cloudy. Dissolved species do NOT scatter (transparent solution). Suspended solids scatter proportionally to their concentration. A liquid with suspended charcoal is opaque. A dissolved salt solution is clear. The composition already tracks dissolved vs. suspended (§3.1).
+
+**Step 4: Temperature → Blackbody Emission**
+
+Hot materials glow. This is blackbody radiation, not a special effect. Wien's displacement law: `peak_wavelength = 2898 / T(K)`. Below ~500°C: no visible emission. At 500°C: faint red glow. At 1000°C: bright orange. At 1500°C: yellow-white. The Planck distribution gives exact RGB emission at any temperature — the same equation used by every PBR renderer.
+
+**Per-particle optical attributes (40 bytes, cached):**
+- absorptionRGB: vec3 (12 bytes)
+- refractiveIndex: float (4 bytes)
+- scatteringRGB: vec3 (12 bytes)
+- emissionRGB: vec3 (12 bytes) — blackbody glow from temperature
+
+Recomputed ONLY when composition or temperature changes. For a static puddle: computed once, cached forever. For actively mixing liquids: recomputed each sim tick.
+
+**Multi-Material Screen-Space Rendering**
+
+When two immiscible fluids occupy the same screen region (oil on water, slag on molten metal), the bilateral blur must not smear them together. The solution follows from how light actually behaves in layered fluids — it passes through each layer independently, being absorbed and refracted at each interface.
+
+```
+Step 1: Classify particles into layers by density and miscibility.
+  Particles whose composition similarity is > 0.9 (dot product of
+  normalized composition vectors) are the same layer — they are
+  miscible and will mix over time. Particles with similarity < 0.9
+  are separate layers (immiscible — ΔG of mixing > 0, already
+  computed by the reaction engine).
+
+Step 2: Run the full SSFR pipeline independently per immiscible layer.
+  Each layer gets its own depth buffer, thickness map, normal map.
+  The bilateral blur operates WITHIN each layer — no cross-material smearing.
+
+Step 3: Composite layers back-to-front (densest first).
+  Light enters the top layer → absorbed by Beer's Law using top layer's α.
+  Light exits top layer, enters bottom layer → refracted at the interface
+  (Snell's law: n₁·sin(θ₁) = n₂·sin(θ₂)).
+  Light absorbed by bottom layer → reflected off bottom surface or terrain.
+  Light travels back up through both layers.
+
+Cost: one extra SSFR pass per immiscible layer.
+  1 layer (most common): ~2.5ms
+  2 layers (oil+water, metal+slag): ~4.5ms
+  3+ layers (exotic): ~6.5ms — almost never happens naturally.
+```
+
+Miscible fluids (water + dissolved salt, water + alcohol) are ONE layer. Their optical properties are the mass-weighted average of the components. This happens automatically because SPH diffusion mixes their compositions over time. As they mix, per-particle optical properties gradually converge. You literally watch the color change as mixing happens — no special rendering, just composition changing → absorption changing → color changing.
+
+#### Secondary Particles — Foam, Spray, Bubbles
+
+These are not effects. In the real world, spray happens when kinetic energy overcomes surface tension. Foam happens when gas gets trapped in liquid films. Bubbles happen when gas is produced inside a liquid. The simulation already computes everything needed to predict when these occur. Secondary particles are visual-only (Tier 3 raw points). They are spawned BY the primary SPH/MPM simulation based on physical conditions, then rendered cheaply as GPU billboards. They do not participate in SPH forces.
+
+**Spray: Liquid fragmenting into droplets**
+
+When a fluid surface moves fast enough, surface tension cannot hold the surface together. The Weber number determines this:
+
+`We = ρ · v² · L / σ` (density × velocity² × length scale / surface tension)
+
+- We > 12: surface starts to deform (waves, fingers)
+- We > 40: surface fragments into droplets (spray)
+- We > 100: explosive atomization (waterfall crashing)
+
+The SPH simulation already computes velocity and surface tension per particle. Surface particles (particles with fewer than ~70% of average neighbors — they are at the fluid boundary) are candidates for spray emission.
+
+```
+SprayEmission (per surface particle, per sim tick):
+  We = particle.density × |particle.velocity|² × particle.radius / particle.surfaceTension
+
+  if We > 40:
+    numDroplets = clamp(floor((We - 40) / 20), 1, 10)
+    for each droplet:
+      position = particle.position + random offset within kernel radius
+      velocity = particle.velocity + random perturbation (±30%)
+      lifetime = 0.5 to 2.0 seconds
+      size = particle.radius × 0.1 to 0.3
+      color = particle's optical absorptionRGB
+      movement = ballistic (full gravity, no fluid forces)
+      // On hitting fluid surface: absorbed. On hitting terrain: tiny splat.
+```
+
+**Foam: Gas trapped in liquid films**
+
+Foam forms when turbulent flow entrains air. The trapped air forms thin liquid films. Surfactants (compounds that lower surface tension: fats, proteins, soap) stabilize the films.
+
+Without surfactants: foam collapses in <1 second (pure water barely foams). This is correct.
+With surfactants: foam persists for minutes to hours (soap, beer, egg whites).
+
+The simulation already computes vorticity (curl of velocity field): `ω_i = Σⱼ (mⱼ/ρⱼ) × (vⱼ - vᵢ) × ∇W(rᵢⱼ, h)`
+
+```
+FoamGeneration (per surface particle with high vorticity):
+  if |vorticity| > FOAM_THRESHOLD:
+    // Surfactant detection: low surface tension = surfactants present
+    hasSurfactant = (particle.surfaceTension < 0.5 × WATER_SURFACE_TENSION)
+
+    foamLifetime = hasSurfactant ? 5.0–30.0 seconds : 0.2–1.0 seconds
+    // Pure water: foam dies instantly. Soapy water: foam lives long. Beer: minutes.
+
+    spawn foam particle:
+      position = particle.position + surface normal × small offset
+      velocity = particle.velocity × 0.3 (foam moves slower than fluid)
+      lifetime = foamLifetime
+      size = particle.radius × 2–5 (foam bubbles are larger)
+      color = white with slight tint from fluid absorption
+      // Foam is white because thin films scatter all wavelengths (Mie scattering)
+      movement = constrained to fluid surface, pushed by flow beneath
+      // As they age: shrink and fade (film drainage → bubbles pop)
+```
+
+**Bubbles: Gas produced inside liquid**
+
+Bubbles form when: (1) a chemical reaction produces gas (CO₂ from acid + carbonate, H₂ from acid + metal), (2) liquid is heated past boiling (steam bubbles), (3) air is trapped when an object enters liquid. Cases 1 and 2 are already handled by the reaction engine and phase transition system.
+
+```
+BubbleGeneration (triggered by reaction engine or phase transition):
+  when reaction produces gas inside a liquid body:
+    bubbleRadius = max(0.001, 2 × particle.surfaceTension / (gasP - liquidP))
+    // Laplace pressure: small bubbles need more pressure to exist
+    numBubbles = clamp(gasMass / (4/3 × π × bubbleRadius³ × gasDensity), 1, 100)
+
+    for each bubble:
+      position = reaction site
+      velocity = buoyancy-driven upward:
+        // Stokes' law: v_rise = (2/9) × (ρ_liquid - ρ_gas) × g × r² / μ_liquid
+        // Small bubbles rise slowly. Large bubbles rise fast.
+        // High viscosity (honey): very slow. Low viscosity (water): fast.
+        // This uses the fluid's viscosity — already computed.
+      lifetime = time to reach surface + 0.5s
+      size = bubbleRadius
+      // On reaching surface: pop → optionally spawn micro-spray particle
+```
+
+**Boiling** emerges from bubble count: a few bubbles per second = simmering, many per second = rolling boil. No animation — the rate tracks the heat input rate. **Fermentation** produces slow steady CO₂ bubbles over hours — the player sees this and knows fermentation is happening.
+
+**Secondary particle budget:**
+- Typical active counts: waterfall 500–2,000 spray, boiling pot 50–200 bubbles, smelting 100–500 foam
+- Max concurrent: ~5,000 secondary particles
+- GPU cost: <0.1ms (same as weather particles)
+- Memory: ~150 KB (negligible)
+- These particles are LOCAL to each client. The server does not track them. Each client independently generates secondaries from the primary particle state it receives. Since spawn conditions are deterministic (based on velocity, vorticity, reactions), all clients produce visually similar effects. Slight differences do not matter.
+
+#### Crafted Object Collision
+
+The terrain heightfield handles ground collision. But when a player pours molten copper into a clay mold, the mold is a mesh collider, not a heightfield. Particle-mesh collision is needed for crafted objects, containers, and structures.
+
+```
+MeshCollision:
+  Crafted objects with concave interiors (pots, molds, channels, troughs)
+  are decomposed into a signed distance field (SDF) at creation time.
+  The SDF stores the distance to the nearest surface at each point in a
+  3D grid encompassing the object. Inside the object: negative distance.
+  Outside: positive distance.
+
+  Per particle, per tick:
+    sdf_value = sample(object.sdf, particle.position)
+    if sdf_value < 0:
+      // Particle is inside the solid — push it out
+      gradient = sdf_gradient(object.sdf, particle.position)
+      particle.position += gradient × (-sdf_value)  // push to surface
+      // Zero out velocity into the surface, apply friction to tangential
+      v_normal = dot(particle.velocity, gradient) × gradient
+      v_tangent = particle.velocity - v_normal
+      particle.velocity = v_tangent × (1 - friction)
+
+  SDF resolution: ~0.01m (1cm) for crafting objects. A typical pot:
+  10cm × 10cm × 15cm → 10 × 10 × 15 grid = 1,500 cells × 4 bytes = 6 KB per object.
+  100 crafted objects near the player = 600 KB. Negligible.
+
+  SDFs are recomputed when the object's shape changes (player modifies it).
+  For rigid objects (finished pot, stone mold): computed once at creation.
+```
+
+#### Fluid-Structure Coupling — Water Pushes on Walls
+
+The fluid simulation and structural physics are not independent. Fluid exerts force on any solid surface it contacts. Without this coupling, dams have no load on them, bridge piers feel no river current, and underground structures don't experience buoyancy.
+
+**Hydrostatic pressure on walls and dams:**
+Every solid block in contact with fluid receives a horizontal force:
+  F = ρ_fluid × g × h × A
+  where h = depth of the fluid above the block's center, A = contact area
+
+A dam holding back 5m of water: F = 1000 × 9.81 × 5 × 1 = 49,050 N per m² of wall.
+This force is applied as a lateral load to the structural system (§3.4).
+The dam's structural integrity check must resist this — if the dam is too thin
+or unbuttressed, it fails and the water is released as a flood (see below).
+
+**Hydrodynamic force on submerged structures:**
+Moving fluid pushes on submerged objects:
+  F = 0.5 × ρ × v² × Cd × A
+  where v = fluid velocity, Cd = drag coefficient (~1.2 for flat surfaces)
+
+A bridge pier in a river flowing at 2 m/s: F = 0.5 × 1000 × 4 × 1.2 × 1 = 2400 N/m².
+Not enough to destroy a stone pier, but enough to erode a wooden one over time.
+
+**Buoyancy on submerged foundations:**
+Structures below the water table experience uplift:
+  F_buoyancy = ρ_water × g × V_submerged
+A basement 3m × 3m × 2m deep below water table:
+  F_up = 1000 × 9.81 × 18 = 176,580 N (18 tonnes pushing up)
+If the building above isn't heavy enough, the basement floats up.
+
+**Dam break → flood wave:**
+When a structural failure releases contained water, the shallow water equations
+describe the resulting flood:
+  ∂A/∂t + ∂Q/∂x = 0  (continuity)
+  ∂Q/∂t + ∂(Q²/A)/∂x + gA × ∂h/∂x = gA(S₀ - Sf)  (momentum)
+
+For the game's grid-based regional water (Scale 3), a simplified kinematic wave
+model is sufficient: when a dam block is removed, the grid cell behind it
+instantly has its waterVolume redistributed to downhill cells, with flow velocity
+determined by the height difference. MPM particles are spawned at the breach
+point for the dramatic visual of water rushing through.
+
+Implementation: the structural system notifies the fluid system when a block
+that was retaining water is removed. The fluid system then:
+  1. Queries waterVolume in grid cells adjacent to the removed block
+  2. Spawns MPM particles at the breach with velocity from √(2gh)
+  3. Reduces waterVolume in the upstream cells
+  4. The MPM particles flow downhill, joining the environment-scale simulation
+
+#### Hydraulic Jump — Fast Water Hits Slow Water
+
+When supercritical flow (fast, shallow) transitions to subcritical flow (slow, deep), a hydraulic jump forms — a turbulent standing wave with dramatic energy dissipation.
+
+The Froude number determines the flow regime:
+
+```
+Fr = v / √(g × d)
+where v = flow velocity (m/s), d = flow depth (m)
+
+Fr < 1: subcritical (slow, deep, tranquil) — normal river flow
+Fr = 1: critical (at a weir crest, at the brink of a waterfall)
+Fr > 1: supercritical (fast, shallow, shooting) — below a spillway
+```
+
+When supercritical flow enters a subcritical region, the jump occurs. The conjugate depth ratio gives the downstream depth:
+
+```
+d₂/d₁ = 0.5 × (-1 + √(1 + 8 × Fr₁²))
+```
+
+Example: water flowing at 4 m/s, 0.1m deep (Fr = 4/√(9.81×0.1) = 4.04):
+- d₂ = 0.1 × 0.5 × (-1 + √(1 + 8×16.3)) = 0.1 × 5.2 = 0.52m
+- Water depth jumps from 10cm to 52cm in a turbulent roller.
+
+Energy dissipated in the jump:
+
+```
+ΔE = (d₂ - d₁)³ / (4 × d₁ × d₂)
+```
+
+This energy goes into turbulence, spray, and SOUND.
+
+Where hydraulic jumps appear in gameplay:
+- Base of waterfalls: fast falling water hits the pool → jump + spray + foam
+- Below spillways: player-built dam with overflow → fast water hits downstream pool
+- In steep channels: sudden slope change from steep to flat
+
+This connects to:
+- Sound (§3.3): the jump is LOUD — continuous broadband noise from turbulence. Sound power is proportional to energy dissipation rate. The noise synthesis uses ΔE as input.
+- Secondary particles (§3.2): the turbulent roller generates spray (Weber number is high at the jump) and foam (vorticity is maximum in the roller).
+- Structural (§3.4): the turbulent flow at a jump scours foundations. Real dams have "stilling basins" specifically designed to contain the jump.
+
+Implementation in the grid-based regional water (Scale 3): when adjacent grid cells have Fr > 1 → Fr < 1 transition, mark as a jump. Spawn MPM particles at the jump location for the visual turbulence. Generate a continuous noise sound event at the jump position.
+
+#### Particle Network Streaming
+
+The world is consistent. Every player sees the same lava flow, the same river, the same puddle. But streaming 400,000 particle positions to every client every frame is impossible. The solution mirrors human perception: you can only see what is in front of you, and distant things have less detail.
+
+**The bandwidth problem:**
+
+Naive: 400,000 particles × 12 bytes (xyz float32) × 30 Hz = 144 MB/s per client. Absurd.
+
+**Solution 1: Only send what is awake.** The sleep system means 80–95% of particles are dormant. Sleeping particles were already sent when they were active — the client remembers their position. Active particles only: 400,000 × 5% = 20,000 × 12 bytes × 30 Hz = 7.2 MB/s. Better, but still too much.
+
+**Solution 2: Spatial relevance — only send what you can see.** Each client has a view frustum and a maximum interest radius. Particles outside this region are irrelevant.
+
+| Zone | Distance | Update frequency | Detail level |
+|------|----------|-----------------|-------------|
+| Full detail | 0–10 m | Every tick (30 Hz) | Every active particle, delta-compressed |
+| Reduced | 10–30 m | Every 3rd tick (10 Hz) | Every active particle, delta-compressed |
+| Sparse | 30–50 m | Every 5th tick (6 Hz) | Every 4th particle, half-precision |
+| Summary | 50 m+ | Every 10th tick (3 Hz) | Fluid body bounding box + avg velocity only |
+
+Typical active particles within 50m of a player: 1,000–5,000 (most of the world's 400k are far away).
+
+**Solution 3: Delta compression.** Particles move smoothly. The client predicts each particle's next position: `pos += velocity × dt`. The server only sends the CORRECTION (delta from prediction). Most deltas are tiny (<0.01m) and fit in 3 bytes (int8 × 3 scaled to ±0.1m range) instead of 12 bytes (float32 × 3). In practice 90%+ of particles fit in 3-byte deltas. Average cost: ~3.3 bytes per particle vs. 12 = 3.6× compression.
+
+**Combined bandwidth:**
+
+```
+Typical frame (exploring near a river):
+  Full detail:  500 particles × 3.3 bytes              = 1,650 bytes
+  Reduced:      1000 particles × 3.3 bytes (at 10 Hz)  = 1,100 bytes/tick
+  Sparse:       200 particles × 6 bytes (at 6 Hz)      = 240 bytes/tick
+  Summary:      5 bodies × 30 bytes                     = 150 bytes
+  Events:       ~100 bytes (occasional spawn/kill)
+  TOTAL per tick: ~3,240 bytes × 30 Hz = ~97 KB/s
+
+Peak frame (standing in a volcanic eruption):
+  Full detail:  3000 × 3.3 = 9,900
+  Reduced:      5000 × 3.3 = 5,500/tick
+  Sparse:       2000 × 6   = 2,400/tick
+  Events:       ~500 (many spawns)
+  TOTAL: ~18,300 bytes × 30 Hz = ~549 KB/s
+```
+
+Both well within broadband capacity. Even mobile connections (1 MB/s) handle the typical case.
+
+**Client-side gap filling:** When the network skips particles (spatial or temporal downsampling), the client fills gaps. Temporal gaps: interpolate position from last two known positions. Spatial gaps: spawn visual-only "ghost" particles to maintain fluid body shape. These ghost particles have no simulation authority — they are pure visual interpolation. They are removed when the server sends real data for that region.
+
+**Consistency:** Two players standing next to each other see the same fluid. Both receive the same authoritative particle positions from the server. The only difference: client-generated secondary particles (spray, foam, bubbles) may differ slightly because they include randomness. This is acceptable — in real life, two people standing next to the same waterfall would describe the spray slightly differently too. The 50ms round-trip latency is masked by the visual smoothness of screen-space rendering (the bilateral blur hides small jitters in position updates).
+
+#### Implementation Phases
+
+**Phase 1 — Crafting-scale SPH (connect to material packets)**
+- Implement SPH solver in Rust via napi-rs (pressure, viscosity, gravity, terrain collision)
+- Hook into material packet phase transitions: solid → liquid spawns particles, cooling merges them back
+- Visual: Tier 1 marching cubes mesh with composition-driven optical properties
+- Test: melt copper ore in bloomery → molten copper flows into a channel → cools into solid
+
+**Phase 2 — Local environment MPM + screen-space rendering**
+- Implement MLS-MPM solver in Rust for environment-scale particles
+- Tier 2 screen-space fluid rendering pipeline (5 GPU passes)
+- Tier transition system (crossfade + hysteresis between Tier 1 and 2)
+- Connect to weather system: rain events spawn falling particles that form puddles
+- Particle redistribution system (splitting, merging, adaptive zones)
+
+**Phase 3 — Grid-based regional water + scale transitions**
+- Extend fluid.worker.ts with water volume tracking, Manning's equation flow
+- SPH/MPM ↔ grid transitions (particle absorption / emission)
+- Lakes form in terrain concavities, overflow creates rivers
+- Server syncs grid state in WORLD_SNAPSHOT
+
+**Phase 4 — Full water cycle + secondary particles**
+- Evaporation from water surfaces → feeds weather system humidity
+- Groundwater absorption and springs
+- Seasonal variation (freeze/thaw cycle)
+- Connect ocean shader to grid system at coastlines
+- Spray (Weber number), foam (vorticity + surfactant), bubbles (reactions + boiling)
+
+**Phase 5 — Lava, exotic fluids, and network streaming**
+- Volcanic events spawn high-temperature MPM particles (up to 200,000)
+- Lava cooling → terrain modification (new rock forms)
+- Multi-material rendering (immiscible fluid layers)
+- Particle network streaming protocol with delta compression and spatial LOD
+- Crafted object collision via signed distance fields
+
+**Phase 6 — GPU compute path (WebGPU)**
+- Port SPH crafting solver to WebGPU compute shaders
+- Port MPM environment solver to WebGPU compute (target: 200k+ particles at 30 Hz)
+- Parallel spatial hash construction on GPU
+- Fallback: Rust CPU path remains the default, GPU path is an enhancement
+
+---
+
+### 3.3 Sound Engine — Synthesized from Physics, Zero Samples
+
+#### The Principle
+
+Every sound in the real world is just air vibrating. When you hit a metal bar, the bar vibrates at specific frequencies determined by its material (Young's modulus, density) and shape (length, thickness). Those vibrations push air molecules, creating pressure waves that reach your ear. The ear decomposes those waves into frequencies (via the cochlea) and the brain interprets them as "the sound of metal being hit."
+
+This means: **if you know the material properties and the geometry, you can compute the exact frequencies the object will produce.** No recordings needed. No samples. The sound is derived from the same MaterialPacket properties that determine melting point, color, and structural strength.
+
+This technique is called **Modal Synthesis** — a proven method used in academic research, film sound design, and game audio. The game produces ALL sound from physics. Zero audio files ship with the game.
+
+#### How Sound Actually Works (The Physics)
+
+```
+The Physics of Vibration {
+  // When an object is struck, it vibrates. The vibration is NOT random —
+  // it is a precise set of frequencies called MODES (eigenmodes).
+  //
+  // A vibrating bar has mode frequencies:
+  //   f_n = (β_n² / 2πL²) × √(EI / ρA)
+  //   where:
+  //     f_n = frequency of mode n (Hz)
+  //     β_n = mode constant (β₁=4.73, β₂=7.85, β₃=11.0, β₄=14.1, ...)
+  //     L = length of bar (m)
+  //     E = Young's modulus (Pa) — from MaterialPacket
+  //     I = second moment of area (m⁴) — from object geometry
+  //     ρ = density (kg/m³) — from MaterialPacket
+  //     A = cross-section area (m²) — from object geometry
+  //
+  // A vibrating plate (2D) has modes:
+  //   f_mn = (π/2) × √(E·h² / (12·ρ·(1-ν²))) × (m²/a² + n²/b²)
+  //   where h = thickness, a,b = plate dimensions, ν = Poisson's ratio, m,n = mode indices
+  //
+  // A vibrating string has modes:
+  //   f_n = (n/2L) × √(T / μ)
+  //   where T = tension, μ = mass per unit length
+  //
+  // KEY INSIGHT: every one of these formulas takes its inputs from the MaterialPacket
+  // (E, ρ) and the object's geometry (L, A, I). Given those, the sound is DETERMINED.
+  // There is no guessing, no randomness — it's physics.
+  //
+  // This is why a small iron nail pings at ~4000 Hz and a large iron anvil rings at
+  // ~300 Hz. Same material (same E, same ρ), different geometry (different L) →
+  // different sound. The formula computes both correctly.
+}
+```
+
+#### Three Synthesis Methods
+
+```
+SoundEngine {
+  // The engine has three synthesis methods, each for a different type of sound.
+  // All three produce audio from MATH ONLY — no recordings, no samples, no files.
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 1: Modal Synthesis — Struck/Vibrating Objects
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Used for: impacts, breaking, footsteps, tool strikes, structural collapse,
+  //           anything where a solid object vibrates after being excited.
+  //
+  // How it works:
+  //   1. Compute the object's resonant modes from material + geometry
+  //   2. Each mode = one sine wave oscillator at a specific frequency
+  //   3. Set each mode's initial amplitude from the excitation (where/how hard it was hit)
+  //   4. Apply exponential decay to each mode (rate from material damping)
+  //   5. Sum all modes → output waveform → speaker
+
+  ModalSynth {
+    computeModes(material: MaterialPacket, geometry: ObjectGeometry): Mode[] {
+      modes = []
+      for n = 1 to 30:
+        // Frequency from eigenmode formula (depends on shape type):
+        if geometry.type == 'bar':
+          f = (BETA[n]² / (2 * PI * L²)) * sqrt(E * I / (rho * A))
+        else if geometry.type == 'plate':
+          f = (PI / 2) * sqrt(E * h² / (12 * rho * (1 - nu²))) * (m²/a² + n²/b²)
+        else if geometry.type == 'sphere':
+          f = (BETA_SPHERE[n] / (2 * PI * R)) * sqrt(E / (rho * (1 - nu²)))
+
+        // Decay: internal damping determines how long each mode rings
+        // Q factor ≈ youngsModulus / (internalFriction × density)
+        // Metals: Q ~ 1000-5000 (ring for seconds)
+        // Wood: Q ~ 10-50 (thud, gone in 0.05s)
+        // Stone: Q ~ 50-200 (medium)
+        decay = Q / (PI * f)
+
+        // Amplitude: depends on where object was hit relative to mode shape
+        amplitude = excitationEnergy * modeShapeAtContactPoint(n, contactPoint)
+
+        modes.push({ frequency: f, amplitude, decayRate: 1/decay })
+      return modes
+    }
+
+    // WebAudio implementation:
+    //   Each mode = one OscillatorNode (sine wave) + one GainNode (decay envelope)
+    //   osc.frequency.value = mode.frequency
+    //   gain.gain.exponentialRampToValueAtTime(0.001, now + 1/mode.decayRate)
+    //   20 modes × 2 nodes = 40 WebAudio nodes per sound event — trivial for WebAudio
+  }
+
+  // What modal synthesis produces:
+  //   Iron anvil (L=0.5m, E=200GPa, ρ=7800): f₁=312Hz, decay 3.2s → deep resonant clang
+  //   Ceramic cup (R=0.04m, E=70GPa, ρ=2400): f₁=2800Hz, decay 0.3s → sharp high clink
+  //   Oak log (L=1.0m, E=12GPa, ρ=600): f₁=68Hz, decay 0.05s → short dull thud
+  //   Glass pane (0.5×0.5m, h=3mm, E=70GPa): f₁=850Hz, decay 0.5s → bright ring, shatters into many high-freq fragments
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 2: Noise Synthesis — Continuous/Turbulent Sounds
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Used for: wind, rain, fire, water flow, grinding, scraping, sand pouring.
+  // These are NOT periodic vibrations — they are NOISE shaped by physics.
+
+  NoiseSynth {
+    // Wind:
+    //   Aeolian tone: f = St × v / d (Strouhal number ~0.2, v = wind speed, d = obstacle diameter)
+    //   Implementation: band-pass filtered brown noise centered at the Aeolian frequency
+    //   Each thin object (branch, fence post, wire) produces its own tone
+    //   Forest in wind: dozens of Aeolian tones from branches → broadband rush
+
+    // Rain:
+    //   Each drop impact = micro-impulse. Many impacts = noise.
+    //   Drop pitch: Minnaert bubble frequency f = 3.26 / r (r = drop radius in meters)
+    //     Light rain (r=1mm): f ≈ 3260 Hz. Heavy rain (r=3mm): f ≈ 1087 Hz.
+    //   Surface material adds its own modal response (rain on metal roof = noise + metal modes)
+
+    // Fire:
+    //   Low-frequency: brown noise at 60-200 Hz (turbulent combustion)
+    //   Crackle: random short broadband bursts at 1-4 kHz (moisture pockets exploding)
+    //     Rate proportional to wood moisture content
+    //   Hiss: high-frequency white noise at 4-8 kHz (steam, if moisture > 0.3)
+
+    // Water flow:
+    //   Turbulence spectrum follows Kolmogorov cascade (power law — more energy at low frequencies)
+    //   Small stream: high-pitched babble (2-4 kHz). Large river: low rumble (100-400 Hz)
+    //   Frequency inversely proportional to channel width
+    //   Rapids: add white noise bursts (air entrainment)
+
+    // Grinding/scraping:
+    //   Stick-slip friction: contact alternates between sticking and slipping
+    //   Each slip = modal excitation of both surfaces
+    //   Fast scraping: impulses merge into tonal sound. Slow: individual pops.
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 3: Source-Filter Synthesis — Voice and Animal Calls
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Voice is a vibrating membrane (vocal cords) producing a base frequency,
+  // filtered through a resonant cavity (throat/mouth/nasal passage).
+
+  VoiceSynth {
+    // Source: vocal cord vibration → pulse/sawtooth oscillator at fundamental f₀
+    //   Human male: f₀ = 85-180 Hz
+    //   Human female: f₀ = 165-255 Hz
+    //   Wolf howl: f₀ = 150-780 Hz (sweeps through range)
+    //   Bird song: f₀ = 1000-8000 Hz (syrinx produces very high frequencies)
+    //   Dog bark: f₀ = 500 Hz, short burst (50ms), harsh spectrum
+    //   Cow moo: f₀ = 60-200 Hz
+    //   Bee buzz: f₀ = wingbeat frequency (200 Hz) — mechanical, not vocal
+
+    // Filter: vocal tract creates FORMANTS — resonant peaks that define the sound
+    //   "ah" (open mouth): F1=800Hz, F2=1200Hz
+    //   "ee" (narrow mouth): F1=300Hz, F2=2300Hz
+    //   "oo" (rounded lips): F1=300Hz, F2=800Hz
+    //   Implementation: chain of 3-5 BiquadFilterNodes in WebAudio, each at a formant freq
+
+    // NPC speech (§5.3):
+    //   1. Language generator produces phoneme sequence
+    //   2. Each phoneme maps to formant configuration
+    //   3. Source oscillator at NPC's pitch (body size → pitch: larger = lower)
+    //   4. Formant filters morph between phoneme configurations
+    //   5. Result: sounds like speech in an unknown language — no audio files needed
+
+    // Animal calls:
+    //   Same source-filter but species-specific:
+    //   Wolf howl: f₀ sweeps 150→400→250 Hz over 5-10s, smooth formants
+    //   Bird chirp: rapid f₀ sweep 2000-6000 Hz in 20-50ms
+    //   Frog: f₀=100-300Hz, throat sac acts as Helmholtz resonator (amplifies)
+    //   Insect: oscillator at wingbeat frequency (no filter — pure mechanical tone)
+  }
+}
+```
+
+#### The Audio Pipeline
+
+```
+SOUND_EVENT (from server) → SoundComputer → Synthesizer → Environment → Spatial → Speaker
+
+Step 1: SOUND_EVENT arrives from server with:
+  { type, materialA, materialB, energy, contactPoint, geometryA, relativeVelocity }
+
+Step 2: SoundComputer selects synthesis method:
+  impact/break  → Modal Synthesis (Method 1)
+  scrape        → Modal + Noise hybrid
+  flow/combustion → Noise Synthesis (Method 2)
+  voice/animal  → Source-Filter (Method 3)
+
+Step 3: Synthesizer creates WebAudio nodes and produces waveform
+
+Step 4: Environment filter (client-side):
+  Underwater: low-pass 800 Hz + speed of sound 1500 m/s
+  Cave: reverb proportional to estimated cave volume
+  Forest: multi-tap delay (tree reflections) + high-freq absorption
+  Open field: dry (no reverb)
+
+Step 5: Spatial positioning (WebAudio PannerNode):
+  HRTF panning (directional hearing)
+  Inverse square distance attenuation (I = P / 4πr²)
+  Propagation delay: distance / 343 m/s (thunder after lightning)
+
+Step 6: Output → speaker
+```
+
+#### Doppler Effect — Moving Sounds Shift Pitch
+
+When a sound source moves toward a listener, the frequency shifts upward. When moving away, it shifts downward:
+
+```
+f_observed = f_source × (v_sound + v_listener) / (v_sound + v_source)
+where:
+  v_sound = 343 m/s (speed of sound in air at 20°C)
+  v_listener = listener velocity along the source-listener axis (+ = moving away)
+  v_source = source velocity along the source-listener axis (+ = moving away)
+```
+
+Gameplay-noticeable examples:
+- Arrow flying past player at 50 m/s: Approaching: f_obs = f × 343 / (343 + (-50)) = f × 1.17 → 17% higher pitch. Receding: f_obs = f × 343 / (343 + 50) = f × 0.87 → 13% lower pitch. The "zip" of an arrow past your ear is this pitch transition.
+- Horse galloping past at 15 m/s: Approaching: +4.6% pitch. Receding: -4.2% pitch. Subtle but audible — hoofbeats sound slightly higher as horse approaches.
+- Thrown rock at 20 m/s: Approaching: +6.2%. Receding: -5.5%.
+
+Implementation: the SOUND_EVENT message already includes source position. Add source velocity (Vec3) to the descriptor. The client computes the relative velocity along the source-listener axis each frame and adjusts the playback rate of the WebAudio source accordingly.
+
+WebAudio's PannerNode supports Doppler natively — set the source's positionX/Y/Z and velocityX/Y/Z, and the listener's position/velocity. The browser handles the pitch shifting automatically. Cost: zero.
+
+This connects to networking (§3.5): source velocity must be included in SOUND_EVENT messages. For most events (impacts, breaks), velocity is zero (the sound source is stationary). For projectiles, thrown objects, and moving entities, velocity comes from the physics simulation.
+
+#### Frequency-Dependent Atmospheric Absorption — Distant Sounds Lose Their Sharpness
+
+Sound doesn't just get quieter with distance — it changes character. High frequencies are absorbed more by air than low frequencies.
+
+Absorption coefficients (simplified from ISO 9613-1, at 20°C, 50% humidity):
+```
+250 Hz:  0.001 dB/m   (bass travels far)
+1000 Hz: 0.005 dB/m   (mid-range moderate)
+4000 Hz: 0.02 dB/m    (treble fades fast)
+8000 Hz: 0.08 dB/m    (highest frequencies gone quickly)
+```
+
+At 100m distance:
+- 250 Hz: -0.1 dB (barely affected)
+- 4000 Hz: -2.0 dB (noticeably reduced)
+- 8000 Hz: -8.0 dB (nearly gone)
+
+At 500m distance:
+- 250 Hz: -0.5 dB (still audible)
+- 4000 Hz: -10 dB (very quiet)
+- 8000 Hz: -40 dB (effectively silent)
+
+This is why:
+- Distant thunder is a low rumble (high frequencies absorbed over km)
+- Nearby thunder is a sharp crack (full spectrum arrives intact)
+- A distant waterfall is a low roar; close up it hisses
+- Distant footsteps are soft thumps; close up you hear the crunch
+
+Implementation: apply a low-pass filter to each sound, with cutoff frequency inversely related to distance:
+```
+cutoffFrequency = 20000 / (1 + distance × 0.02)
+At 0m: 20kHz (full spectrum). At 50m: 10kHz. At 200m: 4kHz. At 1km: 1kHz.
+```
+
+WebAudio BiquadFilterNode (type = "lowpass") does this in one node. Set the frequency parameter dynamically based on distance. Cost: negligible.
+
+Humidity affects absorption — dry air absorbs high frequencies faster. The weather system's humidity value modulates the absorption coefficient:
+```
+absorption × (1.5 - humidity)  // at humidity=0: 1.5×. At humidity=1: 0.5×
+Dry desert: sounds die quickly at distance. Humid jungle: sounds carry farther.
+```
+
+#### What This System Can Produce
+
+| Sound | Method | Key Parameters |
+|-------|--------|---------------|
+| Hammer on anvil | Modal | E=200GPa, ρ=7800, L=0.5m → f₁=312Hz, Q=3000 |
+| Footstep on stone | Modal | Stone surface modes excited by foot impact |
+| Footstep on sand | Noise | Many micro-granular impacts → filtered white noise |
+| Campfire | Noise | Brown noise 60-200Hz + random crackle impulses |
+| Rain on roof | Noise+Modal | Minnaert drop frequency + roof modal response |
+| Wind through trees | Noise | Aeolian tones from branches (f=0.2v/d) |
+| River flowing | Noise | Kolmogorov turbulence spectrum |
+| Glass breaking | Modal | High-frequency modes + many fragment modes |
+| NPC speaking | Voice | Pulse oscillator + formant filters |
+| Wolf howling | Voice | f₀ sweep + throat formants |
+| Bird singing | Voice | Rapid f₀ sweep via syrinx model |
+| Bee buzzing | Oscillator | Single tone at wingbeat frequency |
+| Pouring liquid | Noise | Minnaert bubble oscillations |
+| Silence in cave | Environment | Long reverb tail, no active sources |
+
+**Zero audio files ship with the game.** Every sound is computed from MaterialPacket properties + object geometry + physics formulas. A new material automatically produces correct sounds.
+
+#### Helmholtz Resonance — Enclosed Spaces Have a Voice
+
+A cavity with a narrow opening acts as a resonator, amplifying a specific frequency:
+  f = (v_sound / 2π) × √(A / (V × L_neck))
+  where:
+    v_sound = 343 m/s (speed of sound in air)
+    A = neck opening area (m²)
+    V = cavity volume (m³)
+    L_neck = effective neck length (m) ≈ physical length + 0.6 × √(A/π)
+
+Examples in gameplay:
+  Bottle (V=0.001m³, A=0.0003m², L=0.05m):
+    f = 343/(2π) × √(0.0003 / (0.001 × 0.08)) = 106 Hz — low hum when wind blows across
+
+  Furnace chimney (V=0.5m³, A=0.04m², L=0.3m):
+    f = 343/(2π) × √(0.04 / (0.5 × 0.42)) = 30 Hz — deep rumble felt more than heard
+    Hot gas lowers the resonant frequency further (speed of sound increases with temperature
+    but the density effect in the cavity dominates for Helmholtz).
+
+  Small room (V=27m³, door opening A=2m², L=0.3m):
+    f = 343/(2π) × √(2 / (27 × 0.6)) = 18 Hz — infrasonic, creates unease
+    This is why small enclosed rooms with one door feel oppressive — Helmholtz infrasound.
+
+  Ocarina/whistle (V=0.00005m³, A=0.00002m², L=0.005m):
+    f = 343/(2π) × √(0.00002 / (0.00005 × 0.008)) = 2070 Hz — a clear musical note
+
+Implementation: when wind blows across an opening of an enclosed space
+(detected from structural connectivity — a sealed volume with one or few openings),
+compute f_helmholtz and generate a continuous tone at that frequency.
+Volume proportional to wind speed². This creates the characteristic "howling"
+of wind over chimneys and the "breathing" of large enclosed spaces.
+
+The player hears their furnace hum when the wind picks up. A cave with a narrow
+entrance moans in a storm. A well-designed chimney with the right proportions
+produces a satisfying low resonance. All from physics, not sound files.
+
+#### Performance Budget
+
+| Component | Budget | How |
+|-----------|--------|-----|
+| Mode computation | <0.1ms per event | ~30 eigenfrequency calculations |
+| WebAudio node creation | <0.05ms per event | OscillatorNode + GainNode per mode |
+| Noise generation | ~0.01ms per frame | One noise buffer, filtered per source |
+| Voice synthesis | ~0.02ms per frame | Oscillator + 3-5 filters per voice |
+| Environment filter | ~0.5ms per frame | Raycast cache, recompute when player moves >5m |
+| WebAudio processing | ~2-3ms total | Browser audio thread (not main thread) |
+| **Total main thread** | **<1ms** | Main thread computes parameters only |
+
+**Voice limiting:** Maximum 24 concurrent sound sources. Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots.
+
+#### Structure-Borne Sound — Impacts Travel Through Solids
+
+Sound travels through solid materials much faster than through air:
+
+```
+v_sound = √(E / ρ)  (longitudinal wave in a rod)
+
+Air:    343 m/s      (slow, highly attenuated)
+Water:  1,480 m/s    (4.3× faster than air)
+Wood:   3,800 m/s along grain (11× faster)
+Stone:  5,500 m/s    (16× faster)
+Steel:  5,960 m/s    (17× faster)
+```
+
+When an impact occurs on a solid surface (pickaxe hits stone wall, footstep on wooden floor), the vibration propagates through the solid at v_sound(material), much faster than the airborne sound.
+
+Gameplay effects:
+- Ear to the ground: footsteps at 200m through stone ground arrive in 200/5500 = 0.036s. Through air: 200/343 = 0.58s. You hear the ground vibration 0.55 seconds BEFORE the airborne sound. This is how real trackers detect distant movement.
+- Impact on the other side of a wall: a pickaxe hitting the far side of a 1m stone wall arrives through stone in 0.0002s. Through air (around the wall): depends on path, but always slower. You hear the thud through the wall first.
+- Mining sounds: impacts in a mine tunnel propagate through the rock to adjacent tunnels. Other players/NPCs can hear mining activity through solid rock, attenuated by distance but arriving much sooner than airborne.
+
+Implementation: when a sound event occurs on a solid surface:
+1. Generate the normal airborne sound event (existing system)
+2. Also propagate through the structural connectivity graph:
+   - Find all blocks connected to the impact block (BFS, same as load path §3.4)
+   - For each block, compute: delay = distance / v_sound(block.material)
+   - Attenuate: each block boundary attenuates by ~3 dB (impedance mismatch)
+   - If a block is adjacent to air (exposed face): re-radiate as airborne sound at that position, with the accumulated delay and attenuation
+3. The listener hears: structure-borne version (early, muffled) + airborne version (late, clear)
+
+This uses the SAME connectivity graph as the structural load path algorithm (§3.4). Sound propagation and structural load propagation share the BFS infrastructure.
+
+Cost: one BFS per impact event through the structural graph (same as load path). Typically <0.1ms for a 200-block structure.
+
+#### Boundary Condition Detection — Support Changes the Pitch
+
+The β_n values used in modal synthesis (4.73, 7.85, 11.0, 14.1) are for a free-free bar (both ends free to vibrate). But most objects in the game are supported differently, which dramatically changes the frequencies:
+
+| Boundary condition | β₁    | β₂    | β₃    | Example |
+|-------------------|-------|-------|-------|---------|
+| Free-free         | 4.730 | 7.853 | 10.996 | Dropped object, thrown tool |
+| Clamped-free      | 1.875 | 4.694 | 7.855  | Torch bracket, shelf, flag pole |
+| Simply supported  | π     | 2π    | 3π     | Beam resting on two walls |
+| Clamped-clamped   | 4.730 | 7.853 | 10.996 | Beam mortared into both walls |
+| Clamped-simply    | 3.927 | 7.069 | 10.210 | Beam mortared one end, resting other |
+
+The fundamental frequency of a clamped-free bar is (1.875/4.730)² = 0.157× the free-free frequency — more than 6× LOWER pitch. A torch bracket vibrates at a completely different pitch than the same metal bar dropped on the ground.
+
+Detection algorithm: when a sound event occurs on a block, query its structural connections (§3.4 connectivity graph):
+- No connections: free-free (dropped/thrown object)
+- One face connected to another block: clamped-free (wall-mounted)
+- Two opposite faces connected: clamped-clamped or simply-supported. If connections are mortared/fastened: clamped-clamped. If connections are just stacked (friction): simply-supported.
+- Mixed: use the most constrained boundary
+
+This reuses the structural connection data already tracked by §3.4. No new computation needed — just a lookup based on existing bond types.
+
+
+### 3.4 Structural Physics — How Buildings Stand or Fall
+
+##### The Principle
+
+Every structure in the game is made of MaterialPackets (§3.1). A wall is not a "wall object" — it is a collection of MaterialPackets (stone blocks, mud bricks, wooden beams) placed in the world and optionally bonded together. Whether that wall stands or falls is determined by the **same material properties** that determine melting point, hardness, and conductivity: compressive strength, tensile strength, shear strength, density. There is no separate "structural integrity" system — there is physics applied to materials.
+
+##### Every Block Is a MaterialPacket
+
+```
+StructuralBlock {
+  // A placed building block IS a MaterialPacket. It has:
+  packet: MaterialPacket             // composition, mass, density, temperature, phase
+  // ALL structural properties come directly from the packet:
+  //   packet.compressiveStrength, packet.tensileStrength, packet.shearStrength,
+  //   packet.youngsModulus, packet.frictionCoefficient, packet.density
+  // No structural properties are stored on the block — they are read from the
+  // MaterialPacket's property calculator (§3.1). Same system as melting point.
+
+  // Real material values (computed by property calculator from composition):
+  //   Granite (SiO₂ + Al₂O₃ + feldspar):
+  //     compressive: ~200 MPa, tensile: ~15 MPa, shear: ~25 MPa
+  //   Limestone (CaCO₃):
+  //     compressive: ~60 MPa, tensile: ~5 MPa, shear: ~10 MPa
+  //   Mud brick (clay + straw + water, dried):
+  //     compressive: ~2 MPa, tensile: ~0.2 MPa, shear: ~0.5 MPa
+  //   Oak wood (cellulose + lignin):
+  //     compressive: ~50 MPa (along grain), tensile: ~100 MPa (along grain!)
+  //     Wood is STRONGER in tension than compression — opposite of stone
+  //     This is why wood beams span gaps but stone beams don't
+  //   Copper:
+  //     compressive: ~250 MPa, tensile: ~210 MPa, shear: ~150 MPa
+  //   Iron:
+  //     compressive: ~350 MPa, tensile: ~400 MPa, shear: ~170 MPa
+  //   Steel (iron + carbon alloy):
+  //     compressive: ~400 MPa, tensile: ~500 MPa, shear: ~200 MPa
+
+  // An impure copper block (Cu₀.₈₅Fe₀.₁₀S₀.₀₅) has DIFFERENT structural properties
+  // than pure copper — because the property calculator accounts for impurities.
+  // A player who smelts cleaner copper gets stronger building material.
+  // This is emergent — not coded as a "building material quality" stat.
+
+  // ── Connection state ──────────────────────────────────────────────────
+  connections: Connection[]          // bonds to adjacent blocks
+  grounded: boolean                  // can trace a connection path to terrain?
+
+  Connection {
+    targetBlock: StructuralBlock
+    bondType: 'stacked' | 'mortared' | 'joinery' | 'fastened'
+    bondStrength: number             // Pa — force to break this connection
+    // stacked (no bond, gravity only): bondStrength = friction force = weight × μ
+    //   μ (friction coefficient): stone-on-stone = 0.6, wood-on-wood = 0.4, mud = 0.3
+    //   Stacked blocks can slide off each other under lateral force (wind, impact)
+    // mortared (mud/lime/concrete between blocks):
+    //   mud mortar: bondStrength = 0.1 MPa (weak, dissolves in rain)
+    //   lime mortar: bondStrength = 2.0 MPa (strong, waterproof)
+    //   concrete: bondStrength = 5.0 MPa (very strong)
+    //   The mortar IS a MaterialPacket too — its bondStrength comes from its composition
+    // joinery (wooden notches, pegs, lashing):
+    //   peg joint: bondStrength = 1.5 MPa
+    //   mortise-and-tenon: bondStrength = 3.0 MPa (strongest wood joint)
+    //   rope lashing: bondStrength = 0.5 MPa (stretches, weakens when wet)
+    // fastened (metal nails, bolts):
+    //   iron nail: bondStrength = 4.0 MPa
+    //   iron bolt: bondStrength = 8.0 MPa
+  }
+}
+```
+
+##### Force Propagation — How Load Travels to Ground
+
+```
+ForceSystem {
+  // Every block has weight. Weight is a downward force.
+  // That force must travel through connected blocks to the ground.
+  // If any block in the path receives more force than it can handle → it breaks.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE LOAD PATH ALGORITHM (4 phases, runs on structural change events)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ── Phase 1: Connectivity — which blocks can reach ground? ─────────────
+  //
+  // BFS flood fill starting from all ground-touching blocks.
+  // A block is "supported" if it can trace a path through face-connected
+  // neighbors (6 directions: ±x, ±y, ±z) to any block on terrain.
+  //
+  // function findSupportedBlocks(grid):
+  //   supported = Set()
+  //   queue = Queue()
+  //
+  //   // Seed: blocks sitting on terrain
+  //   for each block in grid.blocks:
+  //     if terrain.isSolid(block.x, block.y - 1, block.z):
+  //       supported.add(block)
+  //       queue.enqueue(block)
+  //
+  //   // BFS through face-connected neighbors
+  //   while queue not empty:
+  //     current = queue.dequeue()
+  //     for each neighbor in current.connections (6 faces):
+  //       if neighbor != null AND neighbor not in supported:
+  //         supported.add(neighbor)
+  //         queue.enqueue(neighbor)
+  //
+  //   return supported
+  //
+  // Blocks NOT in the supported set are floating → become rigid body debris.
+  // Cost: O(N) where N = number of blocks. For a 200-block house: <0.1ms.
+
+  // ── Phase 2: Load computation — top-down gravity accumulation ──────────
+  //
+  // Process all supported blocks from highest Y to lowest Y.
+  // Each block accumulates its own weight plus load from above,
+  // then distributes that total to blocks below it.
+  //
+  // function computeLoads(grid):
+  //   sortedBlocks = grid.blocks.sortBy(b => -b.y)  // top-down
+  //
+  //   for each block in sortedBlocks:
+  //     block.load = block.weight  // reset to self-weight
+  //
+  //   for each block in sortedBlocks:
+  //     receivers = getLoadReceivers(block, grid)  // blocks below
+  //     for each (receiver, fraction) in receivers:
+  //       receiver.load += block.load × fraction
+  //
+  // Load distribution uses a 1:4 spreading ratio:
+  //   Block directly below (y-1, same x,z): weight factor 4
+  //   Blocks at (y-1, ±1 in x or z): weight factor 1 each
+  //   Normalize by total weight factors.
+  //
+  // Example: block at (5,10,5) weighs 500N, has blocks below at
+  //   (5,9,5) and (6,9,5):
+  //   Direct below gets: 500 × 4/5 = 400N
+  //   Side below gets:   500 × 1/5 = 100N
+  //
+  // This creates a realistic load-spreading pyramid — heavy loads at the top
+  // spread out as they travel down through the structure, just like real masonry.
+  //
+  // Full tower example:
+  //   [Roof beam: 30kg]      → 300N
+  //       ↓
+  //   [Wall block: 50kg]     → 500N own + 300N from above = 800N
+  //       ↓
+  //   [Wall block: 50kg]     → 500N own + 800N from above = 1300N
+  //       ↓
+  //   [Foundation: 80kg]     → 800N own + 1300N from above = 2100N
+  //       ↓
+  //   [Terrain]              → absorbs 2100N
+
+  // ── Phase 3: Stress checks — does any block exceed capacity? ───────────
+  //
+  // Three failure modes checked per block:
+  //
+  //   COMPRESSIVE (crushing):
+  //     σ_c = block.load / contactArea
+  //     For a 1m voxel: contactArea = 1 m²
+  //     if σ_c > block.compressiveStrength → CRUSH FAILURE
+  //     Block shatters. Everything above loses support.
+  //
+  //   TENSILE (beam snapping):
+  //     Only checked for blocks detected as spanning a gap (see Beam Detection below).
+  //     σ_t = M / S where:
+  //       M = bending moment = w × L² / 8 (uniform load, simply supported)
+  //       S = section modulus = b × h² / 6 (rectangular cross-section)
+  //       w = total distributed load / beam span (N/m)
+  //     Simplified: σ_t = 3 × w × L² / (4 × b × h²)
+  //     if σ_t > block.tensileStrength → SNAP FAILURE at midspan
+  //
+  //   SHEAR (sliding):
+  //     σ_s = lateralForce / contactArea
+  //     lateralForce comes from wind (Connection 16) or player impact (§7.5)
+  //     if σ_s > block.shearStrength → SHEAR FAILURE
+  //     Block slides sideways. Relevant for walls under wind or siege.
+  //
+  //   BOND FAILURE:
+  //     For bonded blocks, also check if the connection can handle the load:
+  //     if block.load > connection.bondStrength × contactArea → BOND BREAKS
+  //     Stacked (unbonded) blocks can slide under lateral force:
+  //       frictionResistance = block.load × frictionCoefficient
+  //       if lateralForce > frictionResistance → block slides off
+  //
+  //   BUCKLING (slender column failure):
+  //     Tall, thin columns fail by sideways bowing, NOT by crushing.
+  //     Euler's critical load: P_cr = π² × E × I / (K × L)²
+  //     where:
+  //       E = Young's modulus (Pa)
+  //       I = second moment of area (m⁴) — for a 1m square: I = 1/12 = 0.083
+  //       K = effective length factor: 1.0 for pinned-pinned, 0.5 for fixed-fixed,
+  //           2.0 for cantilever (flag pole), 0.7 for fixed-pinned
+  //       L = column height (m)
+  //
+  //     Slenderness ratio: λ = K×L / r where r = √(I/A) is radius of gyration
+  //       λ < 30: stocky — crushing governs (use compressive strength check)
+  //       λ > 100: slender — buckling governs (use Euler)
+  //       30-100: intermediate — use Rankine-Gordon: 1/P_fail = 1/P_crush + 1/P_euler
+  //
+  //     Example: 1m × 1m stone column, 10m tall (pinned-pinned):
+  //       I = 0.083 m⁴, r = 0.289 m, λ = 10/0.289 = 34.6 → intermediate
+  //       P_euler = π² × 40×10⁹ × 0.083 / 100 = 328,000 kN
+  //       P_crush = 200×10⁶ × 1 = 200,000 kN
+  //       Governs: crushing (P_crush < P_euler)
+  //
+  //     Same column at 20m tall:
+  //       λ = 20/0.289 = 69.2 → intermediate
+  //       P_euler = 328,000 / 4 = 82,000 kN ← now buckling governs
+  //       Column fails at 82,000 kN (41% of crushing capacity)
+  //
+  //     This is why real buildings use wide bases and why Gothic cathedrals
+  //     need flying buttresses — tall stone columns buckle before they crush.
+  //
+  //     Implementation: for each column (vertical run of blocks with no lateral support),
+  //     compute λ. If λ > 30, also check Euler. Take the lower of P_crush and P_euler.
+
+  // ── Phase 4: Cascade collapse ──────────────────────────────────────────
+  //
+  // When a block fails, process the collapse in batched waves:
+  //
+  // function cascadeCollapse(failedBlock, grid):
+  //   currentFailures = Set(failedBlock)
+  //   wave = 0
+  //
+  //   while currentFailures not empty AND wave < 100:
+  //     wave++
+  //
+  //     // Remove all failed blocks at once
+  //     for each block in currentFailures:
+  //       grid.blocks.remove(block.position)
+  //
+  //     // Find blocks that lost their path to ground
+  //     floating = findFloatingAfterRemoval(currentFailures, grid)
+  //
+  //     // Recompute loads on remaining structure
+  //     computeLoads(grid)
+  //
+  //     // Find new stress failures
+  //     nextFailures = Set(floating)
+  //     for each block in grid.blocks:
+  //       stress = block.load / BLOCK_AREA
+  //       if stress > block.compressiveStrength:
+  //         nextFailures.add(block)
+  //
+  //     currentFailures = nextFailures
+  //
+  //   // Convert all removed blocks to rigid body debris
+  //   // Group adjacent debris into compound rigid bodies (one per cluster)
+  //   // Apply downward velocity + random tumble
+  //   // Cap at 50-100 active debris bodies for performance
+  //
+  // The findFloatingAfterRemoval function uses targeted BFS:
+  //   Only check blocks that were neighbors of removed blocks.
+  //   For each, BFS toward ground. If no path found → floating.
+  //   Blocks already confirmed supported are cached (skip re-check).
+  //   Cost: O(K) where K = neighbors of removed blocks, NOT the full structure.
+  //
+  // Cascade example (removing a load-bearing wall):
+  //   Wave 0: wall block removed (player action or combat)
+  //   Wave 1: blocks directly above lose support → fall
+  //   Wave 2: roof blocks above those lose support → fall
+  //   Wave 3: neighboring wall overloaded by redistributed load → crush failure
+  //   Wave 4: more roof falls → cascade stabilizes when remaining structure is strong enough
+  //
+  // A 1000-block castle losing a load-bearing wall:
+  //   ~500 blocks recalculated → ~5ms → 3-6 waves → spectacular collapse
+  //   Client receives CHUNK_UPDATE with removed blocks + PHYSICS_EVENT with debris bodies
+
+  // ── Dynamic impact in cascade collapse ─────────────────────────────────
+  //
+  // When a block or floor falls and hits the structure below, the impact force
+  // is MUCH greater than the static weight. This is what causes "pancake collapse"
+  // in real building failures.
+  //
+  //   F_impact = m × g × (1 + √(1 + 2h/δ_static))
+  //   where:
+  //     m = mass of falling object (kg)
+  //     h = fall height (m) — distance the block fell before impact
+  //     δ_static = static deflection of the receiving structure under load m×g
+  //       For a rigid floor: δ_static ≈ 0.001m → F_impact ≈ m×g × (1 + √(1 + 2000h))
+  //
+  //   A 1000 kg block falling just 1m onto a rigid floor:
+  //     F_impact = 1000 × 9.81 × (1 + √(1 + 2000)) = 9810 × 45.7 = 448,000 N
+  //     That's 45× the static weight!
+  //
+  //   Even a 0.1m fall (one block falling onto the next):
+  //     F_impact = 9810 × (1 + √(1 + 200)) = 9810 × 15.2 = 149,000 N
+  //     About 15× the static weight.
+  //
+  //   This means: in a cascade collapse, each falling floor hits the floor below
+  //   with enough force to punch through it, which then falls onto the next floor,
+  //   accumulating mass and velocity. This is the "progressive collapse" mechanism
+  //   that destroyed the World Trade Center towers.
+  //
+  //   Implementation: in the cascade algorithm, when debris from wave N hits the
+  //   remaining structure, apply F_impact (not just static weight) to the impacted blocks.
+  //   If F_impact / contactArea > block.compressiveStrength → block also fails.
+  //   The debris mass accumulates as floors collect falling material.
+  //
+  //   This connects to sound (§3.3): dynamic impacts produce louder sound events.
+  //   Impact energy = 0.5 × m × v² where v = √(2gh) from the fall.
+  //   A 1m fall: v = 4.4 m/s, energy = 0.5 × 1000 × 19.6 = 9800 J.
+  //   Compare: a pickaxe strike is ~10 J. A collapsing floor is 1000× louder.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // BEAM DETECTION AND BENDING ANALYSIS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // A beam is a horizontal run of blocks with air below and supports at the ends.
+  // The system scans along X and Z axes to find these automatically.
+  //
+  // Detection algorithm:
+  //   Walk along each horizontal row. When a block has a solid block below it,
+  //   it's a potential support. When blocks have air below, they're spanning.
+  //   When air-below blocks are bracketed by supported blocks → beam found.
+  //
+  // Bending stress formula:
+  //   σ = 3 × w × L² / (4 × b × h²)
+  //   where:
+  //     w = (beam self-weight + load from above) / span    (N/m)
+  //     L = span length in meters (number of air-below blocks × BLOCK_SIZE)
+  //     b = beam width = BLOCK_SIZE = 1m
+  //     h = beam height = BLOCK_SIZE = 1m (or count of stacked beam blocks)
+  //
+  // The beam fails in TENSION on the bottom face (not compression).
+  // This is why material tensileStrength determines beam capacity.
+  //
+  // Maximum span for self-weight only (no additional load):
+  //   L_max = √(4 × tensileStrength × h / (3 × density × g))
+  //
+  //   | Material          | Density  | Tensile   | Max self-weight span | With 5× load |
+  //   |-------------------|----------|-----------|---------------------|--------------|
+  //   | Oak wood          | 600      | 40 MPa   | ~95 m (extraordinary)| ~42 m        |
+  //   | Granite           | 2700     | 10 MPa   | ~22 m               | ~10 m        |
+  //   | Limestone         | 2400     | 3 MPa    | ~13 m               | ~6 m         |
+  //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
+  //   | Iron              | 7800     | 200 MPa  | ~53 m               | ~24 m        |
+  //   | Steel             | 7800     | 500 MPa  | ~84 m               | ~38 m        |
+  //
+  // These match real-world experience:
+  //   Stone buildings need close-spaced columns (Parthenon: columns 2.5m apart)
+  //   Wood buildings span wide rooms easily (timber framing spans 5-6m with load)
+  //   Gothic cathedrals needed flying buttresses (stone can't span the nave)
+  //   Iron/steel revolutionized architecture (long spans without columns)
+  //
+  // Numerical example:
+  //   6 limestone blocks spanning a 4-block gap, 3 floors of load above:
+  //   Beam self-weight: 4 × 23,544N = 94,176N
+  //   Load from above: 300,000N
+  //   Total: 394,176N, w = 98,544 N/m
+  //   M = 98,544 × 16 / 8 = 197,088 N·m
+  //   S = 1 × 1² / 6 = 0.167 m³
+  //   σ = 197,088 / 0.167 = 1.18 MPa < 3 MPa (limestone tensile) → beam holds
+  //
+  //   Same beam at 8-block span:
+  //   M = 98,544 × 64 / 8 = 789,352 N·m
+  //   σ = 789,352 / 0.167 = 4.73 MPa > 3 MPa → beam snaps at midspan
+
+  // ── Deflection — beams sag before they break ──────────────────────────
+  //
+  // A beam can be strong enough not to break but deflect so much it's unusable.
+  // Maximum deflection for a simply-supported beam under uniform load:
+  //   δ_max = 5 × w × L⁴ / (384 × E × I)
+  //   where:
+  //     w = distributed load (N/m)
+  //     L = span (m)
+  //     E = Young's modulus (Pa)
+  //     I = second moment of area (m⁴) — for 1m×1m block: I = 1/12
+  //
+  //   Serviceability limits (from real structural engineering):
+  //     δ < L/360: acceptable for floors (no cracking of finishes)
+  //     δ < L/240: acceptable for roofs
+  //     δ < L/180: visible sag — occupants notice
+  //     δ < L/100: severe sag — doors won't close, water pools on roof
+  //
+  //   Example: oak beam, 6m span, supporting a floor (w = 5000 N/m):
+  //     δ = 5 × 5000 × 6⁴ / (384 × 12×10⁹ × 0.083) = 5 × 5000 × 1296 / (383×10⁹ × 0.083)
+  //     δ = 32,400,000 / 31,789,000,000 = 0.001 m = 1mm → L/6000 — negligible
+  //
+  //   Same beam, 12m span:
+  //     δ = 5 × 5000 × 12⁴ / (384 × 12×10⁹ × 0.083)
+  //     δ = 5 × 5000 × 20736 / 31,789,000,000 = 0.016 m = 16mm → L/750 — fine
+  //
+  //   Stone beam (E = 40 GPa instead of 12 GPa, but ρ = 2700 instead of 600):
+  //     Same 6m span: w includes much heavier self-weight → δ is larger
+  //     Stone beams sag much more than wood beams at the same span.
+  //
+  // Progressive ponding failure:
+  //   A flat roof that deflects collects rainwater in the sag. Water adds load.
+  //   More load → more deflection → more water → more load → collapse.
+  //   δ_ponding = δ_0 / (1 - q_water × L⁴ / (π⁴ × E × I))
+  //   When the denominator approaches 0: runaway failure.
+  //   Prevention: cambered roofs (built with upward curve) or drainage.
+  //
+  // Gameplay effect: visible beam sag gives players visual feedback that a
+  //   structure is near its limit. A beam that sags L/100 (6cm over a 6m span)
+  //   is visually noticeable and warns the player before catastrophic failure.
+  //   This is more informative than sudden collapse with no warning.
+  //
+  // Implementation: for each detected beam, compute δ_max. If δ > L/180,
+  //   render the beam with a downward curve (vertex displacement proportional to
+  //   δ × sin(π×x/L) along the beam). This is purely visual — the structural
+  //   check still uses the stress formula for failure.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ARCH DETECTION AND THRUST ANALYSIS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // An arch converts tensile stress (spanning) into compressive stress
+  // (pushing down the sides). Stone is great in compression → arches let
+  // stone span much farther than lintels:
+  //   Stone lintel: max ~2-3m
+  //   Stone arch: max ~30m+ (Roman arches spanned this)
+
+  // Arch detection algorithm:
+  //   1. Find all blocks with air below (spanning blocks)
+  //   2. Cluster them into connected components
+  //   3. For each cluster: find the rise (max Y - min Y) and span (horizontal extent)
+  //   4. If rise ≥ 2 blocks AND both ends connect to grounded blocks → arch found
+  //   5. Find springers (where the arch meets its supports) and crown (highest point)
+
+  // Arch thrust formula (parabolic arch under uniform load):
+  //   T = w × L² / (8 × h)
+  //   where:
+  //     T = horizontal thrust at each springer (N)
+  //     w = total load / span (N/m) — arch weight + anything on top
+  //     L = span (m)
+  //     h = rise (m) — height from springer to crown
+  //
+  //   Vertical reaction at each springer: V = totalLoad / 2
+  //   Resultant force: R = √(T² + V²)
+
+  // Abutment checks (the arch pushes its supports outward):
+  //
+  //   SLIDING check:
+  //     frictionResistance = abutmentWeight × μ (stone-on-stone: μ = 0.65)
+  //     if T > frictionResistance → arch pushes supports apart → collapse
+  //
+  //   OVERTURNING check:
+  //     overturningMoment = T × springerHeight
+  //     resistingMoment = abutmentWeight × (abutmentWidth / 2)
+  //     if overturningMoment > resistingMoment → abutment tips over → collapse
+
+  // Numerical example:
+  //   Arch: 20 stone blocks, span = 10m, rise = 4m
+  //   Arch weight: 20 × 23,544N = 470,880N
+  //   Load on top: 100,000N
+  //   Total: 570,880N, w = 57,088 N/m
+  //   T = 57,088 × 100 / 32 = 178,400N (18 tonnes of horizontal push)
+  //
+  //   Abutment: 3 blocks wide, 6 blocks tall = 18 stone blocks
+  //   Abutment weight: 423,792N
+  //   Friction resistance: 423,792 × 0.65 = 275,465N > 178,400N → no sliding ✓
+  //   Springer height: 2m above ground
+  //   Overturning moment: 178,400 × 2 = 356,800 N·m
+  //   Resisting moment: 423,792 × 1.5 = 635,688 N·m → no overturning ✓
+  //
+  // If the player removes the buttress → overturning check fails → arch collapses.
+  // If the player builds a thin buttress (1 block wide instead of 3) → sliding fails.
+  // These failures emerge from physics — no special "arch collapse" code needed.
+
+  // The same analysis applies to:
+  //   Barrel vault: arch extended into a tunnel (thrust per unit length of tunnel)
+  //   Dome: arch rotated into a hemisphere (hoop stress replaces thrust: T = w×R/(2×h))
+  //   Groin vault: two barrel vaults crossing at 90° (thrust at the 4 corner piers)
+  //   Flying buttress: external arch carrying thrust away from a tall wall to a pier
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // FRAME STABILITY — TRIANGULATION IS REQUIRED
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // A fundamental principle:
+  // a rectangular frame with pinned joints is a MECHANISM — it collapses sideways.
+  // Only triangulated frames (or frames with rigid joints) are stable.
+  //
+  // Kinematic criterion (2D):
+  //   m = b + r - 2j
+  //   where b = bars (blocks acting as beams), r = support reactions, j = joints
+  //   m < 0: mechanism (collapses)
+  //   m = 0: statically determinate (stable, no redundancy)
+  //   m > 0: indeterminate (stable with redundant members)
+  //
+  // A simple rectangle (4 bars, 4 pinned joints, 3 reactions at base):
+  //   m = 4 + 3 - 2×4 = -1 → MECHANISM. It racks (leans sideways) and collapses.
+  //
+  // Adding one diagonal brace:
+  //   m = 5 + 3 - 2×4 = 0 → STABLE. The triangle resists racking.
+  //
+  // This is why:
+  //   Roof trusses use triangles, not rectangles
+  //   Timber-frame buildings have diagonal bracing
+  //   Steel frames use X-bracing or moment connections
+  //   A-frame shelters are inherently stable (they ARE triangles)
+  //
+  // In the game: a player who builds a rectangular doorway with stacked blocks
+  //   (no mortar) should see it rack under lateral load (wind, impact).
+  //   Adding a diagonal timber brace should stabilize it.
+  //   Mortared joints resist rotation (act as rigid, not pinned) — so mortared
+  //   rectangles ARE stable (moment frame behavior).
+  //
+  // Implementation: when checking lateral stability of a structure:
+  //   1. Build a 2D frame model of the structure (project onto the plane
+  //      perpendicular to the lateral load)
+  //   2. Classify joints: stacked (pinned) vs. mortared/fastened (rigid)
+  //   3. Count bars, joints, reactions
+  //   4. If m < 0 AND all joints are pinned → structure is a mechanism →
+  //      fails under any lateral load
+  //   5. If m < 0 BUT some joints are rigid → check if rigid joints provide
+  //      enough moment resistance
+  //
+  // This connects to material properties (§3.1): the joint type (pinned vs. rigid)
+  //   depends on the bond type in the structural connection. Stacked = pinned.
+  //   Mortared with strong mortar = rigid. Rope lashing = semi-rigid (can stretch).
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // WIND AND LATERAL LOADS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Wind applies lateral (sideways) force to walls:
+  //   windForce = 0.5 × airDensity × windSpeed² × wallArea × dragCoefficient
+  //   airDensity ≈ 1.225 kg/m³, dragCoefficient ≈ 1.2 for flat walls
+  //   At 15 m/s wind (strong): ~135N per m² of wall area
+  //   At 30 m/s wind (storm):  ~540N per m² (can topple unbonded walls)
+  //
+  // Tall narrow walls are vulnerable (high moment arm):
+  //   A 3m tall, 0.3m thick unbonded stone wall falls over at ~20 m/s wind
+  //   A 3m tall, 0.6m thick bonded wall survives up to ~40 m/s
+  //   Cross-bracing (diagonal timber inside walls) resists lateral loads
+  //   Buttresses (thick supports on the outside) resist lateral loads
+  //
+  // Wind overturning check for a wall:
+  //   overturningMoment = windForce × wallArea × (wallHeight / 2)
+  //   resistingMoment = wallWeight × (wallThickness / 2)
+  //   if overturning > resisting → wall topples
+  //
+  // Player impact (§7.5 combat):
+  //   Hitting a wall with a tool applies force at the impact point
+  //   If force > bond strength at that block → block breaks free
+  //   If that block was load-bearing → cascade above it
+  //   Siege warfare: ram a wall until blocks break → roof collapses on defenders
+
+  // ── Lateral earth pressure (retaining walls, basements, mine tunnels) ──
+  //
+  // Soil pushes horizontally against walls that hold it back.
+  // Rankine active earth pressure:
+  //   σ_h = K_a × γ_soil × z
+  //   where:
+  //     K_a = (1 - sin(φ)) / (1 + sin(φ)) — active pressure coefficient
+  //     γ_soil = soil unit weight (~18,000 N/m³)
+  //     z = depth below ground surface (m)
+  //     φ = soil internal friction angle (sand: 30-35°, clay: 0-25°)
+  //
+  //   | Soil type    | φ (°) | K_a  | σ_h at 3m depth (Pa) |
+  //   |-------------|-------|------|---------------------|
+  //   | Loose sand   | 28    | 0.36 | 19,440              |
+  //   | Dense sand   | 40    | 0.22 | 11,880              |
+  //   | Soft clay    | 0     | 1.00 | 54,000 (worst case) |
+  //   | Stiff clay   | 25    | 0.41 | 22,140              |
+  //
+  //   At 3m depth in loose sand: ~19 kPa = ~2 tonnes/m² pushing sideways.
+  //   A single-block-thick stone wall (compressive only, no bending capacity)
+  //   would be pushed over by this force unless buttressed.
+  //
+  //   When groundwater is present: add hydrostatic water pressure
+  //     σ_total = K_a × γ_soil × z + ρ_water × g × z_water
+  //     Saturated soil pushes MUCH harder — this is why mines flood AND collapse.
+  //
+  //   Implementation: for blocks that have terrain/soil on one side and air on the other,
+  //   apply lateral earth pressure as a horizontal force to the structural system.
+  //   Check: can the wall resist this as a shear force? Does it overturn?
+  //
+  //   This connects to fluid sim (§3.2): the water table height from the regional
+  //   grid system determines z_water in the formula. Rising water table after rain
+  //   increases lateral pressure on basement walls.
+}
+```
+
+##### Foundation — What the Building Sits On
+
+```
+FoundationSystem {
+  // The ground beneath a building must support the building's total weight.
+  // Different terrain has different bearing capacity.
+
+  // ── Terrain bearing capacity (simplified Terzaghi) ─────────────────────
+  //
+  // q_ult = c × Nc + γ × D × Nq + 0.5 × γ × B × Nγ
+  // where:
+  //   c = soil cohesion (Pa)
+  //   γ = soil unit weight (~18,000 N/m³)
+  //   D = foundation depth below surface (m)
+  //   B = foundation width (m)
+  //   Nc, Nq, Nγ = bearing capacity factors (depend on internal friction angle φ)
+  //
+  // Game uses a pre-computed lookup table:
+  //
+  //   | Soil Type         | φ (°) | c (Pa)  | Typical q_ult (Pa) |
+  //   |-------------------|-------|---------|-------------------|
+  //   | Peat/swamp        | 0     | 10,000  | ~50,000           |
+  //   | Wet clay/mud      | 0     | 25,000  | ~130,000          |
+  //   | Loose sand        | 28    | 0       | ~300,000          |
+  //   | Compact clay      | 0     | 50,000  | ~260,000          |
+  //   | Dense gravel      | 40    | 0       | ~1,500,000        |
+  //   | Bedrock           | 45    | 100,000 | 10,000,000+       |
+  //
+  // Building pressure: q = totalWeight / baseFootprintArea
+  // If q > q_ult → building sinks.
+
+  // ── Sinking rate formula ───────────────────────────────────────────────
+  //
+  // When q > q_ult, the building sinks at a rate proportional to overpressure:
+  //
+  //   overpressure = (q - q_ult) / q_ult     // 0 = at limit, 1 = double capacity
+  //   sinkRate = 0.01 × overpressure × (1 + soil.compressibility) meters/second
+  //
+  //   soil.compressibility: peat = 2.0, clay = 1.0, sand = 0.3, gravel = 0.1, rock = 0.01
+  //
+  // Example: 3000 stone blocks (70,632,000N) on 100m² of soft clay (q_ult = 130,000 Pa):
+  //   q = 706,320 Pa, overpressure = 4.43
+  //   sinkRate = 0.01 × 4.43 × 2.0 = 0.089 m/s → building visibly sinks into the mud
+
+  // ── Differential settlement (uneven sinking) ──────────────────────────
+  //
+  // Each block-sized foundation cell computes its own local pressure
+  // from the column of blocks above it. Heavier side sinks more.
+  //
+  // Angular distortion = (maxSink - minSink) / distanceBetweenThem
+  //
+  //   > 1/500 (0.002): cosmetic cracking — visual cracks appear on walls
+  //   > 1/300 (0.0033): structural cracking — bonds start breaking
+  //   > 1/150 (0.0067): severe damage — blocks separate, potential collapse
+  //
+  // This is why the Leaning Tower of Pisa tilts (soft clay on one side).
+  // In-game: a player who builds a heavy tower on one side of a clay foundation
+  // will see it slowly tilt. The structural system detects the angular distortion,
+  // cracks the affected blocks, and eventually triggers cascade collapse.
+
+  // ── Foundation solutions ──────────────────────────────────────────────
+  //
+  // Spread foundation: widen the base of walls → distributes weight over more area
+  //   q = weight / area → bigger area = less pressure
+  //   A 1m wide wall on soft soil: too much pressure → sinks
+  //   Same wall on a 2m wide stone base: half the pressure → stable
+  //
+  // Deep foundation: dig down to bedrock, fill with stone
+  //   Bypasses weak surface soil entirely. D in Terzaghi's formula increases q_ult.
+  //   Foundation 2m deep in clay: q_ult increases by γ × D × Nq = 18,000 × 2 × 1 = 36,000 Pa
+  //
+  // Pilings: drive wooden posts into soft ground until they hit a hard layer
+  //   Venice is built entirely on wooden pilings driven into lagoon mud
+  //   In-game: player drives sharpened logs into mud → builds on top of the log tops
+  //   The pile's bearing capacity = hard layer's q_ult (not the surface soil)
+  //
+  // Gravel pad: replace soft surface soil with compacted gravel
+  //   Better drainage + higher bearing capacity than clay or mud
+  //   q_ult jumps from 130,000 (clay) to 1,500,000 (dense gravel)
+}
+```
+
+##### Structural Decay — Buildings Age
+
+```
+StructuralDecay {
+  // Buildings are not permanent. Materials degrade over time from weather.
+  // This connects directly to the weather system (§4.6) and material properties.
+
+  // ── Rain damage ───────────────────────────────────────────────────────
+  //
+  // Water weakens certain materials:
+  //   Mud brick: bondStrength decreases by 5% per game-day of rain exposure
+  //     Sustained rain for 20 game-days: mud mortar dissolves → blocks fall apart
+  //     Prevention: roof overhang (keeps rain off walls), lime plaster coating
+  //   Wood: moisture absorption → swelling → warping → joint loosening
+  //     bondStrength decreases by 0.5% per game-day of wet exposure
+  //     Prevention: roof overhang, tar/pitch coating (waterproofing)
+  //   Stone: virtually unaffected by rain (geological timescales)
+  //   Lime mortar: waterproof — no rain damage
+  //   Metal fasteners: rust (iron + water + oxygen → iron oxide)
+  //     bondStrength decreases by 1% per game-day wet
+  //     Prevention: oil coating, bronze fasteners (no rust)
+
+  // ── Galvanic corrosion — dissimilar metals destroy each other ─────────
+  //
+  // When two different metals are in physical contact in the presence of an
+  // electrolyte (rain water, salt water, even humid air), the more reactive
+  // metal corrodes faster. The galvanic series (most reactive/anodic to least):
+  //
+  //   Zinc → Iron → Tin → Lead → Copper → Silver → Gold → Platinum
+  //
+  // Corrosion rate is proportional to the potential difference between the two metals:
+  //   corrosionMultiplier = 1.0 + 3.0 × |E_cathode - E_anode| / 1.5V
+  //   (where E values are standard electrode potentials from the element table)
+  //
+  // Standard electrode potentials (vs. standard hydrogen electrode):
+  //   Zinc: -0.76V   Iron: -0.44V   Tin: -0.14V   Lead: -0.13V
+  //   Copper: +0.34V  Silver: +0.80V  Gold: +1.50V  Platinum: +1.20V
+  //
+  // Examples:
+  //   Iron nail in copper fitting: |0.34 - (-0.44)| = 0.78V → multiplier = 2.56×
+  //     The iron corrodes 2.56× faster than iron alone. The copper is PROTECTED.
+  //
+  //   Zinc coating on iron (galvanization): |-0.76 - (-0.44)| = 0.32V
+  //     The ZINC corrodes preferentially, protecting the iron underneath.
+  //     This is why galvanized steel lasts decades in rain — the zinc sacrifices itself.
+  //
+  //   Copper pipe connected to iron pipe (common plumbing mistake):
+  //     Iron section rapidly corrodes at the junction. Copper section stays pristine.
+  //
+  // Gameplay: a player who fastens copper fittings to an iron frame discovers
+  // the iron rots out in a fraction of the time. A player who coats iron with zinc
+  // (by dipping in molten zinc — galvanizing) discovers it lasts much longer.
+  // Both discoveries emerge from the element table's electrode potentials —
+  // no special "corrosion recipe" needed.
+  //
+  // Implementation: for metal connections between dissimilar metals, apply
+  // corrosionMultiplier to the existing rain damage rate for the more reactive metal.
+  // The less reactive metal's corrosion rate is reduced proportionally.
+  // This connects to structural physics (§3.4): corroded fasteners have reduced
+  // bondStrength. The decay system applies corrosionMultiplier to the existing
+  // rain damage rate for metal connections between dissimilar metals.
+
+  // ── Freeze-thaw damage ────────────────────────────────────────────────
+  //
+  // Water in cracks freezes → expands 9% → widens cracks → thaws → refreezes
+  // Over many cycles: stone blocks crack and crumble
+  //   damagePerCycle = 0.1% of compressiveStrength
+  //   In climates with daily freeze-thaw (spring/autumn): significant over a game-year
+  //   Prevention: dense stone with few pores (granite > limestone > sandstone)
+
+  // ── Maintenance and Repair ──────────────────────────────────────────
+  //
+  // Players (and NPCs) must maintain structures:
+  //   Replace crumbling mortar (repoint walls)
+  //   Replace rotting wood beams
+  //   Repair roof leaks (a leaking roof accelerates all interior decay ×3)
+  //   Paint/coat exposed wood and metal
+  //
+  // Repair actions and their effects:
+  //   Repoint mud mortar:    bondStrength restored to 0.08 MPa (80% of fresh 0.1 MPa)
+  //   Repoint lime mortar:   bondStrength restored to 1.8 MPa (90% of fresh 2.0 MPa)
+  //   Replace thatch roof:   durability = 1.0 (fully restored — thatch is replaceable)
+  //   Replace wood beam:     new beam, durability = 1.0 (requires matching wood MaterialPacket)
+  //   Oil/tar coating:       resets rain damage timer, adds 0.95 waterproofing for 30 game-days
+  //   Lime plaster coating:  blocks rain from reaching mud walls, lasts 60 game-days
+  //
+  // Repair CANNOT exceed original values. Damaged stone cannot be "repaired" —
+  // only replaced. A cracked granite block must be removed and a new one placed.
+  //
+  // Building lifespan without maintenance:
+  //   Stone + lime mortar: effectively forever (centuries in real life)
+  //   Stone + mud mortar: ~20-30 game-years (mortar dissolves, blocks shift)
+  //   Wood frame: ~50-100 game-years (rot, insect damage, joint loosening)
+  //   Mud brick: ~5-10 game-years (rain dissolves the blocks themselves)
+  //   Thatch roof: ~3-5 game-years (biodegrades, leaks)
+  //
+  // NPC settlements maintain their buildings through the SLM:
+  //   "The storage hut roof is leaking. I'll repair it with new thatch."
+  //   When no NPCs remain → no maintenance → structures decay → ruins
+  //   This is why §5.1 mentions dead settlements leaving ruins
+
+  // ── Fire damage ───────────────────────────────────────────────────────
+  //
+  // Fire weakens and destroys building materials:
+  //   Wood: burns completely if sustained fire (ignition from §3.1 fire properties)
+  //     A wooden wall catches fire → burns for 10-30 game-minutes → collapses
+  //     Fire spreads to adjacent wooden structures (fire contagion)
+  //   Stone: survives fire but thermal shock can crack it
+  //     Stone heated to 500°C+ then rapidly cooled (rain, water) → spalls and cracks
+  //     compressiveStrength reduced by 30-50% after fire exposure
+  //   Mud brick: moderate fire resistance (clay is pre-fired, somewhat heat-resistant)
+  //   Metal: doesn't burn but softens at high temperature
+  //     Iron above 500°C: structural capacity drops significantly
+  //     A building fire doesn't melt iron but weakens it enough to buckle
+  //
+  // Historical example: The Great Fire of London (1666) destroyed 13,000 houses
+  //   because they were all timber-framed. The rebuilding used stone and brick.
+  //   In-game: a player who builds everything from wood risks total loss from one fire.
+
+  // ── Thermal stress ─────────────────────────────────────────────────────
+  //
+  // When a block is heated unevenly (one face hot, opposite face cold),
+  // differential thermal expansion creates internal stress:
+  //
+  //   σ_thermal = E × α × ΔT
+  //   where:
+  //     E = Young's modulus (Pa)
+  //     α = thermal expansion coefficient (1/°C)
+  //     ΔT = temperature difference across the block (°C)
+  //
+  //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
+  //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
+  //     This happens when: fire on one side of a stone wall, sun on south face
+  //
+  //   Thermal shock resistance parameter: R = σ_t × k / (E × α)
+  //     Glass: R = 40 → shatters when quenched from >80°C temperature difference
+  //     Copper: R = 12,000 → survives quenching from 500°C+ (safe for quench hardening)
+  //     Ceramic: R = 200 → survives moderate thermal shock but not extreme
+  //
+  //   Gameplay effect: dropping a hot ceramic pot into cold water SHATTERS it.
+  //   Quenching hot copper in water is SAFE. This emerges from the R parameter
+  //   without any special "pottery breaks in water" rule.
+  //
+  //   Daily thermal cycling (sun-facing walls heat during day, cool at night)
+  //   causes cumulative fatigue damage. Over many game-years, south-facing stone
+  //   walls develop surface cracks. This accelerates freeze-thaw damage because
+  //   cracks let water in deeper.
+}
+```
+
+##### Performance — How Structural Checks Run
+
+```
+StructuralPerformance {
+  // Structural integrity is NOT checked every frame for every block.
+  // It is checked only when something changes.
+
+  // ── When to recalculate ───────────────────────────────────────────────
+  //
+  // Trigger events:
+  //   1. Block placed → check the new block + all blocks it connects to
+  //   2. Block removed (destroyed, dug out) → check all blocks that depended on it
+  //   3. Bond broken (mortar dissolved by rain, nail rusted) → check affected blocks
+  //   4. Impact event (combat, falling object) → check struck block + neighbors
+  //   5. Wind change (storm begins) → check exposed walls
+  //   6. Periodic decay check (once per game-day) → check all weather-exposed blocks
+  //
+  // NOT checked: every frame, every tick, or for blocks with no changes
+
+  // ── Propagation algorithm (references Force Propagation above) ───────
+  //
+  // When a trigger occurs, run the 4-phase load path algorithm:
+  //   Phase 1: BFS connectivity check from ground — O(N) where N = blocks
+  //   Phase 2: Top-down load accumulation with 1:4 spreading
+  //   Phase 3: Stress checks (compressive, tensile/beam, shear)
+  //   Phase 4: Cascade collapse in batched waves until stable
+  //
+  // For block removal specifically, use targeted BFS:
+  //   Only check neighbors of the removed block, not the whole structure.
+  //   BFS from each neighbor toward ground — if no path → floating.
+  //   Blocks already confirmed supported are cached (skip re-check).
+  //   Cost: O(K) where K = affected neighborhood, NOT the full structure.
+  //
+  // Optimization: precompute articulation points (Tarjan's algorithm).
+  //   An articulation point is a block whose removal disconnects the graph.
+  //   If a removed block was NOT an articulation point → no floating blocks.
+  //   Skip the expensive connectivity re-check entirely.
+  //   Precompute once at structure creation, update incrementally on changes.
+
+  // ── Cost ──────────────────────────────────────────────────────────────
+  //
+  // Phase 1 (connectivity BFS):     O(N), ~0.02ms per 100 blocks
+  // Phase 2 (load accumulation):    O(N), ~0.03ms per 100 blocks
+  // Phase 3 (stress checks):        O(N + B) where B = detected beams, ~0.05ms per 100 blocks
+  // Phase 4 (cascade per wave):     O(K) per wave, K = neighborhood of failed blocks
+  // Arch detection:                  O(N) once, then cached until structure changes
+  // Beam detection:                  O(N) per axis scan, cached
+  //
+  // Typical structure: 50-200 blocks
+  // Full recalculation: ~0.1-0.3ms (all 4 phases)
+  // Events per game-day (quiet): ~0 (nothing changes)
+  // Events per game-day (construction): ~5-20 (player placing blocks)
+  // Events per game-day (siege): ~50-100 (blocks being destroyed, cascading)
+  //
+  // Maximum cascade: a 1000-block castle losing a load-bearing wall →
+  //   ~500 blocks recalculated → ~5ms → 3-6 waves → plus debris rigid bodies
+  //   Server handles this in one tick. Client sees a spectacular collapse.
+  //   Debris rigid bodies capped at 50-100 for physics performance.
+}
+```
+
+
+### 3.5 Networking & Hybrid Rendering
+
+#### The Principle
+
+This is a real-world online simulation. The server is the world. The client is a window into that world — eyes and ears only. If the server doesn't know about it, it didn't happen. This prevents cheating and ensures all players experience the same reality.
+
+#### Authority Model
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         SERVER (Railway Node.js)                             │
+│                                                                              │
+│  AUTHORITATIVE (server computes, broadcasts results):                        │
+│  ├── All physics simulations                                                 │
+│  │   ├── SPH/MPM fluid particles (up to 400k; melting, pouring, lava, flow) │
+│  │   ├── Material packet reactions (Gibbs free energy, stoichiometry)        │
+│  │   ├── Temperature propagation (heat transfer between objects)             │
+│  │   ├── Rigid body physics (dropped items, thrown objects, digging debris)  │
+│  │   └── Terrain collision and modification                                  │
+│  ├── All entity state                                                        │
+│  │   ├── Player positions (server validates movement)                        │
+│  │   ├── Player stats (health, hunger, thirst, energy, stamina, temperature)│
+│  │   ├── Player inventory (server controls all add/remove)                   │
+│  │   ├── NPC state machines (goal loops, positions, carried items)           │
+│  │   ├── Organism simulation (births, deaths, movement, feeding)            │
+│  │   └── Dropped item positions and despawn timers                           │
+│  ├── Weather and atmosphere (§4.6)                                           │
+│  ├── Settlement economy (trade, population, resource stockpiles)             │
+│  ├── Crafting validation (interaction engine runs server-side)               │
+│  └── Death, loot drops, respawn timing                                       │
+│                                                                              │
+│  BROADCAST TO CLIENTS:                                                       │
+│  ├── WORLD_SNAPSHOT (6 Hz): player positions, NPC positions, organism       │
+│  │   positions, settlement state                                             │
+│  ├── ENVIRONMENT_STATE (1 Hz): weather (wind speed/dir, rain rate,          │
+│  │   temperature, humidity, cloud cover), fire positions + intensities,      │
+│  │   river flow vectors, sun position, season. Drives client GPU shaders.   │
+│  ├── PARTICLE_UPDATE (30 Hz): delta-compressed positions, spatial LOD,       │
+│  │   spawn/kill events (~97 KB/s typical, ~549 KB/s peak eruption)          │
+│  ├── PHYSICS_EVENT (as needed): material                                     │
+│  │   reactions, temperature changes, terrain modifications                   │
+│  ├── SOUND_EVENT (as needed): physics event descriptors for audio            │
+│  │   { type, materialA, materialB, energy, position, contactNormal }        │
+│  └── ENTITY_UPDATE (as needed): inventory changes, stat changes, deaths     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         CLIENT (Browser, Three.js)                           │
+│                                                                              │
+│  RECEIVES AND RENDERS (never computes authoritative state):                  │
+│  ├── Visual rendering                                                        │
+│  │   ├── Terrain mesh from server-sent CHUNK_DATA (no local generation)      │
+│  │   ├── Player/NPC body meshes at server-provided positions                 │
+│  │   ├── Fluid rendering: Tier 1 marching cubes / Tier 2 screen-space SSFR  │
+│  │   ├── Secondary particles (spray, foam, bubbles — client-generated)       │
+│  │   ├── Weather visuals (rain particles, snow, fog, clouds, lightning)      │
+│  │   ├── Lighting (sun position from season/time, torches, campfires)        │
+│  │   ├── Ocean shader (Gerstner waves — visual only, no physics)            │
+│  │   └── UI panels (inventory, craft, map)                                   │
+│  ├── Sound generation (§3.3)                                               │
+│  │   ├── Receives SOUND_EVENT from server                                    │
+│  │   ├── Computes audio parameters locally (pitch, volume, timbre)           │
+│  │   ├── Spatial audio positioning from server-provided source position      │
+│  │   └── Environment filtering (cave/forest/underwater) from local geometry  │
+│  ├── Input capture                                                           │
+│  │   ├── WASD + mouse → sends MOVE_INPUT to server                          │
+│  │   ├── Click/interact → sends ACTION_REQUEST to server                     │
+│  │   ├── Tool swing → sends TOOL_USE { target, position } to server         │
+│  │   └── Drop/pour/place → sends corresponding request to server            │
+│  └── Client-side prediction (for responsiveness)                             │
+│      ├── Player movement is predicted locally, corrected by server          │
+│      ├── Tool swing animation plays immediately, result comes from server   │
+│      └── Camera and first-person arms are client-only (no server involved)  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Server-Authoritative Physics
+
+- **Anti-cheat:** If the client computed reactions, a modified client could claim "I smelted gold from dirt." The server runs the reaction engine — the client only sees the result.
+- **Consistency:** Two players watching the same smelting see the same outcome because the server computed it once.
+- **Sound from physics:** Sound events are a byproduct of server physics. When an impact happens server-side, the server emits a `SOUND_EVENT` with the physics descriptor. The client's audio engine (§3.3) converts that into actual audio. The client hears what the server says happened — not what the client thinks happened.
+
+#### Latency Mitigation
+
+Server-authoritative physics adds latency. A player swings a pickaxe → request goes to server → server computes → result comes back. At 50ms round-trip, this is barely noticeable. At 200ms, it feels sluggish. Mitigations:
+
+```
+Client-Side Prediction {
+  // Movement: client immediately moves the player mesh, server corrects if wrong
+  // If server position diverges > 0.5m from client prediction → snap correction
+
+  // Tool animations: client plays the swing animation immediately
+  // The physical result (rock fragment, sparks, sound) waits for server confirmation
+  // Typical delay: 30-80ms — fast enough that animation covers the gap
+
+  // Crafting: client shows "processing..." immediately when player starts a craft
+  // Server validates and returns result. If invalid, client shows failure feedback.
+
+  // Pouring liquid: client shows a visual pour stream immediately
+  // Actual SPH particles are spawned by server and streamed to client
+  // Visual stream hides the 50ms gap before real particles appear
+}
+```
+
+#### Bandwidth Budget
+
+```
+Per player, per second (steady state — not moving to new chunks):
+  WORLD_SNAPSHOT (6 Hz):    ~2 KB × 6 = 12 KB/s     (positions, compressed)
+  PHYSICS_EVENT (variable): ~0.5 KB average           (only during active physics)
+  SOUND_EVENT (variable):   ~0.1 KB average           (compact descriptors)
+  ENTITY_UPDATE (variable): ~0.2 KB average           (stat changes, inventory)
+  Player input (upstream):  ~0.5 KB/s                 (movement + actions)
+
+  Total per player (steady): ~13 KB/s downstream, ~0.5 KB/s upstream
+  50 concurrent players: ~650 KB/s total server bandwidth
+
+Per player, burst (entering new area):
+  CHUNK_DATA (9 chunks):    ~90 KB burst              (one-time, cached after)
+  This is a brief spike when the player moves into unexplored terrain.
+  Chunks are cached on the client — subsequent visits to the same area cost nothing.
+
+Per player, terrain modification:
+  CHUNK_UPDATE:             ~10 KB per modified chunk  (rare — only when digging/building)
+
+Per player, video stream mode (when active):
+  H.264 NVENC (720p):      ~750 KB/s (~6 Mbit/s)    (replaces all other visual data)
+  JPEG fallback:            ~2-3 MB/s                 (if MSE not supported)
+  Sound data still sent separately as SOUND_EVENTs
+```
+
+#### Hybrid Rendering — Local 3D + Server Video Stream
+
+##### The Problem
+
+The client needs to show the world. Two extremes exist:
+
+1. **Send state data, client renders 3D** — cheap bandwidth (~13 KB/s), but the client must reconstruct complex physics visuals (SPH particles, fire, debris, deforming materials) from abstract position data. This is hard. Thousands of SPH particles flowing in a crucible can't be faithfully rendered from just position arrays — the client would need the full physics context (material properties, surface tension, light interaction with molten metal) to make it look right. The result would either look wrong or require the client to run its own physics (which defeats server authority).
+
+2. **Server renders everything, streams video** — pixel-perfect visuals, but costs ~750 KB/s per player and requires a GPU server. Works for complex scenes but wasteful for a player standing in a field looking at terrain.
+
+Neither extreme is ideal. The hybrid approach uses each where it's strongest.
+
+##### Two Rendering Modes
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  MODE 1: State + Shader Rendering (default, ~90% of play time)             │
+│                                                                             │
+│  Used when: exploring, walking, standing on a beach, watching weather,     │
+│             looking at a campfire, rain falling, rivers flowing, ocean      │
+│             waves, wind blowing through trees — the full living world      │
+│                                                                             │
+│  Server sends: WORLD_SNAPSHOT + CHUNK_DATA + ENTITY_UPDATE                 │
+│                + ENVIRONMENT_STATE (wind speed/dir, rain rate, fire        │
+│                  positions, river flow vectors, temperature field)          │
+│  Client does:  Full 3D rendering with GPU shaders that make the world     │
+│                look REAL:                                                   │
+│                                                                             │
+│    TERRAIN:     Meshes from CHUNK_DATA with PBR materials, normal maps     │
+│    OCEAN:       Gerstner wave shader (already built) — realistic waves     │
+│                 that respond to wind speed/direction from server. Foam,     │
+│                 Fresnel reflections, depth transparency, shoreline wash.    │
+│    RIVERS:      Flow shader driven by server-provided flow vectors.        │
+│                 Scrolling normal maps, foam at rocks, speed variation.      │
+│    RAIN:        GPU particle system — 10,000+ raindrops as point sprites.  │
+│                 Splash particles on terrain contact. Puddle accumulation    │
+│                 shader on low terrain (heightmap depressions fill up).      │
+│    SNOW:        GPU particle system — slow falling, wind-affected.         │
+│                 Accumulation shader: terrain albedo lerps to white.         │
+│    FIRE:        Billboard particle system with noise-driven distortion.    │
+│                 Emissive glow, light emission (point light at fire pos).    │
+│                 Smoke: alpha-blended particles rising, wind-affected.       │
+│                 Ember sparks: tiny emissive particles with short life.      │
+│    WIND:        Vertex shader displacement on vegetation (grass, trees).   │
+│                 Amplitude and frequency from server wind speed.             │
+│    FOG:         Exponential distance fog with density from server weather.  │
+│    CLOUDS:      Scrolling noise layers at altitude, density from server.   │
+│    LIGHTNING:   Bright flash + branching line geometry (rare, storm only).  │
+│    CHARACTERS:  Animated skeletal meshes at server-provided positions.      │
+│    OBJECTS:     Static meshes with PBR materials.                           │
+│    LIGHTING:    Sun from orbital position, dynamic shadows, ambient.       │
+│                 Point lights from fires/torches with flicker.               │
+│    DAY/NIGHT:   Sky shader with atmospheric scattering. Stars at night.    │
+│                                                                             │
+│  The world looks FULLY REAL in Mode 1. A player standing on a beach sees  │
+│  waves crashing, foam washing up, rain falling, wind bending grass,        │
+│  firelight flickering in the distance, clouds moving overhead. This is     │
+│  NOT a degraded view. This is the normal, full-quality game experience.    │
+│                                                                             │
+│  What the client CANNOT do in Mode 1:                                      │
+│  Only things that require INTERACTIVE physics simulation results:           │
+│    - SPH fluid that the player is actively pouring or mixing               │
+│    - Molten metal flowing into a mold (shape depends on simulation)        │
+│    - Material deforming under hammer blows (precision craft)               │
+│    - Clay being shaped on a wheel (player-driven deformation)              │
+│  These need the server to compute what happens and show the result.        │
+│                                                                             │
+│  Bandwidth: ~15 KB/s steady + ~90 KB burst for new chunks                  │
+│  Client needs: GPU (any modern integrated GPU handles all these shaders)   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  MODE 2: Video Stream (only for interactive physics, ~10% of play time)    │
+│                                                                             │
+│  Used ONLY when the player is directly interacting with physics:            │
+│    - Precision crafting (§6.4): shaping clay, knapping flint, forging   │
+│    - Pouring liquid from one container to another                           │
+│    - Smelting: watching ore melt and metal separate from slag               │
+│    - Active lava flow deforming terrain in front of the player              │
+│    - Any moment where the visual result depends on real-time simulation    │
+│                                                                             │
+│  NOT used for: watching ocean waves, standing near a campfire, rain,       │
+│                walking through a forest, watching NPCs work — all of       │
+│                these look great in Mode 1 with GPU shaders.                 │
+│                                                                             │
+│  Server does: renders the scene on its GPU using server-side 3D renderer   │
+│               encodes H.264 via hardware encoder (or JPEG fallback)        │
+│               streams frames over WebSocket                                 │
+│  Client does: decodes video via MSE and displays in <video> element        │
+│               still captures and forwards player input                      │
+│               still plays sound from SOUND_EVENTs (not from video audio)   │
+│                                                                             │
+│  Bandwidth: ~750 KB/s (H.264) or ~2-3 MB/s (JPEG fallback)               │
+│  Server needs: GPU with hardware encoder                                   │
+│  Client needs: just a browser (no GPU required)                            │
+│                                                                             │
+│  Why video is needed here: the player is CREATING the visual result.       │
+│  When you pour copper into a mold, the shape of the liquid depends on      │
+│  SPH simulation. A shader can't fake that — it must be computed.           │
+│  When you hammer metal on an anvil, each blow deforms the mesh in a        │
+│  way that depends on force, angle, temperature. Only the server knows      │
+│  the result. So the server renders it and streams the image.               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+##### When and How the Switch Happens
+
+The switch between modes is triggered by **the player's actions**, not by scene complexity analysis. This makes it predictable and clean.
+
+```
+Mode Switch Triggers {
+  // ── State → Video (player enters a physics-heavy context) ─────────────────
+
+  trigger_1: "Player initiates precision interaction with materials/arrangements"
+    // Camera zooms into the craft arrangement (§6.4 precision craft mode)
+    // During the zoom animation (0.5s), the server:
+    //   1. Starts rendering this player's view on the GPU
+    //   2. Begins encoding H.264 frames
+    //   3. Sends MODE_SWITCH { mode: 'video' } to client
+    // Client:
+    //   1. Receives MODE_SWITCH
+    //   2. Creates/shows <video> element (or JPEG canvas)
+    //   3. Fades out the 3D canvas, fades in the video
+    //   4. The zoom blur hides any visual discontinuity during the transition
+    //   5. From this point, client displays video frames from server
+    //   6. Client still sends input (mouse position for precision craft, keyboard)
+
+  trigger_2: "Active SPH particles > 200 within 10m of player"
+    // A lava flow reaches the player, or someone pours a large amount of liquid nearby
+    // Server detects the threshold and initiates video mode
+    // Transition: 0.3s crossfade from 3D to video
+
+  trigger_3: "Player enters precision craft mode manually"
+    // Player holds an item and presses the precision key
+    // Same as trigger_1 — zoom in, switch to video
+
+  // ── Video → State (physics event ends) ────────────────────────────────────
+
+  trigger_4: "Player exits precision craft mode (ESC or walks away)"
+    // Camera zooms out
+    // During zoom out (0.5s), server:
+    //   1. Sends final state update (what changed: new items, terrain mods)
+    //   2. Sends MODE_SWITCH { mode: 'state' }
+    //   3. Stops encoding video for this player
+    // Client:
+    //   1. Receives MODE_SWITCH
+    //   2. Fades out video, fades in 3D canvas
+    //   3. 3D scene is already up-to-date from state data received during video mode
+    //      (WORLD_SNAPSHOT continues during video mode — client updates 3D scene in background)
+
+  trigger_5: "Active SPH particles drop below 50 near player"
+    // The liquid solidified, the lava cooled, the pour is done
+    // Server sends final state, switches back to state mode
+    // 0.3s crossfade back to 3D
+}
+```
+
+##### Implementation — How It Actually Works
+
+The technology already exists in the codebase (§13.6). The hybrid system connects it:
+
+```
+Server Side (Node.js + headless-gl + NVENC):
+
+  // The server already has:
+  //   - headless-gl creating a WebGL context
+  //   - Three.js v0.152 rendering scenes
+  //   - FFmpeg h264_nvenc encoding frames at ~3-8ms per frame
+  //   - WebSocket transport for binary frame data
+  //   - Per-player camera management
+
+  // What's new for hybrid mode:
+  //   - The server does NOT render video for all players all the time
+  //   - Video rendering is ON-DEMAND, per player, only during physics moments
+  //   - Each player has a videoMode: boolean flag
+
+  class PlayerSession {
+    videoMode: boolean = false           // starts in state mode
+    camera: THREE.PerspectiveCamera      // player's view (always maintained)
+    ffmpegProcess: ChildProcess | null   // spawned only when videoMode = true
+
+    enterVideoMode() {
+      this.videoMode = true
+      // Spawn FFmpeg NVENC encoder for this player
+      this.ffmpegProcess = spawn('ffmpeg', [
+        '-f', 'rawvideo', '-pix_fmt', 'rgba',
+        '-s', '1280x720', '-r', '30',       // 720p at 30fps
+        '-i', 'pipe:0',                       // raw frames from stdin
+        '-c:v', 'h264_nvenc',                 // NVIDIA hardware encoder
+        '-preset', 'p4',                      // balanced quality/speed
+        '-tune', 'ull',                       // ultra-low-latency
+        '-b:v', '4M',                         // 4 Mbit/s bitrate
+        '-f', 'mp4',
+        '-movflags', 'frag_keyframe+empty_moov',
+        'pipe:1'                              // fragmented MP4 to stdout
+      ])
+      // FFmpeg stdout → WebSocket binary frames to client
+      this.ffmpegProcess.stdout.on('data', chunk => {
+        this.ws.send(chunk)                   // binary frame to browser
+      })
+      // Send mode switch message
+      this.ws.send(JSON.stringify({ t: 'mode', mode: 'video' }))
+    }
+
+    exitVideoMode() {
+      this.videoMode = false
+      if (this.ffmpegProcess) {
+        this.ffmpegProcess.stdin.end()        // graceful shutdown
+        this.ffmpegProcess = null
+      }
+      this.ws.send(JSON.stringify({ t: 'mode', mode: 'state' }))
+    }
+  }
+
+  // Render loop (runs at 30 Hz for video-mode players only):
+  function renderVideoFrames() {
+    for (const session of activeSessions) {
+      if (!session.videoMode) continue        // skip state-mode players — no rendering needed
+
+      // Position camera at player's view
+      renderer.render(scene, session.camera)
+
+      // Read pixels from GPU
+      const pixels = new Uint8Array(1280 * 720 * 4)
+      gl.readPixels(0, 0, 1280, 720, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+
+      // Feed to this player's FFmpeg process
+      session.ffmpegProcess.stdin.write(Buffer.from(pixels))
+    }
+  }
+
+  // Server cost: rendering ONLY happens for players in video mode
+  // If 50 players are online but only 3 are in precision craft mode, only 3 get rendered
+  // GTX 5070 can handle ~8-10 simultaneous 720p renders at 30fps
+```
+
+```
+Client Side (Browser):
+
+  class GameClient {
+    mode: 'state' | 'video' = 'state'
+    threeCanvas: HTMLCanvasElement           // 3D rendering (always exists)
+    videoElement: HTMLVideoElement           // MSE video playback
+    mediaSource: MediaSource                 // for H.264 decoding
+    sourceBuffer: SourceBuffer | null
+
+    // 3D scene is ALWAYS maintained, even during video mode
+    // This means switching back to state mode is instant — no loading
+    threeScene: THREE.Scene
+    threeRenderer: THREE.WebGLRenderer
+
+    onMessage(data) {
+      if (typeof data === 'string') {
+        const msg = JSON.parse(data)
+
+        if (msg.t === 'mode') {
+          this.switchMode(msg.mode)
+          return
+        }
+
+        // State data — always processed, even during video mode
+        if (msg.t === 'snapshot') this.updateSceneFromSnapshot(msg)
+        if (msg.t === 'chunk')    this.loadChunkData(msg)
+        if (msg.t === 'sound')    this.playSound(msg)
+        if (msg.t === 'entity')   this.updateEntity(msg)
+      } else {
+        // Binary data = video frame (only arrives during video mode)
+        if (this.sourceBuffer && !this.sourceBuffer.updating) {
+          this.sourceBuffer.appendBuffer(data)
+        }
+      }
+    }
+
+    switchMode(newMode: 'state' | 'video') {
+      if (newMode === this.mode) return
+
+      if (newMode === 'video') {
+        // Crossfade: 3D canvas fades out, video fades in
+        this.threeCanvas.style.transition = 'opacity 0.4s'
+        this.threeCanvas.style.opacity = '0'
+        this.videoElement.style.transition = 'opacity 0.4s'
+        this.videoElement.style.opacity = '1'
+        this.videoElement.style.display = 'block'
+        // Start MSE pipeline
+        this.initMSE()
+      } else {
+        // Crossfade: video fades out, 3D canvas fades in
+        this.videoElement.style.opacity = '0'
+        this.threeCanvas.style.opacity = '1'
+        // 3D scene is already up-to-date (state data kept flowing during video mode)
+        setTimeout(() => {
+          this.videoElement.style.display = 'none'
+          this.cleanupMSE()
+        }, 400)
+      }
+
+      this.mode = newMode
+    }
+
+    // Input is ALWAYS captured and sent to server, regardless of mode
+    // In state mode: server uses input to update player position
+    // In video mode: server uses input for precision craft (mouse on work surface)
+  }
+```
+
+##### Why This Works
+
+| Concern | Answer |
+|---------|--------|
+| "How does the client show SPH particles?" | It doesn't. When physics is active, the server renders it and streams video. The client sees pixel-perfect fluid. |
+| "Doesn't video streaming need an expensive GPU server?" | Only for the ~10% of time when players are in precision craft mode or near active physics. The GTX 5070 you already have handles ~8-10 concurrent video streams. |
+| "What about latency in video mode?" | NVENC encoding: ~3-8ms. Network: ~20-50ms. MSE decode: ~5ms. Total: ~30-60ms. For precision crafting (slow, deliberate actions), this is imperceptible. |
+| "What if 50 players all enter precision craft mode at once?" | The server queues rendering. At 30fps each, 10 players max at 720p on a single GPU. Beyond that: lower resolution, lower framerate, or add a second GPU. In practice, most players are walking around (state mode = zero GPU cost). |
+| "What does the transition look like?" | Player presses F at bloomery → camera zooms in → 0.4s blur/fade → video appears. The zoom motion and blur hide the switch. Looks intentional, not glitchy. |
+| "Can the 3D scene get out of sync during video mode?" | No — state data (WORLD_SNAPSHOT, CHUNK_UPDATE, ENTITY_UPDATE) continues flowing during video mode. The 3D scene updates silently in the background. When switching back, it's already current. |
+| "What if the player has no GPU at all?" | They can stay in video mode permanently — the server renders everything. This is the full cloud gaming fallback. Bandwidth cost: ~750 KB/s constant. Playable on a Chromebook. |
+
+##### Server Hardware Requirements
+
+```
+For state mode only (no video):
+  Railway Node.js server (no GPU needed)
+  Handles 50+ players at ~650 KB/s total
+
+For hybrid mode (state + video):
+  GPU server with NVIDIA card + NVENC
+  Already have: GTX 5070 (local) — see §13.4
+  Capacity per GPU:
+    720p @ 30fps: ~8-10 concurrent video streams
+    480p @ 30fps: ~15-20 concurrent video streams
+    720p @ 15fps: ~15-20 concurrent video streams (lower framerate for less intense moments)
+
+  Scaling:
+    50 players, 5 in precision craft mode → 5 video streams → 1 GPU handles it easily
+    50 players, 15 in precision craft mode → need 2 GPUs or lower resolution
+    100 players → dedicated GPU server (AWS g5.xlarge or similar)
+```
+
+### 3.6 Cross-System Connections — The Complete Data Flow Between Every System
+
+Every system in the game sends data to other systems. This section specifies the exact
+data structures, trigger conditions, conversion formulas, algorithms, and edge cases
+for every connection. 31 connections total (15 critical + 16 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
 ---
+
 
 ##### Connection 1: Sound Event Generation
 
@@ -2420,3367 +6038,6 @@ NPCMaintenanceSystem {
 }
 ```
 
-### 3.1 Emergent Material System — Nothing Is Pre-Defined
-
-#### The Principle
-
-The universe does not have a recipe list. Helium was not "designed" — it emerged when hydrogen atoms were forced together under extreme temperature and pressure inside a star. Bronze was not "invented" — it is what happens when copper and tin atoms mix above 950°C and cool together. Glass was not "planned" — it is what happens when silicon dioxide melts at 1700°C and cools too quickly to crystallize.
-
-The game should work the same way. **No material is pre-defined. Every material is the result of rules applied to simpler materials under specific conditions.** The system doesn't know what "bronze" is. It knows what happens when a packet of mostly-copper meets a packet of mostly-tin at high temperature. The result has properties calculated from the inputs — and those properties happen to match what humans call bronze.
-
-This means:
-- The developer never writes `{ name: "bronze", hardness: 3.5, meltingPoint: 950 }` as a static entry
-- Instead, the system computes: "a Cu₀.₈₈Sn₀.₁₂ alloy at 25°C has Mohs hardness ≈ 3.5, melting point ≈ 950°C" from the component properties and known alloy rules
-- A player who mixes copper and zinc instead gets a different result — brass — without anyone coding brass
-- A player who mixes copper, tin, AND a small amount of phosphorus gets phosphor bronze — harder, more elastic — also without anyone coding it
-
-The game builds its material universe the same way the real universe did: from the bottom up.
-
-#### What Is a Material Packet
-
-The fundamental unit is not an atom (too expensive) or a named material (too rigid). It is a **material packet** — a chunk of matter with a composition, mass, temperature, and phase.
-
-```
-MaterialPacket {
-  // --- Identity: what is this made of? ---
-  composition: Map<Element, number>    // element → mass fraction (sums to 1.0)
-                                        // e.g., { Cu: 0.88, Sn: 0.12 }
-
-  // --- Physical state ---
-  mass: number                          // kg
-  temperature: number                   // °C
-  phase: 'solid' | 'liquid' | 'gas' | 'plasma'
-  pressure: number                      // Pa (default: 101325 = 1 atm)
-
-  // --- Derived (computed from composition + state, never stored manually) ---
-  // Every property below is CALCULATED from composition using real formulas.
-  // Nothing is looked up from a table. The property calculator runs the formula
-  // each time a property is needed (cached per temperature change).
-
-  // ── Phase transition ──────────────────────────────────────────────────────
-  meltingPoint: number                  // °C — CALPHAD weighted average + eutectic corrections
-  boilingPoint: number                  // °C — Clausius-Clapeyron relation from vapor pressure
-  latentHeatFusion: number           // J/kg — energy to melt at melting point (no temp change)
-                                      // Clausius-Clapeyron: L = T × ΔV × (dP/dT)
-                                      // Used by: §3.2 phase transitions (melting/freezing duration)
-  latentHeatVaporization: number     // J/kg — energy to boil at boiling point (no temp change)
-                                      // Used by: §3.2 phase transitions (boiling duration)
-
-  // ── Mechanical ────────────────────────────────────────────────────────────
-  density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
-  hardness: number                      // Mohs scale — Hall-Petch + solid solution strengthening
-  tensileStrength: number               // Pa — maximum pull force before snap
-  compressiveStrength: number           // Pa — maximum squeeze force before crush
-  shearStrength: number                 // Pa — maximum sideways force before shear
-  youngsModulus: number                 // Pa (elasticity) — how much it flexes before breaking
-                                        // Used by: §3.3 sound (pitch: f₀ = (1/2L)√(E/ρ))
-                                        //          §3.4 structural (span limits, beam deflection)
-  frictionCoefficient: number           // dimensionless — surface friction (μ)
-                                        // Used by: §3.4 structural (stacked block stability)
-
-  // ── Thermal ───────────────────────────────────────────────────────────────
-  thermalConductivity: number           // W/(m·K) — how fast heat moves through material
-  specificHeatCapacity: number          // J/(kg·K) — energy needed to raise 1kg by 1°C
-                                        // Used by: temperature propagation, cooling rate
-                                        // Water: 4186, iron: 449, granite: 790, wood: 1700
-  thermalExpansion: number              // 1/K — how much material expands when heated
-                                        // Used by: structural stress from temperature changes
-  emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
-                                        // Used by: radiative heat loss, fire radiation
-  ignitionTemperature: number           // °C — minimum temp for combustion (organic materials only)
-                                        // Wood: ~300°C, paper: ~230°C, coal: ~450°C, metal: N/A
-  combustionEnergy: number              // J/kg — energy released when burned
-                                        // Used by: fire system, furnace temperature calculation
-                                        // Wood: ~15 MJ/kg, charcoal: ~30 MJ/kg, coal: ~25 MJ/kg
-  flammability: number                  // 0-1 — ease of ignition (modified by moisture)
-                                        // Used by: fire starting success rate
-
-  // ── Electrical ────────────────────────────────────────────────────────────
-  electricalConductivity: number        // S/m — Matthiessen's rule
-
-  // ── Fluid (liquid/gas phase only) ─────────────────────────────────────────
-  viscosity: number                     // Pa·s — resistance to flow
-                                        // Used by: §3.2 SPH (F_viscosity = μ · ∇²v)
-                                        // Water: 0.001, honey: 2-10, lava: 100-10⁶
-                                        // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
-  surfaceTension: number                // N/m — surface cohesion
-                                        // Used by: §3.2 SPH (surface tension force, droplet formation)
-                                        // Water: 0.072, mercury: 0.49, molten iron: 1.87
-
-  // ── Mechanical (deformation state) ────────────────────────────────────────
-  workHardeningState: number            // 0-1 — accumulated plastic strain from mechanical deformation
-                                        // 0 = fully annealed (soft). 1 = fully cold-worked (hard).
-                                        // Increases when: metal is hammered, bent, drawn, rolled
-                                        // Resets to 0 when: heated above recrystallization temperature (~0.4 × T_melt in K)
-                                        // Effect on strength: σ_yield = σ_0 × (1 + K × workHardeningState^n)
-                                        //   K = strain hardening coefficient (0.5-1.5 for metals)
-                                        //   n = strain hardening exponent (0.1 for steel, 0.5 for copper)
-                                        // Used by: §3.4 structural strength, §6.3 crafting (hammering improves tools)
-
-  // ── Acoustic ──────────────────────────────────────────────────────────────
-  acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
-                                        // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
-                                        // Metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001
-  dampingLossTangent: number         // dimensionless — internal friction of the material
-                                      // Determines how quickly vibrations decay (Q factor)
-                                      // Low = rings long (metals: 0.0001-0.001)
-                                      // High = dies quickly (wood: 0.01-0.05, rubber: 0.1-0.5)
-                                      // Used by: §3.3 sound engine (Q = 1 / (2 × dampingLossTangent))
-
-  // ── Chemical ──────────────────────────────────────────────────────────────
-  standardEnthalpy: number              // J/mol — formation enthalpy (ΔH_f°)
-                                        // Used by: reaction engine (ΔG = ΔH - TΔS)
-  standardEntropy: number               // J/(mol·K) — formation entropy (S°)
-  activationEnergy: number              // J/mol — energy barrier for reactions (Ea)
-                                        // Used by: Arrhenius equation k = A·e^(-Ea/RT)
-
-  // ── Environmental interaction ─────────────────────────────────────────────
-  porosity: number                      // 0-1 — how porous (affects water absorption, strength)
-                                        // Used by: §4.6 weather (material moisture model)
-                                        //          §3.4 structural (freeze-thaw damage)
-                                        // Stone: 0.01-0.05, wood: 0.3-0.6, clay brick: 0.15-0.25
-  waterAbsorption: number               // 0-1 — max moisture the material can hold
-                                        // Used by: §4.6 weather (rain → material gets wet)
-                                        // Wood: 0.8, cloth: 0.9, stone: 0.05, metal: 0.0
-
-  // ── Visual ────────────────────────────────────────────────────────────────
-  color: [number, number, number]       // RGB — Drude model for metals, absorption for non-metals
-  crystalStructure: string              // FCC, BCC, HCP, amorphous — Hume-Rothery rules
-  opacity: number                       // 0-1 — transparency (glass: 0.1, metal: 1.0, water: 0.3)
-  reflectivity: number                  // 0-1 — surface reflectance (polished metal: 0.9, wood: 0.1)
-
-  // ── Biological (organic materials only) ───────────────────────────────────
-  calorieContent: number                // kcal/kg — nutritional energy (0 for non-food materials)
-  nutrientContent: { N: number, P: number, K: number }  // fertilizer value when applied to soil
-                                        // Used by: §4.4 farming (manure, bone meal, wood ash)
-}
-```
-
-**Total: 36 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
-
-Every derived property is **calculated**, not looked up. The calculation uses real material science:
-
-| Property | How it's computed | Source | Used by |
-|----------|------------------|--------|---------|
-| Melting point | Weighted average + eutectic corrections from binary phase diagrams | CALPHAD method | Phase transitions, smelting |
-| Boiling point | Clausius-Clapeyron from vapor pressure curves | Thermodynamics | Evaporation, boiling |
-| Latent heat (fusion) | Clausius-Clapeyron: L = T × ΔV × (dP/dT), weighted by composition | Thermodynamics | §3.2 Phase transition duration (melting/freezing) |
-| Latent heat (vaporization) | Clausius-Clapeyron from boiling point + entropy of vaporization | Thermodynamics | §3.2 Phase transition duration (boiling) |
-| Density | `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law | SPH, buoyancy, weight |
-| Hardness | Hall-Petch for grain size + solid solution strengthening | Metallurgy | Tool quality, Mohs scale |
-| Tensile strength | Empirical relation to hardness + crystal structure correction | Materials science | §3.4 beam spans, breaking |
-| Compressive strength | ~10× tensile for stone, ~1× for metals, from crystal bonding | Materials science | §3.4 stacking, foundations |
-| Shear strength | ~0.6× tensile for metals, ~0.15× compressive for stone | Materials science | §3.4 lateral force, wind |
-| Young's modulus | Bonding energy per unit cell × packing density | Solid state physics | §3.3 sound pitch, §3.4 deflection |
-| Friction coefficient | Surface roughness from crystal structure + hardness | Tribology | §3.4 stacked blocks, sliding |
-| Thermal conductivity | Wiedemann-Franz law (metals), phonon model (non-metals) | Solid state physics | Heat transfer, insulation |
-| Specific heat capacity | Dulong-Petit law (3R per mole) + corrections for bonding | Thermochemistry | Temperature change rate |
-| Thermal expansion | Grüneisen parameter from bonding strength | Solid state physics | Structural thermal stress |
-| Emissivity | Surface roughness + composition → Kirchhoff's law | Radiative physics | Heat radiation, fire glow |
-| Ignition temperature | Bond dissociation energy of weakest organic bond | Combustion chemistry | Fire starting |
-| Combustion energy | Hess's law: sum of bond energies (products - reactants) | Thermochemistry | Fire heat, furnace temp |
-| Flammability | Ignition temp × surface area × moisture correction | Fire science | Fire success rate |
-| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | Future: electric circuits |
-| Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
-| Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
-| Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
-| Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
-| Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
-| Standard enthalpy | Tabulated per element, computed for compounds via Hess's law | Thermochemistry | Reaction engine ΔG |
-| Standard entropy | Tabulated per element, computed for compounds | Thermochemistry | Reaction engine ΔG |
-| Activation energy | Tabulated per reaction type, estimated from bond strengths | Reaction kinetics | Arrhenius equation |
-| Porosity | Packing efficiency from crystal structure + grain size | Materials science | Weather damage, absorption |
-| Water absorption | Porosity × surface wettability (contact angle) | Surface chemistry | Rain effect on materials |
-| Color | Drude model (metals), band gap absorption (non-metals) | Optical physics | Rendering |
-| Crystal structure | Hume-Rothery rules: size ratio, electronegativity, valence | Crystallography | Many properties depend on this |
-| Opacity | Band gap energy → photon absorption spectrum | Optical physics | Rendering transparency |
-| Reflectivity | Fresnel equations from refractive index | Optical physics | Rendering, mirror surfaces |
-| Calorie content | Combustion energy × digestibility factor (organic only) | Nutrition science | §7.2 food, §4.4 farming |
-| Nutrient content | Element composition → N/P/K extraction | Soil science | §4.4 fertilizer value |
-
-#### Work Hardening — Hammered Metal Gets Harder
-
-When metals are plastically deformed (hammered, bent, drawn through a die), dislocations in the crystal lattice multiply and tangle, resisting further deformation. The Hollomon equation describes this:
-
-```
-σ = K × ε^n
-where ε is the accumulated plastic strain (tracked as workHardeningState 0→1),
-K is the strength coefficient, n is the strain hardening exponent.
-```
-
-Cold-worked copper (workHardeningState = 0.8) has ~2× the yield strength of annealed copper (0.0). This is the foundation of blacksmithing: hammer a blade to harden it.
-
-Annealing (heating above ~0.4 × T_melt in Kelvin) recrystallizes the grain structure, resetting workHardeningState to 0. This softens the metal for further shaping. The cycle: shape → harden → anneal → reshape → harden → final product.
-
-This connects to sound (§3.3): as a metal workpiece hardens, its Young's modulus and density change slightly, so the pitch of each hammer strike shifts higher with successive blows. An experienced player can hear when the metal is fully work-hardened.
-
-#### Martensite Transformation — How Steel Gets Hard
-
-The single most important material transformation in human technological history. Carbon steel (Fe + 0.1-2.0% C) has dramatically different properties depending on cooling rate:
-
-**Fast cooling (quenching in water/oil):**
-Above 727°C, carbon dissolves in iron (austenite phase, FCC crystal structure). Fast cooling traps carbon in the lattice — atoms can't rearrange. Result: martensite (BCT crystal structure) — extremely hard (HV 600-800) but brittle.
-
-```
-Implemented as: if coolingRate > criticalCoolingRate(composition):
-  workHardeningState = 0.95  // near-maximum hardness
-  ductility = 0.02           // almost no ductility — shatters on impact
-  tensileStrength *= 2.5     // dramatic increase
-```
-
-**Slow cooling (air cool or furnace cool):**
-Carbon has time to separate into iron + iron carbide (Fe₃C) layers. Result: pearlite — softer (HV 200-300) but much tougher.
-
-```
-Implemented as: if coolingRate < criticalCoolingRate(composition):
-  workHardeningState unchanged
-  ductility = 0.2-0.4       // good ductility
-  tensileStrength unchanged
-```
-
-**Tempering:** reheating quenched martensite to 200-600°C for a period reduces brittleness while retaining most hardness. The trade-off is controlled by tempering temperature:
-- 200°C: HV 550, still brittle (springs, files)
-- 400°C: HV 400, moderate toughness (tools, blades)
-- 600°C: HV 250, very tough (structural steel)
-
-The criticalCoolingRate depends on carbon content and alloying elements:
-- Plain carbon steel (0.8% C): ~200°C/sec (must quench in water)
-- Alloy steel (+ Cr, Mo, Ni): ~10°C/sec (can air-harden)
-
-This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The fluid's temperature and heat extraction rate (depends on fluid type: water extracts ~10× faster than oil, oil ~5× faster than air) determines whether martensite forms. A player who quenches in oil instead of water gets a different result — because the physics is different.
-
-This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
-
-#### How Materials Combine: The Reaction Engine
-
-When two packets meet under conditions, the **reaction engine** determines what happens. It does not look up recipes. It checks thermodynamics.
-
-**Step 1 — Can a reaction happen?**
-Check Gibbs free energy: `ΔG = ΔH - TΔS`
-- If `ΔG < 0`: reaction is spontaneous (it wants to happen)
-- If `ΔG > 0`: reaction needs energy input
-- If `ΔG ≈ 0`: equilibrium (both forms coexist)
-
-The enthalpy (ΔH) and entropy (ΔS) values come from the elements' standard formation energies — tabulated from real chemistry, stored per element.
-
-**Step 2 — Is there enough energy?**
-- Temperature must be above activation energy threshold (Arrhenius: `k = A·e^(-Ea/RT)`)
-- Some reactions need a catalyst to lower Ea (e.g., iron catalyst for ammonia synthesis)
-- Some need specific atmosphere (reducing = carbon/CO present, oxidizing = oxygen present)
-
-**Step 3 — What comes out?**
-The output packet's composition is computed from stoichiometry:
-- Conservation of mass: total mass in = total mass out
-- Conservation of elements: every atom that goes in comes out (just rearranged)
-- Energy balance: exothermic reactions heat the output, endothermic reactions cool it
-
-**Step 4 — What are the output's properties?**
-All properties are recalculated from the new composition using the formulas above. The system doesn't know it made "bronze" — it made a Cu-Sn solid solution with computed properties.
-
-#### Example: A Player Discovers Bronze
-
-```
-1. Player has: packet A (composition: {Cu: 1.0}, mass: 1.0kg, temp: 25°C, phase: solid)
-              packet B (composition: {Sn: 1.0}, mass: 0.12kg, temp: 25°C, phase: solid)
-
-2. Player puts both in a bloomery and heats to 1100°C
-
-3. Reaction engine:
-   - Cu melting point: 1085°C → packet A transitions to liquid
-   - Sn melting point: 232°C → packet B already liquid
-   - Two liquids in contact → check miscibility: Cu-Sn are fully miscible in liquid phase
-   - Packets merge: new packet {Cu: 0.89, Sn: 0.11}, mass: 1.12kg, temp: 1100°C, phase: liquid
-
-4. Player removes from heat, packet cools below solidus (~950°C for this composition)
-   - Phase → solid
-   - Crystal structure: FCC (Hume-Rothery: Sn atoms substitute into Cu lattice, size ratio 0.93 ≈ OK)
-   - Hardness: higher than pure Cu (solid solution strengthening)
-   - Color: slightly more golden than pure copper
-
-5. The game has created "bronze" without ever defining bronze.
-```
-
-#### Example: Stellar Nucleosynthesis (The Universe Creates Elements)
-
-The same system works at cosmic scale. During world generation, the simulation can model how the planet's elements formed:
-
-```
-1. Primordial hydrogen cloud collapses under gravity
-2. Core temperature reaches 15,000,000°C, pressure reaches 250 billion atm
-3. Reaction engine: H + H → check ΔG at these conditions → fusion is spontaneous
-4. Output: He packet + energy (E = Δm·c²)
-5. As He accumulates, triple-alpha process: He + He + He → C at 100,000,000°C
-6. C + He → O, then Ne, Mg, Si... up to Fe (where fusion becomes endergonic)
-7. Supernova: extreme conditions create everything heavier than iron via neutron capture
-```
-
-This isn't simulated in real-time during gameplay — it runs once during world generation to establish the planet's elemental abundances. But it uses the same reaction engine. The planet's composition is DERIVED, not hardcoded.
-
-#### The Compounding Rule: 1 + 1 = 2
-
-Materials don't just react — they aggregate. Two dirt packets combine into one larger dirt packet. This is simple mass addition with composition averaging:
-
-```
-packet A: {Si: 0.33, O: 0.47, Al: 0.08, Fe: 0.05, ...}, mass: 0.5kg
-packet B: {Si: 0.30, O: 0.50, Al: 0.10, Fe: 0.04, ...}, mass: 0.3kg
-
-Result: weighted composition average, mass: 0.8kg
-  Si: (0.33×0.5 + 0.30×0.3) / 0.8 = 0.319
-  O:  (0.47×0.5 + 0.50×0.3) / 0.8 = 0.481
-  ... etc.
-```
-
-This means:
-- Two packets in contact as liquids merge by mass-weighted composition averaging
-- Splitting a packet divides mass but keeps the same composition
-- Impurities naturally accumulate or dilute through liquid mixing
-- Ore quality varies by location (different packets have different trace elements)
-- Purification is the process of separating a mixed packet into purer sub-packets
-- Inventory stacking does NOT merge composition — two ore chunks share a slot but remain separate objects (see §7.3). Merging requires melting both into liquid.
-
-#### What This Replaces
-
-The current `MaterialRegistry.ts` with 118 pre-defined materials becomes:
-1. **Element table** — 118 entries with REAL measured properties (atomic mass, melting point, density, electronegativity, standard formation enthalpy). This is the only static data. It comes from the periodic table — nature's constants.
-2. **Reaction engine** — thermodynamic rules that compute what happens when packets interact
-3. **Property calculator** — derives all material properties from composition using material science formulas
-4. **Packet store** — every object in the world is a packet (or a collection of packets)
-
-The Tier 2 (minerals) and Tier 3 (processed materials) lists in §6.1–6.2 are no longer definitions — they become **expected emergent results**. They describe what SHOULD emerge when the rules are correct. If the reaction engine, given real Cu and Sn properties, doesn't produce something with bronze-like properties at the right temperature, the rules have a bug — not a missing recipe.
-
-#### Computational Cost
-
-This is feasible on current hardware because:
-- Packets are coarse-grained (not individual atoms — a packet might represent 1 gram to 1 ton of material)
-- Property calculations are simple arithmetic (weighted averages, polynomial fits) — microseconds each
-- Reactions only fire when packets are brought together by a player or NPC action — not continuously
-- The element table (118 entries × ~20 properties) fits in < 10 KB
-- Phase diagram lookups can use pre-computed binary tables for common pairs (Cu-Sn, Fe-C, etc.) — ~500 pairs covers 95% of cases
-- Rare or novel combinations fall back to ideal solution approximations (less accurate but always produces a result)
-
-**Estimated per-reaction cost:** < 0.1ms on a single CPU core. A player performing 10 crafting actions per minute costs essentially nothing.
-
-**Where it gets expensive:** fluid simulation (§3.2), where millions of packets move and interact continuously. That is a separate problem addressed in the next section.
-
----
-
-
-### 3.2 Fluid Simulation — How Liquids Work
-
-#### Why Liquid Is the Hardest Problem
-
-Solids are easy. A solid material packet sits where you put it. It has a position, a shape, and it doesn't move unless something pushes it. The game only needs to track one object.
-
-Liquids are fundamentally different. A liquid has no fixed shape — it takes the shape of whatever contains it. It flows downhill. It pools in valleys. It splashes when it hits something. It mixes with other liquids. It evaporates when heated, condenses when cooled. Every drop interacts with every nearby drop, the terrain, gravity, temperature, and wind — simultaneously, continuously, at every moment.
-
-The reason liquid is hard is not that the physics is complicated (the equations are well understood). It is that liquid requires simulating **many small pieces moving independently**. A solid copper ingot is one object. Molten copper is thousands of tiny pieces flowing, colliding, merging, and separating. That transition — from one thing to many things — is the core computational challenge.
-
-#### The Physical Truth: What Melting Actually Is
-
-At the atomic level, melting is the breakdown of structure:
-
-- **Solid**: atoms are locked in a crystal lattice. Each atom vibrates around a fixed position but cannot leave. The lattice gives the material its rigid shape. This is why solids hold their form.
-- **Liquid**: atoms have enough kinetic energy to break free from the lattice. They can slide past each other, but intermolecular forces (van der Waals, hydrogen bonds, metallic bonds) keep them close together. This is why liquids flow but don't fly apart.
-- **Gas**: atoms have enough energy to overcome all intermolecular forces. They fly freely in all directions, filling any container. This is why gas expands to fill a room.
-
-The game simulates this by **fragmenting a material packet into sub-packets when it crosses its melting point**. The sub-packets are the "freed atoms" — they inherit the parent's composition and temperature, but now they can move independently. When they cool below the melting point, they lock back together into a solid.
-
-This is not a metaphor. This is literally what melting is, at a coarser grain size.
-
-#### The Simulation Model: Smoothed Particle Hydrodynamics (SPH)
-
-SPH is a method for simulating fluids using particles instead of a grid. Each particle represents a small volume of liquid. The particles interact with their neighbors to produce realistic fluid behavior: flow, pressure, viscosity, surface tension, and splashing.
-
-**Why SPH and not a grid?** Grid-based methods (like the existing `fluid.worker.ts`) divide space into fixed cells. They work well for large, slow-moving bodies of water (oceans, lakes). But they cannot handle:
-- Pouring liquid from one container to another
-- A waterfall breaking into droplets
-- Molten metal being cast into a mold
-- Rain hitting the ground and splashing
-- Two different liquids mixing at their boundary
-
-SPH handles all of these because the particles move with the fluid — they go wherever the liquid goes, naturally adapting to any shape or motion.
-
-**Each SPH particle stores:**
-
-```
-SPHParticle {
-  // An SPH particle IS a MaterialPacket fragment. It inherits all 33 properties.
-  packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
-                                        // viscosity, surfaceTension, density etc. come from packet
-
-  // --- SPH physics state (unique to particles, not in MaterialPacket) ---
-  x, y, z: number                      // position on the sphere surface (world space)
-  vx, vy, vz: number                   // velocity (m/s)
-  sphDensity: number                   // kg/m³ (computed from neighbors each tick — NOT the same as packet.density)
-  pressure: number                      // Pa (computed from sphDensity via Tait equation)
-  sleeping: boolean                     // true if settled (skip force calculations)
-
-  // Derived properties used by SPH forces are read directly from packet:
-  //   packet.viscosity     → F_viscosity = μ · ∇²v
-  //   packet.surfaceTension → F_surface = σ · κ · n̂
-  //   packet.density       → restDensity (ρ₀) for Tait equation
-}
-```
-
-**The five forces on every particle, every tick:**
-
-**1. Pressure force** — particles in high-density regions push outward toward low-density regions. This prevents liquid from compressing into a single point and makes it spread out to fill containers.
-
-Formula: `F_pressure = -∇P / ρ`
-
-Pressure is computed from density using the Tait equation of state:
-`P = B · ((ρ/ρ₀)^γ - 1)` where B is a stiffness constant, ρ₀ is rest density, γ ≈ 7 for water.
-
-This is the same equation used in real computational fluid dynamics. It produces the correct behavior: water is nearly incompressible (high B), so even small density increases create large pressure forces that push particles apart.
-
-**2. Viscosity force** — particles drag on their neighbors, resisting relative motion. High viscosity = honey, lava. Low viscosity = water, alcohol. Zero viscosity = superfluid helium (unreachable in-game).
-
-Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dynamic viscosity μ)
-
-**The viscosity comes from the material's composition** via the Andrade/Arrhenius equation in the property calculator (§3.1). These are **expected computed results**, not hardcoded values — the property calculator should produce these when given the correct composition:
-- Water (H₂O): expected μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
-- Molten copper: expected μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
-- Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
-- Honey (sugar solution): expected μ ≈ 2–10 Pa·s — long sugar molecules tangle
-- Lava (basaltic): expected μ ≈ 10–100 Pa·s — silicate networks partially intact
-
-Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
-
-**Non-Newtonian Viscosity — Mud Is Not Water**
-
-The Andrade/Arrhenius model gives viscosity as a function of temperature only. This is correct for simple liquids (water, molten metals, oils). But many gameplay-relevant materials are non-Newtonian — their viscosity depends on shear rate (how fast you stir/deform them):
-
-*Shear-thinning (pseudoplastic) — viscosity DROPS under stress:*
-The Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)`
-- μ₀ = zero-shear viscosity (thick when still)
-- μ_∞ = infinite-shear viscosity (thin when stirred fast)
-- γ̇ = shear rate (velocity gradient in the fluid)
-- K = time constant, n = flow index (<1 for shear-thinning)
-
-Clay slurry: μ₀ = 100 Pa·s (stiff), μ_∞ = 0.1 Pa·s (flows when worked). This is why clay is "workable" — stiff until you knead it, then flows into shape. In the SPH solver, clay particles near the player's hands have high shear rate → low viscosity. Clay particles at rest have zero shear rate → high viscosity → holds its shape.
-
-Blood: μ₀ = 0.05 Pa·s at low shear, μ_∞ = 0.003 Pa·s at high shear. Slow blood pooling is thicker than fast-flowing arterial blood.
-
-Mud: μ₀ = 500+ Pa·s (solid-like), μ_∞ = 1 Pa·s (flows like water when agitated). Walking on mud: shear rate from footstep → mud liquefies under foot → sinks in. This is quicksand behavior: struggling increases shear rate → more liquefaction. Staying still: mud re-solidifies (thixotropy).
-
-*Shear-thickening (dilatant) — viscosity INCREASES under stress:*
-Cornstarch/water (oobleck), wet sand: flows slowly when poured, becomes rigid under sudden impact. Not critical for gameplay but interesting for armor padding.
-
-The SPH viscosity force already computes velocity differences between neighbors. The shear rate γ̇ is simply the magnitude of the velocity gradient tensor, which can be estimated from the SPH velocity Laplacian already being computed. The only change: replace constant μ with μ(γ̇) from the Cross model.
-
-MaterialPacket additions for non-Newtonian fluids:
-```
-  isNonNewtonian: boolean            // true for clay, mud, blood, pitch, etc.
-  zeroShearViscosity: number         // Pa·s — viscosity when undisturbed (μ₀)
-  infShearViscosity: number          // Pa·s — viscosity under fast shear (μ_∞)
-  crossTimeConstant: number          // s — transition shear rate (K)
-  crossFlowIndex: number             // dimensionless — typically 0.3-0.8 (n)
-```
-
-**3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
-
-Formula: `F_gravity = m · g · down_direction`
-
-On a sphere, the "down" direction is toward the planet center: `down = -normalize(position)`. The component of gravity along the terrain surface drives horizontal flow. The component into the terrain is balanced by the terrain's normal force (the ground pushes back).
-
-**4. Surface tension** — particles at the liquid's surface are pulled inward by their neighbors, minimizing surface area. This is what makes water droplets spherical and allows insects to walk on water.
-
-Formula: `F_surface = σ · κ · n̂` where σ is surface tension coefficient, κ is surface curvature, n̂ is surface normal.
-
-Surface tension is computed from composition:
-- Water: σ ≈ 0.073 N/m (hydrogen bonds pull surface inward)
-- Molten iron: σ ≈ 1.8 N/m (strong metallic bonds)
-- Mercury: σ ≈ 0.5 N/m (why mercury forms perfect spherical droplets)
-- Ethanol: σ ≈ 0.022 N/m (weak intermolecular forces)
-
-When two different liquids meet, the difference in surface tension drives **Marangoni flow** — liquid flows from low surface tension to high. This is why soap breaks water tension (soap has lower σ, water flows away from it, creating the spreading pattern).
-
-**5. Terrain collision** — particles cannot pass through the ground. When a particle's position would be below the terrain surface, it is pushed to the surface and its velocity component into the terrain is zeroed (with friction applied to the tangential component).
-
-This is what makes liquid pool in valleys, flow along riverbeds, and fill containers. The terrain acts as a rigid boundary that shapes the flow.
-
-#### The SPH Algorithm (per tick)
-
-```
-for each particle i:
-  1. Find neighbors within kernel radius h (~2× particle spacing)
-     — use spatial hash grid for O(1) neighbor lookup
-
-  2. Compute density:  ρᵢ = Σⱼ mⱼ · W(rᵢⱼ, h)
-     where W is a smoothing kernel (cubic spline) and rᵢⱼ = |posᵢ - posⱼ|
-
-  3. Compute pressure: Pᵢ = B · ((ρᵢ/ρ₀)^γ - 1)
-
-  4. Compute forces:
-     F_pressure  = -Σⱼ mⱼ · (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) · ∇W(rᵢⱼ, h)
-     F_viscosity = μ · Σⱼ mⱼ · (vⱼ - vᵢ) / ρⱼ · ∇²W(rᵢⱼ, h)
-     F_gravity   = m · g · (-normalize(posᵢ))
-     F_surface   = σ · curvature · surface_normal  (only for surface particles)
-
-  5. Integrate:
-     vᵢ += dt · (F_pressure + F_viscosity + F_gravity + F_surface) / mᵢ
-     posᵢ += dt · vᵢ
-
-  6. Terrain collision:
-     if (length(posᵢ) < PLANET_RADIUS + terrainHeight(posᵢ)):
-       push particle to surface, apply friction
-
-  7. Temperature exchange:
-     — particles exchange heat with neighbors (Fourier's law: Q = k·A·ΔT/d)
-     — particles exchange heat with terrain and air
-     — if temperature crosses melting point → phase transition (see below)
-```
-
-**The kernel function W** is the mathematical smoothing function that defines "how much influence does a neighbor have." Closer neighbors have more influence. The standard choice is the cubic spline kernel, which is smooth, compact (zero outside radius h), and computationally cheap.
-
-#### Phase Transitions: Solid ↔ Liquid ↔ Gas
-
-Phase transitions connect the fluid simulation to the material packet system (§3.1). They are the bridge between the static world of solids and the dynamic world of fluids.
-
-**Melting (solid → liquid):**
-```
-When a solid material packet reaches temperature ≥ meltingPoint(composition):
-  1. The solid packet is removed from the world
-  2. N SPH particles are spawned at its position
-     — N = mass / particleMass (particleMass is a resolution parameter, e.g., 0.01 kg)
-     — Each particle inherits: composition, temperature, mass/N
-     — Particles are placed in a tight cluster matching the solid's shape
-     — Particles get zero initial velocity (they start motionless, then flow under gravity)
-  3. The SPH simulation takes over — particles flow, pool, splash
-```
-
-// ── Latent Heat ──────────────────────────────────────────────────────
-// Phase transitions are NOT instant. Melting absorbs energy without
-// raising temperature. Freezing releases energy without lowering it.
-//
-// When a material reaches its melting point, it does not instantly become liquid.
-// It must absorb latentHeatFusion (J/kg) while staying at exactly the melting
-// temperature. Only after all latent heat is absorbed does it finish transitioning.
-//
-// Implementation: each MaterialPacket in transition has a phaseProgress (0→1).
-//   Each tick: absorbed = heatInput × dt
-//   phaseProgress += absorbed / (mass × latentHeatFusion)
-//   Temperature stays at meltingPoint until phaseProgress reaches 1.0
-//   Then: packet transitions and temperature can rise again.
-//
-// Same for boiling (latentHeatVaporization) and freezing (releases latent heat).
-//
-// Typical values (computed from composition by property calculator):
-//   Water: latentHeatFusion = 334 kJ/kg, latentHeatVaporization = 2260 kJ/kg
-//   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
-//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6090 kJ/kg
-//   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
-//
-// Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
-//   247,000 J of sustained heat input before it becomes liquid.
-//   At a typical furnace heat rate of ~500 W: ~8 game-minutes of smelting.
-//   Without latent heat, melting would be instant — unrealistically fast.
-//
-// Casting effect: a mold full of molten copper releases latent heat as it
-//   solidifies. The center of the casting stays liquid longer because the
-//   released latent heat must escape through the already-solidified outer shell.
-//   This creates shrinkage cavities — real metallurgical defects that affect
-//   the quality of the cast object.
-
-**Freezing (liquid → solid):**
-```
-When a cluster of SPH particles cools below meltingPoint(composition):
-  1. Identify connected clusters of cold particles (particles within kernel radius of each other)
-  2. Each cluster merges into a single solid packet:
-     — mass = sum of particle masses
-     — composition = mass-weighted average of particle compositions
-     — position = center of mass of the cluster
-     — shape = convex hull of particle positions (or simplified bounding shape)
-  3. The solid packet is placed in the world; particles are removed
-```
-
-**Solidification Front — Casting Freezes From Outside In**
-
-Real freezing does not happen simultaneously throughout a liquid body. It starts at the coldest surfaces (mold walls, exposed air) and progresses inward as a moving front. The Stefan problem describes this:
-
-```
-dx/dt = k × (T_melt - T_boundary) / (ρ × L × x)
-where:
-  x = thickness of solid shell (m)
-  k = thermal conductivity of the solid (W/m·K)
-  T_melt = melting point (°C)
-  T_boundary = temperature at the cold surface (°C)
-  ρ = density (kg/m³)
-  L = latent heat of fusion (J/kg) — from latentHeatFusion property
-```
-
-The solidification front moves as √(time) — fast at first, then slowing as the insulating solid shell thickens and heat must travel farther to escape.
-
-For a 10cm copper casting in a stone mold (T_boundary = 200°C):
-- After 1 second: solid shell ~3mm thick
-- After 10 seconds: ~9mm thick
-- After 60 seconds: ~23mm thick
-- Center solidifies last — after ~2 minutes
-
-Why this matters for gameplay:
-
-1. **Shrinkage cavities:** the last liquid to freeze (center) has no liquid left to fill the space as it contracts. A void forms — a real metallurgical defect. Well-designed molds have a "riser" (extra reservoir) that feeds liquid to the center as it shrinks. Players who don't add a riser get castings with internal voids — weaker, more likely to crack under stress.
-
-2. **Cooling rate determines microstructure:** surface (fast-cooled) is fine-grained and hard. Center (slow-cooled) is coarse-grained and softer. For steel, this connects to martensite (§3.1): the surface may be martensite (hard) while the center is pearlite (soft) — a single casting with two different property zones.
-
-3. **Directional solidification:** if the mold is cooled from the bottom, the solidification front moves upward, pushing dissolved gases ahead of it → fewer bubbles. This is a real casting technique (chill plates at the base).
-
-Implementation: for freezing SPH particle clusters, don't merge all at once. Instead, identify surface particles (fewest neighbors) → freeze those first. Each tick, freeze the next layer of particles adjacent to already-frozen particles. The rate follows the Stefan formula. Center particles freeze last. Frozen particles that contract more than their neighbors create void particles (tracked as defects in the resulting solid MaterialPacket).
-
-**Boiling (liquid → gas):**
-```
-When a particle reaches temperature ≥ boilingPoint(composition):
-  1. Particle expands: kernel radius increases, restDensity drops dramatically
-  2. Upward buoyancy force added (hot gas rises)
-  3. If particle rises above terrain + threshold → convert to gas system
-     — Gas particles have much larger spacing, lower interaction frequency
-     — Eventually fade out at high altitude (absorbed into atmosphere model)
-```
-
-**Condensation (gas → liquid):**
-```
-When gas-phase particles cool below boilingPoint:
-  1. Particles contract: kernel radius shrinks, restDensity increases
-  2. Surface tension kicks in → droplets form
-  3. Droplets fall under gravity → rain
-```
-
-**Sublimation and deposition** (solid ↔ gas, skipping liquid) also emerge naturally. Dry ice (solid CO₂) sublimates because its phase diagram has no liquid phase at 1 atm. The simulation checks: at current pressure, does a liquid phase exist between solid and gas? If not, the solid transitions directly to gas particles.
-
-#### Multi-Scale Fluid System
-
-One simulation method cannot efficiently handle all scales of liquid in the game. A raindrop and an ocean are both water, but simulating an ocean with SPH particles would require billions of particles. Instead, the game uses different methods at different scales, with smooth transitions between them.
-
-**Scale 1 — Crafting (SPH particles, 100–5,000 particles)**
-
-This is the most interactive scale. The player directly manipulates liquid:
-- Melting ore in a bloomery → molten metal flows into a channel
-- Pouring molten copper into a stone mold → casting
-- Mixing two chemicals in a clay pot → the liquids swirl together
-- Boiling water → steam rises, water level drops
-- Quenching hot steel → dramatic sizzle, steam cloud
-
-SPH runs at 60 Hz. 5,000 particles × 50 neighbors × 5 forces = 1,250,000 operations per tick. At ~10 FLOPs each = 12.5 MFLOP per tick. A single CPU core does 1–5 GFLOP/s in Rust with SIMD. Cost: < 1% of one core.
-
-**Scale 2 — Local environment (MLS-MPM particles, 5,000–200,000 particles)**
-
-Environmental liquid near the player:
-- Rain hitting the ground and forming puddles
-- A small waterfall or creek
-- Blood pooling from a killed animal
-- Spilled liquid from a broken container
-- A hot spring with steam
-- Lava flows from volcanic eruptions (up to 200,000 particles)
-
-MLS-MPM (Moving Least Squares Material Point Method) replaces SPH at this scale. MPM is 3× faster than SPH at the same particle count because it avoids the expensive neighbor search — particles transfer to a background grid, the grid solves forces, then transfers back to particles. MLS-MPM runs at 30 Hz. The particle-to-grid and grid-to-particle transfers cost ~2,700 FLOPs per particle per timestep. At 200,000 active particles: ~540 MFLOP per tick — well within a single Rust core with SIMD, or ~2ms on a mid-range GPU via WebGPU compute.
-
-Old cap was 50,000 for eruptions, 20,000 for environment. New cap is 200,000 per system, 400,000 total across all systems. This is achievable because:
-- Rust with SIMD processes 4–8 particles per instruction
-- Sleep system keeps 80–95% of particles dormant at any time
-- MLS-MPM avoids the O(n²) neighbor search that makes SPH expensive at scale
-- GPU compute path (WebGPU) unlocks 10× headroom when available
-
-**Scale 3 — Regional (grid-based, Eulerian)**
-
-Rivers, lakes, and large water bodies. Too many particles for SPH — switch to a grid where each cell tracks water volume and flow direction.
-
-```
-GridCell {
-  waterVolume: number     // m³ of water in this cell
-  flowX, flowZ: number    // velocity of water flow (m/s)
-  temperature: number     // °C
-  composition: Map<Element, number>   // dissolved minerals, pollutants
-  depth: number           // computed: waterVolume / cellArea
-}
-```
-
-Rules per tick (0.5–1 Hz — slow, large scale):
-- Water flows from high cells to low cells (terrain height + water depth)
-- Flow rate depends on slope (Manning's equation: `v = (1/n) · R^(2/3) · S^(1/2)` where n is roughness, R is hydraulic radius, S is slope)
-- Evaporation removes water based on temperature and humidity
-- Rain adds water based on weather system (§4.6)
-- Rivers defined by RiverSystem.ts are permanent flow paths with base flow rates
-
-This extends the existing `fluid.worker.ts` and `RiverSystem.ts`. The grid is the same 3D grid already initialized in the worker — it just needs water-specific logic added.
-
-**Scale 4 — Global (mathematical model, no particles or grid)**
-
-Ocean currents, tides, deep water temperature. These are too large and slow for real-time simulation. Instead, they are modeled as:
-- Ocean surface: Gerstner wave shader (already built — `OceanShader.ts`)
-- Currents: pre-computed flow field based on continent positions and Coriolis effect
-- Tides: sinusoidal sea level variation driven by moon position (simple formula)
-- Deep ocean temperature: latitude-based gradient (cold at poles, warm at equator)
-
-No per-frame simulation cost. Just math evaluated when needed.
-
-#### Scale Transitions
-
-The critical engineering challenge is smooth transitions between scales. A raindrop (SPH) must be able to join a puddle (SPH), which grows into a stream (grid), which feeds a river (grid), which reaches the ocean (shader). Going backward must also work: a player scoops water from a river (grid → SPH packet).
-
-**SPH → Grid (particle absorption):**
-```
-When an SPH particle enters a grid cell that already contains water:
-  1. Add particle's mass to cell's waterVolume
-  2. Add particle's momentum to cell's flow velocity (momentum-conserving)
-  3. Mix particle's composition into cell's composition (mass-weighted average)
-  4. Mix particle's temperature into cell's temperature
-  5. Remove the SPH particle
-```
-
-Trigger condition: particle velocity < threshold AND particle is in a cell with waterVolume > threshold. This means fast-moving water (waterfalls, splashes) stays as particles. Slow, settled water becomes grid cells.
-
-**Grid → SPH (particle emission):**
-```
-When a player interacts with a grid cell (scoop, dig channel, break dam):
-  1. Remove requested mass from cell's waterVolume
-  2. Spawn N SPH particles with that mass, inheriting cell's composition and temperature
-  3. Particles get initial velocity matching the cell's flow direction
-```
-
-Also triggered when water flows over a cliff edge (waterfall): grid cells at the edge emit SPH particles that fall freely until they hit water below (absorbed back into grid) or terrain (splash → pool → eventually grid again).
-
-**Grid → Shader (ocean boundary):**
-```
-Grid cells at the ocean boundary do not store water — they connect to the ocean.
-River grid cells that reach sea level feed their flow volume into the ocean's
-total water budget (affecting sea level over very long timescales).
-The ocean shader reads sea level from the simulation state.
-```
-
-#### Mixing and Reactions in Liquid
-
-When two SPH particles of different composition are neighbors, they can mix and react — using the same reaction engine from §3.1.
-
-**Diffusion (passive mixing):**
-Each tick, neighboring particles exchange a small fraction of their composition proportional to their contact area and the diffusion coefficient. Over time, two adjacent liquids homogenize. Stirring (player action or turbulent flow) increases the mixing rate by bringing distant particles into contact.
-
-```
-mixRate = D · dt · W(rᵢⱼ, h) / distance
-particle_i.composition += mixRate · (particle_j.composition - particle_i.composition)
-particle_j.composition += mixRate · (particle_i.composition - particle_j.composition)
-```
-
-where D is the diffusion coefficient (depends on temperature and the materials involved).
-
-**Reactions in liquid phase:**
-When two particles' mixed composition satisfies a reaction condition (§3.1 reaction engine — Gibbs free energy check), the reaction fires:
-- Acid dissolves metal: HCl particles + Fe particles → FeCl₂ solution + H₂ gas bubbles
-- Salt dissolves in water: NaCl solid particles near H₂O particles → Na⁺ and Cl⁻ dissolve into water composition
-- Oil and water refuse to mix: if immiscible (ΔG of mixing > 0), particles repel at the interface instead of diffusing
-
-**Density-driven layering:**
-Denser liquid sinks, lighter liquid floats. Oil floats on water. Molten slag floats on molten iron (this is how real smelting separates metal from waste). The SPH pressure force naturally produces this layering because denser particles create higher pressure at the bottom.
-
-#### Capillary Action — Liquid Climbs Upward
-
-In narrow channels, surface tension pulls liquid upward against gravity. Jurin's law determines the height:
-
-```
-h = 2σ × cos(θ) / (ρ × g × r)
-where:
-  σ = surface tension (N/m) — from MaterialPacket
-  θ = contact angle (0° = perfect wetting, 90° = non-wetting, >90° = hydrophobic)
-  ρ = liquid density (kg/m³)
-  r = channel/pore radius (m)
-```
-
-Contact angle depends on the liquid-surface pair:
-- Water on clean glass: θ ≈ 0° (spreads flat — hydrophilic)
-- Water on waxed surface: θ ≈ 110° (beads up — hydrophobic)
-- Mercury on glass: θ ≈ 140° (repelled — mercury is depressed, not elevated)
-- Water on stone: θ ≈ 20-40° (partial wetting)
-- Oil on cloth: θ ≈ 0° (perfect wetting — oil wicks into everything)
-
-Gameplay effects:
-- Oil lamp wicks: oil (σ ≈ 0.03 N/m, θ ≈ 0° on cloth) rises ~15cm in cloth fibers (r ≈ 0.01mm): h = 2×0.03×1 / (800×9.81×0.00001) = 0.76m — easily sufficient
-- Rising damp in walls: water rises in stone pores (r ≈ 0.1mm): h = 2×0.073×cos(30°) / (1000×9.81×0.0001) = 0.13m — rises ~13cm into the wall. This connects to structural decay (§3.4): the damp zone weakens mortar
-- Cloth absorbing blood/water: thin fibers (r ≈ 0.01mm) wick liquid rapidly
-- Sap transport in trees: capillary + transpiration pull moves water from roots to leaves
-
-Implementation: not simulated as individual SPH particles in pores (too small). Instead, tracked as a material property: when a porous block contacts liquid, the block's waterAbsorption rate is multiplied by a capillary factor:
-```
-capillaryFactor = 2σ × cos(θ) / (ρ × g × poreDiameter)
-absorptionRate = porosity × capillaryFactor × contactArea
-```
-
-This connects to structural decay (§3.4): rising damp carries dissolved minerals upward. When water evaporates at the wall surface, minerals crystallize and exert pressure on the pore walls (salt weathering). This is a major real-world cause of stone building deterioration.
-
-#### Sedimentation — Heavy Particles Sink, Light Particles Float
-
-Suspended solids in liquid settle at a rate determined by Stokes' law:
-
-```
-v_settle = (2/9) × (ρ_particle - ρ_fluid) × g × r² / μ
-where:
-  ρ_particle = density of the suspended solid (kg/m³)
-  ρ_fluid = density of the liquid (kg/m³)
-  r = particle radius (m) — from the suspended solid's grain size
-  μ = fluid viscosity (Pa·s)
-```
-
-Settling speeds for common situations:
-- Gold dust (ρ=19300) in water: r=0.5mm → v = 0.85 m/s — settles almost instantly
-- Sand (ρ=2650) in water: r=1mm → v = 0.36 m/s — settles in seconds
-- Silt (ρ=2650) in water: r=0.01mm → v = 0.000036 m/s — takes hours to settle
-- Clay (ρ=2650) in water: r=0.001mm → v = 0.00000036 m/s — takes DAYS (muddy water stays cloudy)
-
-Gameplay effects:
-- Gold panning: swirl water + gravel → gold settles first (highest density) → lighter sand washes away. This is discoverable because the physics is correct.
-- Water clarification: fill a vessel, let it sit → sediment drops, clear water on top. Time depends on grain size: sandy water clears in minutes, clay water takes days.
-- Alluvial deposits: where rivers slow (bends, deltas), sediment drops out. Heavy materials (gold, magnetite) deposit first at the inner bend. Light materials (clay) deposit last, farther downstream. This creates naturally rich mining locations that players can discover by understanding the relationship between river speed and material density.
-
-Implementation: for SPH particles representing suspensions (muddy water, ore slurry), apply a settling velocity to the solid component:
-```
-Each tick: particle.z -= v_settle × dt (relative to the fluid)
-When a settled particle reaches the bottom of a container or terrain:
-  it is removed from the fluid and deposited as a MaterialPacket.
-The deposited material's composition reflects whatever settled there.
-```
-
-#### What the Player Sees — Three-Tier Rendering Pipeline
-
-The visual representation of fluid is NOT hardcoded per material. In the real world, you don't see "water is blue" — you see light being absorbed, scattered, and refracted by matter. The renderer computes optical properties from the same MaterialPacket that drives viscosity and density. Three rendering methods handle different scales:
-
-**Tier 1: Marching Cubes — Crafting Scale (100–5,000 particles)**
-
-When a player is melting, pouring, or mixing at a craft arrangement, they are close. Quality matters. Particle count is low enough for real mesh extraction.
-
-```
-How it works:
-  1. Overlay a 3D grid on the crafting region (32³ = ~33,000 vertices)
-     Grid cell size = half the particle spacing (~0.03m for crafting)
-
-  2. At each grid vertex, compute a scalar field:
-     φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
-     This sums the "influence" of every nearby particle using the SPH kernel.
-     Where many particles overlap, φ is high. Where there are gaps, φ is low.
-
-  3. Extract the isosurface where φ = threshold (~0.6):
-     — For each grid cell, classify its 8 corners as inside/outside
-     — Look up triangle configuration from the 256-entry marching cubes table
-     — Interpolate vertex positions along edges where φ crosses the threshold
-     — Compute normals from ∇φ (gradient of the scalar field)
-
-  4. Result: a smooth, watertight triangle mesh (typically 5,000–20,000 triangles)
-     This mesh has NO individual particle bumps — it is a continuous surface.
-     Topology changes (drops splitting, streams merging) happen automatically.
-
-  5. Shade the mesh using optical properties derived from composition (see below).
-
-Performance at crafting scale:
-  Scalar field computation: ~0.3ms (1000 particles × ~10 neighbors per vertex)
-  Marching cubes traversal: ~0.1ms
-  Mesh rendering: ~0.2ms (5k–20k triangles, trivial for GPU)
-  Total: ~0.6ms — negligible
-```
-
-Why marching cubes here and not screen-space: player is inches away — mesh quality is noticeably better. Low particle count makes mesh extraction cheap. Produces a real 3D mesh that catches light and shadows correctly. Handles transparency naturally (can ray-march through the mesh for thickness).
-
-**Tier 2: Screen-Space Fluid Rendering (SSFR) — Environment Scale (5,000–200,000 particles)**
-
-For rain puddles, lava flows, streams, blood pools — anything with many particles where the player is not scrutinizing individual droplets. This is the technique used by NVIDIA Flex and Unreal Engine 5.
-
-The core idea: render particles as depth sprites, then blur the depth buffer to "connect the dots" into a smooth continuous surface. The blur cost is per-pixel (screen resolution), not per-particle — so 200,000 particles render at the same cost as 5,000.
-
-```
-The pipeline (5 GPU passes):
-
-  Pass 1 — Depth Sprites (0.3–0.8ms):
-    Render each particle as a camera-facing point sprite.
-    In the fragment shader, compute the sphere's depth per pixel:
-      depth(x,y) = particle_z - R · √(1 - x² - y²)
-    Write to a depth-only render target. Overlapping particles resolve via depth test.
-    Result: a bumpy depth buffer of individual sphere shapes.
-
-  Pass 2 — Bilateral Blur (0.5–1.5ms, two sub-passes):
-    A bilateral Gaussian filter smooths the depth buffer:
-      smoothed(p) = Σ w(q) · depth(q) / Σ w(q)
-      w(q) = G_spatial(||p-q||) · G_range(|depth(p) - depth(q)|)
-
-    G_spatial: standard Gaussian blur (σ = 5–10 pixels, kernel radius 10–20 px)
-    G_range: preserves edges — if two pixels have very different depths,
-             they are at a fluid boundary. Do not blur across it.
-
-    Done as two separable 1D passes (horizontal + vertical) for efficiency.
-
-    Result: individual particle bumps vanish. The depth buffer now shows a
-    smooth, continuous fluid surface — even though the particles underneath
-    are discrete points. This is where "connecting the dots" happens.
-
-  Pass 3 — Thickness (0.2–0.5ms):
-    How thick is the fluid along each view ray? Needed for transparency/color.
-    Render particles again with ADDITIVE blending and NO depth test.
-    Each sprite contributes its thickness: t(x,y) = 2R · √(1 - x² - y²)
-    Overlapping particles' thicknesses sum up naturally.
-    Result: a screen-space thickness map.
-
-  Pass 4 — Normal Reconstruction (0.1–0.2ms):
-    Compute surface normals from the smoothed depth via finite differences:
-      ∂z/∂x = (depth(x+1,y) - depth(x-1,y)) / 2
-      ∂z/∂y = (depth(x,y+1) - depth(x,y-1)) / 2
-      normal = normalize(cross(dpdx, dpdy))
-
-  Pass 5 — Compositing (0.3–0.5ms):
-    Full-screen pass that combines everything:
-    — Fresnel reflection: F = F₀ + (1-F₀)(1 - N·V)⁵
-    — Refraction: offset background UV by normal.xy × thickness
-    — Beer's Law absorption: color = exp(-absorption × thickness)
-      Water absorbs red (stays blue), lava absorbs blue (stays orange)
-    — Specular highlights from scene lights
-    — Composite over the scene at the smoothed depth
-
-Total GPU cost: 1.5–3.5ms at 1080p — INDEPENDENT of particle count.
-```
-
-**Tier 3: Raw Points + Shaders — Visual-Only Effects**
-
-Rain, snow, ash, sparks, embers, wind particles. These are not physics fluid — they are visual atmosphere. No smooth surface needed. GPU billboard particle system (THREE.Points). No physics interaction, no SPH, no fluid behavior. Already implemented in WeatherRenderer.tsx. 10,000+ particles at near-zero GPU cost. No change needed.
-
-**Tier Selection — Per Fluid Body, Per Frame**
-
-Tiers are assigned per fluid body (connected component of particles), not per particle:
-
-```
-TierSelection (per fluid body, per frame):
-  if body.context == PRECISION_CRAFT:
-    tier = MARCHING_CUBES    // player is crafting, close up, small count
-  else if body.particleCount <= 5000 AND body.closestDistanceToCamera < 3.0m:
-    tier = MARCHING_CUBES    // small body AND player is very close
-  else:
-    tier = SCREEN_SPACE      // everything else
-
-  // Tier 3 is separate — weather particles never form fluid bodies.
-```
-
-**Tier Transition — Smooth Crossfade**
-
-When a fluid body changes tier (player walks away from a craft arrangement, approaches a puddle), a 20-frame crossfade prevents visual popping:
-
-```
-TierTransition:
-  When targetTier != currentTier:
-    blendWeight increases by 0.05 per frame (~0.33 seconds crossfade)
-    Both rendering methods run simultaneously during the blend
-    Old tier fades out (opacity = 1 - blend), new tier fades in (opacity = blend)
-
-  Hysteresis prevents flickering at boundaries:
-    MARCHING_CUBES entry:  distance < 3.0m AND count < 5,000
-    MARCHING_CUBES exit:   distance > 4.0m OR count > 6,000
-    The gap prevents rapid switching when hovering near the threshold.
-
-  Fluid bodies are recomputed every 10 frames (~6× per second at 60fps)
-  via union-find on the particle neighbor graph. Between recomputations,
-  new particles inherit the body ID of their nearest neighbor.
-```
-
-**Grid cells (regional):**
-- Water surface mesh generated from grid cells with waterVolume > 0
-- Surface height = terrain height + water depth
-- Uses the existing OceanShader.ts material (Gerstner waves scaled down for rivers/lakes)
-- River foam where flow speed is high (reuse the foam noise from OceanShader.ts)
-
-**Ocean (global):**
-- Unchanged from current implementation: sphere mesh + Gerstner wave vertex displacement + Fresnel + caustics
-
-#### Terrain Interaction: The Container Problem
-
-Liquid needs surfaces to contain it. The terrain height field on the sphere is the primary container. But natural terrain has features that matter for fluid:
-
-**Concavities (valleys, bowls, craters):**
-Water pools wherever the terrain forms a local minimum — a point lower than all its neighbors. The grid-based simulation finds these automatically: water flows into the cell and has nowhere lower to go, so it accumulates. Water depth rises until it reaches the lowest outflow point (the rim of the bowl), then spills over and continues flowing.
-
-**Player-made containers:**
-When a player digs (removes terrain) or builds (adds terrain), they modify the height field. A trench becomes a channel. A ring of piled dirt becomes a dam. A clay pot (crafted object with concave interior) becomes a vessel. The fluid system treats all of these the same way: particles cannot penetrate solid surfaces, so they pool inside whatever shape the surface creates.
-
-**Porosity:**
-Not all terrain is waterproof. Sand absorbs water (high porosity). Clay blocks water (low porosity). Rock is somewhere in between. The grid simulation can model this:
-```
-absorption = porosity · waterVolume · dt
-waterVolume -= absorption
-groundwaterLevel += absorption  // water table rises
-```
-
-This produces springs (groundwater pressure pushes water to the surface where terrain is lower than the water table) and explains why clay-lined channels hold water better than dirt channels.
-
-#### The Complete Water Cycle
-
-When all scales work together, the full hydrological cycle emerges:
-
-```
-EVAPORATION: Ocean + lakes + rivers lose water (temperature + surface area + wind)
-  ↓ water vapor enters atmosphere
-CLOUD FORMATION: Vapor rises, cools below dew point, condenses
-  ↓ water droplets aggregate into clouds (weather system §4.6)
-PRECIPITATION: Clouds release water as rain (liquid) or snow (solid)
-  ↓ SPH particles fall from sky (Scale 1-2)
-SURFACE FLOW: Rain hits terrain, flows downhill
-  ↓ SPH particles merge into grid cells (Scale 2 → Scale 3)
-RIVERS: Grid cells with persistent flow form rivers
-  ↓ matches RiverSystem.ts flow paths
-LAKES: Water accumulates in terrain concavities
-  ↓ grid cells fill up, overflow feeds downstream rivers
-OCEAN: Rivers discharge into the ocean (Scale 3 → Scale 4)
-  ↓ ocean level adjusts over long timescales
-GROUNDWATER: Some rain absorbs into porous terrain
-  ↓ feeds springs, wells, and maintains river base flow in dry season
-```
-
-No part of this cycle is scripted. It all follows from the physics: gravity pulls water down, heat drives evaporation, cooling drives condensation, terrain shape determines where water collects and flows. The weather system (§4.6) provides precipitation. The fluid simulation handles everything after the raindrop forms.
-
-#### Lava: Liquid Rock
-
-Volcanic eruptions produce lava — molten rock flowing on the surface. In this system, lava is not a special case. It is a material packet (composition: silicate minerals) that has been heated above its melting point (~700–1200°C depending on composition).
-
-```
-MAGMA CHAMBER: high-temperature material packets deep underground (world generation)
-  ↓ volcanic event (triggered by tectonic simulation or random with geological probability)
-ERUPTION: packets surface → temperature > melting point → fragment into SPH particles
-  ↓ particles flow downhill (very high viscosity — basaltic: μ ≈ 100 Pa·s, rhyolitic: μ ≈ 10⁶ Pa·s)
-COOLING: particles lose heat to air and terrain → temperature drops
-  ↓ viscosity increases exponentially as temperature drops (Arrhenius)
-SOLIDIFICATION: temperature crosses solidus → particles freeze into solid terrain
-  ↓ new rock with composition determined by the original magma
-```
-
-Basaltic lava (low silica) flows fast and far — like Hawaiian eruptions. Rhyolitic lava (high silica) barely moves — it piles up into domes. The difference is entirely from composition → viscosity. The simulation handles both with the same code.
-
-Lava flowing over water produces instant steam (boiling) + rapid cooling of the lava surface → obsidian (amorphous glass, because cooling was too fast for crystals to form). This emergent behavior falls out naturally from the phase transition and heat exchange rules.
-
-#### Performance Budget
-
-**Simulation (Rust, single dedicated core):**
-
-| Scale | Method | Particle/cell count | Tick rate | Rust CPU cost per tick |
-|-------|--------|-------------------|-----------|----------------------|
-| Crafting | SPH | 100–5,000 | 60 Hz | ~0.5 ms |
-| Local env | MLS-MPM | 5,000–200,000 | 30 Hz | ~2.0 ms (50k active) / ~8.0 ms (200k active peak) |
-| Regional | Grid | 10,000–50,000 cells | 1 Hz | ~2.0 ms |
-| Global | Math | 0 | On demand | < 0.1 ms |
-| Redistribution | Amortized | — | Per tick | ~0.3 ms |
-| **Total sustained** | | **~400,000 max** | | **~10% of one CPU core** |
-| **Total peak (eruption)** | | **200k active** | | **~34% of one CPU core** |
-
-**GPU compute path (WebGPU, when available):**
-
-| Scale | GPU cost per tick | Notes |
-|-------|------------------|-------|
-| Crafting SPH (5,000) | ~0.1 ms | Trivially fast on GPU |
-| Environment MPM (200,000, 4 substeps) | ~4 ms | Memory-bound, not compute-bound |
-| **Total GPU compute** | **~4.1 ms** | Leaves >12ms for rendering at 60 FPS |
-
-**Rendering (GPU):**
-
-| Component | GPU cost | Notes |
-|-----------|---------|-------|
-| Marching cubes mesh (crafting, ≤5k particles) | ~0.6 ms | 32³ grid + 5k-20k triangles |
-| Screen-space fluid (environment, any count) | ~2.5 ms at 1080p | Fixed cost regardless of particle count |
-| Weather particles (visual-only) | ~0.3 ms | Existing THREE.Points |
-| Secondary particles (spray/foam/bubbles) | ~0.1 ms | Visual-only points |
-| **Total rendering** | **~3.5 ms** | Fits comfortably in 16ms frame budget |
-
-**Memory:**
-
-| Component | Size |
-|-----------|------|
-| Particle data (400k max × 64 bytes) | ~25 MB |
-| Optical properties (400k × 40 bytes) | ~16 MB |
-| Spatial hash table | ~5 MB |
-| Marching cubes grid (32³) | ~0.5 MB |
-| Screen-space buffers (1080p: depth + thickness + normals) | ~16 MB |
-| Secondary particles (5,000 × 30 bytes) | ~0.15 MB |
-| **Total memory** | **~63 MB** |
-
-**All particle simulation runs on the server** (consistent with §3.5 server-authoritative physics). The server computes particle positions, velocities, and phase transitions. Results are streamed to clients via the particle network streaming protocol (see below). The client renders particles but never simulates them — it cannot invent fluid behavior that the server did not compute. This prevents cheating and ensures all players see the same fluid.
-
-#### Critical Optimizations
-
-The SPH algorithm is simple. Making it run at 60 Hz in a browser is the engineering challenge. These optimizations are not optional improvements — they are the architectural foundation without which the system cannot function at interactive frame rates.
-
-**1. Spatial Hash Grid — O(n²) → O(n)**
-
-The most important single optimization. SPH requires every particle to find its neighbors within kernel radius h. Naive approach: check every particle against every other particle. With 5,000 particles, that's 25,000,000 distance checks per tick — impossible at 60 Hz.
-
-Spatial hash grid: divide the world into cells of size h. Each particle hashes its position to a cell index. To find neighbors, only check the particle's own cell and the 26 adjacent cells (3×3×3 neighborhood). Average neighbor check drops from n to ~50 particles.
-
-```
-// Hash function: position → cell index
-function hashCell(x, y, z, cellSize) {
-  const ix = Math.floor(x / cellSize)
-  const iy = Math.floor(y / cellSize)
-  const iz = Math.floor(z / cellSize)
-  return (ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)
-}
-
-// Each tick:
-// 1. Clear hash table
-// 2. Insert all particles by position hash
-// 3. For each particle, query only 27 neighboring cells
-```
-
-Cost reduction: 5,000 particles goes from 25M distance checks → ~250K. That's a 100× speedup. This is the difference between "impossible" and "trivial."
-
-**2. Sleep/Wake System — Skip Settled Particles**
-
-A particle that hasn't moved significantly for N consecutive ticks is "sleeping." Skip all force calculations for sleeping particles. They cost zero CPU until disturbed.
-
-```
-if (particle.velocity < SLEEP_THRESHOLD for 30 consecutive ticks):
-  particle.sleeping = true
-  // skip all SPH calculations for this particle
-
-if (any neighbor of sleeping particle moves significantly):
-  particle.sleeping = false  // wake up
-```
-
-In practice, 80–95% of fluid particles are sleeping at any moment. A puddle that settled 10 seconds ago has zero ongoing cost. Only the actively flowing portion of a liquid body costs CPU.
-
-**3. Flat Typed Arrays — Avoid JavaScript Object Overhead**
-
-Do NOT store particles as JavaScript objects (`{ x, y, z, vx, vy, vz, ... }`). Object access in JS involves property lookup, hidden class checks, and potential garbage collection pauses.
-
-Instead: store all particle data in flat `Float32Array` buffers. One contiguous array for positions, one for velocities, one for densities.
-
-```
-// Bad — JS objects, GC pressure, cache misses
-particles = [{ x: 1, y: 2, z: 3, vx: 0, ... }, ...]
-
-// Good — flat typed arrays, SIMD-friendly, zero GC
-const STRIDE = 3
-posX = new Float32Array(MAX_PARTICLES)  // or interleaved: pos = new Float32Array(MAX * 3)
-posY = new Float32Array(MAX_PARTICLES)
-posZ = new Float32Array(MAX_PARTICLES)
-velX = new Float32Array(MAX_PARTICLES)
-velY = new Float32Array(MAX_PARTICLES)
-velZ = new Float32Array(MAX_PARTICLES)
-```
-
-Benefits:
-- CPU cache-friendly (sequential memory access)
-- Enables SIMD auto-vectorization (V8 can process 4 floats at once)
-- Zero garbage collection (no object allocation per tick)
-- Direct transfer to GPU via SharedArrayBuffer (zero-copy)
-- ~3–5× faster than object-based approach in V8
-
-**4. Web Workers + SharedArrayBuffer — Off Main Thread, Zero Copy**
-
-The fluid simulation must NEVER run on the main thread. It runs in a dedicated Web Worker. The renderer (main thread) reads particle positions to draw them.
-
-With `SharedArrayBuffer`, the worker writes particle positions directly into shared memory. The main thread reads from the same memory to render. No copying, no message passing, no serialization.
-
-```
-// Main thread: create shared buffer
-const sharedBuf = new SharedArrayBuffer(MAX_PARTICLES * 3 * 4)  // xyz, float32
-const positions = new Float32Array(sharedBuf)
-
-// Send to worker once at startup
-worker.postMessage({ type: 'init', buffer: sharedBuf })
-
-// Worker: write positions every tick (no postMessage needed)
-positions[i * 3 + 0] = particleX
-positions[i * 3 + 1] = particleY
-positions[i * 3 + 2] = particleZ
-
-// Renderer: read positions every frame (same memory, zero copy)
-geometry.attributes.position.array = positions
-geometry.attributes.position.needsUpdate = true
-```
-
-Cost: effectively zero for data transfer. The only synchronization needed is an `Atomics.store/load` on a tick counter so the renderer knows when new data is ready.
-
-**5. Physics LOD — Distance-Based Quality Reduction**
-
-Particles far from the player don't need full-accuracy physics:
-
-| Distance from player | Tick rate | Neighbor search | Notes |
-|---|---|---|---|
-| 0–20 m | 60 Hz | Full (27 cells) | Player is watching closely |
-| 20–50 m | 15 Hz | Reduced (7 cells — face neighbors only) | Visible but not scrutinized |
-| 50–100 m | 2 Hz | Minimal (own cell only) | Background movement |
-| > 100 m | Convert to grid | No SPH | Too far to see individual particles |
-
-This reduces the effective particle count by ~60% in typical gameplay (most fluid is not right next to the player).
-
-**6. Particle Redistribution — Keeping Particles Evenly Spaced**
-
-SPH works best when particles are roughly uniformly spaced. During simulation, particles naturally clump in convergent flows and spread out in divergent flows. This causes density estimation errors (pressure oscillations), visual artifacts (gaps in the rendered surface), and wasted computation (too many particles in one spot). The redistribution system fixes this.
-
-**Splitting — one particle becomes two:**
-```
-Trigger conditions (any one):
-  — Particle spacing exceeds 1.5× target spacing for its zone
-  — Particle enters a high-resolution zone (closer to camera)
-  — Local vorticity exceeds threshold (turbulent region needs detail)
-
-How splitting works:
-  Parent particle (mass m, velocity v, position x):
-  → 2 child particles, each mass m/2
-  → Positions: x ± ε (offset along velocity gradient direction)
-  → Velocities: both inherit parent's velocity
-  → Smoothing radius: h_child = h_parent × 0.794 (= 2^(-1/3) in 3D)
-  → Composition, temperature: inherited exactly
-  → Mass is EXACTLY conserved: m_parent = m_child1 + m_child2
-```
-
-**Merging — two particles become one:**
-```
-Trigger conditions (both required):
-  — Two particles closer than 0.3× smoothing radius h
-  — Both particles are in a low-resolution zone (far from camera)
-
-How merging works:
-  Two particles (m₁, v₁, x₁) + (m₂, v₂, x₂):
-  → 1 merged particle:
-     mass = m₁ + m₂                           (exact conservation)
-     position = (m₁x₁ + m₂x₂) / (m₁+m₂)     (center of mass)
-     velocity = (m₁v₁ + m₂v₂) / (m₁+m₂)      (momentum conservation)
-     composition = mass-weighted average
-     temperature = mass-weighted average
-  → Kinetic energy is NOT conserved — merging dissipates the relative
-     velocity energy, acting as artificial viscosity. Acceptable because
-     merging only happens far from the camera where precision is irrelevant.
-```
-
-**Adaptive resolution zones (camera-based LOD for particles):**
-
-| Zone | Distance | Particle radius | Relative to base | Particles needed (same volume) |
-|------|----------|----------------|------------------|-------------------------------|
-| 0 (near) | 0–5 m | 0.02 m | 1× (base) | 1× |
-| 1 (mid) | 5–15 m | 0.04 m | 2× | 1/8× |
-| 2 (far) | 15–40 m | 0.08 m | 4× | 1/64× |
-| 3 (distant) | 40 m+ | 0.16 m | 8× | 1/512× |
-
-Each doubling of radius = 8× the volume per particle = 8× fewer particles needed. Zone 3 needs 512× fewer particles than Zone 0 for the same volume of fluid. A lava flow covering 100m would need 2 million uniform particles. With adaptive resolution: ~100k–200k. Same visual quality near the camera. 10–50× particle count reduction for large-scale phenomena.
-
-**Transition bands** (width ~5× particle spacing) between zones prevent sharp boundaries. Both resolutions coexist in the band. Particles gradually split (approaching camera) or merge (moving away). Forces between different-sized particles use averaged smoothing radius: `h_ij = (h_i + h_j) / 2`. This maintains Newton's third law across resolution boundaries.
-
-**Hysteresis** prevents split/merge oscillation: split when particle is > 1.5× target size for zone, merge when < 0.5× target size. The gap (0.5× to 1.5×) is the stable band — no action taken.
-
-**7. Hybrid Rendering: Real Physics + Visual Approximations**
-
-The most important optimization is knowing **when NOT to simulate**. Real SPH/MPM physics only runs during active interaction moments. Everything else uses cheap visual approximations:
-
-| Situation | Physics method | Visual method |
-|---|---|---|
-| Player melting/pouring metal | Real SPH (500-5,000 particles) | Tier 1: Marching cubes mesh |
-| Player mixing chemicals | Real SPH + diffusion | Tier 1: Marching cubes with composition-driven color |
-| Rain falling | None | Tier 3: GPU billboard particle system (no physics) |
-| Rain puddles forming | Heightfield (add volume to grid cell) | Puddle decal texture + animated ripple shader |
-| River | Grid flow (volume + direction) | River mesh + scaled-down Gerstner waves from OceanShader |
-| Waterfall | None (visual) + MPM at base (splash) | Tier 3 particle trail + Tier 2 SSFR at splash zone |
-| Lake | Grid cell (single water volume number) | Flat mesh at water height + wave shader + edge foam |
-| Ocean | None | Pure Gerstner wave shader (already built in OceanShader.ts) |
-| Lava (active flow front) | Real MPM (5,000-200,000 particles) | Tier 2: SSFR with emissive glow + heat distortion |
-| Lava (cooled) | None | Terrain with volcanic rock texture |
-| Blood | None | Decal projected onto terrain surface |
-| Water carried in pot | Just a number (mass + composition) | Sloshing animation shader on the pot model |
-
-The SPH/MPM system activates only when needed (phase transition triggers it) and deactivates when particles settle (sleep system) or cool into solids (merge back into material packets). During a typical gameplay session, SPH/MPM is actively running for maybe 10% of the time — during smelting, pouring, or weather events. The other 90% costs zero.
-
-#### Optical Property Pipeline — Composition to Light
-
-In the real world, the appearance of any liquid is fully determined by its atomic composition and temperature. There is no color lookup table. Light enters the medium, gets absorbed at wavelength-dependent rates, scatters off suspended particles, and reflects at interfaces where refractive index changes. The renderer computes all optical properties from the same MaterialPacket that drives viscosity and density.
-
-**Step 1: Composition → Absorption Spectrum (Beer-Lambert Law)**
-
-`I(λ) = I₀ · exp(-α(λ) · d)` — light intensity decreases exponentially with distance through the medium.
-
-Each element/compound contributes to the absorption coefficient α(λ). This is real physics:
-- Pure water: absorbs red (α_red ≈ 0.45/m), passes blue (α_blue ≈ 0.02/m) → this is WHY water looks blue-green in thick layers
-- Dissolved iron (Fe³⁺): absorbs blue/green (α_blue ≈ 50/m) → this is WHY rusty water looks orange-brown
-- Dissolved copper sulfate (CuSO₄): absorbs red (α_red ≈ 80/m) → this is WHY copper sulfate solution looks blue
-- Carbon suspension (soot, charcoal): absorbs everything uniformly → this is WHY ink and crude oil look black
-
-The renderer stores absorption as RGB (not full spectrum — 3 channels is enough for visual accuracy, same approximation used in film VFX):
-
-```
-absorptionRGB(composition) = Σ (concentration_i × species_i.absorptionRGB)
-```
-
-Computed once when composition changes, not every frame. The property calculator (§3.1) already computes viscosity this way. Absorption coefficients are just another column in the element property table.
-
-**Step 2: Composition → Refractive Index**
-
-How much light bends at the fluid surface. Determines how distorted objects look through the liquid and how much reflection you see at glancing angles (Fresnel).
-
-Using the Arago-Biot mixing rule: `n_mix = Σ (volumeFraction_i × n_i)`
-
-- Water: n = 1.333
-- Molten glass (SiO₂): n = 1.458
-- Ethanol: n = 1.361
-- Molten iron: n = 2.87 (highly reflective — metallic)
-- Oil: n = 1.47
-
-High n → more reflection, more refraction distortion, more "glassy." Metallic liquids (n > 2): mostly reflective, almost no transparency.
-
-**Step 3: Composition → Scattering**
-
-Suspended particles scatter light, making liquid cloudy. Dissolved species do NOT scatter (transparent solution). Suspended solids scatter proportionally to their concentration. A liquid with suspended charcoal is opaque. A dissolved salt solution is clear. The composition already tracks dissolved vs. suspended (§3.1).
-
-**Step 4: Temperature → Blackbody Emission**
-
-Hot materials glow. This is blackbody radiation, not a special effect. Wien's displacement law: `peak_wavelength = 2898 / T(K)`. Below ~500°C: no visible emission. At 500°C: faint red glow. At 1000°C: bright orange. At 1500°C: yellow-white. The Planck distribution gives exact RGB emission at any temperature — the same equation used by every PBR renderer.
-
-**Per-particle optical attributes (40 bytes, cached):**
-- absorptionRGB: vec3 (12 bytes)
-- refractiveIndex: float (4 bytes)
-- scatteringRGB: vec3 (12 bytes)
-- emissionRGB: vec3 (12 bytes) — blackbody glow from temperature
-
-Recomputed ONLY when composition or temperature changes. For a static puddle: computed once, cached forever. For actively mixing liquids: recomputed each sim tick.
-
-**Multi-Material Screen-Space Rendering**
-
-When two immiscible fluids occupy the same screen region (oil on water, slag on molten metal), the bilateral blur must not smear them together. The solution follows from how light actually behaves in layered fluids — it passes through each layer independently, being absorbed and refracted at each interface.
-
-```
-Step 1: Classify particles into layers by density and miscibility.
-  Particles whose composition similarity is > 0.9 (dot product of
-  normalized composition vectors) are the same layer — they are
-  miscible and will mix over time. Particles with similarity < 0.9
-  are separate layers (immiscible — ΔG of mixing > 0, already
-  computed by the reaction engine).
-
-Step 2: Run the full SSFR pipeline independently per immiscible layer.
-  Each layer gets its own depth buffer, thickness map, normal map.
-  The bilateral blur operates WITHIN each layer — no cross-material smearing.
-
-Step 3: Composite layers back-to-front (densest first).
-  Light enters the top layer → absorbed by Beer's Law using top layer's α.
-  Light exits top layer, enters bottom layer → refracted at the interface
-  (Snell's law: n₁·sin(θ₁) = n₂·sin(θ₂)).
-  Light absorbed by bottom layer → reflected off bottom surface or terrain.
-  Light travels back up through both layers.
-
-Cost: one extra SSFR pass per immiscible layer.
-  1 layer (most common): ~2.5ms
-  2 layers (oil+water, metal+slag): ~4.5ms
-  3+ layers (exotic): ~6.5ms — almost never happens naturally.
-```
-
-Miscible fluids (water + dissolved salt, water + alcohol) are ONE layer. Their optical properties are the mass-weighted average of the components. This happens automatically because SPH diffusion mixes their compositions over time. As they mix, per-particle optical properties gradually converge. You literally watch the color change as mixing happens — no special rendering, just composition changing → absorption changing → color changing.
-
-#### Secondary Particles — Foam, Spray, Bubbles
-
-These are not effects. In the real world, spray happens when kinetic energy overcomes surface tension. Foam happens when gas gets trapped in liquid films. Bubbles happen when gas is produced inside a liquid. The simulation already computes everything needed to predict when these occur. Secondary particles are visual-only (Tier 3 raw points). They are spawned BY the primary SPH/MPM simulation based on physical conditions, then rendered cheaply as GPU billboards. They do not participate in SPH forces.
-
-**Spray: Liquid fragmenting into droplets**
-
-When a fluid surface moves fast enough, surface tension cannot hold the surface together. The Weber number determines this:
-
-`We = ρ · v² · L / σ` (density × velocity² × length scale / surface tension)
-
-- We > 12: surface starts to deform (waves, fingers)
-- We > 40: surface fragments into droplets (spray)
-- We > 100: explosive atomization (waterfall crashing)
-
-The SPH simulation already computes velocity and surface tension per particle. Surface particles (particles with fewer than ~70% of average neighbors — they are at the fluid boundary) are candidates for spray emission.
-
-```
-SprayEmission (per surface particle, per sim tick):
-  We = particle.density × |particle.velocity|² × particle.radius / particle.surfaceTension
-
-  if We > 40:
-    numDroplets = clamp(floor((We - 40) / 20), 1, 10)
-    for each droplet:
-      position = particle.position + random offset within kernel radius
-      velocity = particle.velocity + random perturbation (±30%)
-      lifetime = 0.5 to 2.0 seconds
-      size = particle.radius × 0.1 to 0.3
-      color = particle's optical absorptionRGB
-      movement = ballistic (full gravity, no fluid forces)
-      // On hitting fluid surface: absorbed. On hitting terrain: tiny splat.
-```
-
-**Foam: Gas trapped in liquid films**
-
-Foam forms when turbulent flow entrains air. The trapped air forms thin liquid films. Surfactants (compounds that lower surface tension: fats, proteins, soap) stabilize the films.
-
-Without surfactants: foam collapses in <1 second (pure water barely foams). This is correct.
-With surfactants: foam persists for minutes to hours (soap, beer, egg whites).
-
-The simulation already computes vorticity (curl of velocity field): `ω_i = Σⱼ (mⱼ/ρⱼ) × (vⱼ - vᵢ) × ∇W(rᵢⱼ, h)`
-
-```
-FoamGeneration (per surface particle with high vorticity):
-  if |vorticity| > FOAM_THRESHOLD:
-    // Surfactant detection: low surface tension = surfactants present
-    hasSurfactant = (particle.surfaceTension < 0.5 × WATER_SURFACE_TENSION)
-
-    foamLifetime = hasSurfactant ? 5.0–30.0 seconds : 0.2–1.0 seconds
-    // Pure water: foam dies instantly. Soapy water: foam lives long. Beer: minutes.
-
-    spawn foam particle:
-      position = particle.position + surface normal × small offset
-      velocity = particle.velocity × 0.3 (foam moves slower than fluid)
-      lifetime = foamLifetime
-      size = particle.radius × 2–5 (foam bubbles are larger)
-      color = white with slight tint from fluid absorption
-      // Foam is white because thin films scatter all wavelengths (Mie scattering)
-      movement = constrained to fluid surface, pushed by flow beneath
-      // As they age: shrink and fade (film drainage → bubbles pop)
-```
-
-**Bubbles: Gas produced inside liquid**
-
-Bubbles form when: (1) a chemical reaction produces gas (CO₂ from acid + carbonate, H₂ from acid + metal), (2) liquid is heated past boiling (steam bubbles), (3) air is trapped when an object enters liquid. Cases 1 and 2 are already handled by the reaction engine and phase transition system.
-
-```
-BubbleGeneration (triggered by reaction engine or phase transition):
-  when reaction produces gas inside a liquid body:
-    bubbleRadius = max(0.001, 2 × particle.surfaceTension / (gasP - liquidP))
-    // Laplace pressure: small bubbles need more pressure to exist
-    numBubbles = clamp(gasMass / (4/3 × π × bubbleRadius³ × gasDensity), 1, 100)
-
-    for each bubble:
-      position = reaction site
-      velocity = buoyancy-driven upward:
-        // Stokes' law: v_rise = (2/9) × (ρ_liquid - ρ_gas) × g × r² / μ_liquid
-        // Small bubbles rise slowly. Large bubbles rise fast.
-        // High viscosity (honey): very slow. Low viscosity (water): fast.
-        // This uses the fluid's viscosity — already computed.
-      lifetime = time to reach surface + 0.5s
-      size = bubbleRadius
-      // On reaching surface: pop → optionally spawn micro-spray particle
-```
-
-**Boiling** emerges from bubble count: a few bubbles per second = simmering, many per second = rolling boil. No animation — the rate tracks the heat input rate. **Fermentation** produces slow steady CO₂ bubbles over hours — the player sees this and knows fermentation is happening.
-
-**Secondary particle budget:**
-- Typical active counts: waterfall 500–2,000 spray, boiling pot 50–200 bubbles, smelting 100–500 foam
-- Max concurrent: ~5,000 secondary particles
-- GPU cost: <0.1ms (same as weather particles)
-- Memory: ~150 KB (negligible)
-- These particles are LOCAL to each client. The server does not track them. Each client independently generates secondaries from the primary particle state it receives. Since spawn conditions are deterministic (based on velocity, vorticity, reactions), all clients produce visually similar effects. Slight differences do not matter.
-
-#### Crafted Object Collision
-
-The terrain heightfield handles ground collision. But when a player pours molten copper into a clay mold, the mold is a mesh collider, not a heightfield. Particle-mesh collision is needed for crafted objects, containers, and structures.
-
-```
-MeshCollision:
-  Crafted objects with concave interiors (pots, molds, channels, troughs)
-  are decomposed into a signed distance field (SDF) at creation time.
-  The SDF stores the distance to the nearest surface at each point in a
-  3D grid encompassing the object. Inside the object: negative distance.
-  Outside: positive distance.
-
-  Per particle, per tick:
-    sdf_value = sample(object.sdf, particle.position)
-    if sdf_value < 0:
-      // Particle is inside the solid — push it out
-      gradient = sdf_gradient(object.sdf, particle.position)
-      particle.position += gradient × (-sdf_value)  // push to surface
-      // Zero out velocity into the surface, apply friction to tangential
-      v_normal = dot(particle.velocity, gradient) × gradient
-      v_tangent = particle.velocity - v_normal
-      particle.velocity = v_tangent × (1 - friction)
-
-  SDF resolution: ~0.01m (1cm) for crafting objects. A typical pot:
-  10cm × 10cm × 15cm → 10 × 10 × 15 grid = 1,500 cells × 4 bytes = 6 KB per object.
-  100 crafted objects near the player = 600 KB. Negligible.
-
-  SDFs are recomputed when the object's shape changes (player modifies it).
-  For rigid objects (finished pot, stone mold): computed once at creation.
-```
-
-#### Fluid-Structure Coupling — Water Pushes on Walls
-
-The fluid simulation and structural physics are not independent. Fluid exerts force on any solid surface it contacts. Without this coupling, dams have no load on them, bridge piers feel no river current, and underground structures don't experience buoyancy.
-
-**Hydrostatic pressure on walls and dams:**
-Every solid block in contact with fluid receives a horizontal force:
-  F = ρ_fluid × g × h × A
-  where h = depth of the fluid above the block's center, A = contact area
-
-A dam holding back 5m of water: F = 1000 × 9.81 × 5 × 1 = 49,050 N per m² of wall.
-This force is applied as a lateral load to the structural system (§3.4).
-The dam's structural integrity check must resist this — if the dam is too thin
-or unbuttressed, it fails and the water is released as a flood (see below).
-
-**Hydrodynamic force on submerged structures:**
-Moving fluid pushes on submerged objects:
-  F = 0.5 × ρ × v² × Cd × A
-  where v = fluid velocity, Cd = drag coefficient (~1.2 for flat surfaces)
-
-A bridge pier in a river flowing at 2 m/s: F = 0.5 × 1000 × 4 × 1.2 × 1 = 2400 N/m².
-Not enough to destroy a stone pier, but enough to erode a wooden one over time.
-
-**Buoyancy on submerged foundations:**
-Structures below the water table experience uplift:
-  F_buoyancy = ρ_water × g × V_submerged
-A basement 3m × 3m × 2m deep below water table:
-  F_up = 1000 × 9.81 × 18 = 176,580 N (18 tonnes pushing up)
-If the building above isn't heavy enough, the basement floats up.
-
-**Dam break → flood wave:**
-When a structural failure releases contained water, the shallow water equations
-describe the resulting flood:
-  ∂A/∂t + ∂Q/∂x = 0  (continuity)
-  ∂Q/∂t + ∂(Q²/A)/∂x + gA × ∂h/∂x = gA(S₀ - Sf)  (momentum)
-
-For the game's grid-based regional water (Scale 3), a simplified kinematic wave
-model is sufficient: when a dam block is removed, the grid cell behind it
-instantly has its waterVolume redistributed to downhill cells, with flow velocity
-determined by the height difference. MPM particles are spawned at the breach
-point for the dramatic visual of water rushing through.
-
-Implementation: the structural system notifies the fluid system when a block
-that was retaining water is removed. The fluid system then:
-  1. Queries waterVolume in grid cells adjacent to the removed block
-  2. Spawns MPM particles at the breach with velocity from √(2gh)
-  3. Reduces waterVolume in the upstream cells
-  4. The MPM particles flow downhill, joining the environment-scale simulation
-
-#### Hydraulic Jump — Fast Water Hits Slow Water
-
-When supercritical flow (fast, shallow) transitions to subcritical flow (slow, deep), a hydraulic jump forms — a turbulent standing wave with dramatic energy dissipation.
-
-The Froude number determines the flow regime:
-
-```
-Fr = v / √(g × d)
-where v = flow velocity (m/s), d = flow depth (m)
-
-Fr < 1: subcritical (slow, deep, tranquil) — normal river flow
-Fr = 1: critical (at a weir crest, at the brink of a waterfall)
-Fr > 1: supercritical (fast, shallow, shooting) — below a spillway
-```
-
-When supercritical flow enters a subcritical region, the jump occurs. The conjugate depth ratio gives the downstream depth:
-
-```
-d₂/d₁ = 0.5 × (-1 + √(1 + 8 × Fr₁²))
-```
-
-Example: water flowing at 4 m/s, 0.1m deep (Fr = 4/√(9.81×0.1) = 4.04):
-- d₂ = 0.1 × 0.5 × (-1 + √(1 + 8×16.3)) = 0.1 × 5.2 = 0.52m
-- Water depth jumps from 10cm to 52cm in a turbulent roller.
-
-Energy dissipated in the jump:
-
-```
-ΔE = (d₂ - d₁)³ / (4 × d₁ × d₂)
-```
-
-This energy goes into turbulence, spray, and SOUND.
-
-Where hydraulic jumps appear in gameplay:
-- Base of waterfalls: fast falling water hits the pool → jump + spray + foam
-- Below spillways: player-built dam with overflow → fast water hits downstream pool
-- In steep channels: sudden slope change from steep to flat
-
-This connects to:
-- Sound (§3.3): the jump is LOUD — continuous broadband noise from turbulence. Sound power is proportional to energy dissipation rate. The noise synthesis uses ΔE as input.
-- Secondary particles (§3.2): the turbulent roller generates spray (Weber number is high at the jump) and foam (vorticity is maximum in the roller).
-- Structural (§3.4): the turbulent flow at a jump scours foundations. Real dams have "stilling basins" specifically designed to contain the jump.
-
-Implementation in the grid-based regional water (Scale 3): when adjacent grid cells have Fr > 1 → Fr < 1 transition, mark as a jump. Spawn MPM particles at the jump location for the visual turbulence. Generate a continuous noise sound event at the jump position.
-
-#### Particle Network Streaming
-
-The world is consistent. Every player sees the same lava flow, the same river, the same puddle. But streaming 400,000 particle positions to every client every frame is impossible. The solution mirrors human perception: you can only see what is in front of you, and distant things have less detail.
-
-**The bandwidth problem:**
-
-Naive: 400,000 particles × 12 bytes (xyz float32) × 30 Hz = 144 MB/s per client. Absurd.
-
-**Solution 1: Only send what is awake.** The sleep system means 80–95% of particles are dormant. Sleeping particles were already sent when they were active — the client remembers their position. Active particles only: 400,000 × 5% = 20,000 × 12 bytes × 30 Hz = 7.2 MB/s. Better, but still too much.
-
-**Solution 2: Spatial relevance — only send what you can see.** Each client has a view frustum and a maximum interest radius. Particles outside this region are irrelevant.
-
-| Zone | Distance | Update frequency | Detail level |
-|------|----------|-----------------|-------------|
-| Full detail | 0–10 m | Every tick (30 Hz) | Every active particle, delta-compressed |
-| Reduced | 10–30 m | Every 3rd tick (10 Hz) | Every active particle, delta-compressed |
-| Sparse | 30–50 m | Every 5th tick (6 Hz) | Every 4th particle, half-precision |
-| Summary | 50 m+ | Every 10th tick (3 Hz) | Fluid body bounding box + avg velocity only |
-
-Typical active particles within 50m of a player: 1,000–5,000 (most of the world's 400k are far away).
-
-**Solution 3: Delta compression.** Particles move smoothly. The client predicts each particle's next position: `pos += velocity × dt`. The server only sends the CORRECTION (delta from prediction). Most deltas are tiny (<0.01m) and fit in 3 bytes (int8 × 3 scaled to ±0.1m range) instead of 12 bytes (float32 × 3). In practice 90%+ of particles fit in 3-byte deltas. Average cost: ~3.3 bytes per particle vs. 12 = 3.6× compression.
-
-**Combined bandwidth:**
-
-```
-Typical frame (exploring near a river):
-  Full detail:  500 particles × 3.3 bytes              = 1,650 bytes
-  Reduced:      1000 particles × 3.3 bytes (at 10 Hz)  = 1,100 bytes/tick
-  Sparse:       200 particles × 6 bytes (at 6 Hz)      = 240 bytes/tick
-  Summary:      5 bodies × 30 bytes                     = 150 bytes
-  Events:       ~100 bytes (occasional spawn/kill)
-  TOTAL per tick: ~3,240 bytes × 30 Hz = ~97 KB/s
-
-Peak frame (standing in a volcanic eruption):
-  Full detail:  3000 × 3.3 = 9,900
-  Reduced:      5000 × 3.3 = 5,500/tick
-  Sparse:       2000 × 6   = 2,400/tick
-  Events:       ~500 (many spawns)
-  TOTAL: ~18,300 bytes × 30 Hz = ~549 KB/s
-```
-
-Both well within broadband capacity. Even mobile connections (1 MB/s) handle the typical case.
-
-**Client-side gap filling:** When the network skips particles (spatial or temporal downsampling), the client fills gaps. Temporal gaps: interpolate position from last two known positions. Spatial gaps: spawn visual-only "ghost" particles to maintain fluid body shape. These ghost particles have no simulation authority — they are pure visual interpolation. They are removed when the server sends real data for that region.
-
-**Consistency:** Two players standing next to each other see the same fluid. Both receive the same authoritative particle positions from the server. The only difference: client-generated secondary particles (spray, foam, bubbles) may differ slightly because they include randomness. This is acceptable — in real life, two people standing next to the same waterfall would describe the spray slightly differently too. The 50ms round-trip latency is masked by the visual smoothness of screen-space rendering (the bilateral blur hides small jitters in position updates).
-
-#### Implementation Phases
-
-**Phase 1 — Crafting-scale SPH (connect to material packets)**
-- Implement SPH solver in Rust via napi-rs (pressure, viscosity, gravity, terrain collision)
-- Hook into material packet phase transitions: solid → liquid spawns particles, cooling merges them back
-- Visual: Tier 1 marching cubes mesh with composition-driven optical properties
-- Test: melt copper ore in bloomery → molten copper flows into a channel → cools into solid
-
-**Phase 2 — Local environment MPM + screen-space rendering**
-- Implement MLS-MPM solver in Rust for environment-scale particles
-- Tier 2 screen-space fluid rendering pipeline (5 GPU passes)
-- Tier transition system (crossfade + hysteresis between Tier 1 and 2)
-- Connect to weather system: rain events spawn falling particles that form puddles
-- Particle redistribution system (splitting, merging, adaptive zones)
-
-**Phase 3 — Grid-based regional water + scale transitions**
-- Extend fluid.worker.ts with water volume tracking, Manning's equation flow
-- SPH/MPM ↔ grid transitions (particle absorption / emission)
-- Lakes form in terrain concavities, overflow creates rivers
-- Server syncs grid state in WORLD_SNAPSHOT
-
-**Phase 4 — Full water cycle + secondary particles**
-- Evaporation from water surfaces → feeds weather system humidity
-- Groundwater absorption and springs
-- Seasonal variation (freeze/thaw cycle)
-- Connect ocean shader to grid system at coastlines
-- Spray (Weber number), foam (vorticity + surfactant), bubbles (reactions + boiling)
-
-**Phase 5 — Lava, exotic fluids, and network streaming**
-- Volcanic events spawn high-temperature MPM particles (up to 200,000)
-- Lava cooling → terrain modification (new rock forms)
-- Multi-material rendering (immiscible fluid layers)
-- Particle network streaming protocol with delta compression and spatial LOD
-- Crafted object collision via signed distance fields
-
-**Phase 6 — GPU compute path (WebGPU)**
-- Port SPH crafting solver to WebGPU compute shaders
-- Port MPM environment solver to WebGPU compute (target: 200k+ particles at 30 Hz)
-- Parallel spatial hash construction on GPU
-- Fallback: Rust CPU path remains the default, GPU path is an enhancement
-
----
-
-### 3.3 Sound Engine — Synthesized from Physics, Zero Samples
-
-#### The Principle
-
-Every sound in the real world is just air vibrating. When you hit a metal bar, the bar vibrates at specific frequencies determined by its material (Young's modulus, density) and shape (length, thickness). Those vibrations push air molecules, creating pressure waves that reach your ear. The ear decomposes those waves into frequencies (via the cochlea) and the brain interprets them as "the sound of metal being hit."
-
-This means: **if you know the material properties and the geometry, you can compute the exact frequencies the object will produce.** No recordings needed. No samples. The sound is derived from the same MaterialPacket properties that determine melting point, color, and structural strength.
-
-This technique is called **Modal Synthesis** — a proven method used in academic research, film sound design, and game audio. The game produces ALL sound from physics. Zero audio files ship with the game.
-
-#### How Sound Actually Works (The Physics)
-
-```
-The Physics of Vibration {
-  // When an object is struck, it vibrates. The vibration is NOT random —
-  // it is a precise set of frequencies called MODES (eigenmodes).
-  //
-  // A vibrating bar has mode frequencies:
-  //   f_n = (β_n² / 2πL²) × √(EI / ρA)
-  //   where:
-  //     f_n = frequency of mode n (Hz)
-  //     β_n = mode constant (β₁=4.73, β₂=7.85, β₃=11.0, β₄=14.1, ...)
-  //     L = length of bar (m)
-  //     E = Young's modulus (Pa) — from MaterialPacket
-  //     I = second moment of area (m⁴) — from object geometry
-  //     ρ = density (kg/m³) — from MaterialPacket
-  //     A = cross-section area (m²) — from object geometry
-  //
-  // A vibrating plate (2D) has modes:
-  //   f_mn = (π/2) × √(E·h² / (12·ρ·(1-ν²))) × (m²/a² + n²/b²)
-  //   where h = thickness, a,b = plate dimensions, ν = Poisson's ratio, m,n = mode indices
-  //
-  // A vibrating string has modes:
-  //   f_n = (n/2L) × √(T / μ)
-  //   where T = tension, μ = mass per unit length
-  //
-  // KEY INSIGHT: every one of these formulas takes its inputs from the MaterialPacket
-  // (E, ρ) and the object's geometry (L, A, I). Given those, the sound is DETERMINED.
-  // There is no guessing, no randomness — it's physics.
-  //
-  // This is why a small iron nail pings at ~4000 Hz and a large iron anvil rings at
-  // ~300 Hz. Same material (same E, same ρ), different geometry (different L) →
-  // different sound. The formula computes both correctly.
-}
-```
-
-#### Three Synthesis Methods
-
-```
-SoundEngine {
-  // The engine has three synthesis methods, each for a different type of sound.
-  // All three produce audio from MATH ONLY — no recordings, no samples, no files.
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // METHOD 1: Modal Synthesis — Struck/Vibrating Objects
-  // ═══════════════════════════════════════════════════════════════════════════
-  //
-  // Used for: impacts, breaking, footsteps, tool strikes, structural collapse,
-  //           anything where a solid object vibrates after being excited.
-  //
-  // How it works:
-  //   1. Compute the object's resonant modes from material + geometry
-  //   2. Each mode = one sine wave oscillator at a specific frequency
-  //   3. Set each mode's initial amplitude from the excitation (where/how hard it was hit)
-  //   4. Apply exponential decay to each mode (rate from material damping)
-  //   5. Sum all modes → output waveform → speaker
-
-  ModalSynth {
-    computeModes(material: MaterialPacket, geometry: ObjectGeometry): Mode[] {
-      modes = []
-      for n = 1 to 30:
-        // Frequency from eigenmode formula (depends on shape type):
-        if geometry.type == 'bar':
-          f = (BETA[n]² / (2 * PI * L²)) * sqrt(E * I / (rho * A))
-        else if geometry.type == 'plate':
-          f = (PI / 2) * sqrt(E * h² / (12 * rho * (1 - nu²))) * (m²/a² + n²/b²)
-        else if geometry.type == 'sphere':
-          f = (BETA_SPHERE[n] / (2 * PI * R)) * sqrt(E / (rho * (1 - nu²)))
-
-        // Decay: internal damping determines how long each mode rings
-        // Q factor ≈ youngsModulus / (internalFriction × density)
-        // Metals: Q ~ 1000-5000 (ring for seconds)
-        // Wood: Q ~ 10-50 (thud, gone in 0.05s)
-        // Stone: Q ~ 50-200 (medium)
-        decay = Q / (PI * f)
-
-        // Amplitude: depends on where object was hit relative to mode shape
-        amplitude = excitationEnergy * modeShapeAtContactPoint(n, contactPoint)
-
-        modes.push({ frequency: f, amplitude, decayRate: 1/decay })
-      return modes
-    }
-
-    // WebAudio implementation:
-    //   Each mode = one OscillatorNode (sine wave) + one GainNode (decay envelope)
-    //   osc.frequency.value = mode.frequency
-    //   gain.gain.exponentialRampToValueAtTime(0.001, now + 1/mode.decayRate)
-    //   20 modes × 2 nodes = 40 WebAudio nodes per sound event — trivial for WebAudio
-  }
-
-  // What modal synthesis produces:
-  //   Iron anvil (L=0.5m, E=200GPa, ρ=7800): f₁=312Hz, decay 3.2s → deep resonant clang
-  //   Ceramic cup (R=0.04m, E=70GPa, ρ=2400): f₁=2800Hz, decay 0.3s → sharp high clink
-  //   Oak log (L=1.0m, E=12GPa, ρ=600): f₁=68Hz, decay 0.05s → short dull thud
-  //   Glass pane (0.5×0.5m, h=3mm, E=70GPa): f₁=850Hz, decay 0.5s → bright ring, shatters into many high-freq fragments
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // METHOD 2: Noise Synthesis — Continuous/Turbulent Sounds
-  // ═══════════════════════════════════════════════════════════════════════════
-  //
-  // Used for: wind, rain, fire, water flow, grinding, scraping, sand pouring.
-  // These are NOT periodic vibrations — they are NOISE shaped by physics.
-
-  NoiseSynth {
-    // Wind:
-    //   Aeolian tone: f = St × v / d (Strouhal number ~0.2, v = wind speed, d = obstacle diameter)
-    //   Implementation: band-pass filtered brown noise centered at the Aeolian frequency
-    //   Each thin object (branch, fence post, wire) produces its own tone
-    //   Forest in wind: dozens of Aeolian tones from branches → broadband rush
-
-    // Rain:
-    //   Each drop impact = micro-impulse. Many impacts = noise.
-    //   Drop pitch: Minnaert bubble frequency f = 3.26 / r (r = drop radius in meters)
-    //     Light rain (r=1mm): f ≈ 3260 Hz. Heavy rain (r=3mm): f ≈ 1087 Hz.
-    //   Surface material adds its own modal response (rain on metal roof = noise + metal modes)
-
-    // Fire:
-    //   Low-frequency: brown noise at 60-200 Hz (turbulent combustion)
-    //   Crackle: random short broadband bursts at 1-4 kHz (moisture pockets exploding)
-    //     Rate proportional to wood moisture content
-    //   Hiss: high-frequency white noise at 4-8 kHz (steam, if moisture > 0.3)
-
-    // Water flow:
-    //   Turbulence spectrum follows Kolmogorov cascade (power law — more energy at low frequencies)
-    //   Small stream: high-pitched babble (2-4 kHz). Large river: low rumble (100-400 Hz)
-    //   Frequency inversely proportional to channel width
-    //   Rapids: add white noise bursts (air entrainment)
-
-    // Grinding/scraping:
-    //   Stick-slip friction: contact alternates between sticking and slipping
-    //   Each slip = modal excitation of both surfaces
-    //   Fast scraping: impulses merge into tonal sound. Slow: individual pops.
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // METHOD 3: Source-Filter Synthesis — Voice and Animal Calls
-  // ═══════════════════════════════════════════════════════════════════════════
-  //
-  // Voice is a vibrating membrane (vocal cords) producing a base frequency,
-  // filtered through a resonant cavity (throat/mouth/nasal passage).
-
-  VoiceSynth {
-    // Source: vocal cord vibration → pulse/sawtooth oscillator at fundamental f₀
-    //   Human male: f₀ = 85-180 Hz
-    //   Human female: f₀ = 165-255 Hz
-    //   Wolf howl: f₀ = 150-780 Hz (sweeps through range)
-    //   Bird song: f₀ = 1000-8000 Hz (syrinx produces very high frequencies)
-    //   Dog bark: f₀ = 500 Hz, short burst (50ms), harsh spectrum
-    //   Cow moo: f₀ = 60-200 Hz
-    //   Bee buzz: f₀ = wingbeat frequency (200 Hz) — mechanical, not vocal
-
-    // Filter: vocal tract creates FORMANTS — resonant peaks that define the sound
-    //   "ah" (open mouth): F1=800Hz, F2=1200Hz
-    //   "ee" (narrow mouth): F1=300Hz, F2=2300Hz
-    //   "oo" (rounded lips): F1=300Hz, F2=800Hz
-    //   Implementation: chain of 3-5 BiquadFilterNodes in WebAudio, each at a formant freq
-
-    // NPC speech (§5.3):
-    //   1. Language generator produces phoneme sequence
-    //   2. Each phoneme maps to formant configuration
-    //   3. Source oscillator at NPC's pitch (body size → pitch: larger = lower)
-    //   4. Formant filters morph between phoneme configurations
-    //   5. Result: sounds like speech in an unknown language — no audio files needed
-
-    // Animal calls:
-    //   Same source-filter but species-specific:
-    //   Wolf howl: f₀ sweeps 150→400→250 Hz over 5-10s, smooth formants
-    //   Bird chirp: rapid f₀ sweep 2000-6000 Hz in 20-50ms
-    //   Frog: f₀=100-300Hz, throat sac acts as Helmholtz resonator (amplifies)
-    //   Insect: oscillator at wingbeat frequency (no filter — pure mechanical tone)
-  }
-}
-```
-
-#### The Audio Pipeline
-
-```
-SOUND_EVENT (from server) → SoundComputer → Synthesizer → Environment → Spatial → Speaker
-
-Step 1: SOUND_EVENT arrives from server with:
-  { type, materialA, materialB, energy, contactPoint, geometryA, relativeVelocity }
-
-Step 2: SoundComputer selects synthesis method:
-  impact/break  → Modal Synthesis (Method 1)
-  scrape        → Modal + Noise hybrid
-  flow/combustion → Noise Synthesis (Method 2)
-  voice/animal  → Source-Filter (Method 3)
-
-Step 3: Synthesizer creates WebAudio nodes and produces waveform
-
-Step 4: Environment filter (client-side):
-  Underwater: low-pass 800 Hz + speed of sound 1500 m/s
-  Cave: reverb proportional to estimated cave volume
-  Forest: multi-tap delay (tree reflections) + high-freq absorption
-  Open field: dry (no reverb)
-
-Step 5: Spatial positioning (WebAudio PannerNode):
-  HRTF panning (directional hearing)
-  Inverse square distance attenuation (I = P / 4πr²)
-  Propagation delay: distance / 343 m/s (thunder after lightning)
-
-Step 6: Output → speaker
-```
-
-#### Doppler Effect — Moving Sounds Shift Pitch
-
-When a sound source moves toward a listener, the frequency shifts upward. When moving away, it shifts downward:
-
-```
-f_observed = f_source × (v_sound + v_listener) / (v_sound + v_source)
-where:
-  v_sound = 343 m/s (speed of sound in air at 20°C)
-  v_listener = listener velocity along the source-listener axis (+ = moving away)
-  v_source = source velocity along the source-listener axis (+ = moving away)
-```
-
-Gameplay-noticeable examples:
-- Arrow flying past player at 50 m/s: Approaching: f_obs = f × 343 / (343 + (-50)) = f × 1.17 → 17% higher pitch. Receding: f_obs = f × 343 / (343 + 50) = f × 0.87 → 13% lower pitch. The "zip" of an arrow past your ear is this pitch transition.
-- Horse galloping past at 15 m/s: Approaching: +4.6% pitch. Receding: -4.2% pitch. Subtle but audible — hoofbeats sound slightly higher as horse approaches.
-- Thrown rock at 20 m/s: Approaching: +6.2%. Receding: -5.5%.
-
-Implementation: the SOUND_EVENT message already includes source position. Add source velocity (Vec3) to the descriptor. The client computes the relative velocity along the source-listener axis each frame and adjusts the playback rate of the WebAudio source accordingly.
-
-WebAudio's PannerNode supports Doppler natively — set the source's positionX/Y/Z and velocityX/Y/Z, and the listener's position/velocity. The browser handles the pitch shifting automatically. Cost: zero.
-
-This connects to networking (§3.5): source velocity must be included in SOUND_EVENT messages. For most events (impacts, breaks), velocity is zero (the sound source is stationary). For projectiles, thrown objects, and moving entities, velocity comes from the physics simulation.
-
-#### Frequency-Dependent Atmospheric Absorption — Distant Sounds Lose Their Sharpness
-
-Sound doesn't just get quieter with distance — it changes character. High frequencies are absorbed more by air than low frequencies.
-
-Absorption coefficients (simplified from ISO 9613-1, at 20°C, 50% humidity):
-```
-250 Hz:  0.001 dB/m   (bass travels far)
-1000 Hz: 0.005 dB/m   (mid-range moderate)
-4000 Hz: 0.02 dB/m    (treble fades fast)
-8000 Hz: 0.08 dB/m    (highest frequencies gone quickly)
-```
-
-At 100m distance:
-- 250 Hz: -0.1 dB (barely affected)
-- 4000 Hz: -2.0 dB (noticeably reduced)
-- 8000 Hz: -8.0 dB (nearly gone)
-
-At 500m distance:
-- 250 Hz: -0.5 dB (still audible)
-- 4000 Hz: -10 dB (very quiet)
-- 8000 Hz: -40 dB (effectively silent)
-
-This is why:
-- Distant thunder is a low rumble (high frequencies absorbed over km)
-- Nearby thunder is a sharp crack (full spectrum arrives intact)
-- A distant waterfall is a low roar; close up it hisses
-- Distant footsteps are soft thumps; close up you hear the crunch
-
-Implementation: apply a low-pass filter to each sound, with cutoff frequency inversely related to distance:
-```
-cutoffFrequency = 20000 / (1 + distance × 0.02)
-At 0m: 20kHz (full spectrum). At 50m: 10kHz. At 200m: 4kHz. At 1km: 1kHz.
-```
-
-WebAudio BiquadFilterNode (type = "lowpass") does this in one node. Set the frequency parameter dynamically based on distance. Cost: negligible.
-
-Humidity affects absorption — dry air absorbs high frequencies faster. The weather system's humidity value modulates the absorption coefficient:
-```
-absorption × (1.5 - humidity)  // at humidity=0: 1.5×. At humidity=1: 0.5×
-Dry desert: sounds die quickly at distance. Humid jungle: sounds carry farther.
-```
-
-#### What This System Can Produce
-
-| Sound | Method | Key Parameters |
-|-------|--------|---------------|
-| Hammer on anvil | Modal | E=200GPa, ρ=7800, L=0.5m → f₁=312Hz, Q=3000 |
-| Footstep on stone | Modal | Stone surface modes excited by foot impact |
-| Footstep on sand | Noise | Many micro-granular impacts → filtered white noise |
-| Campfire | Noise | Brown noise 60-200Hz + random crackle impulses |
-| Rain on roof | Noise+Modal | Minnaert drop frequency + roof modal response |
-| Wind through trees | Noise | Aeolian tones from branches (f=0.2v/d) |
-| River flowing | Noise | Kolmogorov turbulence spectrum |
-| Glass breaking | Modal | High-frequency modes + many fragment modes |
-| NPC speaking | Voice | Pulse oscillator + formant filters |
-| Wolf howling | Voice | f₀ sweep + throat formants |
-| Bird singing | Voice | Rapid f₀ sweep via syrinx model |
-| Bee buzzing | Oscillator | Single tone at wingbeat frequency |
-| Pouring liquid | Noise | Minnaert bubble oscillations |
-| Silence in cave | Environment | Long reverb tail, no active sources |
-
-**Zero audio files ship with the game.** Every sound is computed from MaterialPacket properties + object geometry + physics formulas. A new material automatically produces correct sounds.
-
-#### Performance Budget
-
-| Component | Budget | How |
-|-----------|--------|-----|
-| Mode computation | <0.1ms per event | ~30 eigenfrequency calculations |
-| WebAudio node creation | <0.05ms per event | OscillatorNode + GainNode per mode |
-| Noise generation | ~0.01ms per frame | One noise buffer, filtered per source |
-| Voice synthesis | ~0.02ms per frame | Oscillator + 3-5 filters per voice |
-| Environment filter | ~0.5ms per frame | Raycast cache, recompute when player moves >5m |
-| WebAudio processing | ~2-3ms total | Browser audio thread (not main thread) |
-| **Total main thread** | **<1ms** | Main thread computes parameters only |
-
-**Voice limiting:** Maximum 24 concurrent sound sources. Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots.
-
-#### Structure-Borne Sound — Impacts Travel Through Solids
-
-Sound travels through solid materials much faster than through air:
-
-```
-v_sound = √(E / ρ)  (longitudinal wave in a rod)
-
-Air:    343 m/s      (slow, highly attenuated)
-Water:  1,480 m/s    (4.3× faster than air)
-Wood:   3,800 m/s along grain (11× faster)
-Stone:  5,500 m/s    (16× faster)
-Steel:  5,960 m/s    (17× faster)
-```
-
-When an impact occurs on a solid surface (pickaxe hits stone wall, footstep on wooden floor), the vibration propagates through the solid at v_sound(material), much faster than the airborne sound.
-
-Gameplay effects:
-- Ear to the ground: footsteps at 200m through stone ground arrive in 200/5500 = 0.036s. Through air: 200/343 = 0.58s. You hear the ground vibration 0.55 seconds BEFORE the airborne sound. This is how real trackers detect distant movement.
-- Impact on the other side of a wall: a pickaxe hitting the far side of a 1m stone wall arrives through stone in 0.0002s. Through air (around the wall): depends on path, but always slower. You hear the thud through the wall first.
-- Mining sounds: impacts in a mine tunnel propagate through the rock to adjacent tunnels. Other players/NPCs can hear mining activity through solid rock, attenuated by distance but arriving much sooner than airborne.
-
-Implementation: when a sound event occurs on a solid surface:
-1. Generate the normal airborne sound event (existing system)
-2. Also propagate through the structural connectivity graph:
-   - Find all blocks connected to the impact block (BFS, same as load path §3.4)
-   - For each block, compute: delay = distance / v_sound(block.material)
-   - Attenuate: each block boundary attenuates by ~3 dB (impedance mismatch)
-   - If a block is adjacent to air (exposed face): re-radiate as airborne sound at that position, with the accumulated delay and attenuation
-3. The listener hears: structure-borne version (early, muffled) + airborne version (late, clear)
-
-This uses the SAME connectivity graph as the structural load path algorithm (§3.4). Sound propagation and structural load propagation share the BFS infrastructure.
-
-Cost: one BFS per impact event through the structural graph (same as load path). Typically <0.1ms for a 200-block structure.
-
-#### Boundary Condition Detection — Support Changes the Pitch
-
-The β_n values used in modal synthesis (4.73, 7.85, 11.0, 14.1) are for a free-free bar (both ends free to vibrate). But most objects in the game are supported differently, which dramatically changes the frequencies:
-
-| Boundary condition | β₁    | β₂    | β₃    | Example |
-|-------------------|-------|-------|-------|---------|
-| Free-free         | 4.730 | 7.853 | 10.996 | Dropped object, thrown tool |
-| Clamped-free      | 1.875 | 4.694 | 7.855  | Torch bracket, shelf, flag pole |
-| Simply supported  | π     | 2π    | 3π     | Beam resting on two walls |
-| Clamped-clamped   | 4.730 | 7.853 | 10.996 | Beam mortared into both walls |
-| Clamped-simply    | 3.927 | 7.069 | 10.210 | Beam mortared one end, resting other |
-
-The fundamental frequency of a clamped-free bar is (1.875/4.730)² = 0.157× the free-free frequency — more than 6× LOWER pitch. A torch bracket vibrates at a completely different pitch than the same metal bar dropped on the ground.
-
-Detection algorithm: when a sound event occurs on a block, query its structural connections (§3.4 connectivity graph):
-- No connections: free-free (dropped/thrown object)
-- One face connected to another block: clamped-free (wall-mounted)
-- Two opposite faces connected: clamped-clamped or simply-supported. If connections are mortared/fastened: clamped-clamped. If connections are just stacked (friction): simply-supported.
-- Mixed: use the most constrained boundary
-
-This reuses the structural connection data already tracked by §3.4. No new computation needed — just a lookup based on existing bond types.
-
-
-### 3.4 Structural Physics — How Buildings Stand or Fall
-
-##### The Principle
-
-Every structure in the game is made of MaterialPackets (§3.1). A wall is not a "wall object" — it is a collection of MaterialPackets (stone blocks, mud bricks, wooden beams) placed in the world and optionally bonded together. Whether that wall stands or falls is determined by the **same material properties** that determine melting point, hardness, and conductivity: compressive strength, tensile strength, shear strength, density. There is no separate "structural integrity" system — there is physics applied to materials.
-
-##### Every Block Is a MaterialPacket
-
-```
-StructuralBlock {
-  // A placed building block IS a MaterialPacket. It has:
-  packet: MaterialPacket             // composition, mass, density, temperature, phase
-  // ALL structural properties come directly from the packet:
-  //   packet.compressiveStrength, packet.tensileStrength, packet.shearStrength,
-  //   packet.youngsModulus, packet.frictionCoefficient, packet.density
-  // No structural properties are stored on the block — they are read from the
-  // MaterialPacket's property calculator (§3.1). Same system as melting point.
-
-  // Real material values (computed by property calculator from composition):
-  //   Granite (SiO₂ + Al₂O₃ + feldspar):
-  //     compressive: ~200 MPa, tensile: ~15 MPa, shear: ~25 MPa
-  //   Limestone (CaCO₃):
-  //     compressive: ~60 MPa, tensile: ~5 MPa, shear: ~10 MPa
-  //   Mud brick (clay + straw + water, dried):
-  //     compressive: ~2 MPa, tensile: ~0.2 MPa, shear: ~0.5 MPa
-  //   Oak wood (cellulose + lignin):
-  //     compressive: ~50 MPa (along grain), tensile: ~100 MPa (along grain!)
-  //     Wood is STRONGER in tension than compression — opposite of stone
-  //     This is why wood beams span gaps but stone beams don't
-  //   Copper:
-  //     compressive: ~250 MPa, tensile: ~210 MPa, shear: ~150 MPa
-  //   Iron:
-  //     compressive: ~350 MPa, tensile: ~400 MPa, shear: ~170 MPa
-  //   Steel (iron + carbon alloy):
-  //     compressive: ~400 MPa, tensile: ~500 MPa, shear: ~200 MPa
-
-  // An impure copper block (Cu₀.₈₅Fe₀.₁₀S₀.₀₅) has DIFFERENT structural properties
-  // than pure copper — because the property calculator accounts for impurities.
-  // A player who smelts cleaner copper gets stronger building material.
-  // This is emergent — not coded as a "building material quality" stat.
-
-  // ── Connection state ──────────────────────────────────────────────────
-  connections: Connection[]          // bonds to adjacent blocks
-  grounded: boolean                  // can trace a connection path to terrain?
-
-  Connection {
-    targetBlock: StructuralBlock
-    bondType: 'stacked' | 'mortared' | 'joinery' | 'fastened'
-    bondStrength: number             // Pa — force to break this connection
-    // stacked (no bond, gravity only): bondStrength = friction force = weight × μ
-    //   μ (friction coefficient): stone-on-stone = 0.6, wood-on-wood = 0.4, mud = 0.3
-    //   Stacked blocks can slide off each other under lateral force (wind, impact)
-    // mortared (mud/lime/concrete between blocks):
-    //   mud mortar: bondStrength = 0.1 MPa (weak, dissolves in rain)
-    //   lime mortar: bondStrength = 2.0 MPa (strong, waterproof)
-    //   concrete: bondStrength = 5.0 MPa (very strong)
-    //   The mortar IS a MaterialPacket too — its bondStrength comes from its composition
-    // joinery (wooden notches, pegs, lashing):
-    //   peg joint: bondStrength = 1.5 MPa
-    //   mortise-and-tenon: bondStrength = 3.0 MPa (strongest wood joint)
-    //   rope lashing: bondStrength = 0.5 MPa (stretches, weakens when wet)
-    // fastened (metal nails, bolts):
-    //   iron nail: bondStrength = 4.0 MPa
-    //   iron bolt: bondStrength = 8.0 MPa
-  }
-}
-```
-
-##### Force Propagation — How Load Travels to Ground
-
-```
-ForceSystem {
-  // Every block has weight. Weight is a downward force.
-  // That force must travel through connected blocks to the ground.
-  // If any block in the path receives more force than it can handle → it breaks.
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // THE LOAD PATH ALGORITHM (4 phases, runs on structural change events)
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // ── Phase 1: Connectivity — which blocks can reach ground? ─────────────
-  //
-  // BFS flood fill starting from all ground-touching blocks.
-  // A block is "supported" if it can trace a path through face-connected
-  // neighbors (6 directions: ±x, ±y, ±z) to any block on terrain.
-  //
-  // function findSupportedBlocks(grid):
-  //   supported = Set()
-  //   queue = Queue()
-  //
-  //   // Seed: blocks sitting on terrain
-  //   for each block in grid.blocks:
-  //     if terrain.isSolid(block.x, block.y - 1, block.z):
-  //       supported.add(block)
-  //       queue.enqueue(block)
-  //
-  //   // BFS through face-connected neighbors
-  //   while queue not empty:
-  //     current = queue.dequeue()
-  //     for each neighbor in current.connections (6 faces):
-  //       if neighbor != null AND neighbor not in supported:
-  //         supported.add(neighbor)
-  //         queue.enqueue(neighbor)
-  //
-  //   return supported
-  //
-  // Blocks NOT in the supported set are floating → become rigid body debris.
-  // Cost: O(N) where N = number of blocks. For a 200-block house: <0.1ms.
-
-  // ── Phase 2: Load computation — top-down gravity accumulation ──────────
-  //
-  // Process all supported blocks from highest Y to lowest Y.
-  // Each block accumulates its own weight plus load from above,
-  // then distributes that total to blocks below it.
-  //
-  // function computeLoads(grid):
-  //   sortedBlocks = grid.blocks.sortBy(b => -b.y)  // top-down
-  //
-  //   for each block in sortedBlocks:
-  //     block.load = block.weight  // reset to self-weight
-  //
-  //   for each block in sortedBlocks:
-  //     receivers = getLoadReceivers(block, grid)  // blocks below
-  //     for each (receiver, fraction) in receivers:
-  //       receiver.load += block.load × fraction
-  //
-  // Load distribution uses a 1:4 spreading ratio:
-  //   Block directly below (y-1, same x,z): weight factor 4
-  //   Blocks at (y-1, ±1 in x or z): weight factor 1 each
-  //   Normalize by total weight factors.
-  //
-  // Example: block at (5,10,5) weighs 500N, has blocks below at
-  //   (5,9,5) and (6,9,5):
-  //   Direct below gets: 500 × 4/5 = 400N
-  //   Side below gets:   500 × 1/5 = 100N
-  //
-  // This creates a realistic load-spreading pyramid — heavy loads at the top
-  // spread out as they travel down through the structure, just like real masonry.
-  //
-  // Full tower example:
-  //   [Roof beam: 30kg]      → 300N
-  //       ↓
-  //   [Wall block: 50kg]     → 500N own + 300N from above = 800N
-  //       ↓
-  //   [Wall block: 50kg]     → 500N own + 800N from above = 1300N
-  //       ↓
-  //   [Foundation: 80kg]     → 800N own + 1300N from above = 2100N
-  //       ↓
-  //   [Terrain]              → absorbs 2100N
-
-  // ── Phase 3: Stress checks — does any block exceed capacity? ───────────
-  //
-  // Three failure modes checked per block:
-  //
-  //   COMPRESSIVE (crushing):
-  //     σ_c = block.load / contactArea
-  //     For a 1m voxel: contactArea = 1 m²
-  //     if σ_c > block.compressiveStrength → CRUSH FAILURE
-  //     Block shatters. Everything above loses support.
-  //
-  //   TENSILE (beam snapping):
-  //     Only checked for blocks detected as spanning a gap (see Beam Detection below).
-  //     σ_t = M / S where:
-  //       M = bending moment = w × L² / 8 (uniform load, simply supported)
-  //       S = section modulus = b × h² / 6 (rectangular cross-section)
-  //       w = total distributed load / beam span (N/m)
-  //     Simplified: σ_t = 3 × w × L² / (4 × b × h²)
-  //     if σ_t > block.tensileStrength → SNAP FAILURE at midspan
-  //
-  //   SHEAR (sliding):
-  //     σ_s = lateralForce / contactArea
-  //     lateralForce comes from wind (Connection 16) or player impact (§7.5)
-  //     if σ_s > block.shearStrength → SHEAR FAILURE
-  //     Block slides sideways. Relevant for walls under wind or siege.
-  //
-  //   BOND FAILURE:
-  //     For bonded blocks, also check if the connection can handle the load:
-  //     if block.load > connection.bondStrength × contactArea → BOND BREAKS
-  //     Stacked (unbonded) blocks can slide under lateral force:
-  //       frictionResistance = block.load × frictionCoefficient
-  //       if lateralForce > frictionResistance → block slides off
-  //
-  //   BUCKLING (slender column failure):
-  //     Tall, thin columns fail by sideways bowing, NOT by crushing.
-  //     Euler's critical load: P_cr = π² × E × I / (K × L)²
-  //     where:
-  //       E = Young's modulus (Pa)
-  //       I = second moment of area (m⁴) — for a 1m square: I = 1/12 = 0.083
-  //       K = effective length factor: 1.0 for pinned-pinned, 0.5 for fixed-fixed,
-  //           2.0 for cantilever (flag pole), 0.7 for fixed-pinned
-  //       L = column height (m)
-  //
-  //     Slenderness ratio: λ = K×L / r where r = √(I/A) is radius of gyration
-  //       λ < 30: stocky — crushing governs (use compressive strength check)
-  //       λ > 100: slender — buckling governs (use Euler)
-  //       30-100: intermediate — use Rankine-Gordon: 1/P_fail = 1/P_crush + 1/P_euler
-  //
-  //     Example: 1m × 1m stone column, 10m tall (pinned-pinned):
-  //       I = 0.083 m⁴, r = 0.289 m, λ = 10/0.289 = 34.6 → intermediate
-  //       P_euler = π² × 40×10⁹ × 0.083 / 100 = 328,000 kN
-  //       P_crush = 200×10⁶ × 1 = 200,000 kN
-  //       Governs: crushing (P_crush < P_euler)
-  //
-  //     Same column at 20m tall:
-  //       λ = 20/0.289 = 69.2 → intermediate
-  //       P_euler = 328,000 / 4 = 82,000 kN ← now buckling governs
-  //       Column fails at 82,000 kN (41% of crushing capacity)
-  //
-  //     This is why real buildings use wide bases and why Gothic cathedrals
-  //     need flying buttresses — tall stone columns buckle before they crush.
-  //
-  //     Implementation: for each column (vertical run of blocks with no lateral support),
-  //     compute λ. If λ > 30, also check Euler. Take the lower of P_crush and P_euler.
-
-  // ── Phase 4: Cascade collapse ──────────────────────────────────────────
-  //
-  // When a block fails, process the collapse in batched waves:
-  //
-  // function cascadeCollapse(failedBlock, grid):
-  //   currentFailures = Set(failedBlock)
-  //   wave = 0
-  //
-  //   while currentFailures not empty AND wave < 100:
-  //     wave++
-  //
-  //     // Remove all failed blocks at once
-  //     for each block in currentFailures:
-  //       grid.blocks.remove(block.position)
-  //
-  //     // Find blocks that lost their path to ground
-  //     floating = findFloatingAfterRemoval(currentFailures, grid)
-  //
-  //     // Recompute loads on remaining structure
-  //     computeLoads(grid)
-  //
-  //     // Find new stress failures
-  //     nextFailures = Set(floating)
-  //     for each block in grid.blocks:
-  //       stress = block.load / BLOCK_AREA
-  //       if stress > block.compressiveStrength:
-  //         nextFailures.add(block)
-  //
-  //     currentFailures = nextFailures
-  //
-  //   // Convert all removed blocks to rigid body debris
-  //   // Group adjacent debris into compound rigid bodies (one per cluster)
-  //   // Apply downward velocity + random tumble
-  //   // Cap at 50-100 active debris bodies for performance
-  //
-  // The findFloatingAfterRemoval function uses targeted BFS:
-  //   Only check blocks that were neighbors of removed blocks.
-  //   For each, BFS toward ground. If no path found → floating.
-  //   Blocks already confirmed supported are cached (skip re-check).
-  //   Cost: O(K) where K = neighbors of removed blocks, NOT the full structure.
-  //
-  // Cascade example (removing a load-bearing wall):
-  //   Wave 0: wall block removed (player action or combat)
-  //   Wave 1: blocks directly above lose support → fall
-  //   Wave 2: roof blocks above those lose support → fall
-  //   Wave 3: neighboring wall overloaded by redistributed load → crush failure
-  //   Wave 4: more roof falls → cascade stabilizes when remaining structure is strong enough
-  //
-  // A 1000-block castle losing a load-bearing wall:
-  //   ~500 blocks recalculated → ~5ms → 3-6 waves → spectacular collapse
-  //   Client receives CHUNK_UPDATE with removed blocks + PHYSICS_EVENT with debris bodies
-
-  // ── Dynamic impact in cascade collapse ─────────────────────────────────
-  //
-  // When a block or floor falls and hits the structure below, the impact force
-  // is MUCH greater than the static weight. This is what causes "pancake collapse"
-  // in real building failures.
-  //
-  //   F_impact = m × g × (1 + √(1 + 2h/δ_static))
-  //   where:
-  //     m = mass of falling object (kg)
-  //     h = fall height (m) — distance the block fell before impact
-  //     δ_static = static deflection of the receiving structure under load m×g
-  //       For a rigid floor: δ_static ≈ 0.001m → F_impact ≈ m×g × (1 + √(1 + 2000h))
-  //
-  //   A 1000 kg block falling just 1m onto a rigid floor:
-  //     F_impact = 1000 × 9.81 × (1 + √(1 + 2000)) = 9810 × 45.7 = 448,000 N
-  //     That's 45× the static weight!
-  //
-  //   Even a 0.1m fall (one block falling onto the next):
-  //     F_impact = 9810 × (1 + √(1 + 200)) = 9810 × 15.2 = 149,000 N
-  //     About 15× the static weight.
-  //
-  //   This means: in a cascade collapse, each falling floor hits the floor below
-  //   with enough force to punch through it, which then falls onto the next floor,
-  //   accumulating mass and velocity. This is the "progressive collapse" mechanism
-  //   that destroyed the World Trade Center towers.
-  //
-  //   Implementation: in the cascade algorithm, when debris from wave N hits the
-  //   remaining structure, apply F_impact (not just static weight) to the impacted blocks.
-  //   If F_impact / contactArea > block.compressiveStrength → block also fails.
-  //   The debris mass accumulates as floors collect falling material.
-  //
-  //   This connects to sound (§3.3): dynamic impacts produce louder sound events.
-  //   Impact energy = 0.5 × m × v² where v = √(2gh) from the fall.
-  //   A 1m fall: v = 4.4 m/s, energy = 0.5 × 1000 × 19.6 = 9800 J.
-  //   Compare: a pickaxe strike is ~10 J. A collapsing floor is 1000× louder.
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // BEAM DETECTION AND BENDING ANALYSIS
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // A beam is a horizontal run of blocks with air below and supports at the ends.
-  // The system scans along X and Z axes to find these automatically.
-  //
-  // Detection algorithm:
-  //   Walk along each horizontal row. When a block has a solid block below it,
-  //   it's a potential support. When blocks have air below, they're spanning.
-  //   When air-below blocks are bracketed by supported blocks → beam found.
-  //
-  // Bending stress formula:
-  //   σ = 3 × w × L² / (4 × b × h²)
-  //   where:
-  //     w = (beam self-weight + load from above) / span    (N/m)
-  //     L = span length in meters (number of air-below blocks × BLOCK_SIZE)
-  //     b = beam width = BLOCK_SIZE = 1m
-  //     h = beam height = BLOCK_SIZE = 1m (or count of stacked beam blocks)
-  //
-  // The beam fails in TENSION on the bottom face (not compression).
-  // This is why material tensileStrength determines beam capacity.
-  //
-  // Maximum span for self-weight only (no additional load):
-  //   L_max = √(4 × tensileStrength × h / (3 × density × g))
-  //
-  //   | Material          | Density  | Tensile   | Max self-weight span | With 5× load |
-  //   |-------------------|----------|-----------|---------------------|--------------|
-  //   | Oak wood          | 600      | 40 MPa   | ~95 m (extraordinary)| ~42 m        |
-  //   | Granite           | 2700     | 10 MPa   | ~22 m               | ~10 m        |
-  //   | Limestone         | 2400     | 3 MPa    | ~13 m               | ~6 m         |
-  //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
-  //   | Iron              | 7800     | 200 MPa  | ~53 m               | ~24 m        |
-  //   | Steel             | 7800     | 500 MPa  | ~84 m               | ~38 m        |
-  //
-  // These match real-world experience:
-  //   Stone buildings need close-spaced columns (Parthenon: columns 2.5m apart)
-  //   Wood buildings span wide rooms easily (timber framing spans 5-6m with load)
-  //   Gothic cathedrals needed flying buttresses (stone can't span the nave)
-  //   Iron/steel revolutionized architecture (long spans without columns)
-  //
-  // Numerical example:
-  //   6 limestone blocks spanning a 4-block gap, 3 floors of load above:
-  //   Beam self-weight: 4 × 23,544N = 94,176N
-  //   Load from above: 300,000N
-  //   Total: 394,176N, w = 98,544 N/m
-  //   M = 98,544 × 16 / 8 = 197,088 N·m
-  //   S = 1 × 1² / 6 = 0.167 m³
-  //   σ = 197,088 / 0.167 = 1.18 MPa < 3 MPa (limestone tensile) → beam holds
-  //
-  //   Same beam at 8-block span:
-  //   M = 98,544 × 64 / 8 = 789,352 N·m
-  //   σ = 789,352 / 0.167 = 4.73 MPa > 3 MPa → beam snaps at midspan
-
-  // ── Deflection — beams sag before they break ──────────────────────────
-  //
-  // A beam can be strong enough not to break but deflect so much it's unusable.
-  // Maximum deflection for a simply-supported beam under uniform load:
-  //   δ_max = 5 × w × L⁴ / (384 × E × I)
-  //   where:
-  //     w = distributed load (N/m)
-  //     L = span (m)
-  //     E = Young's modulus (Pa)
-  //     I = second moment of area (m⁴) — for 1m×1m block: I = 1/12
-  //
-  //   Serviceability limits (from real structural engineering):
-  //     δ < L/360: acceptable for floors (no cracking of finishes)
-  //     δ < L/240: acceptable for roofs
-  //     δ < L/180: visible sag — occupants notice
-  //     δ < L/100: severe sag — doors won't close, water pools on roof
-  //
-  //   Example: oak beam, 6m span, supporting a floor (w = 5000 N/m):
-  //     δ = 5 × 5000 × 6⁴ / (384 × 12×10⁹ × 0.083) = 5 × 5000 × 1296 / (383×10⁹ × 0.083)
-  //     δ = 32,400,000 / 31,789,000,000 = 0.001 m = 1mm → L/6000 — negligible
-  //
-  //   Same beam, 12m span:
-  //     δ = 5 × 5000 × 12⁴ / (384 × 12×10⁹ × 0.083)
-  //     δ = 5 × 5000 × 20736 / 31,789,000,000 = 0.016 m = 16mm → L/750 — fine
-  //
-  //   Stone beam (E = 40 GPa instead of 12 GPa, but ρ = 2700 instead of 600):
-  //     Same 6m span: w includes much heavier self-weight → δ is larger
-  //     Stone beams sag much more than wood beams at the same span.
-  //
-  // Progressive ponding failure:
-  //   A flat roof that deflects collects rainwater in the sag. Water adds load.
-  //   More load → more deflection → more water → more load → collapse.
-  //   δ_ponding = δ_0 / (1 - q_water × L⁴ / (π⁴ × E × I))
-  //   When the denominator approaches 0: runaway failure.
-  //   Prevention: cambered roofs (built with upward curve) or drainage.
-  //
-  // Gameplay effect: visible beam sag gives players visual feedback that a
-  //   structure is near its limit. A beam that sags L/100 (6cm over a 6m span)
-  //   is visually noticeable and warns the player before catastrophic failure.
-  //   This is more informative than sudden collapse with no warning.
-  //
-  // Implementation: for each detected beam, compute δ_max. If δ > L/180,
-  //   render the beam with a downward curve (vertex displacement proportional to
-  //   δ × sin(π×x/L) along the beam). This is purely visual — the structural
-  //   check still uses the stress formula for failure.
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // ARCH DETECTION AND THRUST ANALYSIS
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // An arch converts tensile stress (spanning) into compressive stress
-  // (pushing down the sides). Stone is great in compression → arches let
-  // stone span much farther than lintels:
-  //   Stone lintel: max ~2-3m
-  //   Stone arch: max ~30m+ (Roman arches spanned this)
-
-  // Arch detection algorithm:
-  //   1. Find all blocks with air below (spanning blocks)
-  //   2. Cluster them into connected components
-  //   3. For each cluster: find the rise (max Y - min Y) and span (horizontal extent)
-  //   4. If rise ≥ 2 blocks AND both ends connect to grounded blocks → arch found
-  //   5. Find springers (where the arch meets its supports) and crown (highest point)
-
-  // Arch thrust formula (parabolic arch under uniform load):
-  //   T = w × L² / (8 × h)
-  //   where:
-  //     T = horizontal thrust at each springer (N)
-  //     w = total load / span (N/m) — arch weight + anything on top
-  //     L = span (m)
-  //     h = rise (m) — height from springer to crown
-  //
-  //   Vertical reaction at each springer: V = totalLoad / 2
-  //   Resultant force: R = √(T² + V²)
-
-  // Abutment checks (the arch pushes its supports outward):
-  //
-  //   SLIDING check:
-  //     frictionResistance = abutmentWeight × μ (stone-on-stone: μ = 0.65)
-  //     if T > frictionResistance → arch pushes supports apart → collapse
-  //
-  //   OVERTURNING check:
-  //     overturningMoment = T × springerHeight
-  //     resistingMoment = abutmentWeight × (abutmentWidth / 2)
-  //     if overturningMoment > resistingMoment → abutment tips over → collapse
-
-  // Numerical example:
-  //   Arch: 20 stone blocks, span = 10m, rise = 4m
-  //   Arch weight: 20 × 23,544N = 470,880N
-  //   Load on top: 100,000N
-  //   Total: 570,880N, w = 57,088 N/m
-  //   T = 57,088 × 100 / 32 = 178,400N (18 tonnes of horizontal push)
-  //
-  //   Abutment: 3 blocks wide, 6 blocks tall = 18 stone blocks
-  //   Abutment weight: 423,792N
-  //   Friction resistance: 423,792 × 0.65 = 275,465N > 178,400N → no sliding ✓
-  //   Springer height: 2m above ground
-  //   Overturning moment: 178,400 × 2 = 356,800 N·m
-  //   Resisting moment: 423,792 × 1.5 = 635,688 N·m → no overturning ✓
-  //
-  // If the player removes the buttress → overturning check fails → arch collapses.
-  // If the player builds a thin buttress (1 block wide instead of 3) → sliding fails.
-  // These failures emerge from physics — no special "arch collapse" code needed.
-
-  // The same analysis applies to:
-  //   Barrel vault: arch extended into a tunnel (thrust per unit length of tunnel)
-  //   Dome: arch rotated into a hemisphere (hoop stress replaces thrust: T = w×R/(2×h))
-  //   Groin vault: two barrel vaults crossing at 90° (thrust at the 4 corner piers)
-  //   Flying buttress: external arch carrying thrust away from a tall wall to a pier
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // FRAME STABILITY — TRIANGULATION IS REQUIRED
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // A fundamental principle:
-  // a rectangular frame with pinned joints is a MECHANISM — it collapses sideways.
-  // Only triangulated frames (or frames with rigid joints) are stable.
-  //
-  // Kinematic criterion (2D):
-  //   m = b + r - 2j
-  //   where b = bars (blocks acting as beams), r = support reactions, j = joints
-  //   m < 0: mechanism (collapses)
-  //   m = 0: statically determinate (stable, no redundancy)
-  //   m > 0: indeterminate (stable with redundant members)
-  //
-  // A simple rectangle (4 bars, 4 pinned joints, 3 reactions at base):
-  //   m = 4 + 3 - 2×4 = -1 → MECHANISM. It racks (leans sideways) and collapses.
-  //
-  // Adding one diagonal brace:
-  //   m = 5 + 3 - 2×4 = 0 → STABLE. The triangle resists racking.
-  //
-  // This is why:
-  //   Roof trusses use triangles, not rectangles
-  //   Timber-frame buildings have diagonal bracing
-  //   Steel frames use X-bracing or moment connections
-  //   A-frame shelters are inherently stable (they ARE triangles)
-  //
-  // In the game: a player who builds a rectangular doorway with stacked blocks
-  //   (no mortar) should see it rack under lateral load (wind, impact).
-  //   Adding a diagonal timber brace should stabilize it.
-  //   Mortared joints resist rotation (act as rigid, not pinned) — so mortared
-  //   rectangles ARE stable (moment frame behavior).
-  //
-  // Implementation: when checking lateral stability of a structure:
-  //   1. Build a 2D frame model of the structure (project onto the plane
-  //      perpendicular to the lateral load)
-  //   2. Classify joints: stacked (pinned) vs. mortared/fastened (rigid)
-  //   3. Count bars, joints, reactions
-  //   4. If m < 0 AND all joints are pinned → structure is a mechanism →
-  //      fails under any lateral load
-  //   5. If m < 0 BUT some joints are rigid → check if rigid joints provide
-  //      enough moment resistance
-  //
-  // This connects to material properties (§3.1): the joint type (pinned vs. rigid)
-  //   depends on the bond type in the structural connection. Stacked = pinned.
-  //   Mortared with strong mortar = rigid. Rope lashing = semi-rigid (can stretch).
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // WIND AND LATERAL LOADS
-  // ═══════════════════════════════════════════════════════════════════════
-
-  // Wind applies lateral (sideways) force to walls:
-  //   windForce = 0.5 × airDensity × windSpeed² × wallArea × dragCoefficient
-  //   airDensity ≈ 1.225 kg/m³, dragCoefficient ≈ 1.2 for flat walls
-  //   At 15 m/s wind (strong): ~135N per m² of wall area
-  //   At 30 m/s wind (storm):  ~540N per m² (can topple unbonded walls)
-  //
-  // Tall narrow walls are vulnerable (high moment arm):
-  //   A 3m tall, 0.3m thick unbonded stone wall falls over at ~20 m/s wind
-  //   A 3m tall, 0.6m thick bonded wall survives up to ~40 m/s
-  //   Cross-bracing (diagonal timber inside walls) resists lateral loads
-  //   Buttresses (thick supports on the outside) resist lateral loads
-  //
-  // Wind overturning check for a wall:
-  //   overturningMoment = windForce × wallArea × (wallHeight / 2)
-  //   resistingMoment = wallWeight × (wallThickness / 2)
-  //   if overturning > resisting → wall topples
-  //
-  // Player impact (§7.5 combat):
-  //   Hitting a wall with a tool applies force at the impact point
-  //   If force > bond strength at that block → block breaks free
-  //   If that block was load-bearing → cascade above it
-  //   Siege warfare: ram a wall until blocks break → roof collapses on defenders
-
-  // ── Lateral earth pressure (retaining walls, basements, mine tunnels) ──
-  //
-  // Soil pushes horizontally against walls that hold it back.
-  // Rankine active earth pressure:
-  //   σ_h = K_a × γ_soil × z
-  //   where:
-  //     K_a = (1 - sin(φ)) / (1 + sin(φ)) — active pressure coefficient
-  //     γ_soil = soil unit weight (~18,000 N/m³)
-  //     z = depth below ground surface (m)
-  //     φ = soil internal friction angle (sand: 30-35°, clay: 0-25°)
-  //
-  //   | Soil type    | φ (°) | K_a  | σ_h at 3m depth (Pa) |
-  //   |-------------|-------|------|---------------------|
-  //   | Loose sand   | 28    | 0.36 | 19,440              |
-  //   | Dense sand   | 40    | 0.22 | 11,880              |
-  //   | Soft clay    | 0     | 1.00 | 54,000 (worst case) |
-  //   | Stiff clay   | 25    | 0.41 | 22,140              |
-  //
-  //   At 3m depth in loose sand: ~19 kPa = ~2 tonnes/m² pushing sideways.
-  //   A single-block-thick stone wall (compressive only, no bending capacity)
-  //   would be pushed over by this force unless buttressed.
-  //
-  //   When groundwater is present: add hydrostatic water pressure
-  //     σ_total = K_a × γ_soil × z + ρ_water × g × z_water
-  //     Saturated soil pushes MUCH harder — this is why mines flood AND collapse.
-  //
-  //   Implementation: for blocks that have terrain/soil on one side and air on the other,
-  //   apply lateral earth pressure as a horizontal force to the structural system.
-  //   Check: can the wall resist this as a shear force? Does it overturn?
-  //
-  //   This connects to fluid sim (§3.2): the water table height from the regional
-  //   grid system determines z_water in the formula. Rising water table after rain
-  //   increases lateral pressure on basement walls.
-}
-```
-
-##### Foundation — What the Building Sits On
-
-```
-FoundationSystem {
-  // The ground beneath a building must support the building's total weight.
-  // Different terrain has different bearing capacity.
-
-  // ── Terrain bearing capacity (simplified Terzaghi) ─────────────────────
-  //
-  // q_ult = c × Nc + γ × D × Nq + 0.5 × γ × B × Nγ
-  // where:
-  //   c = soil cohesion (Pa)
-  //   γ = soil unit weight (~18,000 N/m³)
-  //   D = foundation depth below surface (m)
-  //   B = foundation width (m)
-  //   Nc, Nq, Nγ = bearing capacity factors (depend on internal friction angle φ)
-  //
-  // Game uses a pre-computed lookup table:
-  //
-  //   | Soil Type         | φ (°) | c (Pa)  | Typical q_ult (Pa) |
-  //   |-------------------|-------|---------|-------------------|
-  //   | Peat/swamp        | 0     | 10,000  | ~50,000           |
-  //   | Wet clay/mud      | 0     | 25,000  | ~130,000          |
-  //   | Loose sand        | 28    | 0       | ~300,000          |
-  //   | Compact clay      | 0     | 50,000  | ~260,000          |
-  //   | Dense gravel      | 40    | 0       | ~1,500,000        |
-  //   | Bedrock           | 45    | 100,000 | 10,000,000+       |
-  //
-  // Building pressure: q = totalWeight / baseFootprintArea
-  // If q > q_ult → building sinks.
-
-  // ── Sinking rate formula ───────────────────────────────────────────────
-  //
-  // When q > q_ult, the building sinks at a rate proportional to overpressure:
-  //
-  //   overpressure = (q - q_ult) / q_ult     // 0 = at limit, 1 = double capacity
-  //   sinkRate = 0.01 × overpressure × (1 + soil.compressibility) meters/second
-  //
-  //   soil.compressibility: peat = 2.0, clay = 1.0, sand = 0.3, gravel = 0.1, rock = 0.01
-  //
-  // Example: 3000 stone blocks (70,632,000N) on 100m² of soft clay (q_ult = 130,000 Pa):
-  //   q = 706,320 Pa, overpressure = 4.43
-  //   sinkRate = 0.01 × 4.43 × 2.0 = 0.089 m/s → building visibly sinks into the mud
-
-  // ── Differential settlement (uneven sinking) ──────────────────────────
-  //
-  // Each block-sized foundation cell computes its own local pressure
-  // from the column of blocks above it. Heavier side sinks more.
-  //
-  // Angular distortion = (maxSink - minSink) / distanceBetweenThem
-  //
-  //   > 1/500 (0.002): cosmetic cracking — visual cracks appear on walls
-  //   > 1/300 (0.0033): structural cracking — bonds start breaking
-  //   > 1/150 (0.0067): severe damage — blocks separate, potential collapse
-  //
-  // This is why the Leaning Tower of Pisa tilts (soft clay on one side).
-  // In-game: a player who builds a heavy tower on one side of a clay foundation
-  // will see it slowly tilt. The structural system detects the angular distortion,
-  // cracks the affected blocks, and eventually triggers cascade collapse.
-
-  // ── Foundation solutions ──────────────────────────────────────────────
-  //
-  // Spread foundation: widen the base of walls → distributes weight over more area
-  //   q = weight / area → bigger area = less pressure
-  //   A 1m wide wall on soft soil: too much pressure → sinks
-  //   Same wall on a 2m wide stone base: half the pressure → stable
-  //
-  // Deep foundation: dig down to bedrock, fill with stone
-  //   Bypasses weak surface soil entirely. D in Terzaghi's formula increases q_ult.
-  //   Foundation 2m deep in clay: q_ult increases by γ × D × Nq = 18,000 × 2 × 1 = 36,000 Pa
-  //
-  // Pilings: drive wooden posts into soft ground until they hit a hard layer
-  //   Venice is built entirely on wooden pilings driven into lagoon mud
-  //   In-game: player drives sharpened logs into mud → builds on top of the log tops
-  //   The pile's bearing capacity = hard layer's q_ult (not the surface soil)
-  //
-  // Gravel pad: replace soft surface soil with compacted gravel
-  //   Better drainage + higher bearing capacity than clay or mud
-  //   q_ult jumps from 130,000 (clay) to 1,500,000 (dense gravel)
-}
-```
-
-##### Structural Decay — Buildings Age
-
-```
-StructuralDecay {
-  // Buildings are not permanent. Materials degrade over time from weather.
-  // This connects directly to the weather system (§4.6) and material properties.
-
-  // ── Rain damage ───────────────────────────────────────────────────────
-  //
-  // Water weakens certain materials:
-  //   Mud brick: bondStrength decreases by 5% per game-day of rain exposure
-  //     Sustained rain for 20 game-days: mud mortar dissolves → blocks fall apart
-  //     Prevention: roof overhang (keeps rain off walls), lime plaster coating
-  //   Wood: moisture absorption → swelling → warping → joint loosening
-  //     bondStrength decreases by 0.5% per game-day of wet exposure
-  //     Prevention: roof overhang, tar/pitch coating (waterproofing)
-  //   Stone: virtually unaffected by rain (geological timescales)
-  //   Lime mortar: waterproof — no rain damage
-  //   Metal fasteners: rust (iron + water + oxygen → iron oxide)
-  //     bondStrength decreases by 1% per game-day wet
-  //     Prevention: oil coating, bronze fasteners (no rust)
-
-  // ── Galvanic corrosion — dissimilar metals destroy each other ─────────
-  //
-  // When two different metals are in physical contact in the presence of an
-  // electrolyte (rain water, salt water, even humid air), the more reactive
-  // metal corrodes faster. The galvanic series (most reactive/anodic to least):
-  //
-  //   Zinc → Iron → Tin → Lead → Copper → Silver → Gold → Platinum
-  //
-  // Corrosion rate is proportional to the potential difference between the two metals:
-  //   corrosionMultiplier = 1.0 + 3.0 × |E_cathode - E_anode| / 1.5V
-  //   (where E values are standard electrode potentials from the element table)
-  //
-  // Standard electrode potentials (vs. standard hydrogen electrode):
-  //   Zinc: -0.76V   Iron: -0.44V   Tin: -0.14V   Lead: -0.13V
-  //   Copper: +0.34V  Silver: +0.80V  Gold: +1.50V  Platinum: +1.20V
-  //
-  // Examples:
-  //   Iron nail in copper fitting: |0.34 - (-0.44)| = 0.78V → multiplier = 2.56×
-  //     The iron corrodes 2.56× faster than iron alone. The copper is PROTECTED.
-  //
-  //   Zinc coating on iron (galvanization): |-0.76 - (-0.44)| = 0.32V
-  //     The ZINC corrodes preferentially, protecting the iron underneath.
-  //     This is why galvanized steel lasts decades in rain — the zinc sacrifices itself.
-  //
-  //   Copper pipe connected to iron pipe (common plumbing mistake):
-  //     Iron section rapidly corrodes at the junction. Copper section stays pristine.
-  //
-  // Gameplay: a player who fastens copper fittings to an iron frame discovers
-  // the iron rots out in a fraction of the time. A player who coats iron with zinc
-  // (by dipping in molten zinc — galvanizing) discovers it lasts much longer.
-  // Both discoveries emerge from the element table's electrode potentials —
-  // no special "corrosion recipe" needed.
-  //
-  // Implementation: for metal connections between dissimilar metals, apply
-  // corrosionMultiplier to the existing rain damage rate for the more reactive metal.
-  // The less reactive metal's corrosion rate is reduced proportionally.
-  // This connects to structural physics (§3.4): corroded fasteners have reduced
-  // bondStrength. The decay system applies corrosionMultiplier to the existing
-  // rain damage rate for metal connections between dissimilar metals.
-
-  // ── Freeze-thaw damage ────────────────────────────────────────────────
-  //
-  // Water in cracks freezes → expands 9% → widens cracks → thaws → refreezes
-  // Over many cycles: stone blocks crack and crumble
-  //   damagePerCycle = 0.1% of compressiveStrength
-  //   In climates with daily freeze-thaw (spring/autumn): significant over a game-year
-  //   Prevention: dense stone with few pores (granite > limestone > sandstone)
-
-  // ── Maintenance and Repair ──────────────────────────────────────────
-  //
-  // Players (and NPCs) must maintain structures:
-  //   Replace crumbling mortar (repoint walls)
-  //   Replace rotting wood beams
-  //   Repair roof leaks (a leaking roof accelerates all interior decay ×3)
-  //   Paint/coat exposed wood and metal
-  //
-  // Repair actions and their effects:
-  //   Repoint mud mortar:    bondStrength restored to 0.08 MPa (80% of fresh 0.1 MPa)
-  //   Repoint lime mortar:   bondStrength restored to 1.8 MPa (90% of fresh 2.0 MPa)
-  //   Replace thatch roof:   durability = 1.0 (fully restored — thatch is replaceable)
-  //   Replace wood beam:     new beam, durability = 1.0 (requires matching wood MaterialPacket)
-  //   Oil/tar coating:       resets rain damage timer, adds 0.95 waterproofing for 30 game-days
-  //   Lime plaster coating:  blocks rain from reaching mud walls, lasts 60 game-days
-  //
-  // Repair CANNOT exceed original values. Damaged stone cannot be "repaired" —
-  // only replaced. A cracked granite block must be removed and a new one placed.
-  //
-  // Building lifespan without maintenance:
-  //   Stone + lime mortar: effectively forever (centuries in real life)
-  //   Stone + mud mortar: ~20-30 game-years (mortar dissolves, blocks shift)
-  //   Wood frame: ~50-100 game-years (rot, insect damage, joint loosening)
-  //   Mud brick: ~5-10 game-years (rain dissolves the blocks themselves)
-  //   Thatch roof: ~3-5 game-years (biodegrades, leaks)
-  //
-  // NPC settlements maintain their buildings through the SLM:
-  //   "The storage hut roof is leaking. I'll repair it with new thatch."
-  //   When no NPCs remain → no maintenance → structures decay → ruins
-  //   This is why §5.1 mentions dead settlements leaving ruins
-
-  // ── Fire damage ───────────────────────────────────────────────────────
-  //
-  // Fire weakens and destroys building materials:
-  //   Wood: burns completely if sustained fire (ignition from §3.1 fire properties)
-  //     A wooden wall catches fire → burns for 10-30 game-minutes → collapses
-  //     Fire spreads to adjacent wooden structures (fire contagion)
-  //   Stone: survives fire but thermal shock can crack it
-  //     Stone heated to 500°C+ then rapidly cooled (rain, water) → spalls and cracks
-  //     compressiveStrength reduced by 30-50% after fire exposure
-  //   Mud brick: moderate fire resistance (clay is pre-fired, somewhat heat-resistant)
-  //   Metal: doesn't burn but softens at high temperature
-  //     Iron above 500°C: structural capacity drops significantly
-  //     A building fire doesn't melt iron but weakens it enough to buckle
-  //
-  // Historical example: The Great Fire of London (1666) destroyed 13,000 houses
-  //   because they were all timber-framed. The rebuilding used stone and brick.
-  //   In-game: a player who builds everything from wood risks total loss from one fire.
-
-  // ── Thermal stress ─────────────────────────────────────────────────────
-  //
-  // When a block is heated unevenly (one face hot, opposite face cold),
-  // differential thermal expansion creates internal stress:
-  //
-  //   σ_thermal = E × α × ΔT
-  //   where:
-  //     E = Young's modulus (Pa)
-  //     α = thermal expansion coefficient (1/°C)
-  //     ΔT = temperature difference across the block (°C)
-  //
-  //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
-  //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
-  //     This happens when: fire on one side of a stone wall, sun on south face
-  //
-  //   Thermal shock resistance parameter: R = σ_t × k / (E × α)
-  //     Glass: R = 40 → shatters when quenched from >80°C temperature difference
-  //     Copper: R = 12,000 → survives quenching from 500°C+ (safe for quench hardening)
-  //     Ceramic: R = 200 → survives moderate thermal shock but not extreme
-  //
-  //   Gameplay effect: dropping a hot ceramic pot into cold water SHATTERS it.
-  //   Quenching hot copper in water is SAFE. This emerges from the R parameter
-  //   without any special "pottery breaks in water" rule.
-  //
-  //   Daily thermal cycling (sun-facing walls heat during day, cool at night)
-  //   causes cumulative fatigue damage. Over many game-years, south-facing stone
-  //   walls develop surface cracks. This accelerates freeze-thaw damage because
-  //   cracks let water in deeper.
-}
-```
-
-##### Performance — How Structural Checks Run
-
-```
-StructuralPerformance {
-  // Structural integrity is NOT checked every frame for every block.
-  // It is checked only when something changes.
-
-  // ── When to recalculate ───────────────────────────────────────────────
-  //
-  // Trigger events:
-  //   1. Block placed → check the new block + all blocks it connects to
-  //   2. Block removed (destroyed, dug out) → check all blocks that depended on it
-  //   3. Bond broken (mortar dissolved by rain, nail rusted) → check affected blocks
-  //   4. Impact event (combat, falling object) → check struck block + neighbors
-  //   5. Wind change (storm begins) → check exposed walls
-  //   6. Periodic decay check (once per game-day) → check all weather-exposed blocks
-  //
-  // NOT checked: every frame, every tick, or for blocks with no changes
-
-  // ── Propagation algorithm (references Force Propagation above) ───────
-  //
-  // When a trigger occurs, run the 4-phase load path algorithm:
-  //   Phase 1: BFS connectivity check from ground — O(N) where N = blocks
-  //   Phase 2: Top-down load accumulation with 1:4 spreading
-  //   Phase 3: Stress checks (compressive, tensile/beam, shear)
-  //   Phase 4: Cascade collapse in batched waves until stable
-  //
-  // For block removal specifically, use targeted BFS:
-  //   Only check neighbors of the removed block, not the whole structure.
-  //   BFS from each neighbor toward ground — if no path → floating.
-  //   Blocks already confirmed supported are cached (skip re-check).
-  //   Cost: O(K) where K = affected neighborhood, NOT the full structure.
-  //
-  // Optimization: precompute articulation points (Tarjan's algorithm).
-  //   An articulation point is a block whose removal disconnects the graph.
-  //   If a removed block was NOT an articulation point → no floating blocks.
-  //   Skip the expensive connectivity re-check entirely.
-  //   Precompute once at structure creation, update incrementally on changes.
-
-  // ── Cost ──────────────────────────────────────────────────────────────
-  //
-  // Phase 1 (connectivity BFS):     O(N), ~0.02ms per 100 blocks
-  // Phase 2 (load accumulation):    O(N), ~0.03ms per 100 blocks
-  // Phase 3 (stress checks):        O(N + B) where B = detected beams, ~0.05ms per 100 blocks
-  // Phase 4 (cascade per wave):     O(K) per wave, K = neighborhood of failed blocks
-  // Arch detection:                  O(N) once, then cached until structure changes
-  // Beam detection:                  O(N) per axis scan, cached
-  //
-  // Typical structure: 50-200 blocks
-  // Full recalculation: ~0.1-0.3ms (all 4 phases)
-  // Events per game-day (quiet): ~0 (nothing changes)
-  // Events per game-day (construction): ~5-20 (player placing blocks)
-  // Events per game-day (siege): ~50-100 (blocks being destroyed, cascading)
-  //
-  // Maximum cascade: a 1000-block castle losing a load-bearing wall →
-  //   ~500 blocks recalculated → ~5ms → 3-6 waves → plus debris rigid bodies
-  //   Server handles this in one tick. Client sees a spectacular collapse.
-  //   Debris rigid bodies capped at 50-100 for physics performance.
-}
-```
-
-
-### 3.5 Networking & Hybrid Rendering
-
-#### The Principle
-
-This is a real-world online simulation. The server is the world. The client is a window into that world — eyes and ears only. If the server doesn't know about it, it didn't happen. This prevents cheating and ensures all players experience the same reality.
-
-#### Authority Model
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         SERVER (Railway Node.js)                             │
-│                                                                              │
-│  AUTHORITATIVE (server computes, broadcasts results):                        │
-│  ├── All physics simulations                                                 │
-│  │   ├── SPH/MPM fluid particles (up to 400k; melting, pouring, lava, flow) │
-│  │   ├── Material packet reactions (Gibbs free energy, stoichiometry)        │
-│  │   ├── Temperature propagation (heat transfer between objects)             │
-│  │   ├── Rigid body physics (dropped items, thrown objects, digging debris)  │
-│  │   └── Terrain collision and modification                                  │
-│  ├── All entity state                                                        │
-│  │   ├── Player positions (server validates movement)                        │
-│  │   ├── Player stats (health, hunger, thirst, energy, stamina, temperature)│
-│  │   ├── Player inventory (server controls all add/remove)                   │
-│  │   ├── NPC state machines (goal loops, positions, carried items)           │
-│  │   ├── Organism simulation (births, deaths, movement, feeding)            │
-│  │   └── Dropped item positions and despawn timers                           │
-│  ├── Weather and atmosphere (§4.6)                                           │
-│  ├── Settlement economy (trade, population, resource stockpiles)             │
-│  ├── Crafting validation (interaction engine runs server-side)               │
-│  └── Death, loot drops, respawn timing                                       │
-│                                                                              │
-│  BROADCAST TO CLIENTS:                                                       │
-│  ├── WORLD_SNAPSHOT (6 Hz): player positions, NPC positions, organism       │
-│  │   positions, settlement state                                             │
-│  ├── ENVIRONMENT_STATE (1 Hz): weather (wind speed/dir, rain rate,          │
-│  │   temperature, humidity, cloud cover), fire positions + intensities,      │
-│  │   river flow vectors, sun position, season. Drives client GPU shaders.   │
-│  ├── PARTICLE_UPDATE (30 Hz): delta-compressed positions, spatial LOD,       │
-│  │   spawn/kill events (~97 KB/s typical, ~549 KB/s peak eruption)          │
-│  ├── PHYSICS_EVENT (as needed): material                                     │
-│  │   reactions, temperature changes, terrain modifications                   │
-│  ├── SOUND_EVENT (as needed): physics event descriptors for audio            │
-│  │   { type, materialA, materialB, energy, position, contactNormal }        │
-│  └── ENTITY_UPDATE (as needed): inventory changes, stat changes, deaths     │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         CLIENT (Browser, Three.js)                           │
-│                                                                              │
-│  RECEIVES AND RENDERS (never computes authoritative state):                  │
-│  ├── Visual rendering                                                        │
-│  │   ├── Terrain mesh from server-sent CHUNK_DATA (no local generation)      │
-│  │   ├── Player/NPC body meshes at server-provided positions                 │
-│  │   ├── Fluid rendering: Tier 1 marching cubes / Tier 2 screen-space SSFR  │
-│  │   ├── Secondary particles (spray, foam, bubbles — client-generated)       │
-│  │   ├── Weather visuals (rain particles, snow, fog, clouds, lightning)      │
-│  │   ├── Lighting (sun position from season/time, torches, campfires)        │
-│  │   ├── Ocean shader (Gerstner waves — visual only, no physics)            │
-│  │   └── UI panels (inventory, craft, map)                                   │
-│  ├── Sound generation (§3.3)                                               │
-│  │   ├── Receives SOUND_EVENT from server                                    │
-│  │   ├── Computes audio parameters locally (pitch, volume, timbre)           │
-│  │   ├── Spatial audio positioning from server-provided source position      │
-│  │   └── Environment filtering (cave/forest/underwater) from local geometry  │
-│  ├── Input capture                                                           │
-│  │   ├── WASD + mouse → sends MOVE_INPUT to server                          │
-│  │   ├── Click/interact → sends ACTION_REQUEST to server                     │
-│  │   ├── Tool swing → sends TOOL_USE { target, position } to server         │
-│  │   └── Drop/pour/place → sends corresponding request to server            │
-│  └── Client-side prediction (for responsiveness)                             │
-│      ├── Player movement is predicted locally, corrected by server          │
-│      ├── Tool swing animation plays immediately, result comes from server   │
-│      └── Camera and first-person arms are client-only (no server involved)  │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-#### Why Server-Authoritative Physics
-
-- **Anti-cheat:** If the client computed reactions, a modified client could claim "I smelted gold from dirt." The server runs the reaction engine — the client only sees the result.
-- **Consistency:** Two players watching the same smelting see the same outcome because the server computed it once.
-- **Sound from physics:** Sound events are a byproduct of server physics. When an impact happens server-side, the server emits a `SOUND_EVENT` with the physics descriptor. The client's audio engine (§3.3) converts that into actual audio. The client hears what the server says happened — not what the client thinks happened.
-
-#### Latency Mitigation
-
-Server-authoritative physics adds latency. A player swings a pickaxe → request goes to server → server computes → result comes back. At 50ms round-trip, this is barely noticeable. At 200ms, it feels sluggish. Mitigations:
-
-```
-Client-Side Prediction {
-  // Movement: client immediately moves the player mesh, server corrects if wrong
-  // If server position diverges > 0.5m from client prediction → snap correction
-
-  // Tool animations: client plays the swing animation immediately
-  // The physical result (rock fragment, sparks, sound) waits for server confirmation
-  // Typical delay: 30-80ms — fast enough that animation covers the gap
-
-  // Crafting: client shows "processing..." immediately when player starts a craft
-  // Server validates and returns result. If invalid, client shows failure feedback.
-
-  // Pouring liquid: client shows a visual pour stream immediately
-  // Actual SPH particles are spawned by server and streamed to client
-  // Visual stream hides the 50ms gap before real particles appear
-}
-```
-
-#### Bandwidth Budget
-
-```
-Per player, per second (steady state — not moving to new chunks):
-  WORLD_SNAPSHOT (6 Hz):    ~2 KB × 6 = 12 KB/s     (positions, compressed)
-  PHYSICS_EVENT (variable): ~0.5 KB average           (only during active physics)
-  SOUND_EVENT (variable):   ~0.1 KB average           (compact descriptors)
-  ENTITY_UPDATE (variable): ~0.2 KB average           (stat changes, inventory)
-  Player input (upstream):  ~0.5 KB/s                 (movement + actions)
-
-  Total per player (steady): ~13 KB/s downstream, ~0.5 KB/s upstream
-  50 concurrent players: ~650 KB/s total server bandwidth
-
-Per player, burst (entering new area):
-  CHUNK_DATA (9 chunks):    ~90 KB burst              (one-time, cached after)
-  This is a brief spike when the player moves into unexplored terrain.
-  Chunks are cached on the client — subsequent visits to the same area cost nothing.
-
-Per player, terrain modification:
-  CHUNK_UPDATE:             ~10 KB per modified chunk  (rare — only when digging/building)
-
-Per player, video stream mode (when active):
-  H.264 NVENC (720p):      ~750 KB/s (~6 Mbit/s)    (replaces all other visual data)
-  JPEG fallback:            ~2-3 MB/s                 (if MSE not supported)
-  Sound data still sent separately as SOUND_EVENTs
-```
-
-#### Hybrid Rendering — Local 3D + Server Video Stream
-
-##### The Problem
-
-The client needs to show the world. Two extremes exist:
-
-1. **Send state data, client renders 3D** — cheap bandwidth (~13 KB/s), but the client must reconstruct complex physics visuals (SPH particles, fire, debris, deforming materials) from abstract position data. This is hard. Thousands of SPH particles flowing in a crucible can't be faithfully rendered from just position arrays — the client would need the full physics context (material properties, surface tension, light interaction with molten metal) to make it look right. The result would either look wrong or require the client to run its own physics (which defeats server authority).
-
-2. **Server renders everything, streams video** — pixel-perfect visuals, but costs ~750 KB/s per player and requires a GPU server. Works for complex scenes but wasteful for a player standing in a field looking at terrain.
-
-Neither extreme is ideal. The hybrid approach uses each where it's strongest.
-
-##### Two Rendering Modes
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│  MODE 1: State + Shader Rendering (default, ~90% of play time)             │
-│                                                                             │
-│  Used when: exploring, walking, standing on a beach, watching weather,     │
-│             looking at a campfire, rain falling, rivers flowing, ocean      │
-│             waves, wind blowing through trees — the full living world      │
-│                                                                             │
-│  Server sends: WORLD_SNAPSHOT + CHUNK_DATA + ENTITY_UPDATE                 │
-│                + ENVIRONMENT_STATE (wind speed/dir, rain rate, fire        │
-│                  positions, river flow vectors, temperature field)          │
-│  Client does:  Full 3D rendering with GPU shaders that make the world     │
-│                look REAL:                                                   │
-│                                                                             │
-│    TERRAIN:     Meshes from CHUNK_DATA with PBR materials, normal maps     │
-│    OCEAN:       Gerstner wave shader (already built) — realistic waves     │
-│                 that respond to wind speed/direction from server. Foam,     │
-│                 Fresnel reflections, depth transparency, shoreline wash.    │
-│    RIVERS:      Flow shader driven by server-provided flow vectors.        │
-│                 Scrolling normal maps, foam at rocks, speed variation.      │
-│    RAIN:        GPU particle system — 10,000+ raindrops as point sprites.  │
-│                 Splash particles on terrain contact. Puddle accumulation    │
-│                 shader on low terrain (heightmap depressions fill up).      │
-│    SNOW:        GPU particle system — slow falling, wind-affected.         │
-│                 Accumulation shader: terrain albedo lerps to white.         │
-│    FIRE:        Billboard particle system with noise-driven distortion.    │
-│                 Emissive glow, light emission (point light at fire pos).    │
-│                 Smoke: alpha-blended particles rising, wind-affected.       │
-│                 Ember sparks: tiny emissive particles with short life.      │
-│    WIND:        Vertex shader displacement on vegetation (grass, trees).   │
-│                 Amplitude and frequency from server wind speed.             │
-│    FOG:         Exponential distance fog with density from server weather.  │
-│    CLOUDS:      Scrolling noise layers at altitude, density from server.   │
-│    LIGHTNING:   Bright flash + branching line geometry (rare, storm only).  │
-│    CHARACTERS:  Animated skeletal meshes at server-provided positions.      │
-│    OBJECTS:     Static meshes with PBR materials.                           │
-│    LIGHTING:    Sun from orbital position, dynamic shadows, ambient.       │
-│                 Point lights from fires/torches with flicker.               │
-│    DAY/NIGHT:   Sky shader with atmospheric scattering. Stars at night.    │
-│                                                                             │
-│  The world looks FULLY REAL in Mode 1. A player standing on a beach sees  │
-│  waves crashing, foam washing up, rain falling, wind bending grass,        │
-│  firelight flickering in the distance, clouds moving overhead. This is     │
-│  NOT a degraded view. This is the normal, full-quality game experience.    │
-│                                                                             │
-│  What the client CANNOT do in Mode 1:                                      │
-│  Only things that require INTERACTIVE physics simulation results:           │
-│    - SPH fluid that the player is actively pouring or mixing               │
-│    - Molten metal flowing into a mold (shape depends on simulation)        │
-│    - Material deforming under hammer blows (precision craft)               │
-│    - Clay being shaped on a wheel (player-driven deformation)              │
-│  These need the server to compute what happens and show the result.        │
-│                                                                             │
-│  Bandwidth: ~15 KB/s steady + ~90 KB burst for new chunks                  │
-│  Client needs: GPU (any modern integrated GPU handles all these shaders)   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│  MODE 2: Video Stream (only for interactive physics, ~10% of play time)    │
-│                                                                             │
-│  Used ONLY when the player is directly interacting with physics:            │
-│    - Precision crafting (§6.4): shaping clay, knapping flint, forging   │
-│    - Pouring liquid from one container to another                           │
-│    - Smelting: watching ore melt and metal separate from slag               │
-│    - Active lava flow deforming terrain in front of the player              │
-│    - Any moment where the visual result depends on real-time simulation    │
-│                                                                             │
-│  NOT used for: watching ocean waves, standing near a campfire, rain,       │
-│                walking through a forest, watching NPCs work — all of       │
-│                these look great in Mode 1 with GPU shaders.                 │
-│                                                                             │
-│  Server does: renders the scene on its GPU using server-side 3D renderer   │
-│               encodes H.264 via hardware encoder (or JPEG fallback)        │
-│               streams frames over WebSocket                                 │
-│  Client does: decodes video via MSE and displays in <video> element        │
-│               still captures and forwards player input                      │
-│               still plays sound from SOUND_EVENTs (not from video audio)   │
-│                                                                             │
-│  Bandwidth: ~750 KB/s (H.264) or ~2-3 MB/s (JPEG fallback)               │
-│  Server needs: GPU with hardware encoder                                   │
-│  Client needs: just a browser (no GPU required)                            │
-│                                                                             │
-│  Why video is needed here: the player is CREATING the visual result.       │
-│  When you pour copper into a mold, the shape of the liquid depends on      │
-│  SPH simulation. A shader can't fake that — it must be computed.           │
-│  When you hammer metal on an anvil, each blow deforms the mesh in a        │
-│  way that depends on force, angle, temperature. Only the server knows      │
-│  the result. So the server renders it and streams the image.               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-##### When and How the Switch Happens
-
-The switch between modes is triggered by **the player's actions**, not by scene complexity analysis. This makes it predictable and clean.
-
-```
-Mode Switch Triggers {
-  // ── State → Video (player enters a physics-heavy context) ─────────────────
-
-  trigger_1: "Player initiates precision interaction with materials/arrangements"
-    // Camera zooms into the craft arrangement (§6.4 precision craft mode)
-    // During the zoom animation (0.5s), the server:
-    //   1. Starts rendering this player's view on the GPU
-    //   2. Begins encoding H.264 frames
-    //   3. Sends MODE_SWITCH { mode: 'video' } to client
-    // Client:
-    //   1. Receives MODE_SWITCH
-    //   2. Creates/shows <video> element (or JPEG canvas)
-    //   3. Fades out the 3D canvas, fades in the video
-    //   4. The zoom blur hides any visual discontinuity during the transition
-    //   5. From this point, client displays video frames from server
-    //   6. Client still sends input (mouse position for precision craft, keyboard)
-
-  trigger_2: "Active SPH particles > 200 within 10m of player"
-    // A lava flow reaches the player, or someone pours a large amount of liquid nearby
-    // Server detects the threshold and initiates video mode
-    // Transition: 0.3s crossfade from 3D to video
-
-  trigger_3: "Player enters precision craft mode manually"
-    // Player holds an item and presses the precision key
-    // Same as trigger_1 — zoom in, switch to video
-
-  // ── Video → State (physics event ends) ────────────────────────────────────
-
-  trigger_4: "Player exits precision craft mode (ESC or walks away)"
-    // Camera zooms out
-    // During zoom out (0.5s), server:
-    //   1. Sends final state update (what changed: new items, terrain mods)
-    //   2. Sends MODE_SWITCH { mode: 'state' }
-    //   3. Stops encoding video for this player
-    // Client:
-    //   1. Receives MODE_SWITCH
-    //   2. Fades out video, fades in 3D canvas
-    //   3. 3D scene is already up-to-date from state data received during video mode
-    //      (WORLD_SNAPSHOT continues during video mode — client updates 3D scene in background)
-
-  trigger_5: "Active SPH particles drop below 50 near player"
-    // The liquid solidified, the lava cooled, the pour is done
-    // Server sends final state, switches back to state mode
-    // 0.3s crossfade back to 3D
-}
-```
-
-##### Implementation — How It Actually Works
-
-The technology already exists in the codebase (§13.6). The hybrid system connects it:
-
-```
-Server Side (Node.js + headless-gl + NVENC):
-
-  // The server already has:
-  //   - headless-gl creating a WebGL context
-  //   - Three.js v0.152 rendering scenes
-  //   - FFmpeg h264_nvenc encoding frames at ~3-8ms per frame
-  //   - WebSocket transport for binary frame data
-  //   - Per-player camera management
-
-  // What's new for hybrid mode:
-  //   - The server does NOT render video for all players all the time
-  //   - Video rendering is ON-DEMAND, per player, only during physics moments
-  //   - Each player has a videoMode: boolean flag
-
-  class PlayerSession {
-    videoMode: boolean = false           // starts in state mode
-    camera: THREE.PerspectiveCamera      // player's view (always maintained)
-    ffmpegProcess: ChildProcess | null   // spawned only when videoMode = true
-
-    enterVideoMode() {
-      this.videoMode = true
-      // Spawn FFmpeg NVENC encoder for this player
-      this.ffmpegProcess = spawn('ffmpeg', [
-        '-f', 'rawvideo', '-pix_fmt', 'rgba',
-        '-s', '1280x720', '-r', '30',       // 720p at 30fps
-        '-i', 'pipe:0',                       // raw frames from stdin
-        '-c:v', 'h264_nvenc',                 // NVIDIA hardware encoder
-        '-preset', 'p4',                      // balanced quality/speed
-        '-tune', 'ull',                       // ultra-low-latency
-        '-b:v', '4M',                         // 4 Mbit/s bitrate
-        '-f', 'mp4',
-        '-movflags', 'frag_keyframe+empty_moov',
-        'pipe:1'                              // fragmented MP4 to stdout
-      ])
-      // FFmpeg stdout → WebSocket binary frames to client
-      this.ffmpegProcess.stdout.on('data', chunk => {
-        this.ws.send(chunk)                   // binary frame to browser
-      })
-      // Send mode switch message
-      this.ws.send(JSON.stringify({ t: 'mode', mode: 'video' }))
-    }
-
-    exitVideoMode() {
-      this.videoMode = false
-      if (this.ffmpegProcess) {
-        this.ffmpegProcess.stdin.end()        // graceful shutdown
-        this.ffmpegProcess = null
-      }
-      this.ws.send(JSON.stringify({ t: 'mode', mode: 'state' }))
-    }
-  }
-
-  // Render loop (runs at 30 Hz for video-mode players only):
-  function renderVideoFrames() {
-    for (const session of activeSessions) {
-      if (!session.videoMode) continue        // skip state-mode players — no rendering needed
-
-      // Position camera at player's view
-      renderer.render(scene, session.camera)
-
-      // Read pixels from GPU
-      const pixels = new Uint8Array(1280 * 720 * 4)
-      gl.readPixels(0, 0, 1280, 720, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-
-      // Feed to this player's FFmpeg process
-      session.ffmpegProcess.stdin.write(Buffer.from(pixels))
-    }
-  }
-
-  // Server cost: rendering ONLY happens for players in video mode
-  // If 50 players are online but only 3 are in precision craft mode, only 3 get rendered
-  // GTX 5070 can handle ~8-10 simultaneous 720p renders at 30fps
-```
-
-```
-Client Side (Browser):
-
-  class GameClient {
-    mode: 'state' | 'video' = 'state'
-    threeCanvas: HTMLCanvasElement           // 3D rendering (always exists)
-    videoElement: HTMLVideoElement           // MSE video playback
-    mediaSource: MediaSource                 // for H.264 decoding
-    sourceBuffer: SourceBuffer | null
-
-    // 3D scene is ALWAYS maintained, even during video mode
-    // This means switching back to state mode is instant — no loading
-    threeScene: THREE.Scene
-    threeRenderer: THREE.WebGLRenderer
-
-    onMessage(data) {
-      if (typeof data === 'string') {
-        const msg = JSON.parse(data)
-
-        if (msg.t === 'mode') {
-          this.switchMode(msg.mode)
-          return
-        }
-
-        // State data — always processed, even during video mode
-        if (msg.t === 'snapshot') this.updateSceneFromSnapshot(msg)
-        if (msg.t === 'chunk')    this.loadChunkData(msg)
-        if (msg.t === 'sound')    this.playSound(msg)
-        if (msg.t === 'entity')   this.updateEntity(msg)
-      } else {
-        // Binary data = video frame (only arrives during video mode)
-        if (this.sourceBuffer && !this.sourceBuffer.updating) {
-          this.sourceBuffer.appendBuffer(data)
-        }
-      }
-    }
-
-    switchMode(newMode: 'state' | 'video') {
-      if (newMode === this.mode) return
-
-      if (newMode === 'video') {
-        // Crossfade: 3D canvas fades out, video fades in
-        this.threeCanvas.style.transition = 'opacity 0.4s'
-        this.threeCanvas.style.opacity = '0'
-        this.videoElement.style.transition = 'opacity 0.4s'
-        this.videoElement.style.opacity = '1'
-        this.videoElement.style.display = 'block'
-        // Start MSE pipeline
-        this.initMSE()
-      } else {
-        // Crossfade: video fades out, 3D canvas fades in
-        this.videoElement.style.opacity = '0'
-        this.threeCanvas.style.opacity = '1'
-        // 3D scene is already up-to-date (state data kept flowing during video mode)
-        setTimeout(() => {
-          this.videoElement.style.display = 'none'
-          this.cleanupMSE()
-        }, 400)
-      }
-
-      this.mode = newMode
-    }
-
-    // Input is ALWAYS captured and sent to server, regardless of mode
-    // In state mode: server uses input to update player position
-    // In video mode: server uses input for precision craft (mouse on work surface)
-  }
-```
-
-##### Why This Works
-
-| Concern | Answer |
-|---------|--------|
-| "How does the client show SPH particles?" | It doesn't. When physics is active, the server renders it and streams video. The client sees pixel-perfect fluid. |
-| "Doesn't video streaming need an expensive GPU server?" | Only for the ~10% of time when players are in precision craft mode or near active physics. The GTX 5070 you already have handles ~8-10 concurrent video streams. |
-| "What about latency in video mode?" | NVENC encoding: ~3-8ms. Network: ~20-50ms. MSE decode: ~5ms. Total: ~30-60ms. For precision crafting (slow, deliberate actions), this is imperceptible. |
-| "What if 50 players all enter precision craft mode at once?" | The server queues rendering. At 30fps each, 10 players max at 720p on a single GPU. Beyond that: lower resolution, lower framerate, or add a second GPU. In practice, most players are walking around (state mode = zero GPU cost). |
-| "What does the transition look like?" | Player presses F at bloomery → camera zooms in → 0.4s blur/fade → video appears. The zoom motion and blur hide the switch. Looks intentional, not glitchy. |
-| "Can the 3D scene get out of sync during video mode?" | No — state data (WORLD_SNAPSHOT, CHUNK_UPDATE, ENTITY_UPDATE) continues flowing during video mode. The 3D scene updates silently in the background. When switching back, it's already current. |
-| "What if the player has no GPU at all?" | They can stay in video mode permanently — the server renders everything. This is the full cloud gaming fallback. Bandwidth cost: ~750 KB/s constant. Playable on a Chromebook. |
-
-##### Server Hardware Requirements
-
-```
-For state mode only (no video):
-  Railway Node.js server (no GPU needed)
-  Handles 50+ players at ~650 KB/s total
-
-For hybrid mode (state + video):
-  GPU server with NVIDIA card + NVENC
-  Already have: GTX 5070 (local) — see §13.4
-  Capacity per GPU:
-    720p @ 30fps: ~8-10 concurrent video streams
-    480p @ 30fps: ~15-20 concurrent video streams
-    720p @ 15fps: ~15-20 concurrent video streams (lower framerate for less intense moments)
-
-  Scaling:
-    50 players, 5 in precision craft mode → 5 video streams → 1 GPU handles it easily
-    50 players, 15 in precision craft mode → need 2 GPUs or lower resolution
-    100 players → dedicated GPU server (AWS g5.xlarge or similar)
-```
 
 
 
