@@ -1,0 +1,40 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-deep:      #060810;
+  --bg-panel:     rgba(8, 14, 28, 0.92);
+  --bg-elevated:  rgba(10, 18, 36, 0.96);
+  --border:       rgba(0, 180, 255, 0.13);
+  --border-glow:  rgba(0, 180, 255, 0.35);
+  --cyan:         #00d4ff;
+  --orange:       #ff6b35;
+  --green:        #00ff88;
+  --gold:         #ffd700;
+  --text:         rgba(255, 255, 255, 0.85);
+  --text-dim:     rgba(150, 185, 220, 0.55);
+  --text-muted:   rgba(80, 120, 180, 0.35);
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+::-webkit-scrollbar-thumb { background: rgba(0,180,255,0.2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,180,255,0.4); }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes blockedPulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
