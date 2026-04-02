@@ -134,11 +134,11 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'A3', source: 'property-calc', target: 'phase-system', label: 'Melting/boiling points', data: 'Triggers particle spawn/merge', severity: 'exists' },
   { id: 'A4', source: 'property-calc', target: 'optical-pipeline', label: 'Composition -> optical properties', data: 'Beer-Lambert, Arago-Biot, Planck', severity: 'exists' },
   { id: 'A5', source: 'property-calc', target: 'phase-system', label: 'MISSING: Latent heat', data: '334 kJ/kg for ice, 2260 kJ/kg for water -- transitions should absorb/release heat', severity: 'missing' },
-  { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'MISSING: Non-Newtonian viscosity', data: 'Mud, clay, blood are shear-thinning (Cross model)', severity: 'missing' },
+  { id: 'A6', source: 'property-calc', target: 'sph-solver', label: 'Non-Newtonian viscosity', data: 'Mud, clay, blood are shear-thinning (Cross model)', severity: 'exists' },
 
   // Connection B: 3.1 -> 3.3 (properties feed sound)
   { id: 'B1', source: 'property-calc', target: 'modal-synth', label: "Young's modulus, density", data: 'E and rho determine modal frequencies', severity: 'exists' },
-  { id: 'B2', source: 'property-calc', target: 'modal-synth', label: 'MISSING: Damping loss tangent', data: "Needed for Q factor -- not in MaterialPacket's 33 properties", severity: 'missing' },
+  { id: 'B2', source: 'property-calc', target: 'modal-synth', label: 'Boundary conditions + damping', data: 'Boundary detection for modal frequencies, Q factor from loss tangent', severity: 'exists' },
 
   // Connection C: 3.1 -> 3.4 (properties feed structural)
   { id: 'C1', source: 'property-calc', target: 'load-path', label: 'Compressive/tensile/shear strength', data: 'Block stress vs material capacity', severity: 'exists' },
@@ -150,7 +150,7 @@ const EDGE_DEFS: EdgeDef[] = [
 
   // Connection E: 3.2 -> 3.1 (solidification back to materials)
   { id: 'E1', source: 'phase-system', target: 'property-calc', label: 'Frozen particles -> solid MaterialPacket', data: 'Mass-weighted composition average', severity: 'exists' },
-  { id: 'E2', source: 'phase-system', target: 'property-calc', label: 'MISSING: Microstructure', data: 'Cooling rate -> grain size -> properties (martensite in steel)', severity: 'missing' },
+  { id: 'E2', source: 'phase-system', target: 'property-calc', label: 'Microstructure (martensite)', data: 'Cooling rate -> grain size -> properties (martensite in steel)', severity: 'exists' },
 
   // Connection F: 3.2 -> 3.3 (fluid events -> sound)
   { id: 'F1', source: 'sph-solver', target: 'noise-synth', label: 'Splash events (v > 0.5 m/s)', data: 'Impact energy + liquid material -> noise descriptor', severity: 'exists' },
@@ -168,16 +168,16 @@ const EDGE_DEFS: EdgeDef[] = [
 
   // Connection I: 3.3 -> 3.5 (sound to network)
   { id: 'I1', source: 'sound-stage', target: 'broadcast', label: 'SOUND_EVENT messages', data: 'Descriptors sent to client for synthesis', severity: 'exists' },
-  { id: 'I2', source: 'modal-synth', target: 'broadcast', label: 'MISSING: Doppler effect', data: 'f_obs = f_src * (v+v_l)/(v+v_s) for moving sources', severity: 'missing' },
-  { id: 'I3', source: 'noise-synth', target: 'broadcast', label: 'MISSING: Freq-dependent absorption', data: 'Distant sounds lose high frequencies', severity: 'missing' },
+  { id: 'I2', source: 'modal-synth', target: 'broadcast', label: 'Doppler effect', data: 'f_obs = f_src * (v+v_l)/(v+v_s) for moving sources', severity: 'exists' },
+  { id: 'I3', source: 'noise-synth', target: 'broadcast', label: 'Freq-dependent absorption', data: 'Distant sounds lose high frequencies', severity: 'exists' },
 
   // Connection J: 3.4 -> 3.3 (structural events -> sound)
   { id: 'J1', source: 'load-path', target: 'modal-synth', label: 'Block breaking -> crack/crash sound', data: 'storedEnergy -> modal descriptor', severity: 'exists' },
   { id: 'J2', source: 'load-path', target: 'noise-synth', label: 'Cascade collapse -> staggered impacts', data: 'Multiple events over 0.5s', severity: 'exists' },
 
   // Connection K: 3.4 -> 3.2 (MISSING: collapse displaces fluid)
-  { id: 'K1', source: 'load-path', target: 'mpm-solver', label: 'MISSING: Dam break -> flood', data: 'Structural failure releases contained water', severity: 'missing' },
-  { id: 'K2', source: 'load-path', target: 'sph-solver', label: 'MISSING: Debris into water -> splash', data: 'Collapsing structure displaces liquid', severity: 'missing' },
+  { id: 'K1', source: 'load-path', target: 'mpm-solver', label: 'Progressive collapse -> flood', data: 'Structural failure releases contained water, progressive collapse dynamics', severity: 'exists' },
+  { id: 'K2', source: 'load-path', target: 'sph-solver', label: 'Debris into water -> splash', data: 'Collapsing structure displaces liquid', severity: 'exists' },
 
   // Connection L: Temperature -> 3.4 (thermal structural damage)
   { id: 'L1', source: 'temp-propagation', target: 'decay-system', label: 'Fire weakens materials', data: 'Wood burns, stone spalls at 500C', severity: 'exists' },
@@ -202,6 +202,17 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'P5', source: 'structural-stage', target: 'rigid-body', label: 'Broken blocks', data: 'Debris objects for physics sim', severity: 'exists' },
   { id: 'P6', source: 'rigid-body', target: 'sound-stage', label: 'Impact events', data: 'Every collision generates sound descriptor', severity: 'exists' },
   { id: 'P7', source: 'sound-stage', target: 'broadcast', label: 'All events packaged', data: 'WebSocket to all clients', severity: 'exists' },
+
+  // Connection Q: Newly filled science gaps (sprint 2026-04)
+  { id: 'Q1', source: 'property-calc', target: 'load-path', label: 'Work hardening', data: 'Plastic deformation increases yield strength in metals', severity: 'exists' },
+  { id: 'Q2', source: 'property-calc', target: 'decay-system', label: 'Galvanic corrosion', data: 'Dissimilar metals in contact corrode at electrochemical potential difference', severity: 'exists' },
+  { id: 'Q3', source: 'sph-solver', target: 'decay-system', label: 'Capillary action', data: 'Capillary: rising damp in walls', severity: 'exists' },
+  { id: 'Q4', source: 'sph-solver', target: 'property-calc', label: 'Sedimentation / settling', data: 'Settling: heavy particles deposit as MaterialPackets', severity: 'exists' },
+  { id: 'Q5', source: 'mpm-solver', target: 'noise-synth', label: 'Hydraulic jump', data: 'Hydraulic jump: turbulent roar at Fr transitions', severity: 'exists' },
+  { id: 'Q6', source: 'modal-synth', target: 'load-path', label: 'Structure-borne sound', data: 'Structure-borne: sound propagates through structural BFS graph', severity: 'exists' },
+  { id: 'Q7', source: 'foundation', target: 'mpm-solver', label: 'Lateral earth pressure', data: 'Earth pressure: soil pushes on retaining walls, connects to water table', severity: 'exists' },
+  { id: 'Q8', source: 'load-path', target: 'load-path', label: 'Frame triangulation', data: 'Triangulation: kinematic criterion m=b+r-2j for frame stability', severity: 'exists' },
+  { id: 'Q9', source: 'beam-analysis', target: 'tier-rendering', label: 'Deflection limits', data: 'Deflection: visible beam sag at delta > L/180', severity: 'exists' },
 ]
 
 // Compute edge counts
