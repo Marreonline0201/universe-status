@@ -2507,6 +2507,16 @@ MaterialPacket {
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
                                         // Water: 0.072, mercury: 0.49, molten iron: 1.87
 
+  // ── Mechanical (deformation state) ────────────────────────────────────────
+  workHardeningState: number            // 0-1 — accumulated plastic strain from mechanical deformation
+                                        // 0 = fully annealed (soft). 1 = fully cold-worked (hard).
+                                        // Increases when: metal is hammered, bent, drawn, rolled
+                                        // Resets to 0 when: heated above recrystallization temperature (~0.4 × T_melt in K)
+                                        // Effect on strength: σ_yield = σ_0 × (1 + K × workHardeningState^n)
+                                        //   K = strain hardening coefficient (0.5-1.5 for metals)
+                                        //   n = strain hardening exponent (0.1 for steel, 0.5 for copper)
+                                        // Used by: §3.4 structural strength, §6.3 crafting (hammering improves tools)
+
   // ── Acoustic ──────────────────────────────────────────────────────────────
   acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
                                         // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
@@ -2572,6 +2582,7 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Flammability | Ignition temp × surface area × moisture correction | Fire science | Fire success rate |
 | Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | Future: electric circuits |
 | Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
+| Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
 | Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
 | Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
 | Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
@@ -2586,6 +2597,59 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Reflectivity | Fresnel equations from refractive index | Optical physics | Rendering, mirror surfaces |
 | Calorie content | Combustion energy × digestibility factor (organic only) | Nutrition science | §7.2 food, §4.4 farming |
 | Nutrient content | Element composition → N/P/K extraction | Soil science | §4.4 fertilizer value |
+
+#### Work Hardening — Hammered Metal Gets Harder
+
+When metals are plastically deformed (hammered, bent, drawn through a die), dislocations in the crystal lattice multiply and tangle, resisting further deformation. The Hollomon equation describes this:
+
+```
+σ = K × ε^n
+where ε is the accumulated plastic strain (tracked as workHardeningState 0→1),
+K is the strength coefficient, n is the strain hardening exponent.
+```
+
+Cold-worked copper (workHardeningState = 0.8) has ~2× the yield strength of annealed copper (0.0). This is the foundation of blacksmithing: hammer a blade to harden it.
+
+Annealing (heating above ~0.4 × T_melt in Kelvin) recrystallizes the grain structure, resetting workHardeningState to 0. This softens the metal for further shaping. The cycle: shape → harden → anneal → reshape → harden → final product.
+
+This connects to sound (§3.3): as a metal workpiece hardens, its Young's modulus and density change slightly, so the pitch of each hammer strike shifts higher with successive blows. An experienced player can hear when the metal is fully work-hardened.
+
+#### Martensite Transformation — How Steel Gets Hard
+
+The single most important material transformation in human technological history. Carbon steel (Fe + 0.1-2.0% C) has dramatically different properties depending on cooling rate:
+
+**Fast cooling (quenching in water/oil):**
+Above 727°C, carbon dissolves in iron (austenite phase, FCC crystal structure). Fast cooling traps carbon in the lattice — atoms can't rearrange. Result: martensite (BCT crystal structure) — extremely hard (HV 600-800) but brittle.
+
+```
+Implemented as: if coolingRate > criticalCoolingRate(composition):
+  workHardeningState = 0.95  // near-maximum hardness
+  ductility = 0.02           // almost no ductility — shatters on impact
+  tensileStrength *= 2.5     // dramatic increase
+```
+
+**Slow cooling (air cool or furnace cool):**
+Carbon has time to separate into iron + iron carbide (Fe₃C) layers. Result: pearlite — softer (HV 200-300) but much tougher.
+
+```
+Implemented as: if coolingRate < criticalCoolingRate(composition):
+  workHardeningState unchanged
+  ductility = 0.2-0.4       // good ductility
+  tensileStrength unchanged
+```
+
+**Tempering:** reheating quenched martensite to 200-600°C for a period reduces brittleness while retaining most hardness. The trade-off is controlled by tempering temperature:
+- 200°C: HV 550, still brittle (springs, files)
+- 400°C: HV 400, moderate toughness (tools, blades)
+- 600°C: HV 250, very tough (structural steel)
+
+The criticalCoolingRate depends on carbon content and alloying elements:
+- Plain carbon steel (0.8% C): ~200°C/sec (must quench in water)
+- Alloy steel (+ Cr, Mo, Ni): ~10°C/sec (can air-harden)
+
+This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The fluid's temperature and heat extraction rate (depends on fluid type: water extracts ~10× faster than oil, oil ~5× faster than air) determines whether martensite forms. A player who quenches in oil instead of water gets a different result — because the physics is different.
+
+This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
 
 #### How Materials Combine: The Reaction Engine
 
@@ -2782,6 +2846,37 @@ Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dy
 
 Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
 
+**Non-Newtonian Viscosity — Mud Is Not Water**
+
+The Andrade/Arrhenius model gives viscosity as a function of temperature only. This is correct for simple liquids (water, molten metals, oils). But many gameplay-relevant materials are non-Newtonian — their viscosity depends on shear rate (how fast you stir/deform them):
+
+*Shear-thinning (pseudoplastic) — viscosity DROPS under stress:*
+The Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)`
+- μ₀ = zero-shear viscosity (thick when still)
+- μ_∞ = infinite-shear viscosity (thin when stirred fast)
+- γ̇ = shear rate (velocity gradient in the fluid)
+- K = time constant, n = flow index (<1 for shear-thinning)
+
+Clay slurry: μ₀ = 100 Pa·s (stiff), μ_∞ = 0.1 Pa·s (flows when worked). This is why clay is "workable" — stiff until you knead it, then flows into shape. In the SPH solver, clay particles near the player's hands have high shear rate → low viscosity. Clay particles at rest have zero shear rate → high viscosity → holds its shape.
+
+Blood: μ₀ = 0.05 Pa·s at low shear, μ_∞ = 0.003 Pa·s at high shear. Slow blood pooling is thicker than fast-flowing arterial blood.
+
+Mud: μ₀ = 500+ Pa·s (solid-like), μ_∞ = 1 Pa·s (flows like water when agitated). Walking on mud: shear rate from footstep → mud liquefies under foot → sinks in. This is quicksand behavior: struggling increases shear rate → more liquefaction. Staying still: mud re-solidifies (thixotropy).
+
+*Shear-thickening (dilatant) — viscosity INCREASES under stress:*
+Cornstarch/water (oobleck), wet sand: flows slowly when poured, becomes rigid under sudden impact. Not critical for gameplay but interesting for armor padding.
+
+The SPH viscosity force already computes velocity differences between neighbors. The shear rate γ̇ is simply the magnitude of the velocity gradient tensor, which can be estimated from the SPH velocity Laplacian already being computed. The only change: replace constant μ with μ(γ̇) from the Cross model.
+
+MaterialPacket additions for non-Newtonian fluids:
+```
+  isNonNewtonian: boolean            // true for clay, mud, blood, pitch, etc.
+  zeroShearViscosity: number         // Pa·s — viscosity when undisturbed (μ₀)
+  infShearViscosity: number          // Pa·s — viscosity under fast shear (μ_∞)
+  crossTimeConstant: number          // s — transition shear rate (K)
+  crossFlowIndex: number             // dimensionless — typically 0.3-0.8 (n)
+```
+
 **3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
 
 Formula: `F_gravity = m · g · down_direction`
@@ -2898,6 +2993,39 @@ When a cluster of SPH particles cools below meltingPoint(composition):
      — shape = convex hull of particle positions (or simplified bounding shape)
   3. The solid packet is placed in the world; particles are removed
 ```
+
+**Solidification Front — Casting Freezes From Outside In**
+
+Real freezing does not happen simultaneously throughout a liquid body. It starts at the coldest surfaces (mold walls, exposed air) and progresses inward as a moving front. The Stefan problem describes this:
+
+```
+dx/dt = k × (T_melt - T_boundary) / (ρ × L × x)
+where:
+  x = thickness of solid shell (m)
+  k = thermal conductivity of the solid (W/m·K)
+  T_melt = melting point (°C)
+  T_boundary = temperature at the cold surface (°C)
+  ρ = density (kg/m³)
+  L = latent heat of fusion (J/kg) — from latentHeatFusion property
+```
+
+The solidification front moves as √(time) — fast at first, then slowing as the insulating solid shell thickens and heat must travel farther to escape.
+
+For a 10cm copper casting in a stone mold (T_boundary = 200°C):
+- After 1 second: solid shell ~3mm thick
+- After 10 seconds: ~9mm thick
+- After 60 seconds: ~23mm thick
+- Center solidifies last — after ~2 minutes
+
+Why this matters for gameplay:
+
+1. **Shrinkage cavities:** the last liquid to freeze (center) has no liquid left to fill the space as it contracts. A void forms — a real metallurgical defect. Well-designed molds have a "riser" (extra reservoir) that feeds liquid to the center as it shrinks. Players who don't add a riser get castings with internal voids — weaker, more likely to crack under stress.
+
+2. **Cooling rate determines microstructure:** surface (fast-cooled) is fine-grained and hard. Center (slow-cooled) is coarse-grained and softer. For steel, this connects to martensite (§3.1): the surface may be martensite (hard) while the center is pearlite (soft) — a single casting with two different property zones.
+
+3. **Directional solidification:** if the mold is cooled from the bottom, the solidification front moves upward, pushing dissolved gases ahead of it → fewer bubbles. This is a real casting technique (chill plates at the base).
+
+Implementation: for freezing SPH particle clusters, don't merge all at once. Instead, identify surface particles (fewest neighbors) → freeze those first. Each tick, freeze the next layer of particles adjacent to already-frozen particles. The rate follows the Stefan formula. Center particles freeze last. Frozen particles that contract more than their neighbors create void particles (tracked as defects in the resulting solid MaterialPacket).
 
 **Boiling (liquid → gas):**
 ```
@@ -3042,6 +3170,72 @@ When two particles' mixed composition satisfies a reaction condition (§3.1 reac
 
 **Density-driven layering:**
 Denser liquid sinks, lighter liquid floats. Oil floats on water. Molten slag floats on molten iron (this is how real smelting separates metal from waste). The SPH pressure force naturally produces this layering because denser particles create higher pressure at the bottom.
+
+#### Capillary Action — Liquid Climbs Upward
+
+In narrow channels, surface tension pulls liquid upward against gravity. Jurin's law determines the height:
+
+```
+h = 2σ × cos(θ) / (ρ × g × r)
+where:
+  σ = surface tension (N/m) — from MaterialPacket
+  θ = contact angle (0° = perfect wetting, 90° = non-wetting, >90° = hydrophobic)
+  ρ = liquid density (kg/m³)
+  r = channel/pore radius (m)
+```
+
+Contact angle depends on the liquid-surface pair:
+- Water on clean glass: θ ≈ 0° (spreads flat — hydrophilic)
+- Water on waxed surface: θ ≈ 110° (beads up — hydrophobic)
+- Mercury on glass: θ ≈ 140° (repelled — mercury is depressed, not elevated)
+- Water on stone: θ ≈ 20-40° (partial wetting)
+- Oil on cloth: θ ≈ 0° (perfect wetting — oil wicks into everything)
+
+Gameplay effects:
+- Oil lamp wicks: oil (σ ≈ 0.03 N/m, θ ≈ 0° on cloth) rises ~15cm in cloth fibers (r ≈ 0.01mm): h = 2×0.03×1 / (800×9.81×0.00001) = 0.76m — easily sufficient
+- Rising damp in walls: water rises in stone pores (r ≈ 0.1mm): h = 2×0.073×cos(30°) / (1000×9.81×0.0001) = 0.13m — rises ~13cm into the wall. This connects to structural decay (§3.4): the damp zone weakens mortar
+- Cloth absorbing blood/water: thin fibers (r ≈ 0.01mm) wick liquid rapidly
+- Sap transport in trees: capillary + transpiration pull moves water from roots to leaves
+
+Implementation: not simulated as individual SPH particles in pores (too small). Instead, tracked as a material property: when a porous block contacts liquid, the block's waterAbsorption rate is multiplied by a capillary factor:
+```
+capillaryFactor = 2σ × cos(θ) / (ρ × g × poreDiameter)
+absorptionRate = porosity × capillaryFactor × contactArea
+```
+
+This connects to structural decay (§3.4): rising damp carries dissolved minerals upward. When water evaporates at the wall surface, minerals crystallize and exert pressure on the pore walls (salt weathering). This is a major real-world cause of stone building deterioration.
+
+#### Sedimentation — Heavy Particles Sink, Light Particles Float
+
+Suspended solids in liquid settle at a rate determined by Stokes' law:
+
+```
+v_settle = (2/9) × (ρ_particle - ρ_fluid) × g × r² / μ
+where:
+  ρ_particle = density of the suspended solid (kg/m³)
+  ρ_fluid = density of the liquid (kg/m³)
+  r = particle radius (m) — from the suspended solid's grain size
+  μ = fluid viscosity (Pa·s)
+```
+
+Settling speeds for common situations:
+- Gold dust (ρ=19300) in water: r=0.5mm → v = 0.85 m/s — settles almost instantly
+- Sand (ρ=2650) in water: r=1mm → v = 0.36 m/s — settles in seconds
+- Silt (ρ=2650) in water: r=0.01mm → v = 0.000036 m/s — takes hours to settle
+- Clay (ρ=2650) in water: r=0.001mm → v = 0.00000036 m/s — takes DAYS (muddy water stays cloudy)
+
+Gameplay effects:
+- Gold panning: swirl water + gravel → gold settles first (highest density) → lighter sand washes away. This is discoverable because the physics is correct.
+- Water clarification: fill a vessel, let it sit → sediment drops, clear water on top. Time depends on grain size: sandy water clears in minutes, clay water takes days.
+- Alluvial deposits: where rivers slow (bends, deltas), sediment drops out. Heavy materials (gold, magnetite) deposit first at the inner bend. Light materials (clay) deposit last, farther downstream. This creates naturally rich mining locations that players can discover by understanding the relationship between river speed and material density.
+
+Implementation: for SPH particles representing suspensions (muddy water, ore slurry), apply a settling velocity to the solid component:
+```
+Each tick: particle.z -= v_settle × dt (relative to the fluid)
+When a settled particle reaches the bottom of a container or terrain:
+  it is removed from the fluid and deposited as a MaterialPacket.
+The deposited material's composition reflects whatever settled there.
+```
 
 #### What the Player Sees — Three-Tier Rendering Pipeline
 
@@ -3737,6 +3931,51 @@ that was retaining water is removed. The fluid system then:
   3. Reduces waterVolume in the upstream cells
   4. The MPM particles flow downhill, joining the environment-scale simulation
 
+#### Hydraulic Jump — Fast Water Hits Slow Water
+
+When supercritical flow (fast, shallow) transitions to subcritical flow (slow, deep), a hydraulic jump forms — a turbulent standing wave with dramatic energy dissipation.
+
+The Froude number determines the flow regime:
+
+```
+Fr = v / √(g × d)
+where v = flow velocity (m/s), d = flow depth (m)
+
+Fr < 1: subcritical (slow, deep, tranquil) — normal river flow
+Fr = 1: critical (at a weir crest, at the brink of a waterfall)
+Fr > 1: supercritical (fast, shallow, shooting) — below a spillway
+```
+
+When supercritical flow enters a subcritical region, the jump occurs. The conjugate depth ratio gives the downstream depth:
+
+```
+d₂/d₁ = 0.5 × (-1 + √(1 + 8 × Fr₁²))
+```
+
+Example: water flowing at 4 m/s, 0.1m deep (Fr = 4/√(9.81×0.1) = 4.04):
+- d₂ = 0.1 × 0.5 × (-1 + √(1 + 8×16.3)) = 0.1 × 5.2 = 0.52m
+- Water depth jumps from 10cm to 52cm in a turbulent roller.
+
+Energy dissipated in the jump:
+
+```
+ΔE = (d₂ - d₁)³ / (4 × d₁ × d₂)
+```
+
+This energy goes into turbulence, spray, and SOUND.
+
+Where hydraulic jumps appear in gameplay:
+- Base of waterfalls: fast falling water hits the pool → jump + spray + foam
+- Below spillways: player-built dam with overflow → fast water hits downstream pool
+- In steep channels: sudden slope change from steep to flat
+
+This connects to:
+- Sound (§3.3): the jump is LOUD — continuous broadband noise from turbulence. Sound power is proportional to energy dissipation rate. The noise synthesis uses ΔE as input.
+- Secondary particles (§3.2): the turbulent roller generates spray (Weber number is high at the jump) and foam (vorticity is maximum in the roller).
+- Structural (§3.4): the turbulent flow at a jump scours foundations. Real dams have "stilling basins" specifically designed to contain the jump.
+
+Implementation in the grid-based regional water (Scale 3): when adjacent grid cells have Fr > 1 → Fr < 1 transition, mark as a jump. Spawn MPM particles at the jump location for the visual turbulence. Generate a continuous noise sound event at the jump position.
+
 #### Particle Network Streaming
 
 The world is consistent. Every player sees the same lava flow, the same river, the same puddle. But streaming 400,000 particle positions to every client every frame is impossible. The solution mirrors human perception: you can only see what is in front of you, and distant things have less detail.
@@ -4042,6 +4281,71 @@ Step 5: Spatial positioning (WebAudio PannerNode):
 Step 6: Output → speaker
 ```
 
+#### Doppler Effect — Moving Sounds Shift Pitch
+
+When a sound source moves toward a listener, the frequency shifts upward. When moving away, it shifts downward:
+
+```
+f_observed = f_source × (v_sound + v_listener) / (v_sound + v_source)
+where:
+  v_sound = 343 m/s (speed of sound in air at 20°C)
+  v_listener = listener velocity along the source-listener axis (+ = moving away)
+  v_source = source velocity along the source-listener axis (+ = moving away)
+```
+
+Gameplay-noticeable examples:
+- Arrow flying past player at 50 m/s: Approaching: f_obs = f × 343 / (343 + (-50)) = f × 1.17 → 17% higher pitch. Receding: f_obs = f × 343 / (343 + 50) = f × 0.87 → 13% lower pitch. The "zip" of an arrow past your ear is this pitch transition.
+- Horse galloping past at 15 m/s: Approaching: +4.6% pitch. Receding: -4.2% pitch. Subtle but audible — hoofbeats sound slightly higher as horse approaches.
+- Thrown rock at 20 m/s: Approaching: +6.2%. Receding: -5.5%.
+
+Implementation: the SOUND_EVENT message already includes source position. Add source velocity (Vec3) to the descriptor. The client computes the relative velocity along the source-listener axis each frame and adjusts the playback rate of the WebAudio source accordingly.
+
+WebAudio's PannerNode supports Doppler natively — set the source's positionX/Y/Z and velocityX/Y/Z, and the listener's position/velocity. The browser handles the pitch shifting automatically. Cost: zero.
+
+This connects to networking (§3.5): source velocity must be included in SOUND_EVENT messages. For most events (impacts, breaks), velocity is zero (the sound source is stationary). For projectiles, thrown objects, and moving entities, velocity comes from the physics simulation.
+
+#### Frequency-Dependent Atmospheric Absorption — Distant Sounds Lose Their Sharpness
+
+Sound doesn't just get quieter with distance — it changes character. High frequencies are absorbed more by air than low frequencies.
+
+Absorption coefficients (simplified from ISO 9613-1, at 20°C, 50% humidity):
+```
+250 Hz:  0.001 dB/m   (bass travels far)
+1000 Hz: 0.005 dB/m   (mid-range moderate)
+4000 Hz: 0.02 dB/m    (treble fades fast)
+8000 Hz: 0.08 dB/m    (highest frequencies gone quickly)
+```
+
+At 100m distance:
+- 250 Hz: -0.1 dB (barely affected)
+- 4000 Hz: -2.0 dB (noticeably reduced)
+- 8000 Hz: -8.0 dB (nearly gone)
+
+At 500m distance:
+- 250 Hz: -0.5 dB (still audible)
+- 4000 Hz: -10 dB (very quiet)
+- 8000 Hz: -40 dB (effectively silent)
+
+This is why:
+- Distant thunder is a low rumble (high frequencies absorbed over km)
+- Nearby thunder is a sharp crack (full spectrum arrives intact)
+- A distant waterfall is a low roar; close up it hisses
+- Distant footsteps are soft thumps; close up you hear the crunch
+
+Implementation: apply a low-pass filter to each sound, with cutoff frequency inversely related to distance:
+```
+cutoffFrequency = 20000 / (1 + distance × 0.02)
+At 0m: 20kHz (full spectrum). At 50m: 10kHz. At 200m: 4kHz. At 1km: 1kHz.
+```
+
+WebAudio BiquadFilterNode (type = "lowpass") does this in one node. Set the frequency parameter dynamically based on distance. Cost: negligible.
+
+Humidity affects absorption — dry air absorbs high frequencies faster. The weather system's humidity value modulates the absorption coefficient:
+```
+absorption × (1.5 - humidity)  // at humidity=0: 1.5×. At humidity=1: 0.5×
+Dry desert: sounds die quickly at distance. Humid jungle: sounds carry farther.
+```
+
 #### What This System Can Produce
 
 | Sound | Method | Key Parameters |
@@ -4076,6 +4380,62 @@ Step 6: Output → speaker
 | **Total main thread** | **<1ms** | Main thread computes parameters only |
 
 **Voice limiting:** Maximum 24 concurrent sound sources. Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots.
+
+#### Structure-Borne Sound — Impacts Travel Through Solids
+
+Sound travels through solid materials much faster than through air:
+
+```
+v_sound = √(E / ρ)  (longitudinal wave in a rod)
+
+Air:    343 m/s      (slow, highly attenuated)
+Water:  1,480 m/s    (4.3× faster than air)
+Wood:   3,800 m/s along grain (11× faster)
+Stone:  5,500 m/s    (16× faster)
+Steel:  5,960 m/s    (17× faster)
+```
+
+When an impact occurs on a solid surface (pickaxe hits stone wall, footstep on wooden floor), the vibration propagates through the solid at v_sound(material), much faster than the airborne sound.
+
+Gameplay effects:
+- Ear to the ground: footsteps at 200m through stone ground arrive in 200/5500 = 0.036s. Through air: 200/343 = 0.58s. You hear the ground vibration 0.55 seconds BEFORE the airborne sound. This is how real trackers detect distant movement.
+- Impact on the other side of a wall: a pickaxe hitting the far side of a 1m stone wall arrives through stone in 0.0002s. Through air (around the wall): depends on path, but always slower. You hear the thud through the wall first.
+- Mining sounds: impacts in a mine tunnel propagate through the rock to adjacent tunnels. Other players/NPCs can hear mining activity through solid rock, attenuated by distance but arriving much sooner than airborne.
+
+Implementation: when a sound event occurs on a solid surface:
+1. Generate the normal airborne sound event (existing system)
+2. Also propagate through the structural connectivity graph:
+   - Find all blocks connected to the impact block (BFS, same as load path §3.4)
+   - For each block, compute: delay = distance / v_sound(block.material)
+   - Attenuate: each block boundary attenuates by ~3 dB (impedance mismatch)
+   - If a block is adjacent to air (exposed face): re-radiate as airborne sound at that position, with the accumulated delay and attenuation
+3. The listener hears: structure-borne version (early, muffled) + airborne version (late, clear)
+
+This uses the SAME connectivity graph as the structural load path algorithm (§3.4). Sound propagation and structural load propagation share the BFS infrastructure.
+
+Cost: one BFS per impact event through the structural graph (same as load path). Typically <0.1ms for a 200-block structure.
+
+#### Boundary Condition Detection — Support Changes the Pitch
+
+The β_n values used in modal synthesis (4.73, 7.85, 11.0, 14.1) are for a free-free bar (both ends free to vibrate). But most objects in the game are supported differently, which dramatically changes the frequencies:
+
+| Boundary condition | β₁    | β₂    | β₃    | Example |
+|-------------------|-------|-------|-------|---------|
+| Free-free         | 4.730 | 7.853 | 10.996 | Dropped object, thrown tool |
+| Clamped-free      | 1.875 | 4.694 | 7.855  | Torch bracket, shelf, flag pole |
+| Simply supported  | π     | 2π    | 3π     | Beam resting on two walls |
+| Clamped-clamped   | 4.730 | 7.853 | 10.996 | Beam mortared into both walls |
+| Clamped-simply    | 3.927 | 7.069 | 10.210 | Beam mortared one end, resting other |
+
+The fundamental frequency of a clamped-free bar is (1.875/4.730)² = 0.157× the free-free frequency — more than 6× LOWER pitch. A torch bracket vibrates at a completely different pitch than the same metal bar dropped on the ground.
+
+Detection algorithm: when a sound event occurs on a block, query its structural connections (§3.4 connectivity graph):
+- No connections: free-free (dropped/thrown object)
+- One face connected to another block: clamped-free (wall-mounted)
+- Two opposite faces connected: clamped-clamped or simply-supported. If connections are mortared/fastened: clamped-clamped. If connections are just stacked (friction): simply-supported.
+- Mixed: use the most constrained boundary
+
+This reuses the structural connection data already tracked by §3.4. No new computation needed — just a lookup based on existing bond types.
 
 
 ### 3.4 Structural Physics — How Buildings Stand or Fall
@@ -4344,6 +4704,42 @@ ForceSystem {
   //   ~500 blocks recalculated → ~5ms → 3-6 waves → spectacular collapse
   //   Client receives CHUNK_UPDATE with removed blocks + PHYSICS_EVENT with debris bodies
 
+  // ── Dynamic impact in cascade collapse ─────────────────────────────────
+  //
+  // When a block or floor falls and hits the structure below, the impact force
+  // is MUCH greater than the static weight. This is what causes "pancake collapse"
+  // in real building failures.
+  //
+  //   F_impact = m × g × (1 + √(1 + 2h/δ_static))
+  //   where:
+  //     m = mass of falling object (kg)
+  //     h = fall height (m) — distance the block fell before impact
+  //     δ_static = static deflection of the receiving structure under load m×g
+  //       For a rigid floor: δ_static ≈ 0.001m → F_impact ≈ m×g × (1 + √(1 + 2000h))
+  //
+  //   A 1000 kg block falling just 1m onto a rigid floor:
+  //     F_impact = 1000 × 9.81 × (1 + √(1 + 2000)) = 9810 × 45.7 = 448,000 N
+  //     That's 45× the static weight!
+  //
+  //   Even a 0.1m fall (one block falling onto the next):
+  //     F_impact = 9810 × (1 + √(1 + 200)) = 9810 × 15.2 = 149,000 N
+  //     About 15× the static weight.
+  //
+  //   This means: in a cascade collapse, each falling floor hits the floor below
+  //   with enough force to punch through it, which then falls onto the next floor,
+  //   accumulating mass and velocity. This is the "progressive collapse" mechanism
+  //   that destroyed the World Trade Center towers.
+  //
+  //   Implementation: in the cascade algorithm, when debris from wave N hits the
+  //   remaining structure, apply F_impact (not just static weight) to the impacted blocks.
+  //   If F_impact / contactArea > block.compressiveStrength → block also fails.
+  //   The debris mass accumulates as floors collect falling material.
+  //
+  //   This connects to sound (§3.3): dynamic impacts produce louder sound events.
+  //   Impact energy = 0.5 × m × v² where v = √(2gh) from the fall.
+  //   A 1m fall: v = 4.4 m/s, energy = 0.5 × 1000 × 19.6 = 9800 J.
+  //   Compare: a pickaxe strike is ~10 J. A collapsing floor is 1000× louder.
+
   // ═══════════════════════════════════════════════════════════════════════
   // BEAM DETECTION AND BENDING ANALYSIS
   // ═══════════════════════════════════════════════════════════════════════
@@ -4397,6 +4793,52 @@ ForceSystem {
   //   Same beam at 8-block span:
   //   M = 98,544 × 64 / 8 = 789,352 N·m
   //   σ = 789,352 / 0.167 = 4.73 MPa > 3 MPa → beam snaps at midspan
+
+  // ── Deflection — beams sag before they break ──────────────────────────
+  //
+  // A beam can be strong enough not to break but deflect so much it's unusable.
+  // Maximum deflection for a simply-supported beam under uniform load:
+  //   δ_max = 5 × w × L⁴ / (384 × E × I)
+  //   where:
+  //     w = distributed load (N/m)
+  //     L = span (m)
+  //     E = Young's modulus (Pa)
+  //     I = second moment of area (m⁴) — for 1m×1m block: I = 1/12
+  //
+  //   Serviceability limits (from real structural engineering):
+  //     δ < L/360: acceptable for floors (no cracking of finishes)
+  //     δ < L/240: acceptable for roofs
+  //     δ < L/180: visible sag — occupants notice
+  //     δ < L/100: severe sag — doors won't close, water pools on roof
+  //
+  //   Example: oak beam, 6m span, supporting a floor (w = 5000 N/m):
+  //     δ = 5 × 5000 × 6⁴ / (384 × 12×10⁹ × 0.083) = 5 × 5000 × 1296 / (383×10⁹ × 0.083)
+  //     δ = 32,400,000 / 31,789,000,000 = 0.001 m = 1mm → L/6000 — negligible
+  //
+  //   Same beam, 12m span:
+  //     δ = 5 × 5000 × 12⁴ / (384 × 12×10⁹ × 0.083)
+  //     δ = 5 × 5000 × 20736 / 31,789,000,000 = 0.016 m = 16mm → L/750 — fine
+  //
+  //   Stone beam (E = 40 GPa instead of 12 GPa, but ρ = 2700 instead of 600):
+  //     Same 6m span: w includes much heavier self-weight → δ is larger
+  //     Stone beams sag much more than wood beams at the same span.
+  //
+  // Progressive ponding failure:
+  //   A flat roof that deflects collects rainwater in the sag. Water adds load.
+  //   More load → more deflection → more water → more load → collapse.
+  //   δ_ponding = δ_0 / (1 - q_water × L⁴ / (π⁴ × E × I))
+  //   When the denominator approaches 0: runaway failure.
+  //   Prevention: cambered roofs (built with upward curve) or drainage.
+  //
+  // Gameplay effect: visible beam sag gives players visual feedback that a
+  //   structure is near its limit. A beam that sags L/100 (6cm over a 6m span)
+  //   is visually noticeable and warns the player before catastrophic failure.
+  //   This is more informative than sudden collapse with no warning.
+  //
+  // Implementation: for each detected beam, compute δ_max. If δ > L/180,
+  //   render the beam with a downward curve (vertex displacement proportional to
+  //   δ × sin(π×x/L) along the beam). This is purely visual — the structural
+  //   check still uses the stress formula for failure.
 
   // ═══════════════════════════════════════════════════════════════════════
   // ARCH DETECTION AND THRUST ANALYSIS
@@ -4462,6 +4904,53 @@ ForceSystem {
   //   Flying buttress: external arch carrying thrust away from a tall wall to a pier
 
   // ═══════════════════════════════════════════════════════════════════════
+  // FRAME STABILITY — TRIANGULATION IS REQUIRED
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // A fundamental principle:
+  // a rectangular frame with pinned joints is a MECHANISM — it collapses sideways.
+  // Only triangulated frames (or frames with rigid joints) are stable.
+  //
+  // Kinematic criterion (2D):
+  //   m = b + r - 2j
+  //   where b = bars (blocks acting as beams), r = support reactions, j = joints
+  //   m < 0: mechanism (collapses)
+  //   m = 0: statically determinate (stable, no redundancy)
+  //   m > 0: indeterminate (stable with redundant members)
+  //
+  // A simple rectangle (4 bars, 4 pinned joints, 3 reactions at base):
+  //   m = 4 + 3 - 2×4 = -1 → MECHANISM. It racks (leans sideways) and collapses.
+  //
+  // Adding one diagonal brace:
+  //   m = 5 + 3 - 2×4 = 0 → STABLE. The triangle resists racking.
+  //
+  // This is why:
+  //   Roof trusses use triangles, not rectangles
+  //   Timber-frame buildings have diagonal bracing
+  //   Steel frames use X-bracing or moment connections
+  //   A-frame shelters are inherently stable (they ARE triangles)
+  //
+  // In the game: a player who builds a rectangular doorway with stacked blocks
+  //   (no mortar) should see it rack under lateral load (wind, impact).
+  //   Adding a diagonal timber brace should stabilize it.
+  //   Mortared joints resist rotation (act as rigid, not pinned) — so mortared
+  //   rectangles ARE stable (moment frame behavior).
+  //
+  // Implementation: when checking lateral stability of a structure:
+  //   1. Build a 2D frame model of the structure (project onto the plane
+  //      perpendicular to the lateral load)
+  //   2. Classify joints: stacked (pinned) vs. mortared/fastened (rigid)
+  //   3. Count bars, joints, reactions
+  //   4. If m < 0 AND all joints are pinned → structure is a mechanism →
+  //      fails under any lateral load
+  //   5. If m < 0 BUT some joints are rigid → check if rigid joints provide
+  //      enough moment resistance
+  //
+  // This connects to material properties (§3.1): the joint type (pinned vs. rigid)
+  //   depends on the bond type in the structural connection. Stacked = pinned.
+  //   Mortared with strong mortar = rigid. Rope lashing = semi-rigid (can stretch).
+
+  // ═══════════════════════════════════════════════════════════════════════
   // WIND AND LATERAL LOADS
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -4487,6 +4976,40 @@ ForceSystem {
   //   If force > bond strength at that block → block breaks free
   //   If that block was load-bearing → cascade above it
   //   Siege warfare: ram a wall until blocks break → roof collapses on defenders
+
+  // ── Lateral earth pressure (retaining walls, basements, mine tunnels) ──
+  //
+  // Soil pushes horizontally against walls that hold it back.
+  // Rankine active earth pressure:
+  //   σ_h = K_a × γ_soil × z
+  //   where:
+  //     K_a = (1 - sin(φ)) / (1 + sin(φ)) — active pressure coefficient
+  //     γ_soil = soil unit weight (~18,000 N/m³)
+  //     z = depth below ground surface (m)
+  //     φ = soil internal friction angle (sand: 30-35°, clay: 0-25°)
+  //
+  //   | Soil type    | φ (°) | K_a  | σ_h at 3m depth (Pa) |
+  //   |-------------|-------|------|---------------------|
+  //   | Loose sand   | 28    | 0.36 | 19,440              |
+  //   | Dense sand   | 40    | 0.22 | 11,880              |
+  //   | Soft clay    | 0     | 1.00 | 54,000 (worst case) |
+  //   | Stiff clay   | 25    | 0.41 | 22,140              |
+  //
+  //   At 3m depth in loose sand: ~19 kPa = ~2 tonnes/m² pushing sideways.
+  //   A single-block-thick stone wall (compressive only, no bending capacity)
+  //   would be pushed over by this force unless buttressed.
+  //
+  //   When groundwater is present: add hydrostatic water pressure
+  //     σ_total = K_a × γ_soil × z + ρ_water × g × z_water
+  //     Saturated soil pushes MUCH harder — this is why mines flood AND collapse.
+  //
+  //   Implementation: for blocks that have terrain/soil on one side and air on the other,
+  //   apply lateral earth pressure as a horizontal force to the structural system.
+  //   Check: can the wall resist this as a shear force? Does it overturn?
+  //
+  //   This connects to fluid sim (§3.2): the water table height from the regional
+  //   grid system determines z_water in the formula. Rising water table after rain
+  //   increases lateral pressure on basement walls.
 }
 ```
 
@@ -4593,6 +5116,46 @@ StructuralDecay {
   //   Metal fasteners: rust (iron + water + oxygen → iron oxide)
   //     bondStrength decreases by 1% per game-day wet
   //     Prevention: oil coating, bronze fasteners (no rust)
+
+  // ── Galvanic corrosion — dissimilar metals destroy each other ─────────
+  //
+  // When two different metals are in physical contact in the presence of an
+  // electrolyte (rain water, salt water, even humid air), the more reactive
+  // metal corrodes faster. The galvanic series (most reactive/anodic to least):
+  //
+  //   Zinc → Iron → Tin → Lead → Copper → Silver → Gold → Platinum
+  //
+  // Corrosion rate is proportional to the potential difference between the two metals:
+  //   corrosionMultiplier = 1.0 + 3.0 × |E_cathode - E_anode| / 1.5V
+  //   (where E values are standard electrode potentials from the element table)
+  //
+  // Standard electrode potentials (vs. standard hydrogen electrode):
+  //   Zinc: -0.76V   Iron: -0.44V   Tin: -0.14V   Lead: -0.13V
+  //   Copper: +0.34V  Silver: +0.80V  Gold: +1.50V  Platinum: +1.20V
+  //
+  // Examples:
+  //   Iron nail in copper fitting: |0.34 - (-0.44)| = 0.78V → multiplier = 2.56×
+  //     The iron corrodes 2.56× faster than iron alone. The copper is PROTECTED.
+  //
+  //   Zinc coating on iron (galvanization): |-0.76 - (-0.44)| = 0.32V
+  //     The ZINC corrodes preferentially, protecting the iron underneath.
+  //     This is why galvanized steel lasts decades in rain — the zinc sacrifices itself.
+  //
+  //   Copper pipe connected to iron pipe (common plumbing mistake):
+  //     Iron section rapidly corrodes at the junction. Copper section stays pristine.
+  //
+  // Gameplay: a player who fastens copper fittings to an iron frame discovers
+  // the iron rots out in a fraction of the time. A player who coats iron with zinc
+  // (by dipping in molten zinc — galvanizing) discovers it lasts much longer.
+  // Both discoveries emerge from the element table's electrode potentials —
+  // no special "corrosion recipe" needed.
+  //
+  // Implementation: for metal connections between dissimilar metals, apply
+  // corrosionMultiplier to the existing rain damage rate for the more reactive metal.
+  // The less reactive metal's corrosion rate is reduced proportionally.
+  // This connects to structural physics (§3.4): corroded fasteners have reduced
+  // bondStrength. The decay system applies corrosionMultiplier to the existing
+  // rain damage rate for metal connections between dissimilar metals.
 
   // ── Freeze-thaw damage ────────────────────────────────────────────────
   //
