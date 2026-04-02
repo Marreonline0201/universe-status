@@ -1,0 +1,15 @@
+[
+  {
+    "signature": "low_food|low_water|panel_missing",
+    "count": 1,
+    "examples": [
+      {
+        "episodeId": "2026-03-24T06-16-01-625Z-c001-ep-001",
+        "scenario": "survival",
+        "minFood": 0,
+        "minWater": 0,
+        "deathCount": 0
+      }
+    ]
+  }
+]

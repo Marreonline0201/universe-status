@@ -4,30 +4,10 @@
 // Inspired by docs.anthropic.com / Claude documentation layout.
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-// Fetch structure.md from GitHub at runtime (no filesystem dependency)
-const GITHUB_RAW = 'https://raw.githubusercontent.com/Marreonline0201/universe-sim/master'
-let _cachedPublic: string | null = null
-let _cachedFull: string | null = null
-
-async function fetchMd(url: string): Promise<string> {
-  const r = await fetch(url); return r.ok ? r.text() : '# Failed to load'
-}
-
-function useMdFromGithub(authed: boolean) {
-  const [pub, setPub] = useState(_cachedPublic ?? '')
-  const [full, setFull] = useState(_cachedFull ?? '')
-  const [loading, setLoading] = useState(!_cachedPublic)
-  useEffect(() => {
-    if (_cachedPublic) { setPub(_cachedPublic); setLoading(false); return }
-    fetchMd(`${GITHUB_RAW}/structure-public.md`).then(m => { _cachedPublic = m; setPub(m); setLoading(false) })
-  }, [])
-  useEffect(() => {
-    if (!authed) return
-    if (_cachedFull) { setFull(_cachedFull); return }
-    fetchMd(`${GITHUB_RAW}/structure.md`).then(m => { _cachedFull = m; setFull(m) })
-  }, [authed])
-  return { pub, full, loading }
-}
+// @ts-ignore — Vite raw import
+import publicMd from '../../structure-public.md?raw'
+// @ts-ignore
+import fullMd from '../../structure.md?raw'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 // Simple password gate: public visitors see structure-public.md,
@@ -1049,7 +1029,6 @@ export function DocsPage() {
   const [rightWidth, setRightWidth] = useState(200)
   const contentRef                  = useRef<HTMLDivElement>(null)
 
-  const { pub: publicMd, full: fullMd } = useMdFromGithub(authed)
   const rawMd = authed ? fullMd : publicMd
 
   const onLeftDrag = useCallback((delta: number) => {

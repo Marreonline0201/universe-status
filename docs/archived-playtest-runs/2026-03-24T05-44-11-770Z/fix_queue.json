@@ -1,0 +1,20 @@
+[
+  {
+    "priority": 1,
+    "severity": "high",
+    "issue": "overlay_stuck",
+    "occurrences": 4,
+    "recommendation": "Harden pointer-lock and focus reacquire flow after respawn and click-to-play; auto-dismiss residual overlays after successful world input.",
+    "ownerArea": "input/ui",
+    "evidenceEpisodes": [1, 2, 3, 4]
+  },
+  {
+    "priority": 2,
+    "severity": "low",
+    "issue": "clean",
+    "occurrences": 2,
+    "recommendation": "Keep as control baseline; expand episode count to confirm stability after overlay fix.",
+    "ownerArea": "qa/playtest",
+    "evidenceEpisodes": [5, 6]
+  }
+]

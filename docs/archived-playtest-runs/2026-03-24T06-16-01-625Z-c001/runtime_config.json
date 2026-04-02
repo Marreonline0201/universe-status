@@ -1,0 +1,24 @@
+{
+  "clickToPlay": {
+    "x": 700,
+    "y": 420,
+    "attempts": 2,
+    "betweenMs": 180
+  },
+  "respawnDelayMs": 850,
+  "postRecoveryDelayMs": 220,
+  "survival": {
+    "strafeEvery": 3,
+    "dodgeEvery": 4,
+    "gatherEvery": 1,
+    "feedEvery": 1,
+    "evadeEvery": 3
+  },
+  "combat": {
+    "engageMs": 550,
+    "useDodgeEvery": 2
+  },
+  "detection": {
+    "panelSweepEvery": 6
+  }
+}

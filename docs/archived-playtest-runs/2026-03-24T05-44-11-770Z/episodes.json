@@ -1,0 +1,74 @@
+[
+  {
+    "episode": 1,
+    "scenario": "survival",
+    "signature": "overlay_stuck",
+    "minHp": 56,
+    "minFood": 57,
+    "minWater": 56,
+    "deathCount": 0,
+    "overlayCount": 7,
+    "panelFail": 0,
+    "panelMissing": 0
+  },
+  {
+    "episode": 2,
+    "scenario": "combat",
+    "signature": "overlay_stuck",
+    "minHp": 57,
+    "minFood": 57,
+    "minWater": 56,
+    "deathCount": 0,
+    "overlayCount": 7,
+    "panelFail": 0,
+    "panelMissing": 0
+  },
+  {
+    "episode": 3,
+    "scenario": "camera",
+    "signature": "overlay_stuck",
+    "minHp": 58,
+    "minFood": 57,
+    "minWater": 55,
+    "deathCount": 0,
+    "overlayCount": 7,
+    "panelFail": 0,
+    "panelMissing": 0
+  },
+  {
+    "episode": 4,
+    "scenario": "ui",
+    "signature": "overlay_stuck",
+    "minHp": 59,
+    "minFood": 56,
+    "minWater": 54,
+    "deathCount": 0,
+    "overlayCount": 1,
+    "panelFail": 0,
+    "panelMissing": 0
+  },
+  {
+    "episode": 5,
+    "scenario": "survival",
+    "signature": "clean",
+    "minHp": 60,
+    "minFood": 56,
+    "minWater": 54,
+    "deathCount": 0,
+    "overlayCount": 0,
+    "panelFail": 0,
+    "panelMissing": 0
+  },
+  {
+    "episode": 6,
+    "scenario": "combat",
+    "signature": "clean",
+    "minHp": 61,
+    "minFood": 56,
+    "minWater": 54,
+    "deathCount": 0,
+    "overlayCount": 0,
+    "panelFail": 0,
+    "panelMissing": 0
+  }
+]

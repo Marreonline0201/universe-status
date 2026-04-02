@@ -1,0 +1,80 @@
+[
+  {
+    "id": "fix-001",
+    "issue": "low_food",
+    "count": 1,
+    "ratio": 1,
+    "severity": "high",
+    "confidence": 0.98,
+    "sample": {
+      "episodeId": "2026-03-24T06-16-01-625Z-c001-ep-001",
+      "scenario": "survival",
+      "signature": "low_food|low_water|panel_missing",
+      "minHp": 0,
+      "minFood": 0,
+      "minWater": 0,
+      "deathCount": 0,
+      "overlayStuckCount": 0
+    },
+    "mode": "auto_runtime_tuning",
+    "autoExecutable": true,
+    "verifyWithEpisodes": 8,
+    "title": "Increase survival resource actions",
+    "strategy": "Increase gather/feed cadence during survival steps.",
+    "expectedMetric": "min food/water values increase in next cycle",
+    "status": "planned",
+    "createdAt": "2026-03-24T06:16:22.308Z"
+  },
+  {
+    "id": "fix-002",
+    "issue": "low_water",
+    "count": 1,
+    "ratio": 1,
+    "severity": "high",
+    "confidence": 0.98,
+    "sample": {
+      "episodeId": "2026-03-24T06-16-01-625Z-c001-ep-001",
+      "scenario": "survival",
+      "signature": "low_food|low_water|panel_missing",
+      "minHp": 0,
+      "minFood": 0,
+      "minWater": 0,
+      "deathCount": 0,
+      "overlayStuckCount": 0
+    },
+    "mode": "auto_runtime_tuning",
+    "autoExecutable": true,
+    "verifyWithEpisodes": 8,
+    "title": "Increase survival resource actions",
+    "strategy": "Increase gather/feed cadence during survival steps.",
+    "expectedMetric": "min food/water values increase in next cycle",
+    "status": "planned",
+    "createdAt": "2026-03-24T06:16:22.308Z"
+  },
+  {
+    "id": "fix-003",
+    "issue": "panel_missing",
+    "count": 1,
+    "ratio": 1,
+    "severity": "high",
+    "confidence": 0.98,
+    "sample": {
+      "episodeId": "2026-03-24T06-16-01-625Z-c001-ep-001",
+      "scenario": "survival",
+      "signature": "low_food|low_water|panel_missing",
+      "minHp": 0,
+      "minFood": 0,
+      "minWater": 0,
+      "deathCount": 0,
+      "overlayStuckCount": 0
+    },
+    "mode": "auto_runtime_tuning",
+    "autoExecutable": true,
+    "verifyWithEpisodes": 8,
+    "title": "Expand panel probing and relax panel-failure thresholds",
+    "strategy": "Use broader panel labels and lower probe frequency to reduce false fails.",
+    "expectedMetric": "panel fail/missing counts decrease in next cycle",
+    "status": "planned",
+    "createdAt": "2026-03-24T06:16:22.308Z"
+  }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "fix-001",
+    "issue": "low_food",
+    "action": "runtime.survival.resource_boost"
+  },
+  {
+    "id": "fix-002",
+    "issue": "low_water",
+    "action": "runtime.survival.resource_boost"
+  },
+  {
+    "id": "fix-003",
+    "issue": "panel_missing",
+    "action": "runtime.panelSweep.relaxed"
+  }
+]

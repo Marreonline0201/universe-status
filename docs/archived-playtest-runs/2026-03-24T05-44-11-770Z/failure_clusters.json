@@ -1,0 +1,44 @@
+[
+  {
+    "signature": "overlay_stuck",
+    "count": 4,
+    "examples": [
+      {
+        "episode": 1,
+        "scenario": "survival",
+        "minFood": 57,
+        "minWater": 56
+      },
+      {
+        "episode": 2,
+        "scenario": "combat",
+        "minFood": 57,
+        "minWater": 56
+      },
+      {
+        "episode": 3,
+        "scenario": "camera",
+        "minFood": 57,
+        "minWater": 55
+      }
+    ]
+  },
+  {
+    "signature": "clean",
+    "count": 2,
+    "examples": [
+      {
+        "episode": 5,
+        "scenario": "survival",
+        "minFood": 56,
+        "minWater": 54
+      },
+      {
+        "episode": 6,
+        "scenario": "combat",
+        "minFood": 56,
+        "minWater": 54
+      }
+    ]
+  }
+]
