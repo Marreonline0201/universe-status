@@ -366,6 +366,8 @@ export function ConnectionMap() {
 
   // Tooltip state
   const [tooltip, setTooltip] = useState<{ x: number; y: number; nodeId: string } | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(360)
+  const sidebarDragRef = useRef<{ active: boolean; startX: number; startW: number }>({ active: false, startX: 0, startW: 360 })
 
   // Initialize nodes
   useEffect(() => {
@@ -567,6 +569,32 @@ export function ConnectionMap() {
     })
   }, [])
 
+  // Sidebar resize
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!sidebarDragRef.current.active) return
+      const delta = sidebarDragRef.current.startX - e.clientX
+      setSidebarWidth(Math.max(240, Math.min(600, sidebarDragRef.current.startW + delta)))
+    }
+    const onUp = () => {
+      if (sidebarDragRef.current.active) {
+        sidebarDragRef.current.active = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+  }, [])
+
+  const handleSidebarDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    sidebarDragRef.current = { active: true, startX: e.clientX, startW: sidebarWidth }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [sidebarWidth])
+
   // Build visible sets
   const visibleNodeIds = new Set(
     nodesRef.current
@@ -733,7 +761,7 @@ export function ConnectionMap() {
         <div style={{
           position: 'absolute',
           bottom: 6,
-          right: (selectedNodeData || selectedEdgeData) ? 340 : 10,
+          right: (selectedNodeData || selectedEdgeData) ? sidebarWidth + 16 : 10,
           fontSize: 9,
           letterSpacing: 1,
           color: 'rgba(0,180,255,0.2)',
@@ -892,87 +920,72 @@ export function ConnectionMap() {
           </g>
         </svg>
 
-        {/* Tooltip */}
+        {/* Tooltip — brief summary on hover */}
         {tooltip && !dragNodeRef.current.active && (() => {
           const nd = NODE_DEFS.find(n => n.id === tooltip.nodeId)
           if (!nd) return null
           const connections = getNodeConnections(tooltip.nodeId)
+          const existsCount = connections.filter(c => c.severity === 'exists').length
           const missingCount = connections.filter(c => c.severity === 'missing').length
+          const partialCount = connections.filter(c => c.severity === 'partial').length
           return (
             <div style={{
               position: 'absolute',
-              left: tooltip.x + 14,
+              left: Math.min(tooltip.x + 14, (containerRef.current?.clientWidth ?? 800) - 220),
               top: tooltip.y - 10,
               zIndex: 30,
               background: 'rgba(4,8,20,0.96)',
               border: `1px solid ${GROUP_COLORS[nd.group]}`,
               borderRadius: 4,
-              padding: '8px 12px',
+              padding: '6px 10px',
               fontSize: 10,
               color: 'rgba(220,235,255,0.9)',
               fontFamily: "'IBM Plex Mono', monospace",
               pointerEvents: 'none',
-              maxWidth: 320,
+              maxWidth: 200,
               boxShadow: `0 0 12px ${GROUP_COLORS[nd.group]}22`,
             }}>
-              <div style={{ color: GROUP_COLORS[nd.group], fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+              <div style={{ color: GROUP_COLORS[nd.group], fontSize: 11, fontWeight: 600, marginBottom: 2 }}>
                 {nd.label}
               </div>
-              <div style={{ color: 'rgba(150,185,220,0.55)', fontSize: 9, marginBottom: 4 }}>
-                Section {nd.section} / {GROUP_LABELS[nd.group]}
+              <div style={{ color: 'rgba(150,185,220,0.5)', fontSize: 9, marginBottom: 4 }}>
+                {nd.section} &middot; {GROUP_LABELS[nd.group]}
               </div>
-              <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 9, marginBottom: 6, lineHeight: 1.4 }}>
-                {nd.description}
+              <div style={{ display: 'flex', gap: 8, fontSize: 9 }}>
+                {existsCount > 0 && <span style={{ color: SEVERITY_COLORS.exists }}>{existsCount} ok</span>}
+                {partialCount > 0 && <span style={{ color: SEVERITY_COLORS.partial }}>{partialCount} partial</span>}
+                {missingCount > 0 && <span style={{ color: SEVERITY_COLORS.missing }}>{missingCount} gap{missingCount > 1 ? 's' : ''}</span>}
               </div>
-              {missingCount > 0 && (
-                <div style={{
-                  color: SEVERITY_COLORS.missing,
-                  fontSize: 9,
-                  marginBottom: 4,
-                  padding: '3px 6px',
-                  background: 'rgba(255,107,107,0.08)',
-                  borderRadius: 2,
-                  border: '1px solid rgba(255,107,107,0.15)',
-                }}>
-                  {missingCount} missing science gap{missingCount > 1 ? 's' : ''}
-                </div>
-              )}
-              {connections.length > 0 && (
-                <div style={{ borderTop: '1px solid rgba(0,180,255,0.1)', paddingTop: 4 }}>
-                  <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.4)', marginBottom: 3, letterSpacing: 1 }}>
-                    CONNECTIONS ({connections.length})
-                  </div>
-                  {connections.slice(0, 8).map(c => {
-                    const other = c.source === tooltip.nodeId ? c.target : c.source
-                    const dir = c.source === tooltip.nodeId ? '->' : '<-'
-                    const otherNode = NODE_DEFS.find(n => n.id === other)
-                    return (
-                      <div key={c.id} style={{
-                        fontSize: 9,
-                        color: SEVERITY_COLORS[c.severity],
-                        opacity: 0.8,
-                        lineHeight: 1.6,
-                      }}>
-                        {c.severity === 'missing' ? '[!] ' : ''}{dir} {otherNode?.label ?? other}
-                      </div>
-                    )
-                  })}
-                  {connections.length > 8 && (
-                    <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.3)' }}>
-                      +{connections.length - 8} more
-                    </div>
-                  )}
-                </div>
-              )}
+              <div style={{ fontSize: 8, color: 'rgba(150,185,220,0.3)', marginTop: 3 }}>
+                click for details
+              </div>
             </div>
           )
         })()}
       </div>
 
-      {/* Detail panel (right side) */}
+      {/* Sidebar drag handle */}
+      {(selectedNodeData || selectedEdgeData) && (
+        <div
+          onMouseDown={handleSidebarDragStart}
+          style={{
+            width: 6,
+            flexShrink: 0,
+            cursor: 'col-resize',
+            background: 'transparent',
+            borderLeft: '1px solid rgba(0,180,255,0.08)',
+            transition: 'background 0.15s',
+            zIndex: 10,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,180,255,0.15)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+        />
+      )}
+
+      {/* Detail panel (right side, resizable) */}
       {(selectedNodeData || selectedEdgeData) && (
         <div style={{
-          width: 330,
+          width: sidebarWidth,
           flexShrink: 0,
           background: 'rgba(2,5,14,0.95)',
           borderLeft: '1px solid rgba(0,180,255,0.13)',
@@ -1116,7 +1129,7 @@ export function ConnectionMap() {
                           onClick={() => { setSelectedEdge(c.id); setSelectedNode(null) }}
                           style={{
                             padding: '6px 8px',
-                            marginBottom: 3,
+                            marginBottom: 4,
                             background: c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)',
                             borderLeft: `2px solid ${SEVERITY_COLORS[c.severity]}`,
                             borderRadius: '0 3px 3px 0',
@@ -1126,11 +1139,14 @@ export function ConnectionMap() {
                           onMouseEnter={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.1)' : 'rgba(0,180,255,0.08)' }}
                           onMouseLeave={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)' }}
                         >
-                          <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity] }}>
+                          <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity], fontWeight: 500 }}>
                             {c.severity === 'missing' ? '[!] ' : ''}{c.label}
                           </div>
-                          <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 2 }}>
+                          <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 1 }}>
                             -&gt; {targetNode?.label ?? c.target}
+                          </div>
+                          <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)', marginTop: 3, lineHeight: 1.4, fontStyle: 'italic' }}>
+                            {c.data}
                           </div>
                         </div>
                       )
@@ -1158,7 +1174,7 @@ export function ConnectionMap() {
                           onClick={() => { setSelectedEdge(c.id); setSelectedNode(null) }}
                           style={{
                             padding: '6px 8px',
-                            marginBottom: 3,
+                            marginBottom: 4,
                             background: c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)',
                             borderLeft: `2px solid ${SEVERITY_COLORS[c.severity]}`,
                             borderRadius: '0 3px 3px 0',
@@ -1168,11 +1184,14 @@ export function ConnectionMap() {
                           onMouseEnter={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.1)' : 'rgba(0,180,255,0.08)' }}
                           onMouseLeave={e => { e.currentTarget.style.background = c.severity === 'missing' ? 'rgba(255,107,107,0.04)' : 'rgba(0,180,255,0.03)' }}
                         >
-                          <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity] }}>
+                          <div style={{ fontSize: 10, color: SEVERITY_COLORS[c.severity], fontWeight: 500 }}>
                             {c.severity === 'missing' ? '[!] ' : ''}{c.label}
                           </div>
-                          <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 2 }}>
+                          <div style={{ fontSize: 9, color: 'rgba(150,185,220,0.45)', marginTop: 1 }}>
                             &lt;- {sourceNode?.label ?? c.source}
+                          </div>
+                          <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)', marginTop: 3, lineHeight: 1.4, fontStyle: 'italic' }}>
+                            {c.data}
                           </div>
                         </div>
                       )
