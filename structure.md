@@ -18,11 +18,13 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (51 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (57 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
     - 3.10 Rope, Cable & Flexible Body Physics — Verlet chains, pulleys, bows, rigging
+    - 3.11 Heat Engines & Thermodynamic Cycles — Steam engines, internal combustion, refrigeration
+    - 3.12 Optics — Light Propagation, Lenses, Mirrors
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -4536,7 +4538,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 51 connections total (23 critical + 28 moderate).
+for every connection. 57 connections total (27 critical + 30 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -8299,6 +8301,331 @@ Rendering: rope rendered as a cubic spline through the particle positions.
 - Target: Rope System (S3.10) — drag force on rope segments
 - Data: Force = 0.5 * rho * v^2 * Cd_rope * rope_diameter * rope_length. Cd for a cylinder in crossflow ~ 1.2. Rigging in a storm experiences significant wind load -> mast structural check.
 - Trigger: every tick for every rope exposed to wind
+
+
+### 3.12 Optics — Light Propagation, Lenses, Mirrors
+
+#### The Principle
+
+Light is electromagnetic radiation that travels in straight lines, bends when passing between materials (refraction), and bounces off surfaces (reflection). The game already computes `refractiveIndex` per material (S3.2 optical pipeline) and `reflectivity`. But these are used ONLY for rendering — the player cannot exploit optics as a physical system. A player who grinds glass into a curved shape should get a lens. Two lenses in a tube should make a telescope.
+
+This section adds GAMEPLAY optics — not rendering improvements, but the ability for players to build optical instruments that actually work. The rendering pipeline already does the hard part (computing refractive indices, reflectivity, transparency). Gameplay optics piggybacks on that data to give it mechanical consequences.
+
+#### Snell's Law — Refraction at Material Boundaries
+
+When light crosses from one material into another with a different refractive index, it bends. The angle of bending is governed by Snell's Law:
+
+```
+n1 * sin(theta1) = n2 * sin(theta2)
+
+where:
+  n1 = refractive index of the first material
+  n2 = refractive index of the second material
+  theta1 = angle of incidence (measured from the surface normal)
+  theta2 = angle of refraction (measured from the surface normal)
+```
+
+The `refractiveIndex` field already exists on every `MaterialPacket` from S3.2. Typical values:
+
+```
+Refractive Indices (from MaterialPacket):
+  Air:      1.000
+  Water:    1.333
+  Glass:    1.500 - 1.900  (depends on composition — soda-lime glass ~1.52, flint glass ~1.62)
+  Quartz:   1.544
+  Diamond:  2.417
+  Ice:      1.309
+```
+
+When the player looks THROUGH a transparent material (`opacity < 0.5` in MaterialPacket), the game applies Snell's law to shift the view:
+
+- **Flat glass pane**: minimal bending. The view shifts slightly (like looking through a window — objects behind it appear offset but not magnified). The offset depends on the glass thickness and the viewing angle.
+- **Curved glass surface (lens)**: significant bending that varies across the surface. The result is magnification or demagnification depending on the curvature direction.
+
+**Total Internal Reflection**: When light tries to exit a dense material at a steep angle, Snell's law gives `sin(theta2) > 1`, which is impossible. The light bounces back entirely — total internal reflection. Critical angle: `theta_c = arcsin(n2/n1)`. For glass-to-air: `theta_c = arcsin(1.0/1.52) = 41.1 degrees`. This is how fiber optics and gemstone sparkle work. A player who discovers this can trap light inside a glass rod.
+
+#### Lenses — Curved Glass Focuses Light
+
+A lens is a piece of transparent material with at least one curved surface. The curvature causes different parts of the incoming light to refract by different amounts, converging or diverging the rays.
+
+**Thin Lens Equation** (determines focal length from geometry):
+
+```
+1/f = (n - 1) * (1/R1 - 1/R2)
+
+where:
+  f  = focal length (m) — distance from lens center to the focal point
+  n  = refractive index of the lens material (from MaterialPacket.refractiveIndex)
+  R1 = radius of curvature of the front surface (m, positive if center of curvature is behind the lens)
+  R2 = radius of curvature of the back surface (m, positive if center of curvature is behind the lens)
+```
+
+**Lens types**:
+- **Convex** (thicker in the middle): converges light. R1 > 0, R2 < 0. Positive focal length. Magnifies nearby objects when held close. Focuses distant objects to a point (the focal point) behind the lens.
+- **Concave** (thinner in the middle): diverges light. R1 < 0, R2 > 0. Negative focal length. Makes things look smaller. Corrects for nearsightedness.
+- **Plano-convex** (one flat side, one curved): R2 = infinity, so 1/R2 = 0. Simpler to grind — a player's first lens.
+
+**Image Formation** (where the focused image appears):
+
+```
+1/f = 1/do + 1/di
+
+where:
+  do = object distance (m) — how far the object is from the lens
+  di = image distance (m) — where the image forms behind the lens
+
+Magnification: M = -di / do
+  M > 1: image is enlarged
+  M < 1: image is reduced
+  M < 0: image is inverted (real image)
+  M > 0: image is upright (virtual image)
+```
+
+**Gameplay crafting flow**:
+
+```
+Step 1: Player crafts a glass disk
+  - Requires: sand + furnace at 1700C (S3.1 glass formation)
+  - Uses: Precision Craft workstation (S6.4)
+  - Result: flat glass disk with refractiveIndex from composition
+
+Step 2: Player grinds the surface to a curve
+  - Grinding removes material -> changes R1, R2
+  - Coarse grinding (stone tool): rough curvature, imprecise f, image has aberrations
+  - Fine grinding (metal tool + abrasive): precise curvature, clean f, sharp image
+  - The game tracks the surface profile: array of radii across the lens face
+
+Step 3: Game computes optical properties
+  - f from the thin lens equation
+  - Aperture from the lens diameter
+  - Aberration from surface irregularity (deviation from perfect sphere)
+
+Step 4: Player holds lens and looks through it
+  - Objects at distance do appear magnified by M
+  - Image quality depends on grinding precision
+  - Chromatic aberration (color fringing) from dispersion (see below)
+```
+
+**Example**: A player grinds a soda-lime glass disk (n = 1.52) with R1 = +0.3m (convex front) and R2 = flat (infinity):
+```
+1/f = (1.52 - 1) * (1/0.3 - 0) = 0.52 * 3.33 = 1.733
+f = 0.577 m (about 58 cm focal length)
+```
+Holding this lens at arm's length (~0.6m from the eye) and looking at a flower 2m away:
+```
+1/0.577 = 1/2.0 + 1/di
+1/di = 1.733 - 0.5 = 1.233
+di = 0.811 m
+M = -0.811/2.0 = -0.406 (inverted, ~0.4x — demagnified at this distance)
+```
+But holding it 10cm from the eye and looking at an insect 15cm from the lens:
+```
+1/0.577 = 1/0.15 + 1/di
+1/di = 1.733 - 6.667 = -4.934
+di = -0.203 m (negative = virtual image, same side as object)
+M = -(-0.203)/0.15 = +1.35 (upright, 1.35x magnified — a magnifying glass)
+```
+
+#### Telescope — Two Lenses in a Tube
+
+A single lens can magnify, but the magnification is limited by focal length and working distance. Combining two lenses in a tube creates a telescope that magnifies distant objects far beyond what one lens can achieve.
+
+**Galilean Telescope** (what a player would likely build first):
+- Objective lens: convex, long focal length (f_obj)
+- Eyepiece lens: concave, short focal length (f_eye)
+- Tube length: f_obj - |f_eye|
+- Magnification: M = f_obj / |f_eye|
+- Image is upright (convenient for terrestrial viewing)
+
+**Keplerian Telescope** (better optical quality):
+- Objective lens: convex, long focal length (f_obj)
+- Eyepiece lens: convex, short focal length (f_eye)
+- Tube length: f_obj + f_eye
+- Magnification: M = f_obj / f_eye
+- Image is inverted (fine for astronomical viewing, can add erecting lens for terrestrial)
+
+**Example**: Player grinds two lenses from soda-lime glass:
+```
+Objective: f_obj = 1.0 m (gentle curvature, large diameter for light gathering)
+Eyepiece:  f_eye = 0.1 m (tight curvature, small)
+
+Galilean:  M = 1.0/0.1 = 10x magnification, tube length = 0.9 m
+Keplerian: M = 1.0/0.1 = 10x magnification, tube length = 1.1 m
+```
+
+With 10x magnification, the player can:
+- See distant terrain features not visible to the naked eye
+- Observe animal behavior from safe distances
+- Spot approaching players or NPC groups from far away
+- View celestial bodies (moon craters, planet phases, star clusters)
+- Scout resource deposits on distant hillsides
+
+**Implementation** (the game does NOT need to ray-trace for telescopes):
+```
+TelescopeDetection:
+  1. Detect that the player is looking through two aligned lenses
+     - Check: two transparent MaterialPackets with curved surfaces
+       aligned along the player's view vector within a tube/frame
+  2. Compute magnification from the lens pair
+     - Read f_obj and f_eye from the lens objects
+     - M = f_obj / f_eye
+  3. Render a zoomed circular viewport
+     - Center of screen: circular region with M x zoom
+     - Edge of circle: slight chromatic aberration (RGB offset)
+     - Outside circle: normal view (looking around the tube)
+  4. Field of view reduction
+     - True FOV = Apparent FOV / M
+     - 10x telescope with 50-degree apparent FOV -> 5-degree true FOV
+     - Higher magnification = narrower field = harder to aim
+```
+
+#### Mirrors — Curved Reflective Surfaces
+
+Flat mirrors reflect light without focusing. Curved mirrors focus or spread light — they are lenses that work by reflection instead of refraction.
+
+**Concave Mirror** (inside of a sphere — like a satellite dish):
+
+```
+Focal length: f = R/2   (R = radius of curvature of the mirror surface)
+Image equation: 1/f = 1/do + 1/di   (same as lenses)
+Magnification: M = -di/do             (same as lenses)
+```
+
+A polished metal dish (copper, bronze, silver) with a concave curve acts as a focusing mirror. Unlike lenses, mirrors have no chromatic aberration (reflection doesn't depend on wavelength). They are also easier to make large — a lens must be transparent and uniform throughout; a mirror only needs a good front surface.
+
+**Solar Concentration — Free Energy from Sunlight**:
+
+At the focal point of a concave mirror, solar energy concentrates from the entire mirror area into a small spot:
+
+```
+Power at focus = solar_irradiance * mirror_area * reflectivity
+
+Solar irradiance at ground level: ~1000 W/m^2
+Concentration ratio: mirror_area / focal_spot_area
+
+Examples:
+  0.5 m diameter copper dish (reflectivity 0.7):
+    Area = pi * 0.25^2 = 0.196 m^2
+    Power = 1000 * 0.196 * 0.7 = 137 W at focus
+    Enough to: boil a small cup of water, ignite dry tinder, char wood
+
+  1.0 m diameter polished bronze dish (reflectivity 0.8):
+    Area = pi * 0.5^2 = 0.785 m^2
+    Power = 1000 * 0.785 * 0.8 = 628 W at focus
+    Enough to: melt tin (232C), soften lead (327C), heat a small crucible
+
+  2.0 m diameter polished silver dish (reflectivity 0.95):
+    Area = pi * 1.0^2 = 3.14 m^2
+    Power = 1000 * 3.14 * 0.95 = 2983 W at focus
+    Enough to: melt copper (1085C), smelt small ore samples, generate steam
+```
+
+This is the Archimedes defense — concentrated sunlight as a weapon or tool. A player who discovers concave mirrors gets free high-temperature heat from the sun without burning fuel. The tradeoff: only works during daytime, only works in clear weather, requires line-of-sight to the sun, and the focal point is fixed relative to the sun's position (must track manually or build a heliostat).
+
+**Implementation**: When a concave reflective surface exists (reflectivity > 0.5, curvature detected), compute the focal point position in world space. Any `MaterialPacket` at or near the focal point receives concentrated solar heat as an input to temperature propagation (S3.0 Stage 1). The heat input equals `solar_irradiance * mirror_area * reflectivity`, distributed over the focal spot area.
+
+**Convex Mirror** (outside of a sphere — like a car side mirror):
+- Diverges reflected light — gives a wide-angle view
+- Always produces a smaller, upright virtual image
+- Useful as a wide-angle surveillance mirror at intersections or fortress corners
+- f is negative, image is always virtual
+
+#### Dispersion — Prisms Split White Light into a Spectrum
+
+Different wavelengths of light refract by different amounts. The refractive index is not a single number — it varies with wavelength. Short wavelengths (violet, blue) refract more than long wavelengths (red). This is dispersion.
+
+**Cauchy's Equation** (approximation for the wavelength dependence of refractive index):
+
+```
+n(lambda) = A + B/lambda^2 + C/lambda^4
+
+where:
+  lambda = wavelength of light (in micrometers)
+  A, B, C = material-specific constants
+
+For soda-lime glass (approximate):
+  A = 1.5046,  B = 0.00420,  C = 0
+  n(red,   0.656 um) = 1.5046 + 0.00420/0.430 = 1.514
+  n(blue,  0.486 um) = 1.5046 + 0.00420/0.236 = 1.522
+  Difference: 0.008 — small, but enough to split white light visibly
+```
+
+**Prism**: A triangular piece of glass. White light enters one face, each wavelength refracts at a slightly different angle, and the light exits the other face as a spread-out spectrum: red, orange, yellow, green, blue, violet.
+
+**Gameplay consequences of dispersion**:
+
+1. **Chromatic aberration in lenses**: A simple lens focuses red and blue light to slightly different points. The image has colored fringes at high-contrast edges. This is why early telescopes had blurry, rainbow-edged images. A player who discovers this problem can solve it by building an **achromatic doublet** — two lenses of different glass types (crown + flint) that cancel each other's dispersion. This is a genuine optical engineering achievement.
+
+2. **Spectroscopy**: A player who grinds a triangular glass prism and holds it in sunlight sees the rainbow spectrum. This is scientifically significant because the spectrum contains dark absorption lines (Fraunhausen lines) that reveal what elements are present in the light source. A furnace flame containing copper glows green; sodium glows yellow; strontium glows red. The player has invented spectral analysis — the same tool that let 19th-century scientists determine the composition of stars.
+
+3. **Rainbows**: When sunlight refracts through rain droplets, dispersion creates a rainbow. The game can detect when the player is facing away from the sun during rain and render a rainbow arc at 42 degrees from the anti-solar point. This is not a skybox texture — it is computed from the actual sun position and rain state.
+
+#### Implementation Summary — Gameplay Optics vs. Rendering Optics
+
+The game does NOT need full ray tracing for optics. It needs five cheap checks:
+
+```
+OpticsSystem {
+  // Runs once per frame, only when the player is looking through an optical element.
+  // Cost: negligible — one lens equation evaluation + one shader parameter change.
+
+  1. Lens Detection
+     - Is there a transparent MaterialPacket (opacity < 0.5) with curved surfaces
+       between the player camera and the world?
+     - If yes: compute f from thin lens equation using object geometry and refractiveIndex
+     - Compute M from the image equation given the object distance
+     - Pass M to the renderer as a zoom factor for a circular viewport region
+
+  2. Telescope Detection
+     - Are there TWO aligned lenses in a tube/frame along the view vector?
+     - If yes: compute M = f_obj / f_eye
+     - Render: zoomed circular viewport + vignette + chromatic aberration at edges
+
+  3. Concave Mirror Focus Detection
+     - Is there a concave reflective surface (reflectivity > 0.5) in the scene?
+     - If yes: compute focal point position = mirror_center + normal * (R/2)
+     - Is the sun visible (daytime, clear sky, line-of-sight)?
+     - If yes: apply concentrated heat to any MaterialPacket at the focal point
+       Heat input = solar_irradiance * mirror_area * reflectivity
+       -> feeds into Temperature Propagation (S3.0 Stage 1)
+
+  4. Prism/Dispersion Detection
+     - Is there a triangular transparent object in the player's view with sunlight hitting it?
+     - If yes: render a spectrum (rainbow band) on the surface behind the prism
+     - The spectrum colors correspond to wavelength-dependent n from Cauchy's equation
+
+  5. Total Internal Reflection
+     - Is a light source inside a high-n material hitting a surface at angle > theta_c?
+     - If yes: light bounces back (used for trapped-light effects in gems/glass rods)
+}
+
+Performance cost:
+  - Steps 1-2: one evaluation of the lens equation per frame (trivial)
+  - Step 3: one dot product + one heat injection per concave mirror (trivial)
+  - Step 4: one spectrum render pass (simple gradient shader) when prism detected
+  - Step 5: one angle check per internal light-surface interaction
+  Total: < 0.1 ms per frame on any hardware
+```
+
+#### Connections (3 new — Connections 55-57)
+
+**Connection 55: Lens Geometry -> Magnification (critical)**
+- Source: Precision Craft (S6.4) — curved glass shape defines R1, R2
+- Target: Optics (S3.12) — thin lens equation gives focal length and magnification
+- Data: R1, R2 from the crafted object's surface geometry + `refractiveIndex` from the MaterialPacket are fed into `1/f = (n-1)(1/R1 - 1/R2)`. The resulting f and M determine what the player sees through the lens. Grinding precision affects surface regularity, which determines aberration (blur).
+- Trigger: on player look-through event (player camera ray intersects a curved transparent object)
+
+**Connection 56: Concave Mirror -> Solar Concentration (critical)**
+- Source: Optics (S3.12) — focal point of a concave reflective surface
+- Target: Temperature Propagation (S3.0 Stage 1) — concentrated solar heat input
+- Data: `P = solar_irradiance * mirror_area * reflectivity`, applied as a point heat source at the computed focal position. The focal position = mirror center + surface normal * R/2. Only active when sun is above horizon and sky is not fully overcast. Heat is distributed over the focal spot area (~1 cm^2 for a well-shaped mirror, larger for rough surfaces).
+- Trigger: every tick for every concave mirror with reflectivity > 0.5, while sun is visible
+
+**Connection 57: refractiveIndex -> Gameplay Optics (moderate)**
+- Source: Material System (S3.1) / Optical Pipeline (S3.2) — `refractiveIndex` per material
+- Target: Optics (S3.12) — Snell's law, lens equation, Cauchy dispersion
+- Data: `refractiveIndex` is already computed for every MaterialPacket for rendering purposes. Gameplay optics reads the same value — no duplication. For dispersion, the system also uses the Cauchy coefficients (A, B, C) derived from the material's composition to compute wavelength-dependent n.
+- Trigger: on any optics calculation (lens detection, prism detection, total internal reflection check)
 
 
 ---
