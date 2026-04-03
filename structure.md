@@ -277,7 +277,7 @@ Even at peak eruption (200k active particles), a single core handles it with 66%
 
 The fluid simulation uses two methods optimized for different scales:
 
-**SPH (Smoothed Particle Hydrodynamics)** — for crafting scale (100-2000 particles).
+**SPH (Smoothed Particle Hydrodynamics)** — for crafting scale (100-5,000 particles).
 Each particle checks its neighbors and computes 5 forces. Precise, accurate, good for small interactions where every droplet matters (pouring metal into a mold).
 
 **MLS-MPM (Moving Least Squares Material Point Method)** — for environment scale (5,000-200,000 particles).
@@ -1323,17 +1323,19 @@ When gas-phase particles cool below boilingPoint:
   //
   // SPH -> MPM transition (particle count rising):
   //   1. When count reaches 5,000: initialize the MPM background grid
-  //      Grid cell size = 2 x particle spacing. Grid covers the fluid body bounding box + margin.
-  //   2. Both SPH and MPM run simultaneously during the overlap window.
-  //   3. Each tick during overlap: transfer 5% of particles from SPH to MPM.
+  //      Grid cell size = 2 × particle spacing. Grid covers the fluid body bounding box + margin.
+  //   2. Both SPH and MPM run simultaneously during the overlap window (2 seconds).
+  //   3. Transfer rate: totalParticles / (overlapDuration × tickRate) particles per tick.
+  //      At 5,000 particles, 2-second overlap, 30 Hz: 5000 / (2 × 30) ≈ 83 particles per tick.
   //      Selection: particles FARTHEST from the camera transfer first (least visible).
   //      Transfer means: remove from SPH neighbor lists, add to MPM grid (P2G scatter).
-  //      The particle keeps its position, velocity, mass, composition -- only the solver changes.
-  //   4. After 2 seconds (~60 ticks at 30Hz): all particles are on MPM. Destroy SPH data structures.
+  //      The particle keeps its position, velocity, mass, composition — only the solver changes.
+  //   4. After 2 seconds (60 ticks at 30Hz): all particles are on MPM. Destroy SPH data structures.
   //
   // MPM -> SPH transition (particle count dropping):
   //   1. When count drops below 4,000: initialize SPH neighbor hash
-  //   2. Transfer 5% of particles per tick from MPM to SPH (nearest to camera first).
+  //   2. Transfer rate: same formula — totalParticles / (2s × 30Hz) ≈ 67 particles per tick.
+  //      Selection: nearest to camera first (most visible get SPH accuracy sooner).
   //   3. After 2 seconds: all particles are on SPH. Destroy MPM grid.
   //
   // During overlap: particles on SPH feel SPH forces. Particles on MPM feel MPM forces.
@@ -3097,7 +3099,9 @@ ForceSystem {
   //     Block shatters. Everything above loses support.
   //
   //   TENSILE (beam snapping):
-  //     Only checked for blocks detected as spanning a gap (see Beam Detection below).
+  //     Only checked for blocks detected as spanning a gap.
+  //     Beam detection runs BEFORE stress checks (it's a pre-pass that identifies
+  //     which blocks are beams — see Beam Detection and Bending Analysis section below).
   //     σ_t = M / S where:
   //       M = bending moment = w × L² / 8 (uniform load, simply supported)
   //       S = section modulus = b × h² / 6 (rectangular cross-section)
@@ -3270,14 +3274,18 @@ ForceSystem {
   //       // STEP C: Recompute loads on remaining structure
   //       recomputeLoads(grid)  // top-down load accumulation
   //
-  //       // STEP D: Check for NEW failures from redistributed load
+  //       // STEP D: Check for NEW failures from redistributed STATIC load
   //       nextFailures = []
   //       for each block in grid.allStructuralBlocks():
-  //         stress = block.load / BLOCK_AREA
-  //         if stress > block.compressiveStrength:
+  //         staticStress = block.load / BLOCK_AREA
+  //         if staticStress > block.compressiveStrength:
   //           nextFailures.push(block)
   //
   //       // STEP E: Apply dynamic impact from falling debris
+  //       // NOTE: Impact forces are checked SEPARATELY from static load.
+  //       // Static load (Step D) catches overloaded blocks from redistributed weight.
+  //       // Dynamic impact (Step E) catches blocks hit by falling debris.
+  //       // A block can survive static load but fail from impact (or vice versa).
   //       // Debris from previous waves that hit the structure this tick:
   //       for each d in allDebris:
   //         if d.isResting:  // landed on a structural block
