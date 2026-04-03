@@ -150,6 +150,46 @@ PhysicsTick (Rust native addon, called from Node.js game server) {
   //   Energy balance heats/cools the output
   // Output: transformed packets with new compositions
 
+  // -- Reaction Pair Detection Algorithm ------------------------------
+  //
+  // "For every pair in contact" does NOT mean checking every packet against
+  // every other packet (O(n^2) -- impossible for 500,000 packets).
+  //
+  // The reaction engine reuses the same spatial hash grid as the SPH solver (S3.2).
+  // Each MaterialPacket and fluid particle hashes its position into a cell.
+  // Only pairs in the same cell or the 26 adjacent cells are checked.
+  //
+  // Contact definition:
+  //   Solid blocks: "in contact" = sharing a face (distance between centers <= 1.0 x BLOCK_SIZE)
+  //   Fluid particles: "in contact" = within SPH kernel radius h (already computed by neighbor search)
+  //   Solid-fluid: fluid particle within 0.5 x BLOCK_SIZE of a solid block surface
+  //
+  // Dirty-flag optimization:
+  //   Only check pairs where at least ONE member changed this tick:
+  //     Temperature changed (crossed a reaction threshold)
+  //     Composition changed (new material introduced)
+  //     Phase changed (solid<->liquid -- different reaction pathways available)
+  //   Pairs where BOTH members are unchanged since last check are SKIPPED.
+  //   This reduces checks by ~90% during steady state (most of the world is cold and stable).
+  //
+  // Per-tick algorithm:
+  //   1. Clear the dirty flag on all packets
+  //   2. After Stage 1 (temperature): mark packets whose temperature changed > 1C as dirty
+  //   3. After Stage 2 (phase transitions): mark packets that changed phase as dirty
+  //   4. For Stage 3 (reactions):
+  //      for each dirty packet P:
+  //        for each neighbor N in spatial hash (same cell + 26 adjacent):
+  //          if distance(P, N) <= contactThreshold:
+  //            compute dG for the pair (P.composition, N.composition, avg temperature)
+  //            if dG < 0 AND avg temperature > activationEnergy / R:
+  //              fireReaction(P, N)  // transforms compositions, releases/absorbs heat
+  //
+  // Cost estimate:
+  //   500,000 total packets, ~5% dirty per tick = 25,000 dirty
+  //   Each dirty packet checks ~6-12 neighbors = 150,000-300,000 pair checks
+  //   Each dG computation: ~0.01ms -> total: ~1.5-3ms per tick
+  //   With spatial hash: O(n x k) where k = average neighbors ~ 10
+
   // ── Stage 4: Fluid Simulation ─────────────────────────────────────────────
   // Active fluid particles (from Stage 2 or existing):
   //   Scale 1 (crafting, 100-5000): SPH at 60 Hz — pressure, viscosity, gravity,
@@ -660,6 +700,45 @@ The criticalCoolingRate depends on carbon content and alloying elements:
 - Plain carbon steel (0.8% C): ~200°C/sec (must quench in water)
 - Alloy steel (+ Cr, Mo, Ni): ~10°C/sec (can air-harden)
 
+  // -- Critical Cooling Rate from Composition -------------------------
+  //
+  // The critical cooling rate determines whether steel forms martensite (hard)
+  // or pearlite (soft). It depends on alloying elements:
+  //
+  //   PRACTICAL FORMULA: Use a LOOKUP by carbon content
+  //   with modifiers for alloying elements:
+  //
+  //     baseCCR (plain carbon steel, C/s):
+  //       0.2% C: ~1000C/s (very hard to harden -- needs aggressive water quench)
+  //       0.4% C: ~500C/s
+  //       0.6% C: ~300C/s
+  //       0.8% C: ~200C/s (standard hardenable steel)
+  //       1.0% C: ~150C/s
+  //
+  //     Alloying element multiplier (each REDUCES CCR, making it easier to harden):
+  //       Per 1% Mn: CCR x 0.5 (halves required cooling rate)
+  //       Per 1% Cr: CCR x 0.3
+  //       Per 1% Mo: CCR x 0.2 (very powerful -- Mo is the best hardenability element)
+  //       Per 1% Ni: CCR x 0.6
+  //
+  //     Example: 0.4% C + 1% Cr + 0.5% Mo steel:
+  //       baseCCR = 500C/s
+  //       x 0.3 (Cr) x 0.45 (0.5% Mo -> 0.2^0.5 ~ 0.45)
+  //       finalCCR = 500 x 0.3 x 0.45 ~ 67C/s -> can air-harden (no water quench needed!)
+  //
+  //   Common quenching medium cooling rates:
+  //     Water (agitated): ~300C/s
+  //     Water (still): ~200C/s
+  //     Oil: ~50C/s
+  //     Forced air: ~20C/s
+  //     Still air: ~5C/s
+  //     Furnace cool: ~1C/s
+  //
+  //   The fluid simulation (S3.2) computes the actual cooling rate from the
+  //   heat transfer between the hot steel particle and the surrounding fluid.
+  //   If actualCoolingRate > CCR: martensite forms.
+  //   If actualCoolingRate < CCR: pearlite forms.
+
 This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The fluid's temperature and heat extraction rate (depends on fluid type: water extracts ~10× faster than oil, oil ~5× faster than air) determines whether martensite forms. A player who quenches in oil instead of water gets a different result — because the physics is different.
 
 This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
@@ -703,6 +782,33 @@ Check Gibbs free energy: `ΔG = ΔH - TΔS`
 - If `ΔG < 0`: reaction is spontaneous (it wants to happen)
 - If `ΔG > 0`: reaction needs energy input
 - If `ΔG ≈ 0`: equilibrium (both forms coexist)
+
+  // -- Equilibrium Reactions (dG ~ 0) ---------------------------------
+  //
+  // When |dG| < 1 kJ/mol (near equilibrium), the reaction is reversible:
+  // both forward and backward reactions occur simultaneously.
+  //
+  // Implementation: compute the equilibrium constant K from dG:
+  //   K = exp(-dG / (R x T))
+  //   where R = 8.314 J/(mol*K), T = temperature in Kelvin
+  //
+  // At equilibrium, the ratio of products to reactants = K:
+  //   [products] / [reactants] = K
+  //
+  // For gameplay: if K > 100 -> reaction goes to completion (forward dominant)
+  //              if K < 0.01 -> reaction essentially does not happen (backward dominant)
+  //              if 0.01 <= K <= 100 -> partial reaction:
+  //                fraction converted = K / (1 + K)
+  //                e.g., K = 1 -> 50% converted, 50% remains as reactant
+  //
+  // The result: a mixed composition packet with both reactants and products.
+  // Over time (multiple ticks), the equilibrium shifts as temperature changes.
+  // Heating may push the reaction forward (Le Chatelier principle).
+  // Cooling may push it backward.
+  //
+  // This matters for: smelting near the minimum temperature (partially reduced ore),
+  // reversible calcination (limestone <-> quicklite + CO2 at ~900C),
+  // and dissolution/crystallization cycles.
 
 The enthalpy (ΔH) and entropy (ΔS) values come from the elements' standard formation energies — tabulated from real chemistry, stored per element.
 
@@ -920,6 +1026,34 @@ MaterialPacket additions for non-Newtonian fluids:
   crossFlowIndex: number             // dimensionless — typically 0.3-0.8 (n)
 ```
 
+  // -- Computing Shear Rate from SPH Particles ------------------------
+  //
+  // The Cross model needs shear rate. In SPH, shear rate is the magnitude
+  // of the strain rate tensor, which is computed from the velocity gradient:
+  //
+  //   Velocity gradient tensor at particle i:
+  //     grad_v_i = sum_j (m_j / rho_j) x (v_j - v_i) outer_product grad_W(r_ij, h)
+  //     (outer_product = outer product, grad_W = gradient of the SPH kernel)
+  //
+  //   Strain rate tensor:
+  //     D = 0.5 x (grad_v + grad_v^T)
+  //
+  //   Shear rate (scalar):
+  //     gamma_dot = sqrt(2 x D:D) = sqrt(2 x sum_ij D_ij^2)
+  //     (D:D is the double contraction / Frobenius norm squared)
+  //
+  //   This is computed from the SAME neighbor loop that computes SPH forces.
+  //   The velocity differences (v_j - v_i) and kernel gradients grad_W are already
+  //   available. Computing grad_v adds ~15 FLOPs per neighbor (outer product).
+  //   Total extra cost: ~15 x 50 neighbors = 750 FLOPs per particle per tick.
+  //   For 5,000 crafting particles: 3.75 MFLOP -> negligible.
+  //
+  //   Once gamma_dot is known, the viscosity is:
+  //     mu_eff = mu_inf + (mu_0 - mu_inf) / (1 + (K x gamma_dot)^n)
+  //
+  //   This mu_eff replaces the constant mu in the viscosity force:
+  //     F_viscosity = mu_eff x sum_j m_j x (v_j - v_i) / rho_j x laplacian_W(r_ij, h)
+
 **3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
 
 Formula: `F_gravity = m · g · down_direction`
@@ -1025,6 +1159,64 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
 //   This creates shrinkage cavities — real metallurgical defects that affect
 //   the quality of the cast object.
 
+  // -- Heat Input Rate During Phase Transitions -----------------------
+  //
+  // While a packet is transitioning (phaseProgress between 0 and 1),
+  // temperature stays at the transition point. Heat input continues
+  // flowing in from neighbors, but instead of raising temperature,
+  // it advances phaseProgress.
+  //
+  // Heat input rate for solid blocks (face-contacting neighbors):
+  //   Q_in = sum_neighbors k_contact x A_face x (T_neighbor - T_melt) / d
+  //   where:
+  //     k_contact = harmonic mean of both materials thermal conductivity
+  //                 k_contact = 2 x k1 x k2 / (k1 + k2)
+  //     A_face = contact area = 1 m^2 (for 1m voxel blocks, face-to-face)
+  //     T_neighbor = neighbor temperature (C)
+  //     T_melt = the packet melting point (C) -- temperature is stuck here
+  //     d = center-to-center distance = 1.0m (adjacent blocks)
+  //
+  // Heat input rate for fluid particles (SPH neighbors):
+  //   Uses the existing SPH temperature exchange:
+  //   Q_in = sum_neighbors k_ij x m_j / rho_j x (T_j - T_melt) x laplacian_W(r_ij, h)
+  //   This is already computed in the SPH algorithm (Stage 4, step 7).
+  //
+  // Phase progress update per tick:
+  //   phaseProgress += Q_in x dt / (mass x latentHeat)
+  //   where dt = 1/tickRate (1/60s for crafting, 1/30s for environment)
+  //
+  // When phaseProgress reaches 1.0:
+  //   Transition completes. Packet changes phase. Temperature can resume changing.
+  //   Any excess heat (Q_in that would have pushed phaseProgress past 1.0)
+  //   is converted to temperature increase: T += excess / (mass x specificHeat)
+  //
+  // Worked example -- melting 1 kg of iron in a furnace:
+  //   Iron: T_melt = 1538C, latentHeatFusion = 247,000 J/kg
+  //   Furnace temperature: 1600C (charcoal + double bellows)
+  //   Iron thermal conductivity: k = 80 W/(m*K)
+  //   Contact area: 2 faces exposed to hot gas = 2 m^2
+  //   k_contact (iron-air): 2 x 80 x 0.025 / (80 + 0.025) ~ 0.05 W/(m*K)
+  //     (air is the bottleneck -- very poor conductor)
+  //
+  //   Q_in = 0.05 x 2 x (1600 - 1538) / 1.0 = 6.2 W
+  //   Time to fully melt: 247,000 / 6.2 = 39,839 seconds ~ 11 hours
+  //
+  //   That is way too slow! This is why real furnaces use RADIATION, not conduction:
+  //   Q_radiation = epsilon x sigma x A x (T_furnace^4 - T_melt^4)
+  //     epsilon = emissivity (~0.8 for oxidized iron)
+  //     sigma = Stefan-Boltzmann constant = 5.67e-8 W/(m^2*K^4)
+  //     A = 2 m^2 exposed surface
+  //     Q_rad = 0.8 x 5.67e-8 x 2 x (1873^4 - 1811^4) = ~5,400 W
+  //
+  //   With radiation: 247,000 / 5,400 = 46 seconds ~ 0.75 game-minutes
+  //   This is realistic -- a small piece of iron melts in about a minute in a hot furnace.
+  //
+  //   Implementation: Stage 1 (temperature propagation) must include BOTH:
+  //   1. Conductive heat transfer (Fourier law -- already specified)
+  //   2. Radiative heat transfer (Stefan-Boltzmann): Q = epsilon x sigma x A x (T1^4 - T2^4)
+  //      This only matters above ~500C where radiation dominates.
+  //      Below 500C: radiation is negligible, conduction/convection dominate.
+
 **Freezing (liquid → solid):**
 ```
 When a cluster of SPH particles cools below meltingPoint(composition):
@@ -1088,7 +1280,70 @@ When gas-phase particles cool below boilingPoint:
   3. Droplets fall under gravity → rain
 ```
 
+  // -- Multi-Phase Boundary Crossing ----------------------------------
+  //
+  // If a packet temperature jumps across BOTH melting and boiling points
+  // in a single tick (e.g., 25C -> 2500C from an extreme heat event):
+  //
+  //   Rule: transitions happen ONE AT A TIME, in order.
+  //   The packet queues transitions and processes them sequentially:
+  //
+  //   1. Temperature rises to melting point -> STOP. Begin melting.
+  //      phaseProgress (solid->liquid) advances using remaining heat.
+  //   2. If enough heat remains after melting completes (phaseProgress reaches 1.0):
+  //      Temperature continues rising from melting point.
+  //   3. Temperature reaches boiling point -> STOP. Begin boiling.
+  //      phaseProgress (liquid->gas) advances using remaining heat.
+  //   4. If enough heat remains after boiling completes:
+  //      Temperature continues rising as gas.
+  //
+  //   In practice, latent heat absorbs so much energy that crossing two phase
+  //   boundaries in one tick almost never happens. Melting 1kg of iron absorbs
+  //   247,000 J. At the highest heat input rates (~5,400 W from radiation),
+  //   melting alone takes ~46 seconds. Boiling would need another 6,090,000 J.
+  //   No realistic heat source delivers enough energy to cross both in one tick.
+  //
+  //   Edge case: if it DOES happen (e.g., iron thrown into the sun), the sequential
+  //   processing ensures latent heat is correctly absorbed at each step.
+  //   Sublimation (solid->gas skipping liquid) is handled separately:
+  //   if the material has no stable liquid phase at current pressure
+  //   (checked from the phase diagram), the solid transitions directly to gas.
+
 **Sublimation and deposition** (solid ↔ gas, skipping liquid) also emerge naturally. Dry ice (solid CO₂) sublimates because its phase diagram has no liquid phase at 1 atm. The simulation checks: at current pressure, does a liquid phase exist between solid and gas? If not, the solid transitions directly to gas particles.
+
+  // -- SPH <-> MPM Scale Transition -----------------------------------
+  //
+  // When the active particle count in a fluid body crosses the 5,000 threshold,
+  // the solver switches from SPH (per-particle neighbor search) to MPM
+  // (particle-to-grid transfer). This is NOT instant -- it is a gradual handoff
+  // over a 2-second overlap window to prevent visual popping.
+  //
+  // Hysteresis band: SPH->MPM triggers at 5,000 particles. MPM->SPH triggers
+  // at 4,000 particles. The 1,000-particle gap prevents oscillation.
+  //
+  // SPH -> MPM transition (particle count rising):
+  //   1. When count reaches 5,000: initialize the MPM background grid
+  //      Grid cell size = 2 x particle spacing. Grid covers the fluid body bounding box + margin.
+  //   2. Both SPH and MPM run simultaneously during the overlap window.
+  //   3. Each tick during overlap: transfer 5% of particles from SPH to MPM.
+  //      Selection: particles FARTHEST from the camera transfer first (least visible).
+  //      Transfer means: remove from SPH neighbor lists, add to MPM grid (P2G scatter).
+  //      The particle keeps its position, velocity, mass, composition -- only the solver changes.
+  //   4. After 2 seconds (~60 ticks at 30Hz): all particles are on MPM. Destroy SPH data structures.
+  //
+  // MPM -> SPH transition (particle count dropping):
+  //   1. When count drops below 4,000: initialize SPH neighbor hash
+  //   2. Transfer 5% of particles per tick from MPM to SPH (nearest to camera first).
+  //   3. After 2 seconds: all particles are on SPH. Destroy MPM grid.
+  //
+  // During overlap: particles on SPH feel SPH forces. Particles on MPM feel MPM forces.
+  // At the boundary between SPH and MPM regions, a thin coupling zone (width = 2 x kernel radius)
+  // ensures forces are continuous: SPH particles in the coupling zone also contribute to the
+  // MPM grid (P2G), and MPM grid velocities are sampled by SPH particles in the zone (G2P).
+  // This prevents a seam or discontinuity at the SPH/MPM boundary.
+  //
+  // Cost during overlap: both solvers run -> ~2x normal cost for 2 seconds. Acceptable because
+  // it only happens during scale transitions (rare events: large spills, eruptions, dam breaks).
 
 #### Multi-Scale Fluid System
 
@@ -1245,6 +1500,37 @@ Implementation: not simulated as individual SPH particles in pores (too small). 
 capillaryFactor = 2σ × cos(θ) / (ρ × g × poreDiameter)
 absorptionRate = porosity × capillaryFactor × contactArea
 ```
+
+  // -- Contact Angle from Material Properties -------------------------
+  //
+  // Contact angle theta depends on the liquid-solid pair. Since the game
+  // computes everything from composition, theta is derived from surface energies:
+  //
+  //   cos(theta) = (gamma_solid - gamma_solid_liquid) / gamma_liquid
+  //   (Young equation)
+  //
+  // In practice, surface energies are complex. The game uses a simplified model
+  // based on the hydrophilicity of the solid material:
+  //
+  //   hydrophilicity = f(composition):
+  //     Metals (Fe, Cu, etc.): hydrophilicity = 0.8 -> theta ~ 30 (water wets metal)
+  //     Clean glass (SiO2): hydrophilicity = 0.9 -> theta ~ 15 (water spreads on glass)
+  //     Stone (mixed silicates): hydrophilicity = 0.6 -> theta ~ 50
+  //     Clay (Al2Si2O5): hydrophilicity = 0.7 -> theta ~ 40
+  //     Wood (cellulose): hydrophilicity = 0.4 -> theta ~ 70 (partial wetting)
+  //     Wax/fat/oil surface: hydrophilicity = 0.05 -> theta ~ 110 (hydrophobic)
+  //     Carbon (charcoal): hydrophilicity = 0.3 -> theta ~ 80
+  //
+  //   theta = acos(2 x hydrophilicity - 1)  // maps [0,1] -> [180, 0]
+  //
+  //   For non-water liquids: scale by the liquid surface tension ratio:
+  //     theta_liquid = theta_water x (gamma_water / gamma_liquid)
+  //     Oil (gamma ~ 0.03 N/m): theta_oil = theta_water x (0.073 / 0.03) ~ theta_water x 2.4
+  //     But capped at 0 (complete wetting) -- oil wets almost everything.
+  //     Mercury (gamma ~ 0.5 N/m): theta_mercury = theta_water x 0.15 -- mercury barely wets anything.
+  //
+  //   MaterialPacket addition:
+  //     hydrophilicity: number  // 0-1, computed from composition (metal/oxide/organic classification)
 
 This connects to structural decay (§3.4): rising damp carries dissolved minerals upward. When water evaporates at the wall surface, minerals crystallize and exert pressure on the pore walls (salt weathering). This is a major real-world cause of stone building deterioration.
 
@@ -1697,6 +1983,78 @@ Each doubling of radius = 8× the volume per particle = 8× fewer particles need
 **Transition bands** (width ~5× particle spacing) between zones prevent sharp boundaries. Both resolutions coexist in the band. Particles gradually split (approaching camera) or merge (moving away). Forces between different-sized particles use averaged smoothing radius: `h_ij = (h_i + h_j) / 2`. This maintains Newton's third law across resolution boundaries.
 
 **Hysteresis** prevents split/merge oscillation: split when particle is > 1.5× target size for zone, merge when < 0.5× target size. The gap (0.5× to 1.5×) is the stable band — no action taken.
+
+  // -- Particle Redistribution: Concrete Specifications ----------------
+  //
+  // Each adaptive resolution zone has specific particle parameters:
+  //
+  //   | Zone | Distance | Particle radius | Kernel h  | Particles per m^3 | Solver |
+  //   |------|----------|----------------|-----------|------------------|--------|
+  //   | 0    | 0-5 m    | 0.02 m         | 0.04 m    | ~125,000         | SPH    |
+  //   | 1    | 5-15 m   | 0.04 m         | 0.08 m    | ~15,600          | MPM    |
+  //   | 2    | 15-40 m  | 0.08 m         | 0.16 m    | ~1,950           | MPM    |
+  //   | 3    | 40 m+    | 0.16 m         | 0.32 m    | ~244             | MPM    |
+  //
+  //   Particles per m^3 = 1 / (radius x 2)^3 -- this is the TARGET density.
+  //   Kernel h = 2 x particle radius -- standard SPH convention.
+  //
+  // Split algorithm (particle enters a finer zone):
+  //   Trigger: particle.radius > 1.5 x zone.targetRadius
+  //
+  //   function splitParticle(parent):
+  //     // Compute split direction: along the velocity gradient
+  //     // (where the fluid is stretching, add detail there)
+  //     gradV = computeVelocityGradient(parent, neighbors)
+  //     splitDir = normalize(largestEigenvector(gradV))
+  //     if |splitDir| < 0.001: splitDir = randomUnitVector()
+  //
+  //     // Create two children
+  //     offset = parent.radius x 0.5 x splitDir
+  //     child1.position = parent.position + offset
+  //     child2.position = parent.position - offset
+  //     child1.mass = parent.mass / 2    // EXACT conservation
+  //     child2.mass = parent.mass / 2
+  //     child1.velocity = parent.velocity  // SAME velocity (no random perturbation)
+  //     child2.velocity = parent.velocity
+  //     child1.radius = parent.radius x 0.794  // = 2^(-1/3), volume halved
+  //     child2.radius = parent.radius x 0.794
+  //     child1.composition = parent.composition  // identical
+  //     child2.composition = parent.composition
+  //     child1.temperature = parent.temperature
+  //     child2.temperature = parent.temperature
+  //     child1.cooldown = 30  // do not re-evaluate for 30 ticks
+  //     child2.cooldown = 30
+  //
+  //     remove(parent)
+  //     add(child1, child2)
+  //
+  // Merge algorithm (particle enters a coarser zone):
+  //   Trigger: particle.radius < 0.5 x zone.targetRadius
+  //            AND nearest same-zone neighbor within 0.3 x kernel h
+  //            AND neighbor.cooldown == 0
+  //
+  //   function mergeParticles(a, b):
+  //     merged.mass = a.mass + b.mass           // EXACT conservation
+  //     merged.position = (a.mass x a.position + b.mass x b.position) / merged.mass  // center of mass
+  //     merged.velocity = (a.mass x a.velocity + b.mass x b.velocity) / merged.mass  // momentum conservation
+  //     merged.radius = (merged.mass / (a.density x 4/3 x pi))^(1/3)  // from mass+density
+  //     merged.composition = massWeightedAverage(a.composition, b.composition)
+  //     merged.temperature = (a.mass x a.temperature + b.mass x b.temperature) / merged.mass
+  //     merged.cooldown = 30  // do not re-evaluate for 30 ticks
+  //
+  //     remove(a, b)
+  //     add(merged)
+  //
+  // Zone assignment for multi-player:
+  //   distance = min(distance to each connected player camera)
+  //   The nearest player determines the resolution zone.
+  //   This means: if Player A is 3m away and Player B is 50m away,
+  //   the particle uses Zone 0 (Player A proximity wins).
+  //
+  // Cooldown prevents oscillation:
+  //   After any split or merge, the resulting particles have cooldown = 30 ticks.
+  //   During cooldown, the particle is NOT evaluated for redistribution.
+  //   At 30 Hz: cooldown = 1 second. This prevents split-merge-split loops.
 
 **7. Hybrid Rendering: Real Physics + Visual Approximations**
 
@@ -2585,6 +2943,40 @@ StructuralBlock {
 }
 ```
 
+  // -- Block-Packet Relationship --------------------------------------
+  //
+  // A structural block IS a single MaterialPacket. One block = one composition.
+  // A block cannot be made of mixed materials (e.g., half stone, half wood).
+  //
+  // If a player places two different materials adjacent to each other
+  // (stone block next to wood beam), they are TWO separate blocks with
+  // TWO separate MaterialPackets, connected by a bond (Connection).
+  //
+  // The structural properties (strength, density, Young modulus) come from
+  // the block single MaterialPacket via the property calculator (S3.1).
+  // Additional per-block state (NOT from the property calculator):
+  //
+  //   StructuralBlock {
+  //     packet: MaterialPacket          // composition + all 36 derived properties
+  //     position: Vec3                  // grid position (integer coordinates)
+  //     connections: Connection[]       // bonds to adjacent blocks (up to 6 faces)
+  //     load: number                    // accumulated gravity load from above (N)
+  //     supported: boolean              // can trace path to ground (from BFS)
+  //     // -- Per-block accumulated damage state: --
+  //     fatigueAccumulation: number     // 0->1 from cyclic loading (Basquin). Irreversible.
+  //     crackLength: number             // m, from fatigue + freeze-thaw. Grows over time.
+  //     creepStrain: number             // accumulated from Norton creep law. Permanent.
+  //     // -- These are block-specific, NOT from composition. Two identical-composition
+  //     //   blocks can have different damage levels based on their loading history.
+  //   }
+  //
+  // When a block becomes debris (cascade collapse, player action):
+  //   The MaterialPacket is preserved. The debris rigid body carries the same
+  //   packet with the same composition. If a player picks up the rubble and
+  //   rebuilds with it, the NEW block has fresh damage state (fatigue = 0,
+  //   crackLength = 0, creepStrain = 0) because it was re-placed.
+  //   The MATERIAL is the same, but the structural history resets.
+
 ##### Force Propagation — How Load Travels to Ground
 
 ```
@@ -2655,6 +3047,33 @@ ForceSystem {
   //
   // This creates a realistic load-spreading pyramid — heavy loads at the top
   // spread out as they travel down through the structure, just like real masonry.
+
+  // -- Load Redistribution When Support Is Missing --------------------
+  //
+  // If a block has NO block directly below it (air beneath):
+  //
+  //   Case 1: Block has lateral neighbors that ARE supported -> beam behavior.
+  //     The block acts as a beam spanning between its lateral supports.
+  //     Load transfers laterally (not downward) to the nearest supported neighbors.
+  //     The beam bending analysis (S3.4) determines if the span is within limits.
+  //     If span exceeds max: block fails in tension -> becomes debris.
+  //
+  //   Case 2: Block has no lateral support either -> floating.
+  //     The BFS connectivity check catches this: block cannot reach ground.
+  //     Block becomes debris immediately (converted to rigid body, falls).
+  //
+  //   Case 3: Block is part of an arch -> arch behavior.
+  //     Load transfers through compression along the arch curve to the springers.
+  //     The arch analysis determines if thrust is within abutment capacity.
+  //
+  //   The load distribution algorithm checks in order:
+  //     1. Direct below (y-1, same x,z)? -> normal 1:4 spreading.
+  //     2. No direct below -> check if part of detected beam or arch -> lateral transfer.
+  //     3. Not beam or arch -> check BFS connectivity -> floating if no path to ground.
+  //
+  //   Load is NEVER lost. If it cannot go down or sideways, the block fails.
+  //   Conservation: total load at terrain level = total weight of all supported blocks.
+
   //
   // Full tower example:
   //   [Roof beam: 30kg]      → 300N
@@ -2812,6 +3231,82 @@ ForceSystem {
   //   Implementation: in the cascade algorithm, when debris from wave N hits the
   //   remaining structure, apply F_impact (not just static weight) to the impacted blocks.
   //   If F_impact / contactArea > block.compressiveStrength → block also fails.
+
+  // -- Cascade Collapse: Blocks Become Debris, Never Disappear -------
+  //
+  // IMPORTANT: Broken blocks are NOT removed from the world. They are converted
+  // from structural blocks into rigid body debris objects. The material stays.
+  // A collapsed stone wall becomes a pile of stone rubble on the ground.
+  //
+  // The cascade runs as BATCHED WAVES within a single tick:
+  //
+  //   function cascadeCollapse(failedBlock, grid):
+  //     currentFailures = [failedBlock]
+  //     allDebris = []
+  //     wave = 0
+  //
+  //     while currentFailures.length > 0 AND wave < 100:
+  //       wave++
+  //
+  //       // STEP A: Convert failed blocks to debris (NOT delete)
+  //       for each block in currentFailures:
+  //         debris = convertToDebris(block)
+  //         // debris inherits: position, mass, composition, temperature
+  //         // debris gets: initial velocity = (0, -0.1, 0) (slight downward nudge)
+  //         // debris is now a rigid body -- will be processed in Stage 6
+  //         allDebris.push(debris)
+  //         grid.removeStructuralBlock(block.position)
+  //         // The block is gone from the STRUCTURE but exists as a PHYSICS OBJECT
+  //
+  //       // STEP B: Find blocks that lost their path to ground
+  //       floating = findFloatingBlocks(grid)
+  //       // Floating blocks also become debris (they fall)
+  //       for each block in floating:
+  //         debris = convertToDebris(block)
+  //         debris.velocity = (0, 0, 0)  // starts at rest, gravity accelerates it
+  //         allDebris.push(debris)
+  //         grid.removeStructuralBlock(block.position)
+  //
+  //       // STEP C: Recompute loads on remaining structure
+  //       recomputeLoads(grid)  // top-down load accumulation
+  //
+  //       // STEP D: Check for NEW failures from redistributed load
+  //       nextFailures = []
+  //       for each block in grid.allStructuralBlocks():
+  //         stress = block.load / BLOCK_AREA
+  //         if stress > block.compressiveStrength:
+  //           nextFailures.push(block)
+  //
+  //       // STEP E: Apply dynamic impact from falling debris
+  //       // Debris from previous waves that hit the structure this tick:
+  //       for each d in allDebris:
+  //         if d.isResting:  // landed on a structural block
+  //           impactedBlock = grid.getBlock(d.restingPosition)
+  //           if impactedBlock:
+  //             fallHeight = d.originalPosition.y - d.restingPosition.y
+  //             v_impact = sqrt(2 x g x fallHeight)
+  //             F_impact = d.mass x g x (1 + sqrt(1 + 2 x fallHeight / 0.001))
+  //             impactStress = F_impact / BLOCK_AREA
+  //             if impactStress > impactedBlock.compressiveStrength:
+  //               nextFailures.push(impactedBlock)
+  //
+  //       currentFailures = nextFailures
+  //
+  //     // After cascade completes:
+  //     // - allDebris contains all rigid body objects (stone rubble, broken beams, etc.)
+  //     // - These are passed to Stage 6 (Rigid Body Physics) for gravity + collision
+  //     // - They tumble, bounce, and settle on the ground
+  //     // - Once settled (velocity < 0.01 m/s for 30 ticks): converted to static rubble
+  //     // - Static rubble is a MaterialPacket sitting on the terrain -- can be picked up,
+  //     //   used as building material, smelted, or just left as ruins
+  //     // - NOTHING DISAPPEARS. The mass is conserved.
+  //
+  //   // Debris grouping for performance:
+  //   // Adjacent debris blocks are merged into compound rigid bodies (one body per cluster).
+  //   // A 20-block wall section becomes ~3-5 compound bodies, not 20 individual ones.
+  //   // Cap at 100 active debris bodies per event. Oldest/farthest debris is converted
+  //   // to static rubble early if the cap is exceeded.
+
   //   The debris mass accumulates as floors collect falling material.
   //
   //   This connects to sound (§3.3): dynamic impacts produce louder sound events.
@@ -6266,6 +6761,28 @@ PropertyCache {
   //   interpolate: prop(T) = prop(T_low) + (T - T_low) × (prop(T_high) - prop(T_low)) / (T_high - T_low)
   //   Only recompute when T moves outside the [T_low, T_high] bracket.
   //   Bracket width: 50°C (recompute every ~50° of temperature change)
+
+  // -- Property Recomputation Triggers --------------------------------
+  //
+  // A MaterialPacket properties are recomputed when ANY of these change:
+  //
+  //   | Trigger                         | Threshold          | Properties affected |
+  //   |--------------------------------|-------------------|-------------------|
+  //   | Temperature change              | > 5C since last   | Viscosity, ductility, specific heat, thermal conductivity |
+  //   | Composition change              | Any change at all  | ALL 36 properties |
+  //   | workHardeningState change        | > 0.01 since last | Tensile/compressive strength, hardness |
+  //   | fatigueAccumulation change       | > 0.01 since last | Effective strength (reduced by damage) |
+  //   | crackLength change               | Any change        | Effective strength (fracture toughness) |
+  //   | Phase change                     | Always             | ALL properties (different phase = different behavior) |
+  //
+  //   Temperature threshold of 5C balances accuracy vs. cost:
+  //     At 1C: too many recomputations (most are negligible changes)
+  //     At 50C: viscosity could change 2x without recomputing (too coarse)
+  //     At 5C: viscosity changes ~5-10% per step (acceptable for gameplay)
+  //
+  //   Implementation: each packet stores lastRecomputedTemp and lastRecomputedCompositionHash.
+  //   Property access checks: abs(currentTemp - lastRecomputedTemp) > 5.0
+  //   If true: recompute and update cache. If false: return cached value.
 
   // ── Spatial indexing for reaction checks ──────────────────────────────
   //
