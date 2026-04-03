@@ -18,8 +18,9 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (40 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (44 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
+    - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -4533,7 +4534,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 40 connections total (16 critical + 24 moderate).
+for every connection. 44 connections total (19 critical + 25 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -6819,6 +6820,52 @@ Target: Material System (§3.1) — hardness and strength modified by aging prog
 Data: aging progress computed from time-at-temperature using Avrami kinetics
 Trigger: each game-hour for MaterialPackets at 0.3-0.6 × T_melt
 
+##### Connection 41: Rotational Physics ← Fluid Forces (critical)
+
+Flowing water and wind push on surfaces attached to rotating assemblies.
+The force from the fluid simulation (§3.2) or weather system (§4.6) applies
+torque to waterwheel paddles, windmill blades, and any rotating surface.
+
+Source: Fluid Simulation (§3.2) — hydrodynamic force on submerged surfaces
+       Weather System (§4.6) — wind force on exposed surfaces
+Target: Rotational Mechanics (§3.8) — torque on axle joints
+Data: F_fluid = 0.5 × ρ × v² × A × C_d applied at distance r from axle → τ = F × r
+Trigger: continuous — every tick, fluid/wind forces are applied to rotating assemblies
+
+##### Connection 42: Rotational Physics → Structural Loads (critical)
+
+Rotating machines apply forces to the structures they're mounted on.
+A waterwheel transmits torque to its support beams. A heavy flywheel
+creates gyroscopic forces on its frame. Gear teeth push sideways on shafts.
+
+Source: Rotational Mechanics (§3.8) — reaction forces at joint anchor points
+Target: Structural Physics (§3.4) — loads on support blocks
+Data: joint reaction forces (computed by constraint solver) applied to anchor blocks
+Trigger: every tick — structural blocks at joint anchors receive additional loads
+
+##### Connection 43: Combustion → Piston → Rotation (critical)
+
+The reaction engine (§3.1) combusts fuel, producing hot gas that the fluid
+simulation (§3.2) models as expanding SPH particles. The gas pushes a piston
+(slider joint), which drives a crankshaft (hinge → axle conversion).
+
+Source: Reaction Engine (§3.1) → Fluid Simulation (§3.2) → gas pressure
+Target: Rotational Mechanics (§3.8) — piston slider joint → crankshaft axle joint
+Data: gas pressure P from SPH → F_piston = P × A_piston → slider force → torque on axle
+Trigger: each combustion event (gas expansion applies force to piston each tick)
+
+##### Connection 44: Rotational Physics → Sound (moderate)
+
+Rotating machinery produces sound: gear meshing (periodic impacts at tooth
+frequency), bearing friction (continuous grinding noise), belt slip (squealing),
+windmill blade whoosh (periodic Doppler-like sweep).
+
+Source: Rotational Mechanics (§3.8) — angular velocity, joint friction, gear mesh
+Target: Sound Engine (§3.3) — noise synthesis + modal synthesis
+Data: gear tooth frequency = teeth × ω / (2π), bearing noise ∝ friction × ω,
+      blade whoosh = periodic amplitude modulation at blade passing frequency
+Trigger: continuous — rotating joints generate sound proportional to their angular velocity
+
 
 ### 3.7 System-Wide Optimization — Making It All Run in Real-Time
 
@@ -7329,6 +7376,443 @@ Profiling {
   //   Float32Array buffers for particles: known size (allocated at startup)
   //   Spatial hash: grows/shrinks — monitor via Rust allocator stats
   //   Property cache: bounded by MAX_PACKETS × cache_entry_size
+}
+```
+
+
+### 3.8 Rotational Mechanics & Mechanical Joints — How Machines Work
+
+#### The Principle
+
+Every machine in human history converts one type of motion into another. A waterwheel converts flowing water into rotating shaft power. A crankshaft converts reciprocating piston motion into rotation. A pulley converts pulling force into lifting force at a different ratio. A gear train converts fast rotation into slow-but-powerful rotation.
+
+The game's physics engine (§3.0-3.4) handles linear forces: gravity, pressure, compression, tension. But it has no concept of ROTATION. Without rotation, players cannot build wheels, axles, windmills, waterwheels, looms, catapults, or any engine. This section adds rotational physics.
+
+Nothing here is pre-defined. A "wheel" is not a game object — it is a roughly circular arrangement of blocks attached to an axle joint. A "gear" is a wheel with teeth. The physics determines whether the arrangement rotates, how fast, and with how much force.
+
+#### Rigid Body Assemblies — Groups of Blocks That Move Together
+
+A machine is a collection of structural blocks connected by joints. Some joints are rigid (the blocks move as one unit). Some joints allow rotation (hinges, axles). Some allow sliding (pistons, rails).
+
+```
+RigidAssembly {
+  // A rigid assembly is a group of structural blocks that are bonded together
+  // AND are not connected to the ground (they can move freely).
+  //
+  // Detection: when a group of blocks has no path to ground (BFS fails in §3.4)
+  // BUT the blocks are bonded to each other, they become a rigid assembly
+  // instead of individual debris.
+  //
+  // A rigid assembly has:
+  //   blocks: StructuralBlock[]         // all blocks in the assembly
+  //   mass: number                      // sum of block masses (kg)
+  //   centerOfMass: Vec3                // mass-weighted average position
+  //   momentOfInertia: Mat3             // 3×3 inertia tensor (kg·m²)
+  //
+  // Moment of inertia tensor for a collection of point masses:
+  //   I_xx = Σ m_i × (y_i² + z_i²)
+  //   I_yy = Σ m_i × (x_i² + z_i²)
+  //   I_zz = Σ m_i × (x_i² + y_i²)
+  //   I_xy = -Σ m_i × x_i × y_i    (off-diagonal, same for xz, yz)
+  //   where (x_i, y_i, z_i) are positions relative to center of mass
+  //
+  // A cart with 4 wheels: 4 rigid assemblies (the wheels) connected to
+  // 1 rigid assembly (the frame) via 4 axle joints.
+  
+  // Linear motion (already in Stage 6):
+  //   F = m × a
+  //   v += (F / m) × dt
+  //   position += v × dt
+  
+  // Rotational motion (NEW):
+  //   τ = I × α   (torque = moment of inertia × angular acceleration)
+  //   ω += (τ / I) × dt   (angular velocity update)
+  //   orientation += ω × dt   (quaternion integration)
+  //
+  // Both linear and rotational are computed in Stage 6 (Rigid Body Physics).
+}
+```
+
+#### Joint Types — How Assemblies Connect
+
+```
+JointSystem {
+  // Joints connect two rigid assemblies (or one assembly to the ground).
+  // Each joint type constrains motion differently.
+
+  Joint {
+    assemblyA: RigidAssembly | 'ground'   // first connected body
+    assemblyB: RigidAssembly              // second connected body
+    anchorA: Vec3                          // connection point on A (local coordinates)
+    anchorB: Vec3                          // connection point on B (local coordinates)
+    type: JointType
+    friction: number                       // resistance to motion at the joint (0 = frictionless)
+    maxForce: number                       // force to break the joint (from MaterialPacket strength)
+  }
+
+  // ── HINGE JOINT (rotation around one axis) ────────────────────────────
+  //
+  // Allows rotation around a single axis. Used for:
+  //   Doors, gates, lids, levers, catapult arms, trebuchet beams
+  //
+  // Constraint: assemblies share one anchor point. One rotation axis is free.
+  //   All other motion (translation, other rotations) is locked.
+  //
+  //   HingeJoint extends Joint {
+  //     axis: Vec3                        // rotation axis (unit vector)
+  //     angle: number                     // current angle (radians)
+  //     angularVelocity: number           // rotation speed (rad/s)
+  //     minAngle: number                  // rotation limit (e.g., door: 0 to π)
+  //     maxAngle: number
+  //   }
+  //
+  //   Torque on a hinge: τ = r × F
+  //     where r = distance from hinge axis to the force application point
+  //     A lever with r = 2m and F = 100N produces τ = 200 N·m
+  //     Angular acceleration: α = τ / I_axis (moment of inertia about hinge axis)
+
+  // ── AXLE JOINT (continuous rotation) ───────────────────────────────────
+  //
+  // Allows unlimited rotation around one axis. Used for:
+  //   Wheels on a cart, waterwheel on a shaft, windmill blades, potter's wheel,
+  //   lathe spindle, drill bit, grindstone
+  //
+  // Difference from hinge: no angle limits (can spin freely).
+  // Friction determines how easily it rotates.
+  //
+  //   AxleJoint extends Joint {
+  //     axis: Vec3                        // rotation axis
+  //     angularVelocity: number           // current spin rate (rad/s)
+  //     friction: number                  // bearing friction (N·m per rad/s)
+  //       Dry wood-on-wood bearing: friction ≈ 5.0 (high — hard to turn)
+  //       Greased wood bearing: friction ≈ 0.5 (much better)
+  //       Bronze bearing: friction ≈ 0.1 (smooth — real historical bearing material)
+  //       Iron bearing: friction ≈ 0.3 (decent but rusts without oil)
+  //     // Bearing friction comes from the MaterialPacket of the bearing surfaces:
+  //     //   friction = frictionCoefficient(materialA, materialB) × normalForce × radius
+  //   }
+  //
+  //   Wheels: a circular assembly (or carved round block) on an axle joint.
+  //   The wheel's moment of inertia: I = 0.5 × m × r² (solid cylinder)
+  //   A 10kg wheel with radius 0.3m: I = 0.5 × 10 × 0.09 = 0.45 kg·m²
+  //
+  //   A waterwheel driven by flowing water:
+  //     Water pushes on the paddles with force F_water = 0.5 × ρ × v² × A
+  //     At distance r from the axle: torque τ = F_water × r
+  //     The wheel accelerates: α = τ / I
+  //     Friction at the bearing opposes rotation: τ_friction = friction × ω
+  //     Terminal angular velocity: ω_max = τ_drive / friction
+  //     Power output: P = τ × ω = (F_water × r) × ω (watts)
+
+  // ── SLIDER JOINT (linear motion along one axis) ────────────────────────
+  //
+  // Allows translation along one axis. Used for:
+  //   Pistons in cylinders, sliding doors, drawbridges, elevator platforms,
+  //   crossbow bolts (before release)
+  //
+  //   SliderJoint extends Joint {
+  //     axis: Vec3                        // sliding direction
+  //     position: number                  // current position along axis (m)
+  //     velocity: number                  // current sliding speed (m/s)
+  //     minPosition: number               // travel limit
+  //     maxPosition: number
+  //     friction: number                  // sliding friction
+  //   }
+  //
+  //   A piston in a cylinder:
+  //     Gas pressure pushes the piston: F = P × A_piston
+  //     The piston slides along the cylinder axis
+  //     Connected to a crankshaft via a connecting rod (hinge + axle)
+  //     Linear piston motion → rotational crankshaft motion
+
+  // ── BALL JOINT (rotation in all directions) ────────────────────────────
+  //
+  // Allows rotation around all three axes. Used for:
+  //   Shoulder joints (catapult sling), universal joints, steering linkages
+  //
+  //   BallJoint extends Joint {
+  //     orientation: Quaternion           // current orientation
+  //     angularVelocity: Vec3             // rotation rate (rad/s per axis)
+  //     coneAngle: number                 // maximum deflection from neutral (radians)
+  //   }
+
+  // ── FIXED JOINT (no motion — rigid connection) ─────────────────────────
+  //
+  // Already exists as mortared/fastened bonds in §3.4.
+  // Converts two assemblies into one.
+}
+```
+
+#### Power Transmission — Gears, Belts, and Chains
+
+```
+PowerTransmission {
+  // Machines often need to change the speed or torque of rotation.
+  // A waterwheel rotates slowly with high torque.
+  // A grindstone needs to rotate fast with lower torque.
+  // Gears, belts, and chains convert between them.
+
+  // ── GEAR MESH ──────────────────────────────────────────────────────────
+  //
+  // Two wheels with interlocking teeth. Gear ratio = teeth_A / teeth_B.
+  //   ω_B = ω_A × (teeth_A / teeth_B)     // speed scales inversely with teeth count
+  //   τ_B = τ_A × (teeth_B / teeth_A)     // torque scales directly
+  //   Power is conserved: P = τ × ω is the same on both sides (minus friction losses)
+  //
+  // Teeth count is determined by the wheel's circumference and tooth spacing:
+  //   teeth = floor(circumference / toothPitch)
+  //   toothPitch depends on the material (finer teeth possible with harder material)
+  //     Wood teeth: toothPitch ≈ 0.05m (20 teeth per meter of circumference)
+  //     Iron teeth: toothPitch ≈ 0.02m (50 teeth per meter)
+  //
+  // Example: waterwheel (r=1m, 125 teeth) drives grindstone (r=0.2m, 25 teeth)
+  //   Gear ratio: 125/25 = 5:1
+  //   Waterwheel at 2 rad/s → grindstone at 10 rad/s (5× faster)
+  //   Waterwheel torque 500 N·m → grindstone torque 100 N·m (5× less)
+  //   Power both sides: 1000 W (conserved, minus friction)
+  //
+  // Detection: two axle joints whose wheels are close enough that their
+  //   circumferences overlap. The system checks: does wheel A's outer edge
+  //   intersect wheel B's outer edge? If yes → gear mesh detected.
+  //   The gear ratio comes from the circumferences (proportional to teeth count).
+  //
+  // Tooth strength: each gear tooth is a small structural block.
+  //   If transmitted torque exceeds tooth shear strength → tooth breaks off.
+  //   Wooden gears strip under high torque. Iron gears handle more.
+
+  // ── BELT/ROPE DRIVE ────────────────────────────────────────────────────
+  //
+  // A belt or rope wrapped around two wheels transmits rotation.
+  // Same speed ratio as gears (based on wheel radii), but:
+  //   Can slip under high torque (limited by friction × normal force)
+  //   Can transmit over distance (pulleys don't need to touch)
+  //   Can cross (figure-8 wrap reverses rotation direction)
+  //
+  //   Belt slip condition: transmitted torque > μ × T_belt × r
+  //     where T_belt = belt tension (from the rope/belt MaterialPacket's tensile strength)
+  //     μ = friction between belt and wheel surface
+  //     If torque exceeds this → belt slips, no power transmitted
+  //
+  // Detection: a rope or belt entity connecting two axle joints.
+  //   The system checks: is a continuous rope/belt path between the two wheels?
+  //   Speed ratio = r_A / r_B (inverse of gear ratio — bigger wheel goes slower)
+
+  // ── CHAIN DRIVE ────────────────────────────────────────────────────────
+  //
+  // Like a belt but with rigid links. No slip (positive engagement).
+  // Requires sprockets (wheels with matching tooth spacing).
+  // Historical: first practical chain drives appeared ~1500s (da Vinci sketches).
+  // In-game: a player who makes interlocking metal links and wraps them
+  // around toothed wheels gets a chain drive.
+}
+```
+
+#### Friction-Driven Motion — Wheels on Terrain
+
+```
+WheelMotion {
+  // A wheel on the ground converts rotation into translation.
+  // The contact point between wheel and terrain has zero velocity
+  // (rolling without slipping) — all the wheel's rotational velocity
+  // goes into forward motion of the axle.
+  //
+  // Rolling condition (no slip):
+  //   v_forward = ω × r_wheel
+  //   where ω = angular velocity (rad/s), r = wheel radius (m)
+  //
+  // Driving force (from engine torque through gears to wheel):
+  //   F_drive = τ_wheel / r_wheel
+  //   Maximum before wheel spin: F_drive ≤ μ_terrain × W_on_wheel
+  //     where μ_terrain = friction coefficient of the terrain surface
+  //     W_on_wheel = weight supported by this wheel (N)
+  //
+  //   Terrain friction coefficients:
+  //     Dry stone road: μ ≈ 0.7 (good traction)
+  //     Packed dirt: μ ≈ 0.5
+  //     Grass: μ ≈ 0.4
+  //     Wet mud: μ ≈ 0.2 (wheels spin, vehicle gets stuck)
+  //     Sand: μ ≈ 0.3 (sinks in — rolling resistance increases)
+  //     Ice: μ ≈ 0.05 (almost no traction)
+  //
+  // Rolling resistance (energy lost to terrain deformation):
+  //   F_rolling = C_rr × W_on_wheel
+  //   C_rr depends on terrain and wheel:
+  //     Hard wheel on hard road: C_rr ≈ 0.002 (very low — this is why paved roads matter)
+  //     Hard wheel on packed dirt: C_rr ≈ 0.02
+  //     Hard wheel on soft ground: C_rr ≈ 0.1 (vehicle bogs down)
+  //     Pneumatic tire equivalent (if invented): C_rr ≈ 0.01 on any surface
+  //
+  // Vehicle speed:
+  //   At steady state: F_drive = F_rolling + F_air_drag
+  //   F_air_drag = 0.5 × ρ_air × v² × C_d × A_frontal
+  //   For a cart at 5 m/s: air drag is negligible. Rolling resistance dominates.
+  //   For faster vehicles: air drag becomes significant above ~10 m/s.
+  //
+  // Vehicle acceleration:
+  //   a = (F_drive - F_rolling - F_drag) / m_total
+  //
+  // Steering:
+  //   Front axle pivots on a vertical hinge joint (kingpin).
+  //   Ackermann geometry: inner wheel turns more than outer wheel on curves.
+  //   The game doesn't need to know "Ackermann" — the player builds a front axle
+  //   that pivots, and the physics handles the rest. If the geometry is wrong
+  //   (both wheels turn the same angle), the inner wheel scrubs (friction, wear).
+  //   The player learns to adjust through experimentation.
+}
+```
+
+#### Energy Sources — What Powers Machines
+
+```
+EnergySources {
+  // Machines need energy input. The game has several sources, all emergent:
+
+  // ── HUMAN/ANIMAL MUSCLE ────────────────────────────────────────────────
+  //   Player pushes/pulls: F = limited by stamina system (§7.2)
+  //   Draft animal: F ≈ 500-800N sustained for a horse, 200-400N for a human
+  //   Power: P = F × v ≈ 500 × 1 = 500W for a horse at walking speed
+  //   Connected to machines via rope/harness attached to a rotating beam (capstan)
+  //   or via a treadmill/treadwheel
+
+  // ── FLOWING WATER (waterwheel) ─────────────────────────────────────────
+  //   Water from the fluid simulation (§3.2) pushes on paddles
+  //   Force: F = 0.5 × ρ_water × v² × A_paddle × C_d
+  //   Overshot wheel (water pours from above): uses gravity, more efficient
+  //     F = ρ × g × h × Q  (h = head height, Q = flow rate m³/s)
+  //   Undershot wheel (current pushes paddles): uses kinetic energy, less efficient
+  //   A river flowing at 2 m/s with a 2m wide wheel:
+  //     F = 0.5 × 1000 × 4 × 2 × 1.2 = 4,800N
+  //     At r = 1m: τ = 4,800 N·m
+  //     Power: P ≈ 4,800 × 1 (wheel tip speed) ≈ 4,800W ≈ 6.4 HP
+  //   This is enough to power a grain mill, sawmill, or bellows
+
+  // ── WIND (windmill) ────────────────────────────────────────────────────
+  //   Wind from the weather system (§4.6) pushes on blades
+  //   Force per blade: F = 0.5 × ρ_air × v_wind² × A_blade × C_L
+  //     C_L = lift coefficient (~1.0 for a flat plate at optimal angle)
+  //   A windmill with 4 blades, each 3m long × 0.5m wide, in 8 m/s wind:
+  //     F_total ≈ 0.5 × 1.225 × 64 × 6 × 1.0 ≈ 235N
+  //     At r_effective = 2m: τ ≈ 470 N·m
+  //     Power: P ≈ 470 × 2 ≈ 940W ≈ 1.3 HP
+  //   Windmills are weaker than waterwheels but work anywhere with wind
+
+  // ── FALLING WEIGHT (clockwork, trebuchet) ──────────────────────────────
+  //   A heavy weight on a rope, wrapped around an axle
+  //   As the weight falls, it unwinds the rope and spins the axle
+  //   Energy: E = m × g × h (height of fall)
+  //   Power: P = E / t (spread over the time it takes to fall)
+  //   A 100kg weight falling 5m: E = 4,905 J
+  //   Over 60 seconds (clockwork): P = 82W (enough for a small mechanism)
+  //   Over 0.5 seconds (trebuchet release): P = 9,810W (massive burst)
+
+  // ── SPRING (stored elastic energy) ─────────────────────────────────────
+  //   A bent beam or twisted rope stores elastic energy
+  //   E = 0.5 × k × x²  (Hooke's law: k = spring constant, x = displacement)
+  //   A bent wooden bow (k ≈ 200 N/m, x ≈ 0.5m): E = 25 J → arrow at ~50 m/s
+  //   A torsion spring (twisted sinew rope): used in ballista, catapult
+  //   Spring constant computed from MaterialPacket's Young's modulus + geometry
+
+  // ── COMBUSTION (steam engine, internal combustion) ──────────────────────
+  //   Fuel + oxygen → hot gas → gas expansion → pushes piston
+  //   Already handled by §3.1 (reaction engine) + §3.2 (gas SPH particles)
+  //   The piston slider joint converts gas pressure into linear force
+  //   The crankshaft hinge+axle converts linear force into rotation
+  //   A simple steam engine:
+  //     Boil water in a sealed vessel (§3.2 phase transition)
+  //     Steam pressure pushes a piston (slider joint)
+  //     Piston drives a crankshaft (hinge joint)
+  //     Crankshaft drives a wheel (axle joint)
+  //     Power: P = steam pressure × piston area × stroke length × RPM
+  //   A player who independently invents this gets a working steam engine.
+  //   No blueprint needed — just the right arrangement of materials and joints.
+
+  // ── ELECTRICITY (late game, if player discovers it) ────────────────────
+  //   A rotating magnet near a coil induces electric current (Faraday's law)
+  //   Current through a wire creates a magnetic field (Ampere's law)
+  //   A motor is a generator run backwards
+  //   Implementation: if the material system tracks magnetic properties
+  //   (ferromagnetic materials: Fe, Ni, Co), and the game adds electromagnetic
+  //   coupling, then generators and motors emerge naturally.
+  //   This is a future extension — not required for initial implementation.
+}
+```
+
+#### Performance Budget for Rotational Physics
+
+```
+RotationalPerformance {
+  // Joint constraint solving uses iterative position-based dynamics (PBD)
+  // or sequential impulse methods (same as rigid body engines like Rapier/PhysX).
+  //
+  // Cost per joint per tick:
+  //   Hinge: ~0.01ms (1 rotation constraint + 3 translation constraints)
+  //   Axle: ~0.01ms (same as hinge but no angle limits)
+  //   Slider: ~0.01ms (1 translation free, 2 locked + 3 rotation locked)
+  //   Ball: ~0.008ms (3 translation constraints only)
+  //   Gear mesh: ~0.005ms (angular velocity coupling)
+  //
+  // Typical machine: 5-20 joints (a cart has 4 axles + 2 steering hinges = 6)
+  // Cost: 6 × 0.01 = 0.06ms per tick at 60 Hz → negligible
+  //
+  // A complex machine (water-powered mill with gears):
+  //   Waterwheel axle (1) + 3 gear meshes + grindstone axle (1) + belt drive (1) = ~6 joints
+  //   Cost: 0.06ms → negligible
+  //
+  // Maximum practical complexity:
+  //   A player who builds a 100-joint Rube Goldberg machine:
+  //   100 × 0.01 = 1ms per tick at 60 Hz → still within budget
+  //
+  // Constraint solver iterations: 4-8 per tick (standard for game physics)
+  //   More iterations = more stable joints (less jitter)
+  //   Fewer iterations = cheaper but joints may drift
+  //   4 iterations is sufficient for most machines
+  //   8 iterations for precision mechanisms (clocks, engines)
+}
+```
+
+#### What This Unlocks (Emergent Machines)
+
+```
+EmergentMachines {
+  // None of these are pre-coded. They ALL emerge from:
+  //   materials (§3.1) + joints (§3.8) + fluid (§3.2) + structural (§3.4)
+
+  // Stone Age:
+  //   Lever: a beam on a hinge (rock as fulcrum)
+  //   Wheelbarrow: wheel + axle + frame
+  //   Potter's wheel: heavy disk on axle, spun by hand/foot
+  //   Fire drill: stick in a hole, spun by hands (hinge friction → heat)
+
+  // Bronze Age:
+  //   Cart: frame + 4 wheels + axles (pulled by player or animal)
+  //   Capstan: vertical axle turned by pushing a horizontal beam
+  //   Treadmill: large wheel turned by walking inside it (human-powered crane)
+  //   Bow drill: bow string wraps around a stick, sawing motion rotates the stick
+
+  // Iron Age:
+  //   Waterwheel: paddles on an axle in a river
+  //   Grain mill: waterwheel → gear → grindstone
+  //   Bellows (mechanical): waterwheel → cam → reciprocating bellows → constant airflow
+  //   Catapult: hinge + spring (twisted rope) + lever arm
+  //   Trebuchet: counterweight + lever arm + hinge + sling
+
+  // Medieval:
+  //   Windmill: blades on horizontal axle → gears → vertical shaft → machinery
+  //   Sawmill: waterwheel → crank → reciprocating saw blade
+  //   Clock: falling weight → gear train → escapement (the hardest mechanism to invent)
+  //   Loom: foot pedals (hinges) → heddle frames → shuttle
+
+  // Industrial (if player reaches this tech level):
+  //   Steam engine: boiler + piston + crankshaft + flywheel
+  //   Vehicle: engine + gearbox + differential + wheels
+  //   Lathe: motor + spindle + tool rest (precision metalworking)
+  //   Printing press: screw mechanism + ink roller + platen
+
+  // The game does NOT know any of these names. It knows:
+  //   Blocks + joints + forces + energy sources → motion emerges.
+  //   A player who arranges the right blocks with the right joints
+  //   gets a working machine — even if no human has ever built that
+  //   particular arrangement before.
 }
 ```
 
