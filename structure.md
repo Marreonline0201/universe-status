@@ -1,7 +1,7 @@
 # Universe Sim — Structure & Design Document
 
-**Last Updated**: 2026-04-02
-**Report Version**: 30
+**Last Updated**: 2026-04-03
+**Report Version**: 31
 
 ---
 
@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (57 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (60 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
@@ -4538,7 +4538,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 57 connections total (27 critical + 30 moderate).
+for every connection. 60 connections total (29 critical + 31 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -8301,6 +8301,532 @@ Rendering: rope rendered as a cubic spline through the particle positions.
 - Target: Rope System (S3.10) — drag force on rope segments
 - Data: Force = 0.5 * rho * v^2 * Cd_rope * rope_diameter * rope_length. Cd for a cylinder in crossflow ~ 1.2. Rigging in a storm experiences significant wind load -> mast structural check.
 - Trigger: every tick for every rope exposed to wind
+
+
+### 3.11 Heat Engines & Thermodynamic Cycles
+
+#### The Principle
+
+A heat engine converts thermal energy into mechanical work. The game already has heat (temperature in the core sim tick), phase transitions (boiling produces steam in S3.2), and rotational mechanics (crankshafts, axles, slider joints in S3.8). What is missing is the thermodynamic link: how expanding gas pushes a piston and does work. This section provides that link.
+
+Heat engines are the bridge from the medieval era to the industrial era. Once organisms or players discover that expanding steam can push a piston, and that piston can turn a crankshaft, they unlock steam-powered mills, pumps, locomotives, and eventually internal combustion engines. No new computational systems are required — the section connects existing systems (gas pressure, piston joints, phase transitions, combustion) through thermodynamic laws.
+
+---
+
+#### The Ideal Gas Law — Equation of State for Gas-Phase Particles
+
+For liquid-phase SPH particles, the Tait equation governs pressure:
+
+```
+P_liquid = B * ((rho / rho_0)^gamma - 1)       [Tait equation, used for liquids]
+```
+
+For gas-phase SPH particles (produced when liquid boils past its boiling point, see S3.2), the Tait equation is physically wrong. Gases obey the ideal gas law:
+
+```
+PV = nRT
+```
+
+Where:
+- P = pressure (Pa)
+- V = volume (m^3)
+- n = amount of substance (mol)
+- R = universal gas constant = 8.314 J/(mol*K)
+- T = temperature (K)
+
+For SPH implementation, each gas particle represents a small parcel of gas. The particle's local density rho gives us the specific volume v = 1/rho. Rearranging:
+
+```
+P_gas = rho * (R / M) * T
+```
+
+Where M is the molar mass of the gas (kg/mol). For water vapor (steam): M = 0.018 kg/mol. For air: M = 0.029 kg/mol.
+
+**Implementation detail:** When a liquid SPH particle transitions to gas phase (S3.2 boiling), its equation of state switches from Tait to ideal gas. The particle's pressure contribution in the SPH pressure solver becomes:
+
+```rust
+fn pressure_for_particle(p: &Particle) -> f64 {
+    match p.phase {
+        Phase::Liquid => {
+            // Tait equation (existing)
+            let B = p.material.tait_B;
+            let gamma = p.material.tait_gamma;
+            let rho0 = p.material.reference_density;
+            B * ((p.density / rho0).powf(gamma) - 1.0)
+        }
+        Phase::Gas => {
+            // Ideal gas law (new)
+            let R = 8.314;
+            let M = p.material.molar_mass;  // kg/mol
+            p.density * (R / M) * p.temperature
+        }
+    }
+}
+```
+
+**Worked example — steam pressure in a sealed boiler:**
+- Water at 150C (423 K) boils to steam
+- Steam density in sealed container: ~2.5 kg/m^3 (constrained by container volume)
+- P = 2.5 * (8.314 / 0.018) * 423
+- P = 2.5 * 461.9 * 423
+- P = 488,600 Pa = 4.82 atm
+- This matches the known steam table value for saturated steam at 150C (~4.76 atm)
+
+The ideal gas law also handles mixtures. Air trapped in a cylinder with fuel vapor: use the average molar mass weighted by mole fraction.
+
+---
+
+#### Work from Expansion — How Gas Pushes a Piston
+
+When gas expands against a movable boundary (a piston), it performs mechanical work:
+
+```
+W = integral from V1 to V2 of P dV
+```
+
+In the discrete simulation, this becomes a force on the piston face at every tick:
+
+```
+F_piston = P_gas_average * A_piston
+```
+
+Where:
+- P_gas_average = average pressure of all gas-phase SPH particles in the cylinder (Pa)
+- A_piston = cross-sectional area of the piston face (m^2)
+
+This force is applied to the slider joint (S3.8) that represents the piston. The slider joint already handles linear constrained motion — it simply receives F_piston as an external force.
+
+**Energy conservation (First Law of Thermodynamics):**
+
+```
+dU = Q - W
+```
+
+Where:
+- dU = change in internal energy of the gas (J)
+- Q = heat added to the gas (J) — from combustion, boiler, etc.
+- W = work done BY the gas on the piston (J)
+
+When gas does work (W > 0), its internal energy decreases. Since internal energy is proportional to temperature (U = n * Cv * T for an ideal gas), the gas cools:
+
+```
+delta_T = -W / (n * Cv)
+```
+
+Where Cv = specific heat at constant volume (J/(mol*K)). For steam: Cv ~ 28.0 J/(mol*K). For air: Cv ~ 20.8 J/(mol*K).
+
+**Implementation:** Each tick, after computing the piston force and displacement:
+
+```rust
+fn update_gas_after_expansion(
+    gas_particles: &mut [Particle],
+    piston_displacement: f64,  // meters, positive = expansion
+    piston_area: f64,          // m^2
+) {
+    let avg_pressure = gas_particles.iter()
+        .map(|p| pressure_for_particle(p))
+        .sum::<f64>() / gas_particles.len() as f64;
+
+    let work_done = avg_pressure * piston_area * piston_displacement; // Joules
+
+    if work_done > 0.0 {
+        // Gas did work on piston -> gas cools
+        let total_mass: f64 = gas_particles.iter().map(|p| p.mass).sum();
+        let n_moles = total_mass / gas_particles[0].material.molar_mass;
+        let cv = gas_particles[0].material.cv; // J/(mol*K)
+        let delta_t = -work_done / (n_moles * cv);
+
+        for p in gas_particles.iter_mut() {
+            p.temperature += delta_t;
+            // Update density: container volume changed
+            // New volume = old_volume + piston_area * piston_displacement
+        }
+    }
+}
+```
+
+**Worked example — single expansion stroke:**
+- Cylinder contains steam at 4.82 atm (488,600 Pa), 423 K
+- Piston area: 0.01 m^2 (10 cm x 10 cm square)
+- Stroke length: 0.1 m
+- Force on piston: 488,600 * 0.01 = 4,886 N (about 1,100 lbf)
+- Work per stroke: 4,886 * 0.1 = 488.6 J
+- Temperature drop: 488.6 / ((mass/0.018) * 28.0) — for 0.005 kg steam:
+  n = 0.005 / 0.018 = 0.278 mol
+  delta_T = -488.6 / (0.278 * 28.0) = -62.8 K
+- Steam cools from 423 K to 360 K (87C) during expansion
+- At 360 K the steam pressure has dropped significantly — time to exhaust and refill
+
+---
+
+#### Carnot Efficiency — The Universal Speed Limit of Heat Engines
+
+No heat engine, no matter how perfectly built, can convert all heat into work. The maximum possible efficiency is set by the temperatures of the heat source and heat sink:
+
+```
+eta_max = 1 - T_cold / T_hot       [Carnot efficiency]
+```
+
+Where T_cold and T_hot are absolute temperatures in Kelvin.
+
+This is not a game balance parameter — it is a consequence of the second law of thermodynamics. It emerges naturally from the simulation when gas expansion and compression are modeled correctly. But it also serves as a validation check: if any engine in the simulation exceeds its Carnot efficiency, there is a bug.
+
+**Efficiency examples at different technology levels:**
+
+| Engine Type | T_hot (K) | T_cold (K) | Carnot Limit | Realistic Efficiency |
+|---|---|---|---|---|
+| Primitive steam (wood fire) | 373 (100C) | 300 (27C) | 19.6% | 3-5% |
+| Improved steam (pressure boiler) | 453 (180C) | 300 (27C) | 33.8% | 8-15% |
+| High-pressure steam (industrial) | 573 (300C) | 300 (27C) | 47.6% | 15-25% |
+| Internal combustion (gasoline) | 2500 | 600 | 76.0% | 25-35% |
+| Gas turbine | 1500 | 600 | 60.0% | 30-40% |
+
+The gap between Carnot limit and realistic efficiency comes from friction, heat leaks, incomplete combustion, and imperfect sealing. In-game, these losses come naturally from the physics:
+- Friction in the slider/hinge joints (S3.8 joint friction model)
+- Heat conduction through cylinder walls (S3.0 heat transfer)
+- Incomplete combustion (S3.1 reaction rates)
+- Gas leaking past a poorly-fitted piston (crafting precision, S6.4)
+
+**Implementation — efficiency tracking:**
+
+```rust
+struct HeatEngine {
+    // Accumulated per cycle
+    heat_input_joules: f64,    // total Q added (from fuel combustion or boiler)
+    work_output_joules: f64,   // total W extracted (piston force * displacement)
+    heat_rejected_joules: f64, // total Q lost to exhaust / cooling
+
+    // Computed
+    fn efficiency(&self) -> f64 {
+        if self.heat_input_joules > 0.0 {
+            self.work_output_joules / self.heat_input_joules
+        } else {
+            0.0
+        }
+    }
+
+    fn carnot_limit(&self, t_hot: f64, t_cold: f64) -> f64 {
+        1.0 - t_cold / t_hot
+    }
+}
+```
+
+---
+
+#### The Steam Engine Cycle — Connecting Existing Systems
+
+A steam engine is not a new system. It is a specific configuration of systems that already exist in the simulation. This subsection documents how they connect.
+
+**The cycle has four stages:**
+
+```
+Stage 1: HEATING (boiler)
+    Water particles (liquid SPH) in a sealed container
+    Heat source underneath (fire, S3.1) transfers heat (S3.0 conduction)
+    Water temperature rises until boiling point (100C at 1 atm, higher under pressure)
+    Phase transition: liquid -> gas (S3.2 latent heat absorbed)
+    Steam accumulates, pressure rises (ideal gas law)
+
+Stage 2: EXPANSION (power stroke)
+    Valve opens: steam flows into cylinder (SPH particle migration between containers)
+    Steam pressure pushes piston outward (F = P * A on slider joint, S3.8)
+    Piston drives crankshaft via connecting rod (slider -> hinge coupling, S3.8)
+    Crankshaft rotates: mechanical work output
+    Steam cools as it expands (first law: dU = Q - W)
+
+Stage 3: EXHAUST
+    Valve switches: cylinder connects to exhaust port
+    Piston returns (driven by flywheel momentum on crankshaft, S3.8)
+    Spent steam expelled from cylinder
+    If condenser present: steam -> water (phase transition, S3.2, latent heat released)
+    Condensed water can be pumped back to boiler (closed cycle)
+    Without condenser: steam vented to atmosphere (open cycle, wastes water)
+
+Stage 4: INTAKE
+    Valve switches again: cylinder connects to boiler
+    Fresh high-pressure steam enters cylinder
+    Cycle repeats from Stage 2
+```
+
+**Valve timing** is handled by the crankshaft rotation angle. At specific angles, inlet and exhaust ports align with the cylinder. This is a geometric check, not a new system:
+
+```rust
+fn update_valve_state(crank_angle: f64) -> ValveState {
+    // Simple slide valve: inlet opens at 0 degrees, closes at 60% of stroke
+    // Exhaust opens at 80% of stroke, closes at 5% of next stroke
+    let normalized = crank_angle % (2.0 * PI);
+    if normalized < 0.6 * PI {
+        ValveState::Inlet
+    } else if normalized < 0.8 * PI {
+        ValveState::Closed  // expansion continues without new steam
+    } else if normalized < 1.95 * PI {
+        ValveState::Exhaust
+    } else {
+        ValveState::Closed  // compression of residual steam
+    }
+}
+```
+
+**Worked example — complete steam engine:**
+- Boiler temperature: 150C (423 K)
+- Exhaust/condenser temperature: 100C (373 K) — steam condenses at 100C at 1 atm
+- Carnot efficiency: 1 - 373/423 = 11.8% (theoretical maximum)
+- Real efficiency with friction, heat loss, leaks: ~5-8% (say 7%)
+- Steam pressure at 150C: ~4.76 atm = 482,000 Pa
+- Piston area: 0.01 m^2 (10 cm x 10 cm)
+- Force on piston: 482,000 * 0.01 = 4,820 N
+- Stroke: 0.1 m
+- Work per stroke: 482 J
+- At 2 strokes per second (single-acting, 120 RPM crankshaft): Power = 964 W ~ 1.3 HP
+- Heat input required: 964 / 0.07 = 13,770 W
+- Charcoal energy density: ~30 MJ/kg
+- Charcoal consumption: 13,770 / 30,000,000 = 0.000459 kg/s = 0.46 kg/hour
+- Water consumption (open cycle): steam mass flow ~ 0.005 kg/stroke * 2 = 0.01 kg/s = 36 kg/hour
+- Water consumption (closed cycle with condenser): only makeup for leaks, ~1-2 kg/hour
+
+**What the player/organism must build:**
+1. Boiler: sealed metal container that can hold pressure (requires smelted metal, S6.3)
+2. Cylinder: metal tube with smooth bore (precision craft, S6.4)
+3. Piston: metal disc that fits tightly in cylinder (precision craft, S6.4)
+4. Connecting rod + crankshaft: hinge and slider joints (S3.8)
+5. Valves: moving parts that direct steam flow (simple mechanical linkage)
+6. Condenser (optional): cooling coils or surface to convert exhaust steam back to water
+7. Fuel supply: wood, charcoal, coal — anything that burns (S3.1)
+8. Water supply: access to fresh water
+
+Each component is a physical object built from the crafting system. A boiler made from thin copper will burst at lower pressure than one made from forged iron. A piston with poor fit leaks steam and loses efficiency. The simulation does not assign an "efficiency stat" — the efficiency emerges from the physical properties of the components.
+
+---
+
+#### Internal Combustion — Fuel Burns Inside the Cylinder
+
+A steam engine has an external combustion chamber (the boiler) and a separate working cylinder. An internal combustion engine eliminates the boiler: fuel burns directly inside the cylinder.
+
+**The Otto Cycle (four-stroke):**
+
+```
+Stroke 1: INTAKE
+    Piston moves down, drawing in air + fuel vapor mixture
+    Fuel: alcohol (fermented, bio-process), plant oil, or petroleum (geological, S4.1)
+    Air-fuel ratio matters: too lean = weak combustion, too rich = incomplete burn
+
+Stroke 2: COMPRESSION
+    Piston moves up, compressing the mixture
+    Compression is adiabatic (no heat exchange with walls, approximately):
+        T2 = T1 * (V1/V2)^(gamma-1)
+        P2 = P1 * (V1/V2)^gamma
+    Where gamma = Cp/Cv = 1.4 for air
+    Compression ratio r = V1/V2 (typically 6:1 to 10:1)
+    At r=8: T2 = 300 * 8^0.4 = 300 * 2.297 = 689 K (416C)
+    At r=8: P2 = 1 * 8^1.4 = 18.4 atm
+
+Stroke 3: POWER (combustion + expansion)
+    Ignition: spark from electrical discharge, or compression ignition (diesel)
+    Fuel combustion (S3.1 reaction engine): rapid temperature/pressure spike
+    Peak temperature: 2000-2500 K
+    Peak pressure: 40-60 atm
+    Gas expands, pushing piston down: work output
+    Expansion is approximately adiabatic
+
+Stroke 4: EXHAUST
+    Piston moves up, expelling combustion gases
+    Exhaust gas temperature: 600-900 K
+    Cycle repeats
+```
+
+**Otto cycle efficiency:**
+
+```
+eta_otto = 1 - 1 / r^(gamma-1)
+```
+
+Where r = compression ratio, gamma = ratio of specific heats (1.4 for air).
+
+| Compression Ratio | Theoretical Efficiency | Realistic Efficiency |
+|---|---|---|
+| 4:1 | 42.6% | 15-18% |
+| 6:1 | 51.2% | 20-24% |
+| 8:1 | 56.5% | 25-30% |
+| 10:1 | 60.2% | 28-33% |
+| 12:1 | 63.0% | 30-35% |
+
+Higher compression ratios give better efficiency but require stronger cylinders and risk pre-ignition (knock). Pre-ignition occurs when the compressed mixture's temperature exceeds the fuel's auto-ignition temperature before the intended spark timing. Higher-octane fuels resist knock.
+
+**Adiabatic compression/expansion pseudocode:**
+
+```rust
+fn adiabatic_compression(
+    gas_particles: &mut [Particle],
+    volume_ratio: f64,  // V_old / V_new, > 1 for compression
+    gamma: f64,         // Cp/Cv for the gas mixture
+) {
+    let temp_ratio = volume_ratio.powf(gamma - 1.0);
+    let pressure_ratio = volume_ratio.powf(gamma);
+
+    for p in gas_particles.iter_mut() {
+        p.temperature *= temp_ratio;
+        p.density *= volume_ratio;  // density increases as volume decreases
+        // Pressure updates automatically via ideal gas law on next tick
+    }
+}
+```
+
+**Combustion inside the cylinder** uses the existing reaction engine (S3.1). The fuel particle and oxygen particles are in close proximity; when temperature exceeds the fuel's ignition point (Arrhenius kinetics), the exothermic reaction fires. The released energy heats all particles in the cylinder. This is already how fire works in S3.1 — it just happens to be inside a confined space now.
+
+**What the player/organism must build (beyond steam engine requirements):**
+1. Precision cylinder with higher compression tolerance (thicker walls, better metal)
+2. Tight-fitting piston rings to seal compression (high-precision craft, S6.4)
+3. Fuel delivery: carburetor (mixing fuel vapor with air) or direct injection
+4. Ignition: spark plug (requires basic electrical knowledge, late-game) or compression ignition
+5. Exhaust system: pipe to vent combustion gases away from the operator
+6. Fuel source: distilled alcohol, refined plant oils, or petroleum
+
+---
+
+#### Refrigeration — Running the Heat Engine Backwards
+
+A heat engine converts heat into work. A refrigerator uses work to move heat from cold to hot — the reverse process. This enables food preservation, climate control, and eventually chemical processes requiring low temperatures.
+
+**Coefficient of Performance (COP):**
+
+```
+COP_cooling = Q_cold / W_input = T_cold / (T_hot - T_cold)     [ideal Carnot COP]
+```
+
+A refrigerator cooling a space to 5C (278 K) rejecting heat to 35C (308 K) ambient:
+COP_ideal = 278 / (308 - 278) = 9.27
+COP_real ~ 2-4 (losses from friction, imperfect heat exchange)
+
+This means for every 1 J of mechanical work input, 2-4 J of heat are moved from cold to hot.
+
+**Three levels of refrigeration technology:**
+
+**Level 1: Evaporative cooling (no machinery required)**
+Water absorbs latent heat when it evaporates (2,260 kJ/kg at 100C; ~2,450 kJ/kg at 20C). A wet cloth draped over a clay pot in dry air cools the pot's contents. This already works in the simulation — S3.2 handles evaporation and latent heat absorption. The surface of the wet cloth loses liquid particles to gas phase, each particle carrying away latent heat energy, cooling the remaining liquid and the pot.
+
+Temperature drop depends on humidity: dry air = large drop, humid air = small drop. At 30C and 20% relative humidity, wet-bulb temperature ~ 16C — the pot contents can cool to ~18-20C.
+
+**Level 2: Compression refrigeration (requires a heat engine to drive the compressor)**
+
+```
+The cycle:
+1. COMPRESSION: Compressor (piston driven by engine) compresses refrigerant gas
+   - Gas heats up (adiabatic compression)
+   - e.g., ammonia gas compressed from 1 atm to 10 atm: T rises from 250K to ~620K
+
+2. CONDENSATION: Hot compressed gas passes through condenser coils exposed to ambient air
+   - Gas cools to ambient temperature (~300K) and condenses to liquid
+   - Latent heat released to environment
+   - Requires: metal tubing (coils), air flow or water cooling
+
+3. EXPANSION: Liquid passes through a restriction (expansion valve / throttle)
+   - Pressure drops suddenly
+   - Liquid partially evaporates, temperature drops sharply
+   - e.g., ammonia at 300K throttled from 10 atm to 1 atm: T drops to ~240K (-33C)
+
+4. EVAPORATION: Cold refrigerant flows through evaporator coils inside cold space
+   - Absorbs heat from cold space contents
+   - Refrigerant fully evaporates back to gas
+   - Returns to compressor: cycle repeats
+```
+
+**Refrigerant choice matters.** Ammonia (NH3) is the simplest — it can be produced from nitrogen fixation (lightning + rain, or biological processes) and has excellent thermodynamic properties for refrigeration. Boiling point at 1 atm: -33C. In-game, ammonia would be a late-game chemical discovery.
+
+**Level 3: Absorption refrigeration (heat-driven, no compressor)**
+Uses heat instead of mechanical work to drive the cycle. A solution of ammonia in water is heated; ammonia boils off (lower boiling point), is condensed, expanded, and evaporated as in compression refrigeration. The "compressor" is replaced by a generator (heater) and absorber. This is historically significant — early refrigerators ran on kerosene or gas flames, not electricity.
+
+---
+
+#### Turbines — Continuous Rotation from Gas Flow
+
+A piston engine converts gas pressure into reciprocating (back-and-forth) motion, then uses a crankshaft to convert that into rotation. A turbine skips the reciprocation: gas flows directly through blades mounted on a rotating wheel, producing continuous rotation.
+
+**Torque from gas flow:**
+
+```
+tau = m_dot * delta_v * r
+```
+
+Where:
+- tau = torque on turbine shaft (N*m)
+- m_dot = mass flow rate of gas through turbine (kg/s)
+- delta_v = change in gas velocity across the blades (m/s)
+- r = radius from shaft to blade center (m)
+
+**Power:**
+
+```
+P = tau * omega = m_dot * delta_v * r * omega
+```
+
+Or equivalently, from energy conservation:
+
+```
+P = 0.5 * m_dot * (v_in^2 - v_out^2)    [kinetic energy extracted]
+```
+
+**Worked example — simple steam turbine:**
+- Steam at 5 atm, 200C enters at 400 m/s
+- Steam exits at 100 m/s
+- Mass flow rate: 0.1 kg/s
+- Power = 0.5 * 0.1 * (400^2 - 100^2) = 0.5 * 0.1 * (160000 - 10000) = 7,500 W = 10 HP
+- Much more power-dense than a piston engine, but requires precision blades
+
+**Why turbines are late-game:** The blades must withstand high temperature, high velocity gas without deforming. This requires:
+- Precision metal casting (S6.4) with tight tolerances
+- High-temperature alloys (nickel-based if available)
+- Dynamic balancing of the rotor (unbalanced rotor at high RPM = catastrophic failure)
+- Bearings capable of high RPM (S3.8 bearing friction model)
+
+In the simulation, a turbine is a hinge joint (axle) with blade surfaces attached. Gas SPH particles impacting the blade surfaces transfer momentum to the rotor. The force calculation is the same as projectile impact (momentum transfer) but continuous.
+
+---
+
+#### Performance Budget
+
+Heat engine simulation uses existing systems with minimal additional computation:
+
+| Component | System Used | New Cost |
+|---|---|---|
+| Gas pressure | Ideal gas law replaces Tait for gas-phase particles | ~0 (same computation, different formula) |
+| Piston force | F = P * A applied to slider joint (S3.8) | ~0.01 ms per joint per tick |
+| Phase transitions | Boiling/condensation already in S3.2 | 0 (existing) |
+| Combustion | Reaction engine S3.1 (Arrhenius kinetics) | 0 (existing) |
+| Valve timing | Geometric angle check on crankshaft | < 0.001 ms per engine |
+| Adiabatic compression | Temperature/density update on gas particles | < 0.01 ms per cylinder |
+| Efficiency tracking | Running sum of Q and W per engine | < 0.001 ms per engine |
+
+**Total new cost per engine:** ~0.02 ms per tick. With 10 engines in the simulation: 0.2 ms — negligible against the 16.67 ms tick budget.
+
+The key insight is that heat engines are an *emergent configuration* of existing simulation primitives, not a new simulation system. The gas particles, piston joints, phase transitions, and combustion reactions all already exist. This section documents how they combine — the code changes are a different equation of state for gas particles and a force coupling from gas pressure to slider joints.
+
+---
+
+#### New Cross-System Connections
+
+**Connection 52: Gas Pressure -> Piston Force (critical)**
+- Source: Gas-phase SPH particles (S3.2 / S3.11) — average pressure in a sealed cylinder
+- Target: Slider joint (S3.8) — external force on the piston
+- Data: F = P_average * A_piston, where P_average is computed from ideal gas law over all gas particles in the cylinder volume, and A_piston is the cross-sectional area of the slider joint's moving element
+- Direction: one-way per tick (gas -> piston). The piston's displacement feeds back by changing the cylinder volume, which changes gas density, which changes pressure on the next tick.
+- Trigger: every physics tick for every cylinder containing gas-phase particles with a slider-joint piston
+- Edge case: if piston reaches end of stroke (mechanical stop), force is absorbed by the stop constraint — pressure remains high, no further work is done until exhaust valve opens
+
+**Connection 53: Piston -> Crankshaft Rotation (critical)**
+- Source: Slider joint (S3.8) — linear force and displacement of the piston
+- Target: Hinge joint (S3.8) — torque and rotation of the crankshaft
+- Data: The slider-to-hinge coupling via a connecting rod converts linear piston motion to rotational crankshaft motion. Torque = F_piston * r_crank * sin(theta), where r_crank is the crank throw radius and theta is the crank angle. At theta = 90 degrees (mid-stroke), torque is maximum. At theta = 0 or 180 degrees (dead centers), torque is zero — the flywheel carries through.
+- Direction: bidirectional. Piston pushes crank on power stroke; crank pushes piston back on exhaust/compression strokes (via flywheel inertia).
+- Trigger: every physics tick for every piston-crankshaft assembly
+- Edge case: at top dead center (TDC) and bottom dead center (BDC), the mechanism has zero mechanical advantage — the engine cannot self-start from these positions. A flywheel with sufficient rotational inertia (S3.8) carries through the dead centers. An engine with insufficient flywheel mass stalls at dead center.
+
+**Connection 54: Heat Engine Efficiency -> Fuel Consumption (moderate)**
+- Source: Heat engine efficiency tracker (S3.11) — actual efficiency = W_out / Q_in
+- Target: Fuel combustion rate (S3.1) — determines how much fuel is consumed per unit of mechanical work
+- Data: For a desired mechanical power output P_mech, the required heat input is Q_dot = P_mech / eta_actual. The fuel burn rate is then m_dot_fuel = Q_dot / H_fuel, where H_fuel is the fuel's heat of combustion (J/kg). Charcoal: H ~ 30 MJ/kg. Dry wood: H ~ 16 MJ/kg. Alcohol: H ~ 27 MJ/kg. The Carnot limit provides a hard upper bound: eta_actual <= 1 - T_cold/T_hot.
+- Direction: feedback loop. Low efficiency -> high fuel consumption -> more smoke/pollution -> potentially more heat loss (vicious cycle). High-quality construction -> higher efficiency -> less fuel -> cleaner operation (virtuous cycle).
+- Trigger: computed once per engine cycle (not every tick) — used for fuel consumption accounting and NPC decision-making about engine operation cost
+- Edge case: if efficiency drops below ~1-2% (extremely poor construction), the engine consumes more fuel than it is worth — NPCs with sufficient intelligence (S5.2) should recognize this and abandon or rebuild the engine
 
 
 ### 3.12 Optics — Light Propagation, Lenses, Mirrors
