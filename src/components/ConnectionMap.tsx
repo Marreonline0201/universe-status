@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick'
+type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization'
 type EdgeSeverity = 'exists' | 'partial' | 'missing'
 
 interface GraphNode {
@@ -40,6 +40,7 @@ const GROUP_COLORS: Record<NodeGroup, string> = {
   structural: '#ef476f',
   network: '#a78bfa',
   tick: '#ffd700',
+  optimization: '#ff9b3c',
 }
 
 const GROUP_LABELS: Record<NodeGroup, string> = {
@@ -49,6 +50,7 @@ const GROUP_LABELS: Record<NodeGroup, string> = {
   structural: 'Structural Physics 3.4',
   network: 'Networking 3.5',
   tick: 'Physics Tick Stages',
+  optimization: 'Optimization 3.7',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
@@ -86,7 +88,7 @@ const NODE_DEFS: NodeDef[] = [
   { id: 'broadcast', label: 'Stage 8: Broadcast', section: '3.5', group: 'tick', description: 'Package and send via WebSocket', physics: "Delta-compressed state updates\nSpatial LOD based on player distance\nPriority queue for bandwidth" },
 
   // Material System 3.1
-  { id: 'property-calc', label: 'Property Calculator', section: '3.1', group: 'material', description: 'Composition -> 33+ derived properties', physics: "Computes 36+ properties from elemental composition:\n\u2022 Melting point: CALPHAD binary phase diagrams\n\u2022 Viscosity: Andrade \u03bc=A\u00b7e^(Ea/RT)\n\u2022 Strength: Fleischer solid solution \u0394\u03c3=B\u00b7c^(1/2)\n\u2022 Fracture toughness: K_IC from bonding energy\n\u2022 Work hardening: Hollomon \u03c3=K\u00d7\u03b5^n\n\u2022 Latent heat: Clausius-Clapeyron" },
+  { id: 'property-calc', label: 'Property Calculator', section: '3.1', group: 'material', description: 'Composition -> 36+ derived properties, cached by compositionHash', physics: "36+ properties from composition (cached via CRC32 hash):\n\u2022 Melting point: CALPHAD binary phase diagrams\n\u2022 Viscosity: Andrade \u03bc=A\u00b7e^(Ea/RT)\n\u2022 Strength: Fleischer solid solution \u0394\u03c3=B\u00b7c^(1/2)\n\u2022 Fracture toughness: K_IC from bonding energy\n\u2022 Work hardening: Hollomon \u03c3=K\u00d7\u03b5^n\n\u2022 Latent heat: Clausius-Clapeyron\nCache: 95% hit rate, temp-bracket interpolation" },
   { id: 'reaction-rules', label: 'Reaction Engine', section: '3.1', group: 'material', description: 'delta-G < 0 check, activation energy, stoichiometry', physics: "dG = dH - T*dS (Gibbs free energy)\nArrhenius: k = A * exp(-Ea/(R*T))\nMass conservation via stoichiometric matrix\nExothermic reactions heat neighbors" },
 
   // Fluid System 3.2
@@ -115,6 +117,11 @@ const NODE_DEFS: NodeDef[] = [
   { id: 'authority', label: 'Server Authority', section: '3.5', group: 'network', description: 'All physics server-computed', physics: "Server is single source of truth\nClient sends inputs, receives state\nAnti-cheat: server validates all actions" },
   { id: 'video-mode', label: 'Video Mode', section: '3.5', group: 'network', description: 'H.264 stream for precision craft', physics: "H.264 encode at server, decode at client\nTriggered when >200 particles within 10m\nLow latency: ~50ms encode+transmit" },
   { id: 'state-mode', label: 'State Mode', section: '3.5', group: 'network', description: 'Client renders from position data', physics: "Position + velocity + material sent per entity\nClient-side interpolation between ticks\nExtrapolation for network jitter" },
+
+  // Optimization 3.7
+  { id: 'tick-scheduler', label: 'Tick Scheduler', section: '3.7', group: 'optimization', description: 'Multi-rate pipeline: 60/30/1 Hz per stage', physics: "60 Hz: SPH crafting, rigid body, sound, broadcast\n30 Hz: temperature, MPM, structural\n1-10 Hz: phase transitions, reactions, grid water\nParallelizable: SPH || rigid body, temp || sound" },
+  { id: 'degradation', label: 'Degradation Controller', section: '3.7', group: 'optimization', description: '5-level graceful degradation under load', physics: "Level 1: reduce particle cap (200k→50k)\nLevel 2: reduce tick rates (60→30, 30→15)\nLevel 3: skip distant structural checks\nLevel 4: pause distant reactions\nLevel 5: emergency — freeze background sim\nTrigger: tick_time/budget > threshold" },
+  { id: 'profiler', label: 'Profiler & Monitor', section: '3.7', group: 'optimization', description: 'Per-stage timing, memory tracking, alerts', physics: "Reports per-stage microseconds every tick\nMemory tracking: ~200 MB target, alert at 1.5 GB\nSends monitoring data to status site at 1 Hz\nTriggers degradation when stage exceeds 2× budget" },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
@@ -238,6 +245,18 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'S12', source: 'reaction-rules', target: 'phase-system', label: 'Reactions trigger phase changes', data: 'Exothermic reactions raise temperature, potentially crossing melting/boiling points. Endothermic reactions cool, potentially freezing.', severity: 'exists' },
   { id: 'S13', source: 'reaction-rules', target: 'property-calc', label: 'Reactions change composition', data: 'Reaction outputs have new composition \u2192 property calculator recomputes all 36+ properties for the new material.', severity: 'exists' },
   { id: 'S14', source: 'state-mode', target: 'tier-rendering', label: 'State mode uses tier rendering', data: 'In state mode, client renders fluid via three-tier pipeline (marching cubes / SSFR / points) from server-sent particle positions.', severity: 'exists' },
+
+  // Connection T: Optimization 3.7
+  { id: 'T1', source: 'tick-scheduler', target: 'temp-propagation', label: 'Schedules at 30 Hz', data: 'Temperature propagation runs at 30 Hz (medium rate). Heat changes are gradual — half-rate is imperceptible.', severity: 'exists' },
+  { id: 'T2', source: 'tick-scheduler', target: 'fluid-stage', label: 'Schedules SPH 60Hz / MPM 30Hz', data: 'SPH crafting at 60 Hz (player-facing), MPM environment at 30 Hz (bulk flow). Can run in parallel on separate cores.', severity: 'exists' },
+  { id: 'T3', source: 'tick-scheduler', target: 'structural-stage', label: 'Event-driven + 30 Hz max', data: 'Structural checks only on change events, not every tick. Maximum check rate capped at 30 Hz during active construction.', severity: 'exists' },
+  { id: 'T4', source: 'tick-scheduler', target: 'sound-stage', label: 'Schedules at 60 Hz', data: 'Sound events need immediate response — impacts must produce audio within one frame for perceived responsiveness.', severity: 'exists' },
+  { id: 'T5', source: 'tick-scheduler', target: 'broadcast', label: 'Schedules broadcast 60 Hz', data: 'Broadcast runs every high-frequency tick. Actual send rate per client varies by bandwidth adaptation (15-60 Hz).', severity: 'exists' },
+  { id: 'T6', source: 'profiler', target: 'degradation', label: 'Timing triggers degradation', data: 'When any stage exceeds 2x budget for 10 ticks, profiler increments degradation level. Recovery after 30 ticks below threshold.', severity: 'exists' },
+  { id: 'T7', source: 'degradation', target: 'tick-scheduler', label: 'Reduces tick rates', data: 'Level 2: SPH 60→30 Hz, MPM 30→15 Hz. Level 5: freeze background sim entirely. Hysteresis prevents oscillation.', severity: 'exists' },
+  { id: 'T8', source: 'degradation', target: 'mpm-solver', label: 'Reduces particle cap', data: 'Level 1: cap MPM at 50k instead of 200k. Aggressively merge distant particles. Close-up quality unaffected.', severity: 'exists' },
+  { id: 'T9', source: 'degradation', target: 'broadcast', label: 'Adapts bandwidth per client', data: 'Per-client RTT monitoring. >150ms: skip Tier 1-3 particles. >300ms: WORLD_SNAPSHOT at 1 Hz only. Slow clients get reduced updates.', severity: 'exists' },
+  { id: 'T10', source: 'profiler', target: 'broadcast', label: 'Monitoring to status site', data: 'Per-tick timing report sent to status site at 1 Hz. Includes per-stage microseconds, memory usage, degradation level, particle counts.', severity: 'exists' },
 ]
 
 // Compute edge counts
@@ -265,13 +284,14 @@ const GROUP_ANGLE: Record<NodeGroup, number> = {
   sound: Math.PI * 1.1,       // lower left
   structural: Math.PI * 1.5,  // left
   network: Math.PI * 1.85,    // upper left
+  optimization: Math.PI * 1.2, // lower center
 }
 
 function initNodes(width: number, height: number): GraphNode[] {
   const cx = width / 2
   const cy = height / 2
-  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0 }
-  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0 }
+  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0 }
+  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0 }
   for (const nd of NODE_DEFS) groupTotals[nd.group]++
 
   return NODE_DEFS.map(nd => {
