@@ -18,10 +18,11 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (47 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (51 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
+    - 3.10 Rope, Cable & Flexible Body Physics — Verlet chains, pulleys, bows, rigging
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -4535,7 +4536,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 47 connections total (20 critical + 27 moderate).
+for every connection. 51 connections total (23 critical + 28 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -8058,6 +8059,246 @@ Projectile aerodynamics is effectively free.
 - Target: Projectile Aerodynamics (S3.9) — Cd and Sg values
 - Data: fletched arrows: Cd=0.05, Sg>1 (stable). Un-fletched: Cd=0.20, Sg<1 (tumbles).
 - Trigger: computed once when arrow is crafted, cached on the object
+
+
+### 3.10 Rope, Cable & Flexible Body Physics
+
+#### The Principle
+
+Ropes, chains, cables, and vines are flexible bodies that transmit TENSION along their length. They cannot push (no compression strength) — they can only pull. This simple constraint enables an enormous range of machines and structures: pulleys, cranes, bows, suspension bridges, wells, rigging, block-and-tackle, catapults, drawbridges, elevators.
+
+The game currently has no flexible body simulation. Rope exists as a crafting ingredient but has no physics. A rope connecting two posts hangs as a straight line (wrong — it should sag in a catenary curve). A rope over a branch doesn't create a pulley. A bowstring doesn't store energy.
+
+#### Verlet Chain Simulation
+
+A rope is modeled as a chain of particles connected by distance constraints. This is Position-Based Dynamics (PBD), the standard technique for real-time rope/cloth simulation (Jakobsen 2001).
+
+```
+RopeSimulation {
+  // A rope is N particles connected by (N-1) distance constraints.
+  // Each particle has: position, previousPosition, mass, fixed (boolean).
+  
+  RopeParticle {
+    position: Vec3
+    previousPosition: Vec3        // for Verlet integration
+    mass: number                  // kg — from rope material density × segment volume
+    fixed: boolean                // true if attached to a structure/block (anchor point)
+    // Velocity is implicit: v = (position - previousPosition) / dt
+  }
+  
+  RopeConstraint {
+    particleA: index
+    particleB: index
+    restLength: number            // m — natural length of this segment
+    // From MaterialPacket: tensileStrength determines breaking threshold
+  }
+  
+  // Per tick:
+  //   1. Apply forces (gravity, wind, player pull)
+  //   2. Verlet integration (position update from previous positions)
+  //   3. Constraint solving (enforce distance constraints — iterate multiple times)
+  //   4. Check for breaking (tension > breaking threshold)
+  
+  function simulate(rope, dt):
+    // Step 1: Apply external forces
+    for each particle in rope.particles:
+      if particle.fixed: continue
+      force = particle.mass × gravity
+      force += windForce × ropeWindDragArea  // rope catches wind
+      
+      // Verlet integration (no explicit velocity — implicit from position history)
+      newPos = 2 × particle.position - particle.previousPosition + (force / particle.mass) × dt²
+      particle.previousPosition = particle.position
+      particle.position = newPos
+    
+    // Step 2: Constraint solving (iterate 4-8 times for stability)
+    for iteration in range(constraintIterations):  // 4-8 iterations
+      for each constraint in rope.constraints:
+        pA = rope.particles[constraint.particleA]
+        pB = rope.particles[constraint.particleB]
+        
+        delta = pB.position - pA.position
+        currentLength = |delta|
+        diff = (currentLength - constraint.restLength) / currentLength
+        
+        // Move particles toward each other (or apart) to satisfy constraint
+        if not pA.fixed and not pB.fixed:
+          pA.position += delta × 0.5 × diff
+          pB.position -= delta × 0.5 × diff
+        elif pA.fixed:
+          pB.position -= delta × diff
+        elif pB.fixed:
+          pA.position += delta × diff
+    
+    // Step 3: Check tension and breaking
+    for each constraint in rope.constraints:
+      pA = rope.particles[constraint.particleA]
+      pB = rope.particles[constraint.particleB]
+      currentLength = |pB.position - pA.position|
+      stretch = (currentLength - constraint.restLength) / constraint.restLength
+      tension = stretch × rope.youngsModulus × rope.crossSectionArea  // Hooke's law
+      
+      if tension > rope.tensileStrength × rope.crossSectionArea:
+        // ROPE BREAKS at this segment
+        splitRope(rope, constraint)
+        // Generate sound event: snap (modal synthesis from rope material)
+}
+```
+
+#### Rope Properties from MaterialPacket
+
+Rope material properties come from the fibers it's made of:
+
+| Rope material    | Tensile strength | Young's modulus | Density  | Breaking force (10mm rope) |
+|-----------------|-----------------|----------------|----------|---------------------------|
+| Plant fiber (hemp, flax) | 30-60 MPa | 10-30 GPa | 1400 kg/m³ | 2,400-4,700 N |
+| Animal sinew     | 50-100 MPa      | 1-2 GPa        | 1100 kg/m³ | 3,900-7,850 N |
+| Rawhide strip    | 20-40 MPa       | 2-5 GPa        | 1200 kg/m³ | 1,570-3,140 N |
+| Cotton           | 20-40 MPa       | 5-13 GPa       | 1500 kg/m³ | 1,570-3,140 N |
+| Silk             | 500-600 MPa     | 5-12 GPa       | 1300 kg/m³ | 39,000-47,000 N |
+| Wire (iron)      | 400 MPa         | 200 GPa        | 7800 kg/m³ | 31,400 N |
+| Wire (steel)     | 800-1500 MPa    | 200 GPa        | 7800 kg/m³ | 62,800-117,800 N |
+
+Cross-section area for a round rope: A = pi * (d/2)^2
+10mm diameter: A = 78.5 mm^2 = 0.0000785 m^2
+Breaking force = tensileStrength * A
+
+#### Catenary Curve — How Ropes Hang
+
+A rope hanging under its own weight forms a catenary curve (not a parabola):
+  y(x) = a * cosh(x/a)
+  where a = T_horizontal / (w * g)
+    T_horizontal = horizontal tension at the lowest point
+    w = mass per unit length of rope (kg/m)
+
+The Verlet simulation produces this shape AUTOMATICALLY — no need to compute
+the catenary formula explicitly. Gravity pulls each particle down, constraints
+keep segment lengths constant, and the chain settles into a catenary.
+
+A taut rope (high tension) hangs nearly straight.
+A loose rope (low tension) sags deeply.
+The player sees this visually and understands intuitively.
+
+#### Pulleys — Changing Force Direction
+
+A pulley is an axle joint (S3.8) that a rope wraps around.
+
+Detection: when a rope segment passes over a cylindrical surface
+(within contact distance of an axle-mounted wheel), the rope
+"wraps" around the wheel. The constraint solver treats the contact
+point as a fixed anchor that moves with the wheel's surface.
+
+Ideal pulley (frictionless):
+  Tension is the same on both sides of the pulley.
+  The rope changes direction but force magnitude is preserved.
+
+Real pulley (with bearing friction):
+  T_output = T_input * (1 - mu_bearing)
+  Typical bearing friction loss: 3-10% per pulley
+
+Mechanical advantage from multiple pulleys:
+  A block-and-tackle with N rope segments supporting the load:
+  MA = N (ideal) -> player pulls with F, load lifts with N * F
+  With friction: MA = N * (1 - mu)^N
+  
+  2-pulley block: MA = 2 -> 100N pull lifts 200N (minus ~6% friction loss)
+  4-pulley block: MA = 4 -> 100N pull lifts 400N (minus ~12% friction loss)
+  
+  Trade-off: more pulleys = more mechanical advantage BUT more friction loss
+  AND the player must pull N times more rope length to lift the load 1m.
+  This is real physics: you never get something for nothing.
+
+#### Bow and Sling — Storing Energy in Bent Materials
+
+A bow stores energy by bending a flexible limb (elastic potential energy)
+and releases it through a taut string (rope under tension).
+
+Energy stored in a bent bow:
+  E = 0.5 * k * x^2
+  where k = spring constant of the bow limb, x = draw distance
+  
+  k depends on material and geometry:
+  k = 3 * E * I / L^3  (cantilever beam spring constant)
+  E = Young's modulus of the limb (wood: 10-15 GPa, horn composite: 20+ GPa)
+  I = second moment of area = b * h^3 / 12 (rectangular cross-section)
+  L = limb length
+  
+  A yew longbow (L=0.9m, b=0.04m, h=0.03m, E=12 GPa):
+    I = 0.04 * 0.03^3 / 12 = 9.0e-8 m^4
+    k = 3 * 12e9 * 9e-8 / 0.9^3 = 4,444 N/m
+    At full draw (x=0.7m): E = 0.5 * 4444 * 0.49 = 1,089 J
+  
+  Arrow mass 0.05 kg: v = sqrt(2E/m) = sqrt(2*1089/0.05) = 209 m/s (theoretical max)
+  Real efficiency ~50% (energy lost to limb vibration, string stretch): v ~ 105 m/s
+  
+  This matches real longbow arrow speeds (55-70 m/s for a 0.05 kg arrow).
+  The slightly high prediction is because our formula doesn't account for
+  limb mass (which absorbs some energy). Good enough for gameplay.
+
+The bowstring is a rope under tension. The Verlet simulation handles:
+  Drawing the bow: player pulls the string, bending the limb (stores energy)
+  Release: string snaps forward, limb straightens, arrow accelerates
+  String vibration after release: the string oscillates (produces the "twang" sound)
+  String breaking: if draw force > string tensileStrength * area -> string snaps
+
+#### Suspension Bridges, Rigging, and Complex Rope Networks
+
+Multiple ropes connected at shared anchor points form networks:
+  Suspension bridge: main cables + vertical hangers + deck
+  Ship rigging: mast stays + shrouds + halyards (all ropes under tension)
+  Crane: boom + hoist rope + guy wires
+  
+The Verlet solver handles networks naturally — each rope is a chain,
+and shared anchor points (where ropes meet) are shared particles.
+The constraint solver iterates over ALL ropes in the network simultaneously.
+
+More constraint iterations = stiffer ropes (less stretching).
+  4 iterations: stretchy rope (feels like bungee)
+  8 iterations: taut rope (feels like wire)
+  16 iterations: rigid rod (behaves like a structural beam)
+
+#### Performance Budget
+
+Per rope: N particles * 3 coordinates * Verlet integration = ~10 FLOPs per particle
+Constraint solving: N constraints * iterations * ~20 FLOPs = ~160 FLOPs per constraint per frame
+
+A 10-segment rope (11 particles, 10 constraints) at 8 iterations:
+  Verlet: 11 * 10 = 110 FLOPs
+  Constraints: 10 * 8 * 20 = 1,600 FLOPs
+  Total: ~1,710 FLOPs -> negligible (~0.002 ms)
+
+100 ropes in the world (crane, bridge, ship rigging, pulleys):
+  100 * 1,710 = 171,000 FLOPs -> ~0.2 ms -> negligible
+
+Rendering: rope rendered as a cubic spline through the particle positions.
+  3 particles minimum for a visible curve. 10 particles for smooth drape.
+  GPU cost: one spline mesh per rope -> negligible.
+
+#### Connections
+
+**Connection 48: Rope Tension -> Structural Loads (critical)**
+- Source: Rope System (S3.10) — tension at anchor points
+- Target: Structural Physics (S3.4) — force applied to anchor blocks
+- Data: A crane lifting 500 kg pulls the anchor block with 4,900N. The structural system must handle this — if the anchor block can't take the tension, it breaks and the rope falls.
+- Trigger: every tick for every rope with at least one fixed anchor
+
+**Connection 49: Rope + Pulley -> Mechanical Advantage (critical)**
+- Source: Rope System (S3.10) — rope wrapping around a wheel
+- Target: Rotational Mechanics (S3.8) — axle joint rotation
+- Data: Rope wrapped around an axle joint creates a pulley. The rotational system handles the wheel turning. The rope system handles the tension and direction change. Combined: they produce mechanical advantage.
+- Trigger: every tick for every rope-pulley contact
+
+**Connection 50: Bow Energy -> Projectile Velocity (critical)**
+- Source: Rope System (S3.10) — bowstring release energy
+- Target: Projectile Aerodynamics (S3.9) — initial arrow velocity
+- Data: Elastic energy stored in bent limb transferred through string accelerates arrow. Arrow enters projectile aerodynamics with the velocity from the bow release. Bow sound: string vibration -> modal synthesis (S3.3).
+- Trigger: on bowstring release event
+
+**Connection 51: Wind on Ropes (moderate)**
+- Source: Weather System (S4.6) — wind velocity vector
+- Target: Rope System (S3.10) — drag force on rope segments
+- Data: Force = 0.5 * rho * v^2 * Cd_rope * rope_diameter * rope_length. Cd for a cylinder in crossflow ~ 1.2. Rigging in a storm experiences significant wind load -> mast structural check.
+- Trigger: every tick for every rope exposed to wind
 
 
 ---
