@@ -260,7 +260,7 @@ Performance budget (Rust):
   SPH crafting (5000 particles, 60 Hz):       ~0.5ms per tick  → 3% of one CPU core
   MPM environment (50k active, 30 Hz):        ~2.0ms per tick  → 6% of one CPU core
   MPM peak eruption (200k active, 30 Hz):     ~8.0ms per tick  → 24% of one CPU core
-  Grid regional (50000 cells, 1 Hz):          ~2ms per tick    → 0.2% of one CPU core
+  Grid regional (10,000-50,000 cells, 1 Hz):   ~2ms per tick    → 0.2% of one CPU core
   Particle redistribution (amortized):        ~0.3ms per tick  → ~1% of one CPU core
   Structural (on-demand):                     ~0.5-2ms per event
   Rigid body (100 objects, 60 Hz):            ~0.05ms per tick
@@ -280,7 +280,7 @@ The fluid simulation uses two methods optimized for different scales:
 **SPH (Smoothed Particle Hydrodynamics)** — for crafting scale (100-2000 particles).
 Each particle checks its neighbors and computes 5 forces. Precise, accurate, good for small interactions where every droplet matters (pouring metal into a mold).
 
-**MLS-MPM (Moving Least Squares Material Point Method)** — for environment scale (2000-100,000 particles).
+**MLS-MPM (Moving Least Squares Material Point Method)** — for environment scale (5,000-200,000 particles).
 Particles transfer data to a background grid, the grid solves forces, then transfers results back to particles. 3× faster than SPH at the same particle count because it avoids the expensive neighbor search. Used for rain, puddles, lava flows, floods — situations where overall flow behavior matters more than individual droplet precision.
 
 Both methods use material properties from the MaterialPacket (viscosity, surface tension, density) — the physics is the same, only the computational method differs.
@@ -953,7 +953,7 @@ SPH handles all of these because the particles move with the fluid — they go w
 
 ```
 SPHParticle {
-  // An SPH particle IS a MaterialPacket fragment. It inherits all 33 properties.
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 36+ properties.
   packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
                                         // viscosity, surfaceTension, density etc. come from packet
 
