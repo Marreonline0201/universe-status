@@ -1304,11 +1304,14 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
   //   Q_radiation = epsilon x sigma x A x (T_furnace^4 - T_melt^4)
   //     epsilon = emissivity (~0.8 for oxidized iron)
   //     sigma = Stefan-Boltzmann constant = 5.67e-8 W/(m^2*K^4)
-  //     A = 2 m^2 exposed surface
-  //     Q_rad = 0.8 x 5.67e-8 x 2 x (1873^4 - 1811^4) = ~5,400 W
+  //     A = exposed surface area of the iron piece
+  //     A 1 kg iron cube: side = (1/7800)^(1/3) = 0.05m, A = 6 × 0.05² = 0.015 m²
+  //     Q_rad = 0.8 × 5.67e-8 × 0.015 × (1873⁴ - 1811⁴)
+  //           = 0.8 × 5.67e-8 × 0.015 × 1.55×10¹² ≈ 1,055 W
   //
-  //   With radiation: 247,000 / 5,400 = 46 seconds ~ 0.75 game-minutes
-  //   This is realistic -- a small piece of iron melts in about a minute in a hot furnace.
+  //   With radiation: 247,000 / 1,055 ≈ 234 seconds ≈ 4 game-minutes
+  //   This is realistic — a small iron ingot melts in a few minutes in a hot furnace.
+  //   Larger pieces (10 kg, A ≈ 0.07 m²) melt faster per kg (better surface/volume).
   //
   //   Implementation: Stage 1 (temperature propagation) must include BOTH:
   //   1. Conductive heat transfer (Fourier law -- already specified)
@@ -1398,8 +1401,8 @@ When gas-phase particles cool below boilingPoint:
   //
   //   In practice, latent heat absorbs so much energy that crossing two phase
   //   boundaries in one tick almost never happens. Melting 1kg of iron absorbs
-  //   247,000 J. At the highest heat input rates (~5,400 W from radiation),
-  //   melting alone takes ~46 seconds. Boiling would need another 6,090,000 J.
+  //   247,000 J. At typical furnace radiation rates (~1,000 W for a 1kg piece),
+  //   melting alone takes ~4 minutes. Boiling would need another 6,090,000 J.
   //   No realistic heat source delivers enough energy to cross both in one tick.
   //
   //   Edge case: if it DOES happen (e.g., iron thrown into the sun), the sequential
@@ -1660,10 +1663,15 @@ where:
 ```
 
 Settling speeds for common situations:
-- Gold dust (ρ=19300) in water: r=0.5mm → v = 0.85 m/s — settles almost instantly
-- Sand (ρ=2650) in water: r=1mm → v = 0.36 m/s — settles in seconds
+- Gold dust (ρ=19300) in water: r=0.05mm → v = 0.10 m/s — settles in seconds
+    (Stokes valid: Re = 2×0.00005×0.1×1000/0.001 = 10 — borderline, use drag correction)
+- Fine sand (ρ=2650) in water: r=0.05mm → v = 0.0009 m/s — settles in minutes
 - Silt (ρ=2650) in water: r=0.01mm → v = 0.000036 m/s — takes hours to settle
 - Clay (ρ=2650) in water: r=0.001mm → v = 0.00000036 m/s — takes DAYS (muddy water stays cloudy)
+NOTE: Stokes' law is valid only for Re < 1 (fine particles in viscous flow).
+For larger particles (coarse sand r > 0.1mm, gravel), use the drag coefficient
+approach: v_terminal = √(4×(ρ_p-ρ_f)×g×d / (3×C_d×ρ_f)) with C_d from the
+Schiller-Naumann correlation: C_d = 24/Re × (1 + 0.15×Re^0.687).
 
 Gameplay effects:
 - Gold panning: swirl water + gravel → gold settles first (highest density) → lighter sand washes away. This is discoverable because the physics is correct.
@@ -2802,8 +2810,14 @@ When a sound source moves toward a listener, the frequency shifts upward. When m
 f_observed = f_source × (v_sound + v_listener) / (v_sound + v_source)
 where:
   v_sound = 343 m/s (speed of sound in air at 20°C)
-  v_listener = listener velocity along the source-listener axis (+ = moving away)
-  v_source = source velocity along the source-listener axis (+ = moving away)
+  v_listener = listener velocity TOWARD the source (+ = approaching source)
+  v_source = source velocity AWAY from the listener (+ = receding from listener)
+
+Sign convention:
+  Source approaching listener: v_source is NEGATIVE (moving opposite to "away")
+  Source receding from listener: v_source is POSITIVE
+  Listener approaching source: v_listener is POSITIVE → numerator increases → higher pitch ✓
+  Listener receding from source: v_listener is NEGATIVE → numerator decreases → lower pitch ✓
 ```
 
 Gameplay-noticeable examples:
@@ -2896,8 +2910,9 @@ Examples in gameplay:
 
   Furnace chimney (V=0.5m³, A=0.04m², L=0.3m):
     f = 343/(2π) × √(0.04 / (0.5 × 0.42)) = 30 Hz — deep rumble felt more than heard
-    Hot gas lowers the resonant frequency further (speed of sound increases with temperature
-    but the density effect in the cavity dominates for Helmholtz).
+    Hot gas RAISES the resonant frequency (speed of sound increases with √T,
+    and lower gas density means less inertia in the neck — both effects push f upward).
+    At 1000°C furnace gas: v_sound ≈ 700 m/s, so f roughly doubles to ~60 Hz.
 
   Small room (V=27m³, door opening A=2m², L=0.3m):
     f = 343/(2π) × √(2 / (27 × 0.6)) = 18 Hz — infrasonic, creates unease
