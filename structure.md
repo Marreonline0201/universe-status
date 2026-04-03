@@ -19,6 +19,7 @@
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
     - 3.6 Cross-System Connections — Complete Data Flow Map (40 connections)
+    - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -6149,6 +6150,452 @@ Source: Temperature Propagation (§3.0 Stage 1) — sustained temperature on all
 Target: Material System (§3.1) — hardness and strength modified by aging progress
 Data: aging progress computed from time-at-temperature using Avrami kinetics
 Trigger: each game-hour for MaterialPackets at 0.3-0.6 × T_melt
+
+
+### 3.7 System-Wide Optimization — Making It All Run in Real-Time
+
+The physics systems described in §3.1–3.5 are correct but expensive. Running them naively would consume multiple CPU cores and gigabytes of RAM. This section specifies the optimization strategies that make the simulation fit within real-time budgets on a single server machine.
+
+#### Tick Scheduling — What Runs When
+
+Not all physics stages need to run at the same frequency. The unified physics tick (§3.0) is actually a multi-rate pipeline:
+
+```
+TickScheduler {
+  // ── High frequency (60 Hz) ────────────────────────────────────────────
+  // Only for systems where the player notices per-frame changes:
+  //   Stage 4a: SPH crafting (100-5,000 particles near a craft interaction)
+  //   Stage 6: Rigid body physics (dropped items, debris in flight)
+  //   Stage 7: Sound events (impacts need immediate audio response)
+  //   Stage 8: Broadcast (client needs smooth position updates)
+  //
+  // Budget per tick at 60 Hz: 16.67ms total, physics gets ~8ms max
+
+  // ── Medium frequency (30 Hz) ──────────────────────────────────────────
+  // Systems that change smoothly and tolerate half-rate updates:
+  //   Stage 1: Temperature propagation (heat changes are gradual)
+  //   Stage 4b: MPM environment particles (player sees bulk flow, not individual frames)
+  //   Stage 5: Structural integrity (only on change events, not every tick)
+  //
+  // Budget per tick at 30 Hz: 33.3ms, physics gets ~16ms max
+
+  // ── Low frequency (1-10 Hz) ───────────────────────────────────────────
+  // Slow-changing systems where updates are imperceptible per-frame:
+  //   Stage 2: Phase transitions (melting/freezing takes seconds to minutes)
+  //   Stage 3: Reaction engine (chemical reactions are not instantaneous)
+  //   Stage 4c: Grid-based regional water flow (Manning's equation, slow rivers)
+  //   Structural decay (rain damage, freeze-thaw — per game-day)
+  //
+  // Budget: 100-1000ms per tick, runs in background
+
+  // ── On-demand (event-driven) ──────────────────────────────────────────
+  // Systems that only run when triggered:
+  //   Structural integrity recalculation (block placed/removed/damaged)
+  //   Arch detection (structure modified)
+  //   Beam detection (structure modified)
+  //   Phase transition check (temperature crosses threshold)
+  //   Reaction check (new material contact detected)
+  //
+  // Cost: per-event, amortized across frames
+
+  // ── Dependency graph (what must finish before what starts) ─────────────
+  //
+  //   Temperature (Stage 1) must finish before Phase Transitions (Stage 2)
+  //     because phase checks need updated temperatures.
+  //   Phase Transitions must finish before Reaction Engine (Stage 3)
+  //     because newly liquid materials may react differently.
+  //   Reactions must finish before Fluid Sim (Stage 4)
+  //     because reactions may spawn gas (bubbles) or change viscosity.
+  //   Fluid Sim must finish before Structural (Stage 5)
+  //     because fluid loads affect structures (hydrostatic pressure).
+  //   Structural must finish before Rigid Body (Stage 6)
+  //     because collapsed blocks become debris.
+  //   All above must finish before Sound (Stage 7)
+  //     because sound events are generated from all previous stages.
+  //   Sound finishes before Broadcast (Stage 8).
+  //
+  //   HOWEVER: stages at different frequencies can OVERLAP.
+  //   While a 30 Hz MPM tick is computing, the 60 Hz SPH tick can run
+  //   independently (different particle pools, no shared state).
+  //   Temperature propagation (30 Hz) can overlap with rigid body (60 Hz)
+  //   because they operate on different data.
+  //
+  //   Parallelizable pairs (no data dependency):
+  //     SPH crafting || Rigid body physics (different objects)
+  //     Temperature || Sound synthesis (read-only access to positions)
+  //     Grid water || MPM particles (different scales, different data)
+  //
+  //   Sequential pairs (must wait):
+  //     Temperature → Phase transitions → Reactions → Fluid
+  //     Fluid → Structural → Rigid body → Sound → Broadcast
+}
+```
+
+#### Property Calculator Caching
+
+Computing 36+ material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
+
+```
+PropertyCache {
+  // ── Cache strategy ────────────────────────────────────────────────────
+  //
+  // Each MaterialPacket stores a compositionHash (CRC32 of its composition map).
+  // When the property calculator is called:
+  //   if compositionHash == lastComputedHash AND temperature == lastComputedTemp:
+  //     return cached properties (0 cost)
+  //   else:
+  //     recompute all 36 properties (~0.005ms per packet)
+  //     store in cache, update hash
+  //
+  // In practice: 95%+ of packets have stable composition.
+  // Only packets actively being smelted, mixed, or reacting need recomputation.
+  //
+  // For a world with 100,000 MaterialPackets:
+  //   Without cache: 100,000 × 0.005ms = 500ms per tick — IMPOSSIBLE
+  //   With cache (5% dirty): 5,000 × 0.005ms = 25ms per tick — still heavy
+  //   With cache + tick spreading: 1,000 recomputed per tick × 0.005ms = 5ms — acceptable
+
+  // ── Temperature-dependent properties ──────────────────────────────────
+  //
+  // Some properties change with temperature (viscosity, specific heat, ductility).
+  // But temperature changes gradually — a packet that was 500°C last tick is
+  // probably 499-501°C this tick. Use linear interpolation between cached values
+  // at two reference temperatures instead of full recomputation:
+  //
+  //   cache stores: properties at T_low and T_high (bracketing the current temp)
+  //   interpolate: prop(T) = prop(T_low) + (T - T_low) × (prop(T_high) - prop(T_low)) / (T_high - T_low)
+  //   Only recompute when T moves outside the [T_low, T_high] bracket.
+  //   Bracket width: 50°C (recompute every ~50° of temperature change)
+
+  // ── Spatial indexing for reaction checks ──────────────────────────────
+  //
+  // The reaction engine must check pairs of packets in contact.
+  // Naive: check every packet against every other → O(n²). Impossible.
+  //
+  // Solution: same spatial hash grid used by SPH (§3.2).
+  //   Each packet hashes its position. Only check packets in the same or
+  //   adjacent cells. Average neighbors: ~6-12 (face contacts in a grid world).
+  //
+  //   100,000 packets × 10 neighbor checks × 0.001ms per check = 1ms total.
+  //   Plus Gibbs energy computation for actual contact pairs: ~0.01ms per pair.
+  //
+  //   Further optimization: only check pairs where at least one packet's
+  //   temperature changed this tick (cold-cold pairs won't suddenly react).
+  //   This reduces checks by ~90% during steady state.
+}
+```
+
+#### Sound Engine Optimization
+
+The sound engine can generate hundreds of simultaneous events during action scenes (structural collapse, rainstorm, combat). WebAudio has a practical limit of ~100-200 active nodes before CPU saturation on mid-range hardware.
+
+```
+SoundOptimization {
+  // ── Polyphony management ──────────────────────────────────────────────
+  //
+  // Maximum simultaneous sound sources: 32 (configurable)
+  // Each source uses ~20 WebAudio nodes (oscillators + gains for modes)
+  // Total WebAudio nodes: 32 × 20 = 640 — well within budget
+  //
+  // When a new sound event arrives and all 32 slots are full:
+  //   Priority ranking:
+  //     1. Distance to listener (closer = higher priority)
+  //     2. Energy (louder = higher priority)
+  //     3. Novelty (new sound types > repeated sounds)
+  //     4. Duration (short transients > long continuous sounds)
+  //
+  //   Steal the lowest-priority slot for the new sound.
+  //   Fade out the stolen sound over 10ms to avoid clicks.
+  //
+  // Continuous sounds (rain, wind, fire, water flow):
+  //   Limited to 8 simultaneous continuous sources.
+  //   These persist across frames — don't steal/replace every tick.
+  //   Update parameters (volume, pitch) in place.
+
+  // ── Distance culling ──────────────────────────────────────────────────
+  //
+  // Don't synthesize sounds the player can't hear:
+  //   audibleRange = sqrt(energy / minAudiblePower) × materialEfficiency
+  //   where minAudiblePower ≈ 10^-12 W/m² (threshold of hearing)
+  //
+  //   Typical ranges:
+  //     Footstep on stone: ~30m
+  //     Pickaxe impact: ~80m
+  //     Structural collapse: ~500m
+  //     Thunder: ~10,000m
+  //
+  //   If source distance > audibleRange: discard event entirely.
+  //   If source distance > 0.5 × audibleRange: reduce mode count from 20 to 5
+  //     (distant sounds don't need 20 overtones — the listener hears only
+  //     the fundamental + maybe 2 harmonics after atmospheric absorption).
+  //
+  // Cost savings: in a typical scene, ~80% of sound events are beyond
+  //   audible range and never processed. Of the remaining 20%, half use
+  //   reduced mode counts. Effective CPU load: ~20% of naive approach.
+
+  // ── Mode reduction for distant sounds ─────────────────────────────────
+  //
+  //   Within 10m: full 20 modes (all overtones, accurate timbre)
+  //   10-50m: 8 modes (fundamental + low harmonics)
+  //   50-200m: 3 modes (fundamental + 2nd harmonic only)
+  //   200m+: 1 mode (fundamental only, heavily low-passed)
+  //
+  //   This matches atmospheric absorption — high modes are inaudible at
+  //   distance anyway (§3.3 frequency-dependent absorption).
+}
+```
+
+#### Structural Physics Optimization
+
+```
+StructuralOptimization {
+  // ── Dirty-flag propagation ────────────────────────────────────────────
+  //
+  // Full BFS recomputation on every block change is wasteful for large structures.
+  // Use incremental dirty-flag propagation:
+  //
+  //   When a block changes (placed, removed, damaged):
+  //     1. Mark that block as dirty
+  //     2. Mark all blocks directly above it as dirty (load path affected)
+  //     3. DO NOT mark blocks below (their load only increases, doesn't invalidate)
+  //     4. Mark connected blocks in the same horizontal plane (lateral load redistribution)
+  //
+  //   Only recompute loads for dirty blocks, not the entire structure.
+  //   For a 1000-block castle with one block removed:
+  //     Full recompute: ~1000 blocks × 0.005ms = 5ms
+  //     Dirty propagation: ~50 blocks × 0.005ms = 0.25ms (20× faster)
+
+  // ── Structure sleeping ────────────────────────────────────────────────
+  //
+  // A structure that hasn't been modified for 10+ ticks is "sleeping."
+  // Skip ALL structural checks for sleeping structures.
+  // Wake triggers:
+  //   Block placed/removed near the structure
+  //   Impact event (combat, falling object)
+  //   Wind change (storm begins/ends)
+  //   Decay event (per game-day check)
+  //
+  // In a world with 500 structures, typically only 1-5 are awake at any time
+  // (the ones near active players or under construction).
+
+  // ── Articulation point cache ──────────────────────────────────────────
+  //
+  // Precompute articulation points (Tarjan's algorithm, O(V+E)) once when
+  // a structure is built or significantly modified. Cache the result.
+  //
+  // When a block is removed:
+  //   if removedBlock IS an articulation point:
+  //     full connectivity re-check needed (part of structure may float)
+  //   if removedBlock is NOT an articulation point:
+  //     structure remains connected — skip connectivity check entirely
+  //     only recompute loads on dirty blocks above
+  //
+  // ~70% of interior blocks in a typical structure are NOT articulation points.
+  // This skips the most expensive check (BFS connectivity) for 70% of removals.
+}
+```
+
+#### Memory Budget
+
+```
+MemoryBudget {
+  // ── Per-system memory allocation ──────────────────────────────────────
+  //
+  // Target: < 2 GB total for all physics systems (low-end server)
+  //
+  // MaterialPackets:
+  //   Size per packet: ~200 bytes (composition map + 36 properties + cache)
+  //   Max active packets: 500,000 (world chunks loaded for all players)
+  //   Total: 500,000 × 200 = 100 MB
+  //
+  // Fluid particles:
+  //   Size per particle: 64 bytes (position, velocity, density, pressure, flags)
+  //   + 40 bytes optical properties
+  //   Max particles: 400,000
+  //   Total: 400,000 × 104 = 42 MB
+  //
+  // Spatial hash grid (shared by SPH + reaction engine):
+  //   Table size: ~1M entries × 8 bytes = 8 MB
+  //   Particle index buffer: 400,000 × 4 bytes = 1.6 MB
+  //   Total: ~10 MB
+  //
+  // Structural blocks:
+  //   Size per block: ~100 bytes (position, connections, material ref, state)
+  //   Max blocks (loaded chunks): 200,000
+  //   Total: 200,000 × 100 = 20 MB
+  //
+  // Grid-based regional water:
+  //   Size per cell: 32 bytes (volume, flow xy, temp, composition hash)
+  //   Max cells: 50,000
+  //   Total: 50,000 × 32 = 1.6 MB
+  //
+  // Sound event buffer:
+  //   Size per event: ~100 bytes
+  //   Max buffered: 256 events
+  //   Total: 25 KB (negligible)
+  //
+  // Screen-space render buffers (client GPU, not server RAM):
+  //   Depth + thickness + normals at 1080p: ~16 MB VRAM
+  //   Marching cubes grid (32³): ~0.5 MB VRAM
+  //
+  // ── TOTAL SERVER RAM ──────────────────────────────────────────────────
+  //
+  //   MaterialPackets:     100 MB
+  //   Fluid particles:      42 MB
+  //   Spatial hash:          10 MB
+  //   Structural blocks:     20 MB
+  //   Regional water:         2 MB
+  //   Property cache:         5 MB
+  //   Network buffers:        5 MB
+  //   Rust overhead:         16 MB
+  //   ─────────────────────────────
+  //   TOTAL:               ~200 MB
+  //
+  //   This is 10% of the 2 GB target. Even with Node.js overhead (~300 MB),
+  //   game state (~200 MB), and NPC AI (~200 MB), total stays under 1 GB.
+  //   The 2 GB budget has ~50% headroom for growth.
+}
+```
+
+#### CPU Core Allocation
+
+```
+CoreAllocation {
+  // ── Thread pool design ────────────────────────────────────────────────
+  //
+  // Target: 4-core server (Railway basic, or a single VPS)
+  //
+  //   Core 0: Node.js main thread
+  //     Game loop, WebSocket handling, NPC AI ticking, event dispatch
+  //     Budget: ~8ms per 60Hz tick (50% utilization)
+  //
+  //   Core 1: Rust physics (via napi-rs, called from Node.js)
+  //     Temperature, phase transitions, reactions, SPH crafting, structural
+  //     Budget: ~8ms per 60Hz tick sustained, ~12ms peak
+  //     This is the single physics core. Stages run SEQUENTIALLY on this core.
+  //
+  //   Core 2: Rust MPM environment particles
+  //     Dedicated to the MPM solver when active (up to 200k particles at 30Hz)
+  //     When MPM is idle: available for reaction engine batch processing
+  //     Budget: ~8ms per 30Hz tick sustained, ~16ms peak (eruption)
+  //
+  //   Core 3: Network I/O + GPU rendering (video mode)
+  //     WebSocket send/receive, PARTICLE_UPDATE encoding, delta compression
+  //     When video mode active: H.264 encoding pipeline
+  //     Budget: variable — network is bursty, GPU rendering is periodic
+  //
+  // ── Graceful degradation ──────────────────────────────────────────────
+  //
+  // When the server can't keep up (tick takes longer than budget):
+  //
+  //   Level 1 — Reduce environment particle count:
+  //     Aggressively merge distant particles. Cap at 50k instead of 200k.
+  //     Visual quality at distance drops. Close-up unaffected.
+  //
+  //   Level 2 — Reduce tick rates:
+  //     Drop SPH from 60Hz to 30Hz. Drop MPM from 30Hz to 15Hz.
+  //     Fluid motion looks slightly choppy. Physics still correct.
+  //
+  //   Level 3 — Reduce structural checks:
+  //     Only check structures near active players.
+  //     Distant structures skip decay checks entirely.
+  //     Risk: distant building could silently collapse without cascade.
+  //
+  //   Level 4 — Reduce reaction engine scope:
+  //     Only check reactions near active players (within 50m).
+  //     Distant smelting operations pause until a player approaches.
+  //     NPC craft actions queue rather than execute immediately.
+  //
+  //   Level 5 — Emergency: pause environment simulation:
+  //     Only run crafting SPH (player-facing) and rigid body.
+  //     All background physics frozen until load drops.
+  //     The world stops evolving but the player can still interact.
+  //
+  // Each degradation level is triggered by tick_time / budget_time ratio:
+  //   < 0.8: full quality (no degradation)
+  //   0.8-1.0: Level 1
+  //   1.0-1.5: Level 2
+  //   1.5-2.0: Level 3
+  //   2.0-3.0: Level 4
+  //   > 3.0: Level 5 (emergency)
+  //
+  // Recovery: when load drops below threshold for 30 consecutive ticks,
+  //   step back up one level. Hysteresis prevents oscillation.
+
+  // ── Bandwidth adaptation ──────────────────────────────────────────────
+  //
+  // When a client's connection is slow (measured by unacknowledged messages):
+  //
+  //   Level 0 (< 50ms RTT, < 5% loss): Full quality
+  //     PARTICLE_UPDATE at 30Hz, full spatial LOD, delta compression
+  //
+  //   Level 1 (50-150ms RTT or 5-10% loss): Reduced particle updates
+  //     PARTICLE_UPDATE at 15Hz (half rate)
+  //     Increase delta prediction window (fewer corrections needed)
+  //
+  //   Level 2 (150-300ms RTT or 10-20% loss): Aggressive culling
+  //     Only send Tier 0 particles (within 10m of player)
+  //     Skip Tier 1-3 entirely — client fills with ghost particles
+  //     WORLD_SNAPSHOT reduced to 3Hz
+  //
+  //   Level 3 (> 300ms RTT or > 20% loss): Minimal updates
+  //     Only WORLD_SNAPSHOT at 1Hz + critical PHYSICS_EVENTs
+  //     No particle streaming — client sees static puddles/lava
+  //     Sound events sent but not guaranteed delivery
+  //
+  //   Per-client: each client has its own quality level.
+  //   One player on fast WiFi gets full quality while another on mobile
+  //   gets reduced updates. The server tracks RTT per client via timestamp echo.
+}
+```
+
+#### Profiling and Monitoring
+
+```
+Profiling {
+  // ── Per-tick timing ───────────────────────────────────────────────────
+  //
+  // The Rust physics engine reports per-stage timing every tick:
+  //   tickReport = {
+  //     tick: number,
+  //     stages: {
+  //       temperature:    { us: number, packets: number },
+  //       phaseTransition: { us: number, transitions: number },
+  //       reactions:       { us: number, checksPerformed: number, reactionsFired: number },
+  //       sphCrafting:     { us: number, particles: number, activeParticles: number },
+  //       mpmEnvironment:  { us: number, particles: number, activeParticles: number },
+  //       gridWater:       { us: number, cells: number },
+  //       structural:      { us: number, blocksChecked: number, failures: number },
+  //       rigidBody:       { us: number, objects: number },
+  //       sound:           { us: number, eventsGenerated: number },
+  //     },
+  //     totalUs: number,
+  //     memoryMB: number,
+  //     degradationLevel: 0-5,
+  //   }
+  //
+  // This data is:
+  //   1. Logged to the server console (sampled every 60 ticks)
+  //   2. Sent to the status site agent dashboard (1Hz)
+  //   3. Stored for post-session analysis
+  //
+  // If any stage exceeds 2× its budget for 10 consecutive ticks:
+  //   Alert sent to status site (owner notification via Telegram)
+  //   Degradation level increases automatically
+
+  // ── Memory monitoring ─────────────────────────────────────────────────
+  //
+  // Track allocations per system every 60 seconds:
+  //   if totalMemory > 1.5 GB: warn
+  //   if totalMemory > 1.8 GB: start aggressive GC + reduce particle cap
+  //   if totalMemory > 2.0 GB: emergency — pause non-essential systems
+  //
+  // Rust memory is not garbage-collected. Track it separately:
+  //   Float32Array buffers for particles: known size (allocated at startup)
+  //   Spatial hash: grows/shrinks — monitor via Rust allocator stats
+  //   Property cache: bounded by MAX_PACKETS × cache_entry_size
+}
+```
 
 
 ---
