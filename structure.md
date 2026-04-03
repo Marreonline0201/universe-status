@@ -18,13 +18,14 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (60 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (65 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
     - 3.10 Rope, Cable & Flexible Body Physics — Verlet chains, pulleys, bows, rigging
     - 3.11 Heat Engines & Thermodynamic Cycles — Steam engines, internal combustion, refrigeration
     - 3.12 Optics — Light Propagation, Lenses, Mirrors
+    - 3.13 Electromagnetism — Charge, Current, Magnetism, Induction
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -4538,7 +4539,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 60 connections total (29 critical + 31 moderate).
+for every connection. 65 connections total (34 critical + 31 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -9152,6 +9153,650 @@ Performance cost:
 - Target: Optics (S3.12) — Snell's law, lens equation, Cauchy dispersion
 - Data: `refractiveIndex` is already computed for every MaterialPacket for rendering purposes. Gameplay optics reads the same value — no duplication. For dispersion, the system also uses the Cauchy coefficients (A, B, C) derived from the material's composition to compute wavelength-dependent n.
 - Trigger: on any optics calculation (lens detection, prism detection, total internal reflection check)
+
+
+---
+
+### 3.13 Electromagnetism — Charge, Current, Magnetism, Induction
+
+#### The Principle
+
+Electromagnetism is the physics of electric charge and magnetic fields. Every atom has charged particles (protons +, electrons −). When charges move, they create current. Current creates magnetic fields. Changing magnetic fields create electric fields. This loop — charge → current → magnetism → induction → current — is the foundation of all electrical technology.
+
+The game already stores `electricalConductivity` on every MaterialPacket (§3.1) and `standardElectrodePotential` for galvanic corrosion (§3.4). These properties exist but have NO consumers beyond corrosion. This section makes them useful.
+
+Nothing is pre-defined. A "battery" is not a game object — it is two different metals in an electrolyte solution. A "motor" is not a game object — it is a coil of conductive wire near a magnet on an axle. The physics determines if current flows and if rotation occurs.
+
+---
+
+#### Static Electricity
+
+When two materials with different triboelectric properties are rubbed together, electrons transfer from one to the other, creating a charge imbalance.
+
+```
+Triboelectric series (tendency to lose electrons, most positive first):
+  Glass → Human hair → Nylon → Wool → Silk → Cotton → Steel → Wood →
+  Amber → Rubber → Polyethylene → Teflon (most negative)
+
+Charge transfer: Q = k_tribo × contact_area × pressure × cycles
+  k_tribo depends on the pair of materials (from triboelectric table)
+  Typical: rubbing wool on amber produces ~10 nC (nanocoulombs)
+
+Coulomb's law — force between charges:
+  F = k_e × q1 × q2 / r²
+  k_e = 8.99 × 10⁹ N·m²/C²
+  Two objects with 1 μC each at 0.1m: F = 8.99e9 × 1e-6 × 1e-6 / 0.01 = 0.9 N
+
+Discharge (spark):
+  When electric field E = V/d exceeds ~3 MV/m (breakdown voltage of air):
+  spark jumps between the charged objects
+  Energy: E = 0.5 × C × V² where C is the capacitance between the objects
+  This connects to temperature (spark heats the air → sound) and to
+  fire starting (spark near tinder → ignition if energy > ignition threshold)
+
+Lightning:
+  A natural discharge between cloud and ground (or cloud-cloud).
+  Already in the weather system (Connection 18) as a special event.
+  With electromagnetism: lightning becomes a consequence of charge separation
+  in clouds (ice particles colliding → charge transfer) rather than a random event.
+  Implementation: track charge buildup in cloud cells. When voltage exceeds
+  breakdown threshold: discharge path traces through lowest-resistance route to ground.
+  Lightning rods (tall conductive structures) attract the discharge preferentially
+  because they reduce the breakdown distance.
+```
+
+**Worked Example — Static Spark Ignites Tinder:**
+
+A player rubs a wool cloth against an amber rod 50 times. Each cycle transfers ~0.2 nC. Total charge: Q = 50 × 0.2 nC = 10 nC. The amber rod is held 2 mm from dry cedar-bark tinder. Voltage: V = Q / C, where capacitance C ≈ ε₀ × A / d ≈ 8.85e-12 × 0.001 / 0.002 = 4.4 pF. V = 10e-9 / 4.4e-12 ≈ 2,270 V. Electric field: E = 2270 / 0.002 = 1.14 MV/m. This is below the 3 MV/m breakdown threshold — no spark. The player rubs 100 more times: Q = 30 nC, V ≈ 6,800 V, E = 3.4 MV/m — spark! Energy: E = 0.5 × 4.4e-12 × 6800² = 0.10 μJ. Cedar bark ignition energy is ~0.2 mJ. The spark is 2000× too weak. Static electricity cannot start a fire directly (historically accurate — this is why flint-and-steel was used instead: it shaves off hot iron particles, not just sparks). The system correctly prevents this because it runs the real physics.
+
+**Edge Cases:**
+- Humidity > 60%: charge leaks to air faster than it accumulates → no useful static buildup. `Q_effective = Q × (1 - humidity/100)²`.
+- Conductive materials (metals): cannot hold static charge — electrons redistribute instantly. `triboelectricIndex` is only meaningful for insulators.
+- Grounding: touching a large conductive body (the ground, a metal pole) discharges instantly. Implementation: if a charged object forms a conductive path to a body with ≥ 100× its mass, charge → 0 in one tick.
+
+---
+
+#### Electric Current and Circuits
+
+```
+CurrentFlow {
+  // Current flows through connected conductive materials from high voltage to low voltage.
+
+  // Ohm's Law: V = I × R
+  //   V = voltage difference (volts)
+  //   I = current (amperes)
+  //   R = resistance (ohms)
+  //   R = ρ × L / A (from material resistivity, wire length, cross-section area)
+  //     ρ (resistivity) = 1 / electricalConductivity (already on MaterialPacket)
+
+  // Kirchhoff's Laws (for circuit networks):
+  //   KCL: sum of currents at any node = 0 (charge conservation)
+  //   KVL: sum of voltages around any loop = 0 (energy conservation)
+
+  // Implementation: Circuit Graph
+  //   When conductive materials form a continuous path, they create a circuit.
+  //   Detection:
+  //     1. Find all conductive blocks/wires (electricalConductivity > threshold)
+  //     2. Build a graph: nodes = connection points, edges = conductive paths
+  //     3. Find loops (cycles in the graph) — current only flows in closed loops
+  //     4. Solve for current in each branch using Kirchhoff's laws
+  //        (linear system: Ax = b, where A is the conductance matrix)
+  //
+  //   For simple circuits (single loop): I = V_total / R_total
+  //   For complex circuits: solve sparse linear system (standard Gaussian elimination)
+  //   Typical circuit complexity: 5-20 nodes → microseconds to solve
+
+  // Power dissipation (Joule heating):
+  //   P = I² × R (watts)
+  //   This heat is fed into temperature propagation (Stage 1):
+  //   Each resistive element gains: dT = P × dt / (mass × specificHeat)
+  //
+  //   This IS how resistance heating works:
+  //     A nichrome wire carrying current heats up → glows → can melt things
+  //     An iron wire carrying too much current heats to melting point → fuses (circuit breaker)
+  //     The game doesn't need to know "fuse" — it just tracks temperature of the wire.
+  //     When temperature > melting point → wire melts → circuit breaks → current stops.
+
+  // Wire representation:
+  //   A wire is a thin conductive rod (iron, copper, silver, gold).
+  //   Crafted by drawing metal through progressively smaller holes (wire drawing, §6.2).
+  //   R = ρ × L / A
+  //     Copper wire (ρ = 1.68e-8 Ω·m), 1m long, 1mm² cross-section:
+  //     R = 1.68e-8 × 1 / 1e-6 = 0.0168 Ω (very low — good conductor)
+  //     Iron wire (ρ = 9.7e-8): R = 0.097 Ω (6× more than copper)
+  //     Nichrome (ρ = 1.1e-6): R = 1.1 Ω (resistance heating element)
+}
+```
+
+**Worked Example — Simple Circuit:**
+
+A player builds a voltaic pile (see Batteries below): 5 zinc-copper cells in series, each producing 1.10V. Total EMF = 5.50V. They connect it with 2m of iron wire (ρ = 9.7e-8 Ω·m, cross-section 1 mm²). Wire resistance: R_wire = 9.7e-8 × 2 / 1e-6 = 0.194 Ω. Battery internal resistance: R_int = 0.5 Ω per cell × 5 = 2.5 Ω. Total resistance: R = 2.5 + 0.194 = 2.694 Ω. Current: I = 5.50 / 2.694 = 2.04 A. Power dissipated in the wire: P_wire = 2.04² × 0.194 = 0.81 W. Power dissipated internally: P_int = 2.04² × 2.5 = 10.4 W (most energy wasted as heat inside the battery). Wire temperature rise per second: dT = 0.81 / (0.016 kg × 449 J/kg·K) = 0.11 °C/s (barely noticeable). The wire stays cool. But if the player uses nichrome wire (R = 2.2 Ω for 2m), P_wire = 1.17² × 2.2 = 3.0 W, and the much thinner element heats to several hundred degrees — it glows red. This is a heating element, discovered through physics, not recipes.
+
+**Pseudocode — Circuit Graph Solver:**
+
+```
+fn solve_circuit(world: &World) -> Vec<CircuitSolution> {
+    // Step 1: identify all conductive clusters (connected components)
+    let clusters = find_conductive_clusters(world);  // BFS/DFS on adjacency
+
+    let mut solutions = Vec::new();
+    for cluster in clusters {
+        // Step 2: build circuit graph
+        let mut graph = CircuitGraph::new();
+        for segment in &cluster.segments {
+            let r = segment.resistivity * segment.length / segment.cross_section;
+            graph.add_edge(segment.node_a, segment.node_b, r);
+        }
+        for source in &cluster.voltage_sources {
+            graph.add_voltage_source(source.node_a, source.node_b, source.emf, source.r_internal);
+        }
+
+        // Step 3: check for at least one closed loop
+        if !graph.has_cycle() {
+            continue;  // open circuit — no current flows
+        }
+
+        // Step 4: build conductance matrix (Modified Nodal Analysis)
+        //   G × V_nodes = I_sources
+        //   Standard technique: one row per node (KCL), one row per voltage source (KVL)
+        let (g_matrix, i_vector) = graph.build_mna_system();
+
+        // Step 5: solve
+        let node_voltages = sparse_lu_solve(&g_matrix, &i_vector);
+
+        // Step 6: compute branch currents from voltage differences
+        for edge in &graph.edges {
+            let v_diff = node_voltages[edge.node_a] - node_voltages[edge.node_b];
+            let current = v_diff / edge.resistance;
+            let power = current * current * edge.resistance;
+            solutions.push(CircuitSolution {
+                edge: edge.id,
+                current,
+                power,  // → fed to temperature propagation as heat source
+            });
+        }
+    }
+    solutions
+}
+```
+
+**Edge Cases:**
+- Short circuit: if a wire connects battery terminals with near-zero resistance, I → V / R_internal. Enormous current flows. Battery heats rapidly (P = I² × R_internal). If battery temperature exceeds electrolyte boiling point → electrolyte evaporates → battery fails. If wire temperature exceeds melting point → wire melts → circuit breaks. Both are natural consequences — no special "short circuit" handler needed.
+- Superconductors: not in the game (require temperatures below -140°C which are not achievable with the current tech tree). If added later: R = 0 exactly, requiring special handling in the solver (ideal wire constraint).
+- Wet paths: water on the ground between two electrodes creates a conductive path. R = ρ_water × distance / cross_section_area. Salt water (ρ ≈ 0.2 Ω·m) is a decent conductor; pure water (ρ ≈ 2×10⁵ Ω·m) is an insulator. A player who drops a live wire in a puddle creates a circuit through the water — anything standing in the puddle takes current. Current through a biological entity causes damage proportional to I² × t (Joule heating of tissue).
+
+---
+
+#### Batteries (Electrochemical Cells)
+
+```
+Battery {
+  // A battery converts chemical energy into electrical energy.
+  // It is NOT a game object — it is two different metals in an electrolyte.
+
+  // The voltage comes from the difference in standard electrode potentials:
+  //   V_cell = E_cathode - E_anode
+  //   (electrode potentials from the element property table)
+
+  // Voltaic pile (first battery): zinc + copper + salt water
+  //   V = E_Cu - E_Zn = +0.34 - (-0.76) = 1.10 V per cell
+  //   Stack N cells in series: V_total = N × 1.10V
+  //   10 cells: 11V (enough to feel a shock, drive a small motor)
+
+  // Lead-acid battery: lead + lead dioxide + sulfuric acid
+  //   V = 2.05 V per cell (higher than zinc-copper)
+  //   6 cells: 12.3V (standard car battery — powerful)
+
+  // Internal resistance limits current:
+  //   I_max = V_cell / R_internal
+  //   R_internal depends on: electrode area, electrolyte conductivity, electrode spacing
+  //   Larger electrodes = lower R_internal = more current available
+
+  // Capacity (how long the battery lasts):
+  //   Q = n × F (coulombs) where n = moles of reactant, F = 96,485 C/mol (Faraday constant)
+  //   For a zinc electrode of mass m: n = m / M_Zn = m / 65.4
+  //   Q = (m / 65.4) × 2 × 96,485 (2 electrons per Zn atom)
+  //   100g of zinc: Q = (0.1/0.0654) × 2 × 96,485 = 295,000 C
+  //   At 1A current: lasts 295,000 seconds ≈ 82 hours
+  //   At 10A current: lasts 8.2 hours
+
+  // The reaction engine (§3.1) handles the chemistry:
+  //   Zn → Zn²⁺ + 2e⁻ (anode dissolves — zinc electrode gets thinner over time)
+  //   Cu²⁺ + 2e⁻ → Cu (cathode gains mass — copper electrode gets thicker)
+  //   When the zinc is consumed: battery dies. Player must replace the zinc.
+
+  // Recharging (for lead-acid type):
+  //   Reverse the reaction by forcing current backward through the cell.
+  //   Requires an external voltage source > V_cell (e.g., from a generator).
+  //   Not all batteries are rechargeable — zinc-copper is not (zinc dissolves permanently).
+}
+```
+
+**Worked Example — Voltaic Pile Construction:**
+
+A player has: 10 zinc ingots (each 50g, smelted from sphalerite ore §4.1), 10 copper plates (each 100g), and a bucket of salt water (NaCl dissolved in water). They stack alternating zinc-copper pairs with salt-water-soaked cloth separators. Each cell: V = 1.10V, R_internal ≈ 0.5 Ω (depends on cloth thickness and salt concentration — thinner cloth, more salt = lower resistance). 10 cells in series: V_total = 11.0V, R_internal_total = 5.0 Ω. Maximum current (short circuit): I_max = 11.0 / 5.0 = 2.2 A. Connected to a 10 Ω external load: I = 11.0 / 15.0 = 0.73 A, P_load = 0.73² × 10 = 5.3 W. Battery lifetime: Q = (0.5 / 0.0654) × 2 × 96,485 = 1,475,000 C per cell. At 0.73A: 1,475,000 / 0.73 = 2,020,000 s ≈ 561 hours ≈ 23 game-days. The zinc electrodes visibly thin over this period (mass decreases tracked by the reaction engine). When a zinc plate reaches zero mass, that cell dies, total voltage drops by 1.1V, and the remaining cells must supply the load at reduced voltage.
+
+**Edge Cases:**
+- Wrong metal pairing: two pieces of the same metal in electrolyte → V_cell = 0. No current flows. Not an error — just physics.
+- No electrolyte: two metals touching directly → galvanic corrosion (§3.4) but no useful current (electrons transfer at the junction but there is no ionic path to complete the circuit).
+- Electrolyte concentration: higher salt concentration → lower R_internal → more current. Saturated salt water (~26% NaCl) gives R ≈ 0.04 Ω·m. Pure water gives R ≈ 2×10⁵ Ω·m — effectively no current.
+- Temperature dependence: battery voltage decreases slightly with temperature (Nernst equation). At freezing, R_internal increases significantly as ion mobility drops. A battery left outside in winter performs worse.
+
+---
+
+#### Magnetism
+
+```
+Magnetism {
+  // Magnetic fields are created by:
+  //   1. Permanent magnets (lodestone — naturally magnetized magnetite Fe₃O₄)
+  //   2. Electric current flowing through a conductor (electromagnet)
+
+  // MaterialPacket addition:
+  //   magneticPermeability: number    // relative permeability (dimensionless)
+  //     Vacuum/air: μ_r = 1
+  //     Iron: μ_r = 200-5000 (ferromagnetic — strongly attracted to magnets)
+  //     Nickel: μ_r = 100-600
+  //     Cobalt: μ_r = 250
+  //     Copper, aluminum, wood, stone: μ_r ≈ 1 (non-magnetic)
+  //
+  //   permanentMagnetization: Vec3    // residual magnetic field (Tesla), zero for non-magnets
+  //     Natural lodestone: |B| ≈ 0.01-0.1 T
+  //     Magnetized iron: |B| ≈ 0.1-1.0 T (depends on how it was magnetized)
+  //     A compass needle is a small piece of magnetized iron or lodestone.
+
+  // Magnetic field from a current-carrying wire:
+  //   B = μ₀ × I / (2π × r)
+  //   μ₀ = 4π × 10⁻⁷ T·m/A (permeability of free space)
+  //   At 1A current, 0.01m from wire: B = 4π×10⁻⁷ × 1 / (2π × 0.01) = 2×10⁻⁵ T
+  //   This is weak — about half of Earth's magnetic field (~5×10⁻⁵ T).
+
+  // Magnetic field from a coil (solenoid):
+  //   B = μ₀ × μ_r × N × I / L
+  //   N = number of turns, L = coil length
+  //   100 turns, iron core (μ_r = 1000), 1A, 0.1m long:
+  //   B = 4π×10⁻⁷ × 1000 × 100 × 1 / 0.1 = 1.26 T (strong electromagnet!)
+  //   Strong enough to pick up iron tools, separate iron from ore, or drive a motor.
+
+  // Force between magnets / on ferromagnetic materials:
+  //   F = (B² × A) / (2 × μ₀) (approximate, for a magnet near a flat surface)
+  //   At B = 0.1T, A = 0.01m²: F = (0.01 × 0.01) / (2 × 4π×10⁻⁷) = 40 N (can lift 4 kg)
+
+  // Compass: a magnetized needle on a low-friction pivot (axle joint §3.8)
+  //   aligns with the vector sum of: Earth's field + nearby permanent magnets + nearby current
+  //   Implementation: compute B_total at the compass position, apply torque to align the needle
+}
+```
+
+**Worked Example — Electromagnet Picks Up Iron:**
+
+A player winds 200 turns of copper wire around an iron rod (μ_r = 2000, length 0.15m). They connect it to a 5-cell voltaic pile (5.5V). Wire resistance: 10m of copper wire at 1mm² = 10 × 0.0168 = 0.168 Ω. Battery R_internal = 2.5 Ω. Total R = 2.668 Ω. Current: I = 5.5 / 2.668 = 2.06 A. Solenoid field: B = 4π×10⁻⁷ × 2000 × 200 × 2.06 / 0.15 = 6.90 T. This is unrealistically high because the formula assumes unsaturated iron. Iron saturates at ~2.0 T (B_sat). Clamping: B = min(6.90, 2.0) = 2.0 T. Lifting force at the pole face (area = π × 0.01² = 3.14×10⁻⁴ m²): F = (2.0² × 3.14e-4) / (2 × 4π×10⁻⁷) = 1,000 N ≈ lifting 100 kg. A small electromagnet powered by a primitive battery can lift heavy iron objects. Disconnect the battery → field collapses → iron drops. This is how magnetic cranes work, and the player discovers it through physics.
+
+**Pseudocode — Magnetic Field Computation:**
+
+```
+fn compute_magnetic_field(world: &World, point: Vec3) -> Vec3 {
+    let mut b_total = world.earth_magnetic_field(point);  // ~5e-5 T, varies by latitude
+
+    // Contribution from permanent magnets (dipole approximation)
+    for magnet in world.permanent_magnets_near(point, MAX_MAGNET_RANGE) {
+        let r = point - magnet.position;
+        let r_mag = r.length();
+        if r_mag < 0.001 { continue; }  // avoid singularity at center
+
+        // Dipole field: B = (μ₀/4π) × (3(m·r̂)r̂ - m) / r³
+        let m = magnet.magnetic_moment();  // m = B_r × V / μ₀ for a permanent magnet
+        let r_hat = r / r_mag;
+        let b = (MU_0 / (4.0 * PI)) * (3.0 * m.dot(r_hat) * r_hat - m) / r_mag.powi(3);
+        b_total += b;
+    }
+
+    // Contribution from current-carrying coils
+    for coil in world.active_coils_near(point, MAX_COIL_RANGE) {
+        // Solenoid approximation for points near the axis
+        let axis_dist = coil.distance_to_axis(point);
+        if axis_dist < coil.radius * 3.0 {
+            // On-axis or near-axis: B ≈ μ₀ × μ_r × N × I / L (along axis)
+            let b_mag = MU_0 * coil.core_permeability * coil.turns as f64
+                        * coil.current / coil.length;
+            let b_mag = b_mag.min(coil.core_saturation_b);  // saturation clamp
+            b_total += coil.axis_direction * b_mag;
+        } else {
+            // Far field: treat as magnetic dipole
+            let m = coil.magnetic_moment();  // m = N × I × A × axis_dir
+            // ... dipole formula same as above
+        }
+    }
+
+    b_total
+}
+```
+
+**Edge Cases:**
+- Demagnetization: hitting a permanent magnet hard enough (impact energy exceeds domain-wall energy) randomizes magnetic domains → B_residual drops. Heating a magnet above its Curie temperature (iron: 770°C, nickel: 358°C) destroys magnetization entirely. Implementation: when temperature > T_curie, set `permanentMagnetization = 0`. When impact energy > demagnetization_threshold, reduce `permanentMagnetization` by a fraction proportional to impact/threshold.
+- Magnetic shielding: wrapping a region in high-μ material (iron, mu-metal) diverts field lines around the interior. Implementation: if a closed shell of ferromagnetic material surrounds a point, multiply external B contributions by `1 / μ_r` of the shell material. Practical use: protecting a compass from nearby electromagnets.
+- Earth's magnetic field: varies by location. At the equator: ~30 μT horizontal. At the poles: ~60 μT vertical. Implementation: `B_earth = f(latitude, altitude)` — a simple dipole model is sufficient.
+
+---
+
+#### Electromagnetic Induction (Generators and Motors)
+
+```
+Induction {
+  // Faraday's Law: changing magnetic flux through a coil induces voltage:
+  //   EMF = -N × d(Φ_B)/dt
+  //   Φ_B = B × A × cos(θ) (magnetic flux through the coil)
+  //   where θ = angle between the field and the coil normal
+
+  // Generator: rotate a coil in a magnetic field → voltage appears
+  //   A coil of N turns, area A, rotating at ω rad/s in field B:
+  //   EMF = N × B × A × ω × sin(ω × t) (AC voltage — alternates with rotation)
+  //   Peak EMF = N × B × A × ω
+  //
+  //   100 turns, B = 0.5T (permanent magnet), A = 0.01m², 30 rev/s (ω = 188 rad/s):
+  //   Peak EMF = 100 × 0.5 × 0.01 × 188 = 94V
+  //   At 1A load: Power = 94W → decent for lighting or small motor
+  //
+  //   The coil is on an axle joint (§3.8). The waterwheel/windmill/steam engine
+  //   drives the rotation. Faraday's law produces the voltage. Ohm's law determines
+  //   the current through whatever is connected. P = V × I = useful electrical power.
+
+  // Motor: current through a coil in a magnetic field → rotation
+  //   A motor is a generator run in reverse.
+  //   Apply voltage to the coil → current flows → Lorentz force on the wire
+  //   F = I × L × B (force on a wire of length L carrying current I in field B)
+  //   The force creates torque on the coil → rotation
+  //
+  //   Torque: τ = N × I × A × B × sin(θ)
+  //   A motor with 100 turns, 2A, 0.01m², 0.5T:
+  //   τ_max = 100 × 2 × 0.01 × 0.5 = 1.0 N·m
+  //   At 30 rev/s: Power = τ × ω = 1.0 × 188 = 188W ≈ 0.25 HP
+  //
+  //   Implementation: when current flows through a coil AND the coil is in a
+  //   magnetic field AND the coil is on an axle joint → apply Lorentz torque.
+  //   The motor converts electrical power to mechanical rotation.
+  //   The generator converts mechanical rotation to electrical power.
+  //   Same device, same physics, different direction of energy flow.
+
+  // Transformer: two coils on a shared iron core
+  //   AC voltage in coil 1 → changing magnetic field in iron core →
+  //   changing flux through coil 2 → induced voltage in coil 2
+  //   V2/V1 = N2/N1 (voltage ratio = turns ratio)
+  //   Step-up transformer: N2 > N1 → higher voltage (for transmission)
+  //   Step-down transformer: N2 < N1 → lower voltage (for use)
+  //   Power conserved: V1 × I1 = V2 × I2 (minus losses from core heating)
+}
+```
+
+**Worked Example — Waterwheel Generator:**
+
+A player has built a waterwheel (§3.8) on a river. The wheel turns at 2 rev/s (ω = 12.6 rad/s). They attach a coil of 500 turns of copper wire (area 0.02 m²) to the wheel axle, positioned between two lodestone magnets providing B = 0.08 T. Peak EMF = 500 × 0.08 × 0.02 × 12.6 = 10.1 V. Connected to a circuit with 5 Ω total resistance: I_peak = 10.1 / 5 = 2.02 A. Average power (AC): P_avg = 0.5 × V_peak × I_peak = 0.5 × 10.1 × 2.02 = 10.2 W. This is enough to run a single bright incandescent lamp (a resistive wire in a vacuum bulb) or to charge a lead-acid battery. To get more power: more turns, stronger magnets (electromagnet with iron core instead of lodestone), larger coil area, or faster rotation (gearing up from the waterwheel via the gear system §3.8).
+
+**Worked Example — Electric Motor Drives a Grinding Wheel:**
+
+A player connects a 12V lead-acid battery (6 cells) to a coil motor: 200 turns, area 0.015 m², between magnets providing B = 0.3 T. Coil resistance = 1.5 Ω, battery R_internal = 0.3 Ω. At startup (ω = 0, no back-EMF): I = 12 / 1.8 = 6.67 A. Starting torque: τ = 200 × 6.67 × 0.015 × 0.3 = 6.0 N·m. The motor accelerates. As ω increases, the spinning coil generates back-EMF: V_back = N × B × A × ω. At steady state, V_back = V_battery - I × R_total. If the motor reaches 20 rev/s (ω = 125.7): V_back = 200 × 0.3 × 0.015 × 125.7 = 113.1 V — this exceeds the battery voltage, so the motor cannot reach this speed. Steady state: V_back = 12 - I × 1.8. Also V_back = 200 × 0.3 × 0.015 × ω = 0.9 × ω. And I = τ_load / (N × A × B) = τ_load / 0.9. If the grinding wheel requires τ_load = 0.5 N·m: I = 0.5 / 0.9 = 0.56 A. V_back = 12 - 0.56 × 1.8 = 10.99 V. ω = 10.99 / 0.9 = 12.2 rad/s = 1.9 rev/s. Power delivered to grinding: P = 0.5 × 12.2 = 6.1 W. Enough for light grinding/polishing work.
+
+**Pseudocode — Generator/Motor Tick:**
+
+```
+fn update_electromechanical(world: &mut World, dt: f64) {
+    for device in &mut world.coil_in_field_devices {
+        let coil = &device.coil;
+        let axle = &mut device.axle;  // from §3.8 rotational mechanics
+        let b_field = compute_magnetic_field(world, coil.center);
+        let b_along_axis = b_field.dot(coil.normal);
+
+        // Current angle between coil normal and field
+        let theta = axle.angle;  // from rotational mechanics
+        let omega = axle.angular_velocity;
+
+        // Faraday's law: EMF from rotation
+        let emf = coil.turns as f64 * b_along_axis * coil.area * omega * theta.sin();
+
+        // Feed EMF into circuit solver as a voltage source
+        device.circuit_voltage_source.emf = emf;
+
+        // After circuit solver runs, get the current through this coil
+        let current = device.circuit_solution.current;
+
+        // Lorentz torque: motor effect (opposes rotation in generator, drives rotation in motor)
+        let torque = coil.turns as f64 * current * coil.area * b_along_axis * theta.sin();
+
+        // Apply torque to the axle (§3.8 handles angular acceleration, friction, load)
+        axle.apply_torque(torque, dt);
+
+        // Power dissipation in the coil (Joule heating)
+        let p_coil = current * current * coil.resistance;
+        coil.material.add_heat(p_coil * dt);
+    }
+}
+```
+
+**Edge Cases:**
+- No magnets available: without permanent magnets, the first generators cannot be built. Lodestone (naturally magnetized magnetite) must be found in the world. It is rare but not impossibly so — historically, lodestone was known in antiquity. World generation (§4.1) places lodestone deposits in magnetite-rich volcanic regions. Once a player has a generator and a coil, they can magnetize iron by passing current through a coil wrapped around it (creating an electromagnet), then removing the current — some residual magnetization remains. This bootstraps the magnet supply.
+- AC vs DC: generators naturally produce AC (alternating current). A commutator (a split-ring contact on the axle) converts AC to pulsating DC. Implementation: if the coil has a commutator attachment (two half-ring conductors), the output voltage is |EMF| instead of EMF. Smoother DC requires a capacitor (two parallel conductive plates separated by an insulator — charge stores on the plates, smoothing voltage fluctuations).
+- Back-EMF protection: when a motor is suddenly disconnected from its load, it spins freely and generates high voltage (back-EMF spike) that can damage other circuit components. Implementation: track the voltage spike; if V > breakdown_threshold of any component in the circuit, that component fails (insulation breaks down, spark jumps, wire melts).
+- Transformer only works with AC: a constant DC current through coil 1 produces a constant magnetic field → d(Φ)/dt = 0 → no induced voltage in coil 2. Only changing current (AC) induces voltage. The system handles this naturally because Faraday's law computes d(Φ)/dt per tick — if Φ is constant between ticks, EMF = 0.
+
+---
+
+#### Electrolysis (Electricity Drives Chemistry)
+
+```
+Electrolysis {
+  // Reverse of a battery: force current through a solution to drive a non-spontaneous reaction.
+  // This is how aluminum is smelted (impossible by fire — Al₂O₃ melting point is 2072°C,
+  // and carbon reduction doesn't work because aluminum is more reactive than carbon).
+
+  // Faraday's Laws of Electrolysis:
+  //   m = (M × I × t) / (n × F)
+  //   m = mass deposited (kg)
+  //   M = molar mass of the element (kg/mol)
+  //   I = current (A)
+  //   t = time (s)
+  //   n = electrons transferred per atom
+  //   F = Faraday constant = 96,485 C/mol
+  //
+  //   Copper electroplating: Cu²⁺ + 2e⁻ → Cu
+  //   At 10A for 1 hour: m = (0.0635 × 10 × 3600) / (2 × 96485) = 0.0119 kg = 11.9 g
+  //
+  //   Aluminum smelting: Al³⁺ + 3e⁻ → Al
+  //   At 100A for 1 hour: m = (0.027 × 100 × 3600) / (3 × 96485) = 0.0336 kg = 33.6 g
+  //   Real aluminum smelting uses ~15 kWh per kg — enormous energy.
+  //   This is why aluminum was more expensive than gold until electricity became cheap.
+
+  // Implementation: when current flows through an electrolyte (conductive liquid)
+  // containing dissolved metal ions, the reaction engine (§3.1) is triggered
+  // with the current as an energy input (replaces thermal activation energy).
+  // The Nernst equation determines the minimum voltage needed:
+  //   V_min = E_standard + (RT / nF) × ln(Q)
+  // If applied voltage > V_min: electrolysis proceeds. If less: nothing happens.
+}
+```
+
+**Worked Example — Copper Electroplating:**
+
+A player wants to coat an iron tool with copper to prevent rust. They dissolve copper sulfate (CuSO₄) in water (blue solution). They connect a 3-cell voltaic pile (3.3V) to two electrodes submerged in the solution: the iron tool as cathode (negative), a scrap copper plate as anode (positive). Minimum voltage for copper deposition: E_standard = 0.34V. Applied voltage 3.3V > 0.34V — electrolysis proceeds. Solution resistance: ~2 Ω. Battery R_internal: 1.5 Ω. Current: I = (3.3 - 0.34) / 3.5 = 0.85 A. Copper deposited per hour: m = (0.0635 × 0.85 × 3600) / (2 × 96485) = 1.0 g. A thin copper layer (~0.01 mm) covers the iron tool in about 1 hour. The copper anode dissolves at the same rate, maintaining the solution concentration. The iron tool now has `electricalConductivity` of copper on its surface and is protected from galvanic corrosion (§3.4) because copper is nobler than iron.
+
+**Worked Example — Aluminum Smelting (Late-Game Technology):**
+
+Aluminum requires: (1) bauxite ore → alumina (Al₂O₃) via the Bayer process (dissolve in NaOH, filter, calcine), (2) cryolite flux (Na₃AlF₆) to lower the melting point from 2072°C to ~960°C, (3) enormous electrical power. A player with a large waterwheel generator (500W) attempts smelting. Current at ~5V (minimum for Al): I = 500/5 = 100A. But generator voltage is AC and much higher. They need a step-down transformer: 100V AC → 5V AC (turns ratio 20:1), then a rectifier (not easily available without semiconductors). Alternative: multiple batteries in parallel for high DC current. 50 voltaic cells in parallel (each 1.1V, 2A max): V = 1.1V (too low — need ~5V). Cells in series-parallel: 5 series × 10 parallel = 5.5V, 20A max. At 20A: m = (0.027 × 20 × 3600) / (3 × 96485) = 6.7 g/hour. Tiny yield. This is why aluminum smelting historically required industrial-scale hydroelectric power. The game accurately reflects that aluminum is inaccessible until the player builds serious electrical infrastructure.
+
+**Edge Cases:**
+- Electrolysis of water: 2H₂O → 2H₂ + O₂ at V > 1.23V. Produces hydrogen gas (flammable — connects to combustion §3.1) and oxygen gas. A player can generate hydrogen fuel via electrolysis, store it, and use it for high-temperature flames (H₂ + O₂ → 2860°C) or for filling balloons (H₂ is lighter than air → buoyancy).
+- Competing reactions: if multiple ions are present, the one with the least negative electrode potential deposits first. In a solution containing Cu²⁺ and Zn²⁺, copper deposits before zinc because E_Cu > E_Zn. The reaction engine priority system handles this.
+- Electrode degradation: inert electrodes (carbon, platinum) do not participate in the reaction. Active electrodes (copper anode in copper plating) dissolve. If the anode is consumed entirely, electrolysis stops (no source of ions). Track electrode mass via the reaction engine.
+
+---
+
+#### Arc Furnace (Electricity → Extreme Heat)
+
+```
+ArcFurnace {
+  // When voltage is high enough to ionize air between two electrodes,
+  // an electric arc forms — a continuous plasma discharge at 3000-20000°C.
+  // This is the highest temperature achievable in the game.
+  //
+  // Arc voltage: V_arc ≈ 20-50V (depends on gap distance and gas)
+  // Arc current: I = (V_supply - V_arc) / R_circuit
+  // Power: P = V_arc × I
+  //
+  // A 100V supply, 10Ω circuit, 30V arc: I = (100-30)/10 = 7A, P = 210W
+  // A 500V supply, 1Ω circuit, 50V arc: I = 450A, P = 22,500W (22.5 kW)
+  //
+  // At 22.5 kW focused on a small area: temperature exceeds 3000°C easily.
+  // This enables:
+  //   Melting steel (1538°C) — possible with lower-power arc
+  //   Melting tungsten (3422°C) — requires powerful arc
+  //   Making steel from scrap (electric arc furnace steelmaking)
+  //   Welding (joining metals by melting their junction)
+  //
+  // Implementation: when two electrodes are close but not touching, and
+  // voltage between them exceeds breakdown threshold (~3 MV/m × gap distance):
+  //   Create an arc entity (continuous plasma between the electrodes)
+  //   The arc converts electrical power to heat at the arc location
+  //   Temperature propagation (Stage 1) distributes the heat
+  //   MaterialPackets in the arc zone heat rapidly
+  //   Sound: continuous broadband noise from the plasma (noise synthesis §3.3)
+  //   Light: intense white/blue glow (emissive rendering)
+}
+```
+
+**Worked Example — Arc Welding Two Iron Plates:**
+
+A player has a generator producing 80V AC (from a steam engine, §3.11, driving a 400-turn coil in a 0.3T field at 10 rev/s: EMF = 400 × 0.3 × 0.02 × 62.8 = 150V peak, 80V RMS). They touch a carbon electrode to the junction between two iron plates, then pull it back 3mm. Breakdown voltage: 3 MV/m × 0.003 m = 9,000V — too high for 80V! But the electrode was touching the iron: as it pulls away, the contact point heats to incandescence, creating a hot ionized channel. Hot air breaks down at much lower voltage (~0.5 MV/m). Revised breakdown: 0.5 MV/m × 0.003 = 1,500V — still too high. In practice, arc welding works because the initial contact creates a molten bridge that ionizes as it stretches. Implementation: if two conductors were in contact within the last 5 ticks and are now separated by < 10mm, use a reduced breakdown threshold (V_breakdown = 20V + 10V/mm × gap). At 3mm gap: V_breakdown = 50V. With 80V supply: arc strikes. Arc current with 0.5 Ω circuit resistance: I = (80 - 30) / 0.5 = 100A. Power: P = 30 × 100 = 3,000W concentrated at the junction. Temperature at the weld zone rises past iron's melting point (1538°C) in seconds. The two plates fuse.
+
+**Edge Cases:**
+- Arc in vacuum: no gas to ionize. Arc cannot form (electrons need gas molecules to create a conductive channel). Implementation: if the arc gap is in a vacuum chamber, breakdown threshold → infinity.
+- Arc in inert gas: argon, nitrogen have different breakdown voltages. Argon is lower → easier to strike an arc. This is why real welding uses argon shielding gas (prevents oxidation of the weld). If the player surrounds the weld zone with argon (collected from air distillation, late-game), weld quality improves (no oxide inclusions).
+- Carbon electrode consumption: carbon electrodes gradually oxidize (C + O₂ → CO₂) at arc temperatures. The electrode shortens over time. Player must periodically advance the electrode to maintain the gap. Tracked by the reaction engine.
+- Electromagnetic interference: the arc produces broadband electromagnetic radiation (radio noise). Any nearby compass or sensitive magnetic instrument is disturbed while the arc is active. Implementation: add a noise component to `compute_magnetic_field()` when an arc is within range.
+
+---
+
+#### Resistance Wire Applications (Emergent Devices)
+
+This subsection does not add new physics — it documents emergent devices that arise naturally from current + resistance + temperature propagation. None of these are coded as special objects. They exist because the physics produces them.
+
+```
+EmergentElectricalDevices {
+  // Incandescent lamp:
+  //   A thin wire (tungsten, carbon, or iron) in a sealed glass bulb (vacuum or inert gas).
+  //   Current heats the wire. At ~2500°C, it glows white-hot (Wien's law, §3.12).
+  //   Vacuum prevents oxidation (without vacuum: wire burns in seconds).
+  //   The emissive rendering system (§3.5) already handles glowing hot objects.
+  //   A lamp is just: a hot wire + a transparent enclosure + a vacuum.
+  //
+  //   100V supply, tungsten filament R = 100Ω: I = 1A, P = 100W.
+  //   ~5% of power becomes visible light (historically accurate for incandescent lamps).
+
+  // Electric fence:
+  //   A wire at high voltage. Anything that touches it and is grounded completes
+  //   a circuit through its body. Current = V / (R_wire + R_body + R_ground).
+  //   Human body: R ≈ 1000Ω (wet skin) to 100,000Ω (dry skin).
+  //   At 100V through wet skin: I = 100/1000 = 0.1A (dangerous — can cause muscle spasm).
+  //   Implementation: already handled by the circuit solver. The fence wire is a circuit
+  //   element. The entity's body is a resistor. Contact creates a new circuit path.
+
+  // Telegraph:
+  //   A long wire from point A to point B. A battery at A, an electromagnet at B.
+  //   Close a switch at A → current flows → electromagnet at B activates → clicks.
+  //   Open the switch → current stops → electromagnet releases.
+  //   Morse code: patterns of short/long activations encode messages.
+  //   Implementation: no new physics needed. The circuit solver, the electromagnet force
+  //   calculation, and the switch (a mechanical contact that opens/closes a circuit path)
+  //   are all already defined. A telegraph is an emergent composition of existing systems.
+
+  // Electric bell / alarm:
+  //   An electromagnet pulls a hammer toward a bell (gong). The hammer's motion
+  //   breaks the circuit (the hammer arm IS the switch). Circuit breaks → magnet releases →
+  //   spring pulls hammer back → circuit closes → magnet pulls again → repeat.
+  //   This creates an oscillation at ~5-20 Hz. The bell rings continuously while
+  //   the battery is connected. Implementation: entirely emergent from the circuit solver
+  //   + electromagnet force + structural mechanics. No special code.
+}
+```
+
+---
+
+#### Performance Budget
+
+```
+ElectromagnetismPerformance {
+  // Circuit solving: sparse linear system Ax = b
+  //   5-node circuit: ~0.01 ms (Gaussian elimination)
+  //   20-node circuit: ~0.1 ms (LU decomposition)
+  //   100-node circuit (complex factory): ~1 ms (iterative solver)
+  //
+  // Magnetic field computation:
+  //   Per permanent magnet: ~0.005 ms (dipole field evaluation at nearby points)
+  //   Per current-carrying coil: ~0.01 ms (solenoid field formula)
+  //   10 magnets + 5 coils in range: ~0.1 ms
+  //
+  // Static charge: negligible (< 0.01 ms — only computed when insulating objects
+  //   are being rubbed, which is a player-initiated action, not a world-tick process)
+  //
+  // Arc furnace: ~0.02 ms per active arc (one heat injection + one sound event per tick)
+  //
+  // Electrolysis: ~0.01 ms per active electrolysis cell (one Faraday's law calculation
+  //   + one reaction engine trigger per tick)
+  //
+  // Total EM budget: ~0.2-1.0 ms per tick (comparable to structural physics)
+  // Only computed when electrical systems exist near active players.
+  // A world with no batteries or generators: zero EM cost.
+  //
+  // Circuit graph updates: event-driven (not every tick)
+  //   Wire placed/removed → rebuild circuit graph
+  //   Battery connected/disconnected → resolve voltages
+  //   Generator speed changes → update EMF
+  //   Circuit graph is cached between events (dirty flag pattern)
+  //
+  // Tick rate: 30 Hz (same as environment physics — electrical changes are smooth)
+  // Magnetic field is cached per-frame for each query point (LRU cache, 256 entries)
+  //   Recomputed only when magnets/coils move or currents change
+
+  // MaterialPacket additions for this section:
+  //   magneticPermeability: number    // relative, dimensionless (iron: 200-5000, air/wood: 1)
+  //   permanentMagnetization: number  // Tesla (0 for non-magnets, 0.01-1.0 for magnets)
+  //   triboelectricIndex: number      // position in triboelectric series (-1 to +1)
+  //   These three fields add 12 bytes per MaterialPacket (3 × f32).
+  //   At 100,000 active packets: 1.2 MB additional memory (negligible).
+}
+```
+
+---
+
+#### Connections (5 new — Connections 58-62)
+
+**Connection 58: Battery Voltage from Electrode Potentials (critical)**
+- Source: Material System (§3.1) — `standardElectrodePotential` per element
+- Target: Electromagnetism (§3.13) — V_cell = E_cathode - E_anode
+- Data: already stored on MaterialPacket; now consumed by the circuit solver. When two different metals are detected in contact with a conductive liquid (electrolyte), the system computes V_cell from the difference in their electrode potentials. This voltage is registered as a voltage source in the circuit graph. Multiple cells in series sum their voltages. The same property that drives galvanic corrosion (§3.4) now drives useful electrical power — the only difference is whether the electron flow is intentionally harnessed through an external circuit.
+- Trigger: when two different metals are placed in an electrolyte (conductive liquid) and connected by an external conductive path
+
+**Connection 59: Current → Resistive Heating (critical)**
+- Source: Electromagnetism (§3.13) — current I through each circuit element
+- Target: Temperature Propagation (§3.0 Stage 1) — P = I²R added as heat source
+- Data: for every edge in the solved circuit graph, power dissipation P = I² × R is computed. This power is injected as a heat source into the temperature propagation system at the spatial location of that circuit element. The temperature increase per tick: dT = (P × dt) / (mass × specificHeat). This is how resistance heating, fuse blowing, wire melting, incandescent lamp glowing, and arc furnace operation all emerge from a single formula.
+- Trigger: every tick while current flows through any resistive element
+
+**Connection 60: Generator ← Rotational Mechanics (critical)**
+- Source: Rotational Mechanics (§3.8) — angular velocity ω of axle with attached coil
+- Target: Electromagnetism (§3.13) — EMF = N × B × A × ω × sin(θ)
+- Data: the rotational mechanics system provides angular velocity and angle for every axle joint. For axles that have a coil attachment in a magnetic field region, the EM system computes induced EMF via Faraday's law and registers it as a voltage source in the circuit graph. The circuit solver then determines current through connected loads. The power drawn by the electrical load creates a counter-torque (Lenz's law) fed back to the axle, which the rotational mechanics system applies as a braking force. Energy is conserved: mechanical power in = electrical power out + losses.
+- Trigger: every tick while a coil-on-axle rotates in a magnetic field
+
+**Connection 61: Motor → Rotational Mechanics (critical)**
+- Source: Electromagnetism (§3.13) — current I through coil in magnetic field
+- Target: Rotational Mechanics (§3.8) — τ = N × I × A × B × sin(θ) applied to axle
+- Data: when the circuit solver determines that current flows through a coil situated in a magnetic field and mounted on an axle joint, the Lorentz force produces a torque. This torque is applied to the axle via the rotational mechanics system, which handles angular acceleration, friction, gear ratios, and connected loads. The motor's back-EMF (generated by its own rotation) is fed back into the circuit solver, naturally limiting the motor's speed. A motor and a generator are the same physical device — the direction of energy flow is determined by whether external torque or external voltage is applied.
+- Trigger: every tick while current flows through a coil mounted on an axle in a magnetic field
+
+**Connection 62: Electrolysis → Reaction Engine (critical)**
+- Source: Electromagnetism (§3.13) — current I through electrolyte solution
+- Target: Reaction Engine (§3.1) — drives non-spontaneous electrochemical reactions
+- Data: when current flows through an electrolyte containing dissolved ions, Faraday's law determines the mass of material deposited or dissolved per tick: m = (M × I × dt) / (n × F). The reaction engine receives this as a forced reaction (bypassing the normal activation energy requirement). The minimum voltage is checked against the Nernst equation: V_min = E°_standard + (RT / nF) × ln(Q). If applied voltage < V_min, no reaction occurs. The deposited mass is added to the cathode's MaterialPacket; the dissolved mass is removed from the anode's MaterialPacket. Ion concentration in the electrolyte is tracked and affects both R_internal and V_min over time.
+- Trigger: when current flows through an electrolyte containing dissolved metal ions and applied voltage exceeds the Nernst threshold
 
 
 ---
