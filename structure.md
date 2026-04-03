@@ -18,9 +18,10 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (44 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (47 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
+    - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
 
 ### PART III — GAME WORLD
 4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
@@ -4534,7 +4535,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 44 connections total (19 critical + 25 moderate).
+for every connection. 47 connections total (20 critical + 27 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -7815,6 +7816,248 @@ EmergentMachines {
   //   particular arrangement before.
 }
 ```
+
+
+### 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
+
+#### The Principle
+
+Every object moving through air experiences drag — a force opposing its motion. Currently, Stage 6 (Rigid Body Physics) applies gravity and terrain collision but NO air resistance. This means:
+- An arrow shot at 60 m/s maintains full speed until it hits something (wrong — real arrows lose ~50% speed over 100m)
+- A thrown rock follows a perfect parabola (wrong — drag flattens the trajectory)
+- A feather and a stone fall at the same speed (wrong — terminal velocity depends on drag)
+- Fletching on arrows is useless (wrong — fletching creates spin stabilization via Magnus effect)
+
+Adding drag to Stage 6 fixes ALL of these with one force term.
+
+#### Drag Force
+
+Every rigid body in flight experiences aerodynamic drag:
+
+```
+  F_drag = 0.5 × ρ_air × v² × Cd × A
+
+  where:
+    ρ_air = 1.225 kg/m³ (air density at sea level, 15°C)
+           Varies with altitude: ρ(h) = 1.225 × exp(-h/8500)
+           At 1000m elevation: ρ ≈ 1.112 kg/m³
+           At 3000m: ρ ≈ 0.909 kg/m³
+    v = speed of the object relative to the air (m/s)
+        v_relative = v_object - v_wind (wind affects effective speed)
+    Cd = drag coefficient (dimensionless) — depends on shape
+    A = cross-sectional area perpendicular to motion (m²)
+
+  The drag force acts OPPOSITE to the velocity direction:
+    F_drag_vector = -0.5 × ρ_air × |v|² × Cd × A × normalize(v)
+```
+
+#### Drag Coefficient by Shape
+
+Cd depends on the object's shape and orientation. For the game, compute Cd from
+the object's aspect ratio and surface roughness:
+
+| Shape                  | Cd    | Example in game                      |
+|------------------------|-------|--------------------------------------|
+| Sphere                 | 0.47  | Thrown rock, cannonball               |
+| Long cylinder (axial)  | 0.82  | Log thrown end-first                  |
+| Long cylinder (broadside) | 1.2 | Log tumbling sideways                |
+| Flat plate (perpendicular) | 1.28 | Shield held up, door blown by wind |
+| Streamlined (teardrop) | 0.04  | Well-shaped arrow, fish               |
+| Arrow with fletching   | 0.05  | Arrow in flight (stabilized)          |
+| Arrow without fletching | 0.20 | Un-fletched arrow (tumbles)           |
+| Human body (standing)  | 1.0   | Player falling, NPC in wind           |
+| Human body (diving)    | 0.3   | Player falling headfirst              |
+
+For arbitrary crafted objects, approximate Cd from dimensions:
+
+```
+  aspectRatio = length / max(width, height)
+  if aspectRatio > 3 and aligned with velocity: Cd ≈ 0.05 + 0.1/aspectRatio (streamlined)
+  if aspectRatio < 0.5: Cd ≈ 1.2 (flat plate)
+  else: Cd ≈ 0.47 (sphere-like default)
+  Add roughness penalty: Cd += 0.1 × surfaceRoughness (rough surfaces drag more)
+```
+
+#### Terminal Velocity
+
+When drag equals gravity, the object stops accelerating:
+
+```
+  F_drag = F_gravity
+  0.5 × ρ × v_t² × Cd × A = m × g
+  v_t = √(2 × m × g / (ρ × Cd × A))
+```
+
+Examples:
+
+```
+  Stone (1 kg, r=0.05m, Cd=0.47): v_t = √(2×1×9.81 / (1.225×0.47×0.00785)) = 74 m/s
+  Arrow (0.05 kg, A=0.0001m², Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.0001)) = 127 m/s
+  Feather (0.001 kg, A=0.003m², Cd=1.0): v_t = √(2×0.001×9.81 / (1.225×1.0×0.003)) = 2.3 m/s
+  Human (70 kg, A=0.7m², Cd=1.0): v_t = √(2×70×9.81 / (1.225×1.0×0.7)) = 40 m/s (~144 km/h)
+```
+
+A feather reaches terminal velocity in ~0.2 seconds (falls slowly).
+A stone barely slows down over a 5m fall (terminal velocity >> fall speed).
+This is physically correct — heavy dense objects are less affected by drag.
+
+#### Spin and Magnus Effect
+
+A spinning projectile curves in flight due to the Magnus effect:
+
+```
+  F_magnus = S × (ω × v)
+  where:
+    S = Magnus coefficient ≈ 0.5 × ρ × A (for a sphere)
+    ω = angular velocity vector (rad/s)
+    × = cross product — force is perpendicular to both spin axis and velocity
+```
+
+Spin stabilization:
+
+A bullet or arrow spinning around its long axis resists tumbling (gyroscopic stability).
+
+```
+  Gyroscopic stability parameter: Sg = (I_axial × ω²) / (ρ × v × A × d × CM_alpha)
+  If Sg > 1: stable (arrow flies straight)
+  If Sg < 1: tumbles (arrow cartwheels — no damage, reduced range)
+```
+
+How spin is created in gameplay:
+
+- **Fletching**: angled feathers on arrow create spin when air flows over them.
+  `ω ≈ v × sin(fletch_angle) / r_arrow`.
+  Typical: v=60 m/s, fletch_angle=3 degrees, r=0.005m gives ω ≈ 628 rad/s (~100 rev/s).
+- **Rifling**: spiral grooves in a tube spin the projectile.
+  Only matters for gunpowder-era (Chapter 8 tech tree).
+- **Throwing with spin**: player imparts angular velocity by wrist action.
+  Adds skill element — spin-thrown spears fly straighter.
+
+The Magnus effect curves spinning projectiles:
+- A top-spinning ball curves downward (like a soccer kick)
+- A back-spinning ball curves upward (like a golf drive)
+- For arrows: the fletching-induced spin is around the long axis,
+  so Magnus effect creates a slow helical drift, not a dramatic curve.
+  This drift is small (~1-2cm per 100m) and mostly irrelevant for gameplay.
+  But gyroscopic stability IS critical — it determines straight flight vs. tumbling.
+
+#### Worked Example: Arrow in Flight
+
+```
+  Arrow: mass 0.05 kg, length 0.7m, diameter 0.01m
+  Fletching: 3 feathers at 3° angle → spin ω ≈ 628 rad/s
+  Initial velocity: 60 m/s (longbow)
+  Cd = 0.05 (streamlined + spin-stabilized)
+  A = π × 0.005² = 0.0000785 m²
+
+  Drag force at launch: F = 0.5 × 1.225 × 3600 × 0.05 × 0.0000785 = 0.0087 N
+  Deceleration: a = F/m = 0.0087/0.05 = 0.17 m/s² (very small)
+
+  But drag grows with v²: at 60 m/s it's 0.17 m/s², but it accumulates.
+  Numerical integration (Euler, dt=0.01s) over 100m range:
+    t=0.0s: v=60.0 m/s, x=0m
+    t=0.5s: v=55.8 m/s, x=29m (lost 7%)
+    t=1.0s: v=51.4 m/s, x=56m (lost 14%)
+    t=1.7s: v=45.2 m/s, x=100m (lost 25% — arrives at 45 m/s)
+
+  Without drag: arrives at 100m in 1.67s at 60 m/s (full speed)
+  With drag: arrives at 100m in ~2.0s at 45 m/s (25% slower, takes longer)
+
+  Impact energy: 0.5 × 0.05 × 45² = 50.6 J (with drag) vs. 90 J (without)
+  This 44% energy reduction matters enormously for combat damage.
+
+  Un-fletched arrow (Cd=0.20, tumbling):
+    Much more drag. Loses ~60% speed over 100m. Arrives at ~24 m/s.
+    Impact energy: 14.4 J (84% less than fletched arrow)
+    Fletching is worth 3.5× more damage at range — a REAL gameplay difference.
+```
+
+#### Implementation
+
+Stage 6 (Rigid Body Physics) gains one additional force per object:
+
+```rust
+for each rigidBody in activeObjects {
+    // Existing: gravity
+    F_gravity = rigidBody.mass * g * downDirection;
+
+    // NEW: aerodynamic drag
+    v_relative = rigidBody.velocity - windVelocity;  // wind from weather §4.6
+    speed = length(v_relative);
+    if speed > 0.1 {  // skip drag for nearly-stationary objects (optimization)
+        F_drag = -0.5 * rho_air * speed * speed * rigidBody.Cd * rigidBody.A * normalize(v_relative);
+    } else {
+        F_drag = Vec3(0.0, 0.0, 0.0);
+    }
+
+    // NEW: Magnus effect (only for spinning objects)
+    if length(rigidBody.angularVelocity) > 1.0 {  // spinning faster than 1 rad/s
+        S = 0.5 * rho_air * rigidBody.A;
+        F_magnus = S * cross(rigidBody.angularVelocity, v_relative);
+    } else {
+        F_magnus = Vec3(0.0, 0.0, 0.0);
+    }
+
+    // Integrate
+    totalForce = F_gravity + F_drag + F_magnus;
+    rigidBody.velocity += (totalForce / rigidBody.mass) * dt;
+    rigidBody.position += rigidBody.velocity * dt;
+
+    // Spin decay from aerodynamic torque (drag slows the spin too)
+    spinDragTorque = -0.01 * rho_air * speed * rigidBody.angularVelocity;
+    rigidBody.angularVelocity += spinDragTorque * dt;
+}
+```
+
+**Cost**: ~5 FLOPs per object (one cross product, one dot product, one normalize).
+For 100 active rigid bodies: 500 FLOPs — negligible.
+This adds ZERO measurable cost to the physics tick.
+
+#### Edge Cases
+
+- **Object at rest on ground**: speed < 0.1 threshold skips drag entirely. No wasted computation on grounded objects.
+- **Extreme speed (> 343 m/s, Mach 1)**: Cd increases sharply at transonic speeds (wave drag). For gameplay this only matters if gunpowder-era weapons are reached. If needed: `Cd_effective = Cd * (1 + 2 * max(0, speed/343 - 0.8)²)` adds transonic penalty.
+- **Zero-mass objects**: Division by mass in deceleration would produce infinity. Guard: if mass < 0.001 kg, clamp to 0.001 kg.
+- **Wind stronger than object velocity**: v_relative can point backward, meaning drag pushes the object forward (wind carrying it). This is correct behavior — a feather in a gale SHOULD blow away.
+- **Underwater projectiles**: If the object is submerged, replace rho_air (1.225) with rho_water (1000). Drag becomes ~800x greater. Arrows stop almost instantly underwater. Spearfishing requires very short range.
+- **Altitude variation**: At very high altitudes (mountains, 3000m+), reduced air density means arrows fly farther. Mountain archers have a real range advantage — emergent tactical gameplay.
+- **Tumbling transition**: When Sg drops below 1 mid-flight (spin decays too much), Cd jumps from 0.05 to 0.20 discontinuously. Smooth this: `Cd = lerp(Cd_stable, Cd_tumble, clamp(1 - Sg, 0, 1))` to avoid physics jitter.
+
+#### Performance Budget
+
+| Operation | Cost per object per tick | Notes |
+|-----------|------------------------|-------|
+| v_relative subtraction | 3 FLOPs | vec3 subtract |
+| speed (length) | 5 FLOPs | sqrt(dot product) |
+| Threshold check | 1 FLOP | branch |
+| F_drag computation | 8 FLOPs | multiply + normalize |
+| F_magnus (if spinning) | 12 FLOPs | cross product + scale |
+| Spin decay | 4 FLOPs | scale + add |
+| **Total** | **~20 FLOPs** | Worst case with Magnus |
+
+At 100 active rigid bodies and 60 ticks/second: 120,000 FLOPs/s.
+A modern CPU does ~50 billion FLOPs/s. This is 0.00024% of one core.
+Projectile aerodynamics is effectively free.
+
+#### Connections
+
+**Connection 45: Drag on Rigid Bodies (critical)**
+- Source: Weather System (S4.6) — wind velocity vector
+- Target: Rigid Body Physics (Stage 6) — drag force
+- Data: rho_air (from altitude), v_wind (from weather), applied as F_drag per object per tick
+- Trigger: every tick for every active rigid body
+
+**Connection 46: Drag to Combat Damage (critical)**
+- Source: Projectile Aerodynamics (S3.9) — impact velocity after drag
+- Target: Combat System (S7.5) — damage = 0.5 * m * v_impact^2
+- Data: arrows/projectiles arrive with reduced velocity leading to reduced damage at range
+- Trigger: on projectile impact
+
+**Connection 47: Fletching/Spin to Stability (moderate)**
+- Source: Crafting (S6.3) — arrow construction with/without fletching
+- Target: Projectile Aerodynamics (S3.9) — Cd and Sg values
+- Data: fletched arrows: Cd=0.05, Sg>1 (stable). Un-fletched: Cd=0.20, Sg<1 (tumbles).
+- Trigger: computed once when arrow is crafted, cached on the object
 
 
 ---
