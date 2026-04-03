@@ -339,7 +339,10 @@ MaterialPacket {
 
   // ── Mechanical ────────────────────────────────────────────────────────────
   density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
-  hardness: number                      // Mohs scale — Hall-Petch + solid solution strengthening
+  hardness: number                      // Mohs scale — Fleischer solid solution strengthening: Δσ = B×c^(1/2)
+                                        // (Fleischer c^(1/2) for dilute alloys; Labusch c^(2/3) more accurate
+                                        // for concentrated alloys like bronze at 12% Sn, but c^(1/2) is used
+                                        // as a uniform approximation since grain size is not tracked)
   tensileStrength: number               // Pa — maximum pull force before snap
   compressiveStrength: number           // Pa — maximum squeeze force before crush
   shearStrength: number                 // Pa — maximum sideways force before shear
@@ -438,7 +441,7 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Latent heat (fusion) | Clausius-Clapeyron: L = T × ΔV × (dP/dT), weighted by composition | Thermodynamics | §3.2 Phase transition duration (melting/freezing) |
 | Latent heat (vaporization) | Clausius-Clapeyron from boiling point + entropy of vaporization | Thermodynamics | §3.2 Phase transition duration (boiling) |
 | Density | `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law | SPH, buoyancy, weight |
-| Hardness | Hall-Petch for grain size + solid solution strengthening | Metallurgy | Tool quality, Mohs scale |
+| Hardness | Fleischer solid solution Δσ=B×c^(1/2) (no grain size tracked, so Hall-Petch not used) | Metallurgy | Tool quality, Mohs scale |
 | Tensile strength | Empirical relation to hardness + crystal structure correction | Materials science | §3.4 beam spans, breaking |
 | Compressive strength | ~10× tensile for stone, ~1× for metals, from crystal bonding | Materials science | §3.4 stacking, foundations |
 | Shear strength | ~0.6× tensile for metals, ~0.15× compressive for stone | Materials science | §3.4 lateral force, wind |
@@ -580,9 +583,11 @@ A steel tool lasts 5-10× longer than copper because steel has a higher fatigue 
 #### Fracture Toughness — Cracked Materials Are Weaker
 
 A material with a crack fails at LOWER stress than an intact one.
-Griffith-Irwin stress intensity factor:
-  K_I = σ × √(π × a)
-  where a = crack length (m), σ = applied stress (Pa)
+Griffith-Irwin stress intensity factor (infinite plate, central through-crack):
+  K_I = Y × σ × √(π × a)
+  where a = crack half-length (m), σ = applied stress (Pa),
+  Y = geometry correction factor (Y=1.0 for infinite plate, Y≈1.12 for edge crack).
+  The game uses Y=1.0 as a simplification since exact crack geometry isn't tracked.
 
 Failure when K_I ≥ K_IC (critical stress intensity / fracture toughness):
   Glass: K_IC ≈ 0.7 MPa·√m (shatters easily — a tiny scratch is catastrophic)
@@ -748,13 +753,16 @@ This means: the SAME steel, quenched in water vs. oil vs. air, produces three di
 Certain alloys become dramatically harder when held at a specific temperature
 for a specific time. This is "aging" or "precipitation hardening."
 
-The Avrami equation describes the transformation progress:
+The Avrami (JMAK) equation describes the transformation progress:
   f(t) = 1 - exp(-(k×t)^n)
   where:
     f = fraction transformed (0→1)
     t = time at aging temperature (seconds)
-    k = rate constant (depends on temperature — Arrhenius: k = k₀ × exp(-Q/RT))
+    k = rate constant with units of 1/time (depends on temperature: k = k₀ × exp(-Q/RT))
     n = Avrami exponent (1-4, depends on nucleation mechanism)
+  NOTE: this uses the (k×t)^n convention where k has units of 1/time.
+  The alternative convention f = 1 - exp(-K×t^n) has K in units of 1/time^n.
+  Both are valid if parameters are calibrated consistently. This document uses the first form.
 
 Example: Cu-2%Be alloy (beryllium bronze)
   Freshly cast: HV 100 (soft)
@@ -3811,10 +3819,12 @@ StructuralDecay {
   //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
   //     This happens when: fire on one side of a stone wall, sun on south face
   //
-  //   Thermal shock resistance parameter: R = σ_t × k / (E × α)
-  //     Glass: R = 40 → shatters when quenched from >80°C temperature difference
-  //     Copper: R = 12,000 → survives quenching from 500°C+ (safe for quench hardening)
-  //     Ceramic: R = 200 → survives moderate thermal shock but not extreme
+  //   Thermal shock resistance parameter (R', second parameter — includes conductivity):
+  //     R' = σ_t × k × (1 - ν) / (E × α)
+  //     where ν = Poisson's ratio (~0.2-0.3 for most materials)
+  //     Glass: R' ≈ 30 → shatters when quenched from >80°C temperature difference
+  //     Copper: R' ≈ 9,000 → survives quenching from 500°C+ (safe for quench hardening)
+  //     Ceramic: R' ≈ 150 → survives moderate thermal shock but not extreme
   //
   //   Gameplay effect: dropping a hot ceramic pot into cold water SHATTERS it.
   //   Quenching hot copper in water is SAFE. This emerges from the R parameter
