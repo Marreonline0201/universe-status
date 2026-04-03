@@ -126,6 +126,35 @@ This approach has precedent. *Dwarf Fortress* (Tarn Adams, ongoing) demonstrated
 
 These are the foundational physics systems that power every other system in the game. They are NOT independent modules — they are **stages of a single physics tick loop** that runs in a Rust native process on the server. Each stage feeds into the next: temperature changes trigger phase transitions, phase transitions spawn fluid particles, fluid particles interact via forces that depend on material properties, structural blocks break when forces exceed material strength, and every physical event emits a sound descriptor.
 
+#### Recommended Reading Order
+
+The sections below are numbered in the order they were developed, not by importance.
+For understanding the physics engine, read them in this dependency order:
+
+**Foundation (read first — everything depends on these):**
+1. §3.1 Material System — composition to properties. Every other system reads from this.
+2. Physics Tick intro (below) — the 8-stage pipeline that runs every tick.
+3. §3.2 Fluid Simulation — SPH/MPM particles, phase transitions, rendering.
+4. §3.4 Structural Physics — load paths, beams, arches, cascades.
+
+**Mechanics (read second — these enable machines and motion):**
+5. §3.8 Rotational Mechanics — joints, gears, wheels. All machines need this.
+6. §3.10 Rope/Cable Physics — pulleys, bows, rigging. Many machines need rope.
+7. §3.9 Projectile Aerodynamics — drag and spin on every moving object.
+
+**Feedback (read third — what the player perceives):**
+8. §3.3 Sound Engine — every action produces sound from physics.
+
+**Advanced Systems (read fourth — build on the foundation):**
+9. §3.11 Heat Engines — steam power, combustion. Needs fluid + rotational.
+10. §3.13 Electromagnetism — batteries, motors, generators. Needs rotational + heat.
+11. §3.12 Optics — lenses, telescopes, mirrors. Mostly independent.
+
+**Infrastructure (read last — implementation concerns):**
+12. §3.5 Networking — how physics reaches clients.
+13. §3.6 Cross-System Connections — data flow reference (65 connections).
+14. §3.7 Optimization — tick scheduling, caching, degradation.
+
 #### The Unified Physics Tick (Rust Core)
 
 Every server tick (60 Hz for crafting, 30 Hz for environment), the physics engine runs one pipeline:
