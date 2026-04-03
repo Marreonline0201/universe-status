@@ -155,7 +155,7 @@ PhysicsTick (Rust native addon, called from Node.js game server) {
   // "For every pair in contact" does NOT mean checking every packet against
   // every other packet (O(n^2) -- impossible for 500,000 packets).
   //
-  // The reaction engine reuses the same spatial hash grid as the SPH solver (S3.2).
+  // The reaction engine reuses the same spatial hash grid as the SPH solver (§3.2).
   // Each MaterialPacket and fluid particle hashes its position into a cell.
   // Only pairs in the same cell or the 26 adjacent cells are checked.
   //
@@ -739,7 +739,7 @@ The criticalCoolingRate depends on carbon content and alloying elements:
   //     Still air: ~5C/s
   //     Furnace cool: ~1C/s
   //
-  //   The fluid simulation (S3.2) computes the actual cooling rate from the
+  //   The fluid simulation (§3.2) computes the actual cooling rate from the
   //   heat transfer between the hot steel particle and the surrounding fluid.
   //   If actualCoolingRate > CCR: martensite forms.
   //   If actualCoolingRate < CCR: pearlite forms.
@@ -817,6 +817,33 @@ Check Gibbs free energy: `ΔG = ΔH - TΔS`
   // This matters for: smelting near the minimum temperature (partially reduced ore),
   // reversible calcination (limestone <-> quicklite + CO2 at ~900C),
   // and dissolution/crystallization cycles.
+
+  // ── Backward Reactions (Reversal) ──────────────────────────────────────
+  //
+  // When conditions change (temperature drops, pressure changes), K shifts
+  // and the equilibrium moves. The system must actively reverse reactions:
+  //
+  //   Each tick, for packets at equilibrium (|ΔG| < 1 kJ/mol):
+  //     1. Compute current K = exp(-ΔG / (R × T))
+  //     2. Compute target fraction = K / (1 + K)
+  //     3. Compare with actual current fraction of products in the packet
+  //     4. If actual > target: backward reaction — convert some products back to reactants
+  //        If actual < target: forward reaction — convert some reactants to products
+  //     5. Rate of adjustment: Δfraction = (target - actual) × reactionRate × dt
+  //        where reactionRate = k × exp(-Ea / (R × T)) (same Arrhenius as forward)
+  //
+  //   This creates a CONTINUOUS equilibrium, not a binary on/off state.
+  //   As temperature changes slowly, the composition adjusts smoothly.
+  //
+  //   Example: limestone calcination (CaCO₃ ↔ CaO + CO₂)
+  //     At 900°C: K >> 1, calcination proceeds (forward dominant)
+  //     At 850°C: K ≈ 1, equilibrium — limestone partially calcined
+  //     At 800°C: K << 1, recarbonation (backward) — CaO absorbs CO₂ back
+  //
+  //   The player who keeps the kiln above 900°C gets complete quicklite.
+  //   The player whose fire drops to 850°C gets a partially calcined mixture.
+  //   The player who lets it cool to 800°C finds the quicklite reverting.
+  //   All from the same physics — no special recipe logic.
 
 The enthalpy (ΔH) and entropy (ΔS) values come from the elements' standard formation energies — tabulated from real chemistry, stored per element.
 
@@ -1061,6 +1088,27 @@ MaterialPacket additions for non-Newtonian fluids:
   //
   //   This mu_eff replaces the constant mu in the viscosity force:
   //     F_viscosity = mu_eff x sum_j m_j x (v_j - v_i) / rho_j x laplacian_W(r_ij, h)
+
+  // ── Mixing Rule for Non-Newtonian Parameters ─────────────────────────
+  //
+  // When two non-Newtonian fluids mix via SPH diffusion (§3.2 mixing),
+  // the Cross model parameters of the mixture are mass-weighted averages:
+  //
+  //   mixed.zeroShearViscosity = (m_a × a.μ₀ + m_b × b.μ₀) / (m_a + m_b)
+  //   mixed.infShearViscosity  = (m_a × a.μ_∞ + m_b × b.μ_∞) / (m_a + m_b)
+  //   mixed.crossTimeConstant  = (m_a × a.K + m_b × b.K) / (m_a + m_b)
+  //   mixed.crossFlowIndex     = (m_a × a.n + m_b × b.n) / (m_a + m_b)
+  //
+  // This is a linear blending rule — the simplest physically meaningful approach.
+  // Real polymer/colloid rheology uses more complex mixing models (log-weighted,
+  // Arrhenius-type), but for gameplay the linear blend produces correct qualitative
+  // behavior: mixing a thick clay slurry with water produces a thinner slurry.
+  //
+  // If one fluid is Newtonian (isNonNewtonian = false) and the other is non-Newtonian:
+  //   Treat the Newtonian fluid as having μ₀ = μ_∞ = its normal viscosity, K = 0, n = 1.
+  //   The mixture becomes "less non-Newtonian" as Newtonian fluid is added.
+  //   At 50/50 mix: the shear-thinning effect is halved.
+  //   At 90% Newtonian: the mixture behaves essentially Newtonian.
 
 **3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
 
@@ -1402,7 +1450,7 @@ GridCell {
 }
 ```
 
-Rules per tick (0.5–1 Hz — slow, large scale):
+Rules per tick (1 Hz (can drop to 0.5 Hz for distant regions beyond 200m) — slow, large scale):
 - Water flows from high cells to low cells (terrain height + water depth)
 - Flow rate depends on slope (Manning's equation: `v = (1/n) · R^(2/3) · S^(1/2)` where n is roughness, R is hydraulic radius, S is slope)
 - Evaporation removes water based on temperature and humidity
@@ -3162,6 +3210,25 @@ ForceSystem {
   //     Implementation: for each column (vertical run of blocks with no lateral support),
   //     compute λ. If λ > 30, also check Euler. Take the lower of P_crush and P_euler.
 
+  //   COMBINED STRESS (interaction check):
+  //     Real materials can fail under combined loading even if each individual
+  //     stress is below its respective limit. A block at 80% compressive AND
+  //     80% tensile capacity is more likely to fail than one at 80% of just one.
+  //
+  //     Interaction formula (simplified Mohr-Coulomb for voxel blocks):
+  //       utilization = (σ_c / compressiveStrength)² + (σ_t / tensileStrength)² + (σ_s / shearStrength)²
+  //       if utilization > 1.0 → COMBINED FAILURE
+  //
+  //     This is a quadratic interaction — each stress component contributes
+  //     proportionally to the square of its ratio to capacity.
+  //     At 70% of each: utilization = 0.49 + 0.49 + 0.49 = 1.47 → fails.
+  //     At 50% of each: utilization = 0.25 + 0.25 + 0.25 = 0.75 → safe.
+  //
+  //     This catches arch corner blocks (compression + tension), wall corners
+  //     under wind (compression + shear), and loaded beams (tension + shear).
+  //     Individual checks still run first — they catch the obvious cases.
+  //     The interaction check catches the subtle combined cases.
+
   // ── Phase 4: Cascade collapse ──────────────────────────────────────────
   //
   // When a block fails, process the collapse in batched waves:
@@ -3322,6 +3389,25 @@ ForceSystem {
   //   // A 20-block wall section becomes ~3-5 compound bodies, not 20 individual ones.
   //   // Cap at 100 active debris bodies per event. Oldest/farthest debris is converted
   //   // to static rubble early if the cap is exceeded.
+
+  //   Debris-debris collision:
+  //     Debris rigid bodies DO collide with each other, not only with terrain.
+  //     When debris from a collapsing upper floor hits debris from a lower floor,
+  //     both are subject to rigid body collision resolution (Stage 6).
+  //     This creates realistic pile-up behavior: rubble accumulates, not phases through.
+  //
+  //     However, debris-debris collision is expensive (O(n²) for n debris bodies).
+  //     Mitigation:
+  //       1. Compound rigid bodies (adjacent debris grouped into one body): reduces n by ~5×
+  //       2. Spatial broadphase (AABB overlap test): eliminates most pairs
+  //       3. Performance cap: max 100 active debris bodies. When exceeded, oldest
+  //          debris converts to static rubble (terrain modification). Static rubble
+  //          is a MaterialPacket sitting on the ground — future debris collides with
+  //          it as terrain, not as a rigid body.
+  //
+  //     The result: a collapsing building produces a heap of rubble, not a flat
+  //     layer of blocks. The heap has structure — larger blocks settle first,
+  //     smaller debris fills gaps. This is physically correct and visually dramatic.
 
   //   The debris mass accumulates as floors collect falling material.
   //
@@ -6738,6 +6824,15 @@ TickScheduler {
   //     Temperature || Sound synthesis (read-only access to positions)
   //     Grid water || MPM particles (different scales, different data)
   //
+  //   CROSS-SYSTEM CASCADE NOTE:
+  //   A structural collapse (Stage 5) that releases contained water spawns
+  //   MPM particles (fluid system). Those particles apply hydrostatic pressure
+  //   to downstream structures — but that structural check happens in the NEXT
+  //   tick's Stage 5, not the current one. This means structural-fluid-structural
+  //   cascades span 2+ ticks. This is correct behavior: the water needs one tick
+  //   to flow before it can push on the next structure. Each tick advances the
+  //   cascade by one step, creating a realistic propagation delay.
+  //
   //   Sequential pairs (must wait):
   //     Temperature → Phase transitions → Reactions → Fluid
   //     Fluid → Structural → Rigid body → Sound → Broadcast
@@ -6801,6 +6896,12 @@ PropertyCache {
   //   Implementation: each packet stores lastRecomputedTemp and lastRecomputedCompositionHash.
   //   Property access checks: abs(currentTemp - lastRecomputedTemp) > 5.0
   //   If true: recompute and update cache. If false: return cached value.
+  //
+  //   Near phase boundaries (within 10°C of melting/boiling point):
+  //   the 5°C threshold is sufficient because phase transitions themselves
+  //   ALWAYS trigger full recomputation (see "Phase change | Always" above).
+  //   Temperature hovering 2-3°C below the melting point produces viscosity
+  //   values that are at most ~5% stale — imperceptible in gameplay.
 
   // ── Spatial indexing for reaction checks ──────────────────────────────
   //
@@ -7056,6 +7157,36 @@ CoreAllocation {
   //
   // Recovery: when load drops below threshold for 30 consecutive ticks,
   //   step back up one level. Hysteresis prevents oscillation.
+
+  // ── Per-Player Crafting Particle Budget ────────────────────────────────
+  //
+  // The SPH crafting solver runs at 60 Hz. Each crafter uses 100-5,000 particles.
+  // With many simultaneous crafters, the total particle count can exceed the budget:
+  //
+  //   | Players crafting | Particles each | Total | Cost at 60Hz | Budget status |
+  //   |-----------------|----------------|-------|-------------|--------------|
+  //   | 1               | 5,000          | 5,000 | ~0.5ms      | OK           |
+  //   | 5               | 5,000          | 25,000| ~2.5ms      | OK           |
+  //   | 10              | 5,000          | 50,000| ~5ms        | Tight        |
+  //   | 20              | 5,000          | 100,000| ~10ms      | Over budget  |
+  //   | 50              | 5,000          | 250,000| ~25ms      | Impossible   |
+  //
+  //   Solution: per-player particle cap that scales with active crafter count.
+  //
+  //   totalCraftingBudget = 50,000 particles (hard cap for all crafters combined)
+  //   perPlayerCap = totalCraftingBudget / activeCrafterCount
+  //
+  //   1 crafter: 50,000 / 1 = 50,000 (capped at 5,000 by Scale 1 max)
+  //   5 crafters: 50,000 / 5 = 10,000 (capped at 5,000 each)
+  //   10 crafters: 50,000 / 10 = 5,000 each (full resolution)
+  //   20 crafters: 50,000 / 20 = 2,500 each (reduced but still functional)
+  //   50 crafters: 50,000 / 50 = 1,000 each (low resolution — coarser particles)
+  //
+  //   At 1,000 particles: still enough for pouring/mixing. Individual droplets
+  //   less visible, but bulk behavior (flow direction, pooling, mixing) is correct.
+  //   The player doesn't notice unless they're comparing side-by-side.
+  //
+  //   Cost at 50 crafters: 50,000 particles × 0.1μs/particle = 5ms at 60Hz. Acceptable.
 
   // ── Bandwidth adaptation ──────────────────────────────────────────────
   //
