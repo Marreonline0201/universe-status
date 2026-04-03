@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (65 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (62 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
@@ -152,7 +152,7 @@ For understanding the physics engine, read them in this dependency order:
 
 **Infrastructure (read last — implementation concerns):**
 12. §3.5 Networking — how physics reaches clients.
-13. §3.6 Cross-System Connections — data flow reference (65 connections).
+13. §3.6 Cross-System Connections — data flow reference (62 connections).
 14. §3.7 Optimization — tick scheduling, caching, degradation.
 
 #### The Unified Physics Tick (Rust Core)
@@ -468,10 +468,21 @@ MaterialPacket {
   calorieContent: number                // kcal/kg — nutritional energy (0 for non-food materials)
   nutrientContent: { N: number, P: number, K: number }  // fertilizer value when applied to soil
                                         // Used by: §4.4 farming (manure, bone meal, wood ash)
+
+  // ── Electromagnetic ──────────────────────────────────────────────────────
+  magneticPermeability: number         // relative permeability (dimensionless)
+                                        // Vacuum/air: 1, Iron: 200-5000, Nickel: 100-600
+                                        // Used by: §3.13 electromagnets, compass, motors
+  permanentMagnetization: Vec3         // residual magnetic field direction + magnitude (Tesla)
+                                        // Zero for non-magnets. Lodestone: 0.01-0.1T. Magnetized iron: 0.1-1.0T
+                                        // Used by: §3.13 compass, permanent magnet motors
+  triboelectricIndex: number           // position in triboelectric series (-1 to +1)
+                                        // Glass: +0.8, Wool: +0.4, Cotton: 0, Amber: -0.5, Rubber: -0.8
+                                        // Used by: §3.13 static electricity, charge transfer
 }
 ```
 
-**Total: 36 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+**Total: 39 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
 
   // ── Element Property Reference Table ───────────────────────────────────
   //
@@ -533,6 +544,9 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Reflectivity | Fresnel equations from refractive index | Optical physics | Rendering, mirror surfaces |
 | Calorie content | Combustion energy × digestibility factor (organic only) | Nutrition science | §7.2 food, §4.4 farming |
 | Nutrient content | Element composition → N/P/K extraction | Soil science | §4.4 fertilizer value |
+| Magnetic permeability | Composition: ferromagnetic elements (Fe, Ni, Co) > 50% → high μ_r | Electromagnetism | §3.13 magnets, compass |
+| Permanent magnetization | From composition + processing (requires magnetizing exposure) | Electromagnetism | §3.13 compass, motors |
+| Triboelectric index | From surface chemistry: metals positive, polymers negative | Electrostatics | §3.13 static electricity |
 
 #### Specific Heat Capacity — Dulong-Petit Is Wrong for Light Elements
 
@@ -1066,7 +1080,7 @@ SPH handles all of these because the particles move with the fluid — they go w
 
 ```
 SPHParticle {
-  // An SPH particle IS a MaterialPacket fragment. It inherits all 36+ properties.
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 39 properties.
   packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
                                         // viscosity, surfaceTension, density etc. come from packet
 
@@ -3119,7 +3133,7 @@ StructuralBlock {
   // Additional per-block state (NOT from the property calculator):
   //
   //   StructuralBlock {
-  //     packet: MaterialPacket          // composition + all 36 derived properties
+  //     packet: MaterialPacket          // composition + all 39 derived properties
   //     position: Vec3                  // grid position (integer coordinates)
   //     connections: Connection[]       // bonds to adjacent blocks (up to 6 faces)
   //     load: number                    // accumulated gravity load from above (N)
@@ -4568,7 +4582,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 65 connections total (34 critical + 31 moderate).
+for every connection. 62 connections total (33 critical + 29 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -6991,7 +7005,7 @@ TickScheduler {
 
 #### Property Calculator Caching
 
-Computing 36+ material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
+Computing 39 material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
 
 ```
 PropertyCache {
@@ -7002,7 +7016,7 @@ PropertyCache {
   //   if compositionHash == lastComputedHash AND temperature == lastComputedTemp:
   //     return cached properties (0 cost)
   //   else:
-  //     recompute all 36 properties (~0.005ms per packet)
+  //     recompute all 39 properties (~0.005ms per packet)
   //     store in cache, update hash
   //
   // In practice: 95%+ of packets have stable composition.
@@ -7032,7 +7046,7 @@ PropertyCache {
   //   | Trigger                         | Threshold          | Properties affected |
   //   |--------------------------------|-------------------|-------------------|
   //   | Temperature change              | > 5C since last   | Viscosity, ductility, specific heat, thermal conductivity |
-  //   | Composition change              | Any change at all  | ALL 36 properties |
+  //   | Composition change              | Any change at all  | ALL 39 properties |
   //   | workHardeningState change        | > 0.01 since last | Tensile/compressive strength, hardness |
   //   | fatigueAccumulation change       | > 0.01 since last | Effective strength (reduced by damage) |
   //   | crackLength change               | Any change        | Effective strength (fracture toughness) |
@@ -7190,7 +7204,7 @@ MemoryBudget {
   // Target: < 2 GB total for all physics systems (low-end server)
   //
   // MaterialPackets:
-  //   Size per packet: ~200 bytes (composition map + 36 properties + cache)
+  //   Size per packet: ~212 bytes (composition map + 39 properties + cache)
   //   Max active packets: 500,000 (world chunks loaded for all players)
   //   Total: 500,000 × 200 = 100 MB
   //
@@ -7641,6 +7655,29 @@ PowerTransmission {
 }
 ```
 
+#### Constraint Solver Implementation
+
+```
+ConstraintSolver {
+  // Constraint solver implementation:
+  //   Use the Rapier physics crate (rapier3d via wasm-bindgen or napi-rs).
+  //   Rapier implements sequential impulse constraint solving with:
+  //     - Warm starting (reuse previous frame's impulses for faster convergence)
+  //     - Temporal coherence (joints that haven't changed skip re-solving)
+  //     - 4-8 velocity iterations + 1-2 position iterations per tick
+  //   This is the same algorithm used by Box2D, Bullet, and PhysX.
+  //
+  //   If building from scratch instead of using Rapier:
+  //     Position-Based Dynamics (PBD, Müller et al. 2007):
+  //       for each iteration:
+  //         for each joint constraint:
+  //           compute position correction to satisfy constraint
+  //           apply correction to both bodies (weighted by inverse mass)
+  //       Velocity = (newPosition - oldPosition) / dt
+  //     4 iterations: soft joints (rope-like). 8 iterations: rigid joints.
+}
+```
+
 #### Friction-Driven Motion — Wheels on Terrain
 
 ```
@@ -7804,6 +7841,24 @@ RotationalPerformance {
 }
 ```
 
+#### Edge Cases for Rotational Mechanics
+
+```
+RotationalEdgeCases {
+  // Edge cases:
+  //   Angular velocity exceeds material limit: centrifugal force tears the wheel apart.
+  //     Failure when: ρ × ω² × r² > tensileStrength (hoop stress in a spinning disk).
+  //     A wooden wheel (σ_t = 40 MPa, ρ = 600) fails at ω > √(40e6/600)/r.
+  //     At r=0.5m: ω > 258 rad/s (2465 RPM). Relevant for high-speed engines.
+  //   Gear tooth breakage: transmitted torque exceeds tooth shear strength.
+  //     If τ > tooth_width × tooth_height × shearStrength: tooth shears off.
+  //     Wooden teeth break before iron teeth at the same torque.
+  //   Zero-mass assembly: physically impossible. Minimum mass = one block.
+  //   Bearing seizure: if bearing friction × ω generates enough heat to melt the bearing,
+  //     the joint locks (angularVelocity → 0). This is a real failure mode.
+}
+```
+
 #### What This Unlocks (Emergent Machines)
 
 ```
@@ -7924,8 +7979,8 @@ When drag equals gravity, the object stops accelerating:
 Examples:
 
 ```
-  Stone (1 kg, r=0.05m, Cd=0.47): v_t = √(2×1×9.81 / (1.225×0.47×0.00785)) = 74 m/s
-  Arrow (0.05 kg, A=0.0001m², Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.0001)) = 127 m/s
+  Stone (1 kg, r=0.05m, Cd=0.47): v_t = √(2×1×9.81 / (1.225×0.47×0.00785)) = √(19.62/0.00452) = √4340 ≈ 66 m/s
+  Arrow (0.05 kg, effective A=0.001m² including fletching drag, Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.001)) = √(0.981/0.00006125) = √16016 ≈ 127 m/s
   Feather (0.001 kg, A=0.003m², Cd=1.0): v_t = √(2×0.001×9.81 / (1.225×1.0×0.003)) = 2.3 m/s
   Human (70 kg, A=0.7m², Cd=1.0): v_t = √(2×70×9.81 / (1.225×1.0×0.7)) = 40 m/s (~144 km/h)
 ```
@@ -8249,23 +8304,37 @@ Energy stored in a bent bow:
   E = 0.5 * k * x^2
   where k = spring constant of the bow limb, x = draw distance
   
-  k depends on material and geometry:
-  k = 3 * E * I / L^3  (cantilever beam spring constant)
-  E = Young's modulus of the limb (wood: 10-15 GPa, horn composite: 20+ GPa)
-  I = second moment of area = b * h^3 / 12 (rectangular cross-section)
-  L = limb length
+  // NOTE: A bow is NOT a simple cantilever beam. The cantilever formula
+  // k = 3EI/L^3 overestimates stiffness by ~10-20x for a tapered bow limb.
+  //
+  // Practical approach: k_bow = drawForce_max / drawLength
+  //   Shortbow (90 N draw, 0.5m): k = 180 N/m, E_stored = 22.5 J
+  //   Longbow (180 N draw, 0.7m): k = 257 N/m, E_stored = 63 J
+  //   Composite bow (250 N draw, 0.8m): k = 312 N/m, E_stored = 100 J
+  //
+  // However, a real bow's draw-force curve is nonlinear (force increases
+  // faster than linear near full draw). A better stored-energy estimate:
+  //   E_stored = integral(F(x) dx) from 0 to drawLength
+  //   For a longbow: E_stored ~ 0.7 * F_max * drawLength = 0.7 * 180 * 0.7 = 88.2 J
+  //
+  // Arrow speed (at ~75% energy transfer — rest goes to limb vibration):
+  //   v = sqrt(2 * 88.2 * 0.75 / 0.05) = sqrt(2646) = 51.4 m/s
+  //   With a lighter arrow (0.03 kg): v = sqrt(2 * 88.2 * 0.75 / 0.03) = 66.4 m/s
+  //   Real longbow speeds: 55-70 m/s for a 50g arrow. Our model is close.
   
-  A yew longbow (L=0.9m, b=0.04m, h=0.03m, E=12 GPa):
-    I = 0.04 * 0.03^3 / 12 = 9.0e-8 m^4
-    k = 3 * 12e9 * 9e-8 / 0.9^3 = 4,444 N/m
-    At full draw (x=0.7m): E = 0.5 * 4444 * 0.49 = 1,089 J
+  k depends on material and draw weight (empirical, not beam theory):
+  k = drawForce_max / drawLength
   
-  Arrow mass 0.05 kg: v = sqrt(2E/m) = sqrt(2*1089/0.05) = 209 m/s (theoretical max)
-  Real efficiency ~50% (energy lost to limb vibration, string stretch): v ~ 105 m/s
+  A yew longbow (F_max=180 N, drawLength=0.7m):
+    k = 180 / 0.7 = 257 N/m
+    E_stored = 0.7 * F_max * drawLength = 0.7 * 180 * 0.7 = 88.2 J (nonlinear correction)
   
-  This matches real longbow arrow speeds (55-70 m/s for a 0.05 kg arrow).
-  The slightly high prediction is because our formula doesn't account for
-  limb mass (which absorbs some energy). Good enough for gameplay.
+  Arrow mass 0.05 kg, 75% energy transfer efficiency:
+    v = sqrt(2 * 88.2 * 0.75 / 0.05) = sqrt(2646) = 51.4 m/s
+  
+  This is slightly below real longbow speeds (55-70 m/s) because our linear
+  spring approximation still underestimates the energy stored near full draw.
+  Good enough for gameplay — within 10-20% of reality.
 
 The bowstring is a rope under tension. The Verlet simulation handles:
   Drawing the bow: player pulls the string, bending the limb (stores energy)
@@ -8610,7 +8679,7 @@ fn update_valve_state(crank_angle: f64) -> ValveState {
 - At 2 strokes per second (single-acting, 120 RPM crankshaft): Power = 964 W ~ 1.3 HP
 - Heat input required: 964 / 0.07 = 13,770 W
 - Charcoal energy density: ~30 MJ/kg
-- Charcoal consumption: 13,770 / 30,000,000 = 0.000459 kg/s = 0.46 kg/hour
+- Charcoal consumption: 13,770 / 30,000,000 = 0.000459 kg/s = 1.65 kg/hour
 - Water consumption (open cycle): steam mass flow ~ 0.005 kg/stroke * 2 = 0.01 kg/s = 36 kg/hour
 - Water consumption (closed cycle with condenser): only makeup for leaks, ~1-2 kg/hour
 
@@ -9448,8 +9517,11 @@ Magnetism {
   //   Strong enough to pick up iron tools, separate iron from ore, or drive a motor.
 
   // Force between magnets / on ferromagnetic materials:
-  //   F = (B² × A) / (2 × μ₀) (approximate, for a magnet near a flat surface)
-  //   At B = 0.1T, A = 0.01m²: F = (0.01 × 0.01) / (2 × 4π×10⁻⁷) = 40 N (can lift 4 kg)
+  //   F_per_pole = (B² × A) / (2 × μ₀) (force per pole face, magnet near a flat surface)
+  //   For an electromagnet with two pole faces touching the load (horseshoe magnet):
+  //     F_total = 2 × F_per_pole = B² × A / μ₀
+  //   At B = 0.1T, A = 0.01m²: F_total = (0.01 × 0.01) / (4π×10⁻⁷) = 80 N (can lift 8 kg)
+  //   Single pole face: F = (0.01 × 0.01) / (2 × 4π×10⁻⁷) = 40 N (can lift 4 kg)
 
   // Compass: a magnetized needle on a low-friction pivot (axle joint §3.8)
   //   aligns with the vector sum of: Earth's field + nearby permanent magnets + nearby current
@@ -9786,10 +9858,10 @@ ElectromagnetismPerformance {
 
   // MaterialPacket additions for this section:
   //   magneticPermeability: number    // relative, dimensionless (iron: 200-5000, air/wood: 1)
-  //   permanentMagnetization: number  // Tesla (0 for non-magnets, 0.01-1.0 for magnets)
+  //   permanentMagnetization: Vec3    // Tesla (zero vector for non-magnets, 0.01-1.0 magnitude for magnets)
   //   triboelectricIndex: number      // position in triboelectric series (-1 to +1)
-  //   These three fields add 12 bytes per MaterialPacket (3 × f32).
-  //   At 100,000 active packets: 1.2 MB additional memory (negligible).
+  //   These three fields add 20 bytes per MaterialPacket (2 × f32 + 1 × Vec3).
+  //   At 100,000 active packets: 2.0 MB additional memory (negligible).
 }
 ```
 
