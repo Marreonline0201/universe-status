@@ -11510,7 +11510,7 @@ AnimalTraits {
   // Physical
   mass: number                       // kg — determines speed, strength, food requirement
   age: number                        // game-days since birth
-  health: number                     // 0-100 — same injury system as players (§6.8.4)
+  health: number                     // 0-100 — same injury system as players (§7.1)
   stamina: number                    // 0-100 — sprint capacity, recovery rate
   pregnancyState: number             // 0 = not pregnant, 1.0 = about to give birth
 
@@ -11958,7 +11958,7 @@ AnimalNeeds {
   //
   // Wild animals forage automatically (Tier 2 AI decides where to graze/hunt)
   // Domesticated animals in enclosures must be FED by the player
-  // If not fed: health declines → starvation → death (same timeline as §6.8.11)
+  // If not fed: health declines → starvation → death (same timeline as §7.2)
   //
   // Overgrazing: if too many herbivores in one area, grass is consumed faster
   //   than it regrows → area becomes barren → animals must move or starve
@@ -11978,7 +11978,7 @@ AnimalNeeds {
   //   Wool production increases (sheep in shelter → less energy spent on warmth → more wool)
 
   // ── Disease ───────────────────────────────────────────────────────────
-  // Animals can get sick — same bacterial infection model as players (§6.8.2)
+  // Animals can get sick — same bacterial infection model as players (§7.6)
   // Crowding increases disease spread (density-dependent transmission)
   //   10 sheep in a small pen: high disease risk
   //   10 sheep in a large pasture: low disease risk
@@ -11998,7 +11998,7 @@ AnimalNeeds {
 
   // ── Death ─────────────────────────────────────────────────────────────
   // Animals die from: starvation, dehydration, predation, disease, old age, player hunting
-  // On death: corpse remains (same as §6.8.2 but no respawn)
+  // On death: corpse remains (same as §7.6 but no respawn)
   //   Corpse can be harvested for products (hide, meat, bone, etc. per §6.2.1)
   //   Unharvested corpse decomposes (turns into organic matter → soil nutrients)
   //   Decomposition time: ~7 game-days (fungal decomposers from §6.2.1)
@@ -12075,7 +12075,7 @@ AnimalPlayerInteraction {
 
 Farming is not a minigame. It is the application of soil science, plant biology, weather, and seasonal cycles to produce food at scale. The player does not "plant wheat seed → wait → harvest wheat." They clear land, prepare soil that has real nutrient content, plant seeds in soil that may or may not support that crop, provide water if rain is insufficient, protect from pests and disease, harvest at the right moment, process the harvest, and manage soil fertility across seasons so the land doesn't die.
 
-Every step interacts with systems already specified: weather (§4.6) provides rain and temperature, seasons (§6.7) determine growing windows, terrain (§7.4) determines soil access, animals (§6.2.2) provide manure and plowing, organisms (§6.2.1) define plant species, and the material system (§3.1) handles everything as MaterialPackets.
+Every step interacts with systems already specified: weather (§4.6) provides rain and temperature, seasons (§4.6) determine growing windows, terrain (§7.4) determines soil access, animals (§4.3) provide manure and plowing, organisms (§6.2.1) define plant species, and the material system (§3.1) handles everything as MaterialPackets.
 
 #### Soil Model
 
@@ -12145,7 +12145,7 @@ SoilState {
 
   tilled: boolean                    // has the soil been prepared for planting?
   // Tilling: loosens soil, mixes in organic matter, kills surface weeds
-  // Methods: hand hoe (slow), plow + animal (fast — §6.2.2)
+  // Methods: hand hoe (slow), plow + animal (fast — §4.3)
   // Tilled soil reverts to untilled after ~30 game-days (compacts from rain/traffic)
 }
 ```
@@ -12452,11 +12452,11 @@ FarmingActions {
   // ── 2. Till soil ──────────────────────────────────────────────────────
   // Break up topsoil to prepare for planting
   //
-  // Methods (from §7.4 + §6.2.2):
+  // Methods (from §7.4 + §4.3):
   //   Digging stick: poke holes for individual seeds → 0.1 m²/game-minute
   //   Stone hoe: scrape and turn topsoil → 0.3 m²/game-minute
   //   Iron hoe: faster, deeper till → 0.5 m²/game-minute
-  //   Animal-drawn plow: continuous furrow → 5.0 m²/game-minute (requires §6.2.2 trained animal)
+  //   Animal-drawn plow: continuous furrow → 5.0 m²/game-minute (requires §4.3 trained animal)
   //
   // Effect on soil:
   //   tilled = true
@@ -12550,7 +12550,7 @@ FarmingActions {
   //       Birds eat insects → maintaining bird habitat near fields helps
   //       Companion planting: some plants repel pests (marigolds repel nematodes,
   //         basil repels aphids, garlic repels many insects)
-  //       Cats hunt rodents in grain storage (§6.2.2)
+  //       Cats hunt rodents in grain storage (§4.3)
   //     Chemical pest control (later technology): sulfur dust, pyrethrin (from chrysanthemum flowers)
   //
   //   Disease protection:
@@ -12685,7 +12685,7 @@ SoilFertilityManagement {
 
   // 2. MANURE (requires domesticated animals)
   manure {
-    // Animal dung is the original fertilizer (§6.2.2):
+    // Animal dung is the original fertilizer (§4.3):
     // Per kg of manure applied per m² (see Fertilizer Replenishment Rates table below):
     //   Cow manure:     N +0.005, P +0.002, K +0.005 (best all-round, slow release)
     //   Chicken manure: N +0.008, P +0.006, K +0.003 (highest N and P, can burn plants if fresh)
@@ -12704,23 +12704,29 @@ SoilFertilityManagement {
 
   // 3. OTHER FERTILIZERS
   otherFertilizers {
-    // Bone meal: ground animal bones → phosphorus +0.08 per application
+    // Bone meal: ground animal bones → best P source.
     //   Made at grinding stone from any bone (§6.2.1 animal products)
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
-    // Wood ash: from any fire → potassium +0.06, pH +0.5
-    //   Easy to obtain — every campfire produces ash
+    // Wood ash: from any fire → excellent K source, raises pH.
+    //   Easy to obtain — every campfire produces ash.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
-    // Fish: buried in soil near plants → nitrogen +0.05, phosphorus +0.04
-    //   The Squanto method — Native Americans taught European colonists this
+    // Fish: buried in soil near plants → good N and P source.
+    //   The Squanto method — Native Americans taught European colonists this.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
-    // Guano: bat/bird droppings from caves → nitrogen +0.12, phosphorus +0.10
-    //   Extremely potent — if the player finds a bat cave, they have the best fertilizer
+    // Guano: bat/bird droppings from caves → extremely potent N and P source.
+    //   If the player finds a bat cave, they have the best fertilizer.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
-    // Seaweed: collected from coastline → potassium +0.05, plus trace minerals
+    // Seaweed: collected from coastline → good K source, plus trace minerals.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
-    // Green manure: grow a crop specifically to plow it back into the soil
-    //   Plant clover → let it grow → till it under before it seeds
-    //   nitrogen +0.08, organicMatter +0.04 (same as legume rotation but sacrifices a harvest)
+    // Green manure: grow a crop specifically to plow it back into the soil.
+    //   Plant clover → let it grow → till it under before it seeds.
+    //   Same as legume rotation but sacrifices a harvest.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
   }
 
   // ── Fertilizer Replenishment Rates ─────────────────────────────────────
@@ -12744,6 +12750,8 @@ SoilFertilityManagement {
   //   | Compost         | +0.003    | +0.002    | +0.003    | Balanced, improves soil structure |
   //   | Green manure    | +0.010    | +0.001    | +0.002    | Cover crop plowed under (legumes) |
   //   | Seaweed         | +0.002    | +0.001    | +0.008    | Good K, trace minerals |
+  //   | Fish (buried)   | +0.010    | +0.008    | +0.002    | Good N and P, slow release |
+  //   | Guano           | +0.020    | +0.018    | +0.003    | Extremely potent N and P |
   //
   // Crop rotation strategy:
   //   Year 1: Wheat (depletes N heavily)
@@ -12785,7 +12793,7 @@ SoilFertilityManagement {
 ```
 FoodPreservation {
   // A harvest happens once per season. The food must last until the next harvest.
-  // Without preservation, organic material rots (§6.8.11 food spoilage model).
+  // Without preservation, organic material rots (§7.2 food spoilage model).
 
   // ── Preservation methods (all from real chemistry/physics) ─────────────
 
@@ -12836,7 +12844,7 @@ FoodPreservation {
   }
 
   coldStorage {
-    // Cold slows bacterial growth (§6.8.11 spoilage model: temperatureFactor = 0 below 4°C)
+    // Cold slows bacterial growth (§7.2 spoilage model: temperatureFactor = 0 below 4°C)
     // Methods:
     //   Root cellar: dig a pit, store food underground → temperature is ~10-15°C year-round
     //     Requires: digging (§7.4), structure to prevent collapse
@@ -12867,7 +12875,7 @@ FoodPreservation {
   //   Underground pits lined with stone: bulk grain storage
   //
   // Rodent protection: stored grain attracts rats and mice
-  //   Cat in storage area: reduces rodent loss (§6.2.2)
+  //   Cat in storage area: reduces rodent loss (§4.3)
   //   Elevated granary: raised platform keeps rodents from ground access
   //   Sealed containers: clay pots with wax seal — rodent-proof
 }
@@ -12933,7 +12941,7 @@ NPCFarming {
   //   NPCs storing grain in clay pots in a storage structure
   //
   // A player can watch this entire chain and learn farming by observation —
-  //   same knowledge transfer system as all NPC skills (§6.8.7).
+  //   same knowledge transfer system as all NPC skills (§5.3).
 }
 ```
 
@@ -13697,7 +13705,7 @@ Settlement {
   // ── Knowledge (what processes NPCs have discovered through practice) ──────
   knownProcesses: Set<string>                // 'fire_starting', 'copper_smelting', 'pottery', etc.
   // Knowledge grows when: an NPC successfully performs a new interaction (same discovery system as players)
-  // Knowledge spreads via trade (§6.8.7): when settlements trade, there's a chance of knowledge transfer
+  // Knowledge spreads via trade (§5.3): when settlements trade, there's a chance of knowledge transfer
   // Knowledge is NEVER assigned — it is earned through NPC practice
 
   // ── Trade Connections ─────────────────────────────────────────────────────
@@ -14094,13 +14102,13 @@ CuriositySystem {
 
   // ── How NPCs make discoveries ─────────────────────────────────────────
   //
-  // NPCs use the SAME crafting system as players (§6.3, §6.8.1).
+  // NPCs use the SAME crafting system as players (§6.3).
   // When a curious NPC tries a new material combination at a craft arrangement:
   //   1. The reaction engine (§3.1) computes the result
   //   2. If the result is new: NPC stores it as a discovery
   //   3. NPC remembers: "heating malachite with charcoal produced copper"
   //   4. This memory persists → NPC can repeat the process
-  //   5. Other NPCs who watch may also learn (§6.8.7 knowledge transfer)
+  //   5. Other NPCs who watch may also learn (§5.3 knowledge transfer)
   //
   // Example: How an NPC discovers copper smelting
   //   1. NPC has high openness (0.8) and growing boredom from gathering
@@ -14218,7 +14226,7 @@ MemorySystem {
 ```
 DailyLifeCycle {
   // NPCs live on a daily schedule driven by their body simulation.
-  // They have the same survival stats as players (§6.8.11) running at 4× time.
+  // They have the same survival stats as players (§7.2) running at 4× time.
   // Their day emerges from needs, not from a script.
 
   // ── Typical day (emergent, not scripted) ──────────────────────────────
@@ -14416,7 +14424,7 @@ SettlementExpansion {
 
 ```
 NPCAppearance {
-  // NPCs use the SAME character model system as players (§6.8.4).
+  // NPCs use the SAME character model system as players (§7.1).
   // Same 67-bone skeleton, same blend shapes, same clothing system.
   //
   // Face and body are generated deterministically from worldSeed + npcId:
@@ -14430,12 +14438,12 @@ NPCAppearance {
   //   Developed settlement: leather, dyed cloth, metal accessories
   //   Clothing quality reflects settlement sophistication
   //
-  // NPCs age visually at the same rate as players (§6.8.4 aging system):
+  // NPCs age visually at the same rate as players (§7.1 aging system):
   //   Born → child (small body) → adolescent → adult → elder
   //   Wrinkles, grey hair, stooped posture in old age
   //   Death from old age after 90 game-years (~22.5 real years)
   //
-  // Animation: same state machine as players (§6.8.4 animation).
+  // Animation: same state machine as players (§7.1 animation).
   //   NPCs walk, run, crouch, carry, swing tools, eat, sleep, sit
   //   Injury animations apply when damaged
   //   Social animations: gesturing while "talking," pointing, waving
@@ -14470,7 +14478,7 @@ Pathfinding {
   //
   // Once a path is computed:
   //   NPC walks along waypoints at walkSpeed (affected by terrain, weather, fatigue)
-  //   Foot IK adapts to terrain (§6.8.4)
+  //   Foot IK adapts to terrain (§7.1)
   //   NPC avoids other NPCs and players (local avoidance: steer away from collision)
   //   If path is blocked (new structure, fallen tree): recompute path
   //
@@ -14687,7 +14695,7 @@ This is the core system. NPCs do not tell players what to do. They **do things**
 
 ```
 DemonstrationSystem {
-  // Each NPC in a settlement runs their goal loop (§6.8.1):
+  // Each NPC in a settlement runs their goal loop (§5.2):
   // idle → gather → carry → process → deliver → idle
 
   // During the 'process' step, the NPC performs a visible crafting action:
@@ -16950,7 +16958,7 @@ InjurySystem {
   // Healing: injuries heal at baseHealRate × (nutrition_factor) × (rest_factor) × (temperature_factor)
   // baseHealRate: 0.5 HP/minute (a bad cut takes ~2 real hours to heal fully at rest with food)
   // Bandaging (cloth + pressure): stops bleedRate, doubles healRate for that region
-  // Infection risk: open wound (bleedRate > 0) in dirty environment → bacterial growth (see §6.8.2 death causes)
+  // Infection risk: open wound (bleedRate > 0) in dirty environment → bacterial growth (see §7.6 death causes)
 }
 ```
 
@@ -17094,7 +17102,7 @@ BodyCustomization {
   //   High muscle + high fat  = powerlifter build  (low speed, very high strength, high insulation)
 
   // ── Stat Effects from Body Type ───────────────────────────────────────────
-  // These modify the BASE values of the fitness stats in §6.8.11:
+  // These modify the BASE values of the fitness stats in §7.2:
   //
   // Strength baseline:     0.4 + muscularity × 0.3 + bodyFat × 0.05
   //   thin build: 0.4, muscular: 0.7, powerlifter: 0.75
@@ -17156,7 +17164,7 @@ CharacterAppearance {
   //   - Aging system (wrinkleDepth increases over time)
   //   - Plastic surgery (late-game: another player with medical tools can modify face_params)
   //   - Hair growth (hairLength slowly increases, player must cut it — or not)
-  //   - Fitness changes (muscularity/bodyFat morph slightly with §6.8.11 training over long periods)
+  //   - Fitness changes (muscularity/bodyFat morph slightly with §7.2 training over long periods)
 
   // When a player's character is rendered by another client:
   //   1. Client receives face_params + body_params in the player's first WORLD_SNAPSHOT appearance
@@ -17168,7 +17176,7 @@ CharacterAppearance {
 
 #### Clothing Appearance and Equipment Screen
 
-Clothing is not just inventory (§6.8.9) — it is visible on the character model. Every piece of clothing the player wears changes how they look to other players. **Clothing is also a primary monetization channel — cosmetic clothing skins/patterns can be sold.**
+Clothing is not just inventory (§7.3) — it is visible on the character model. Every piece of clothing the player wears changes how they look to other players. **Clothing is also a primary monetization channel — cosmetic clothing skins/patterns can be sold.**
 
 **Equipment Screen Layout:**
 
@@ -17220,7 +17228,7 @@ EquipmentScreenUI {
   }
   // Total: 13 visible equipment slots
 
-  // Each slot accepts a ClothingItem (defined in §6.8.9)
+  // Each slot accepts a ClothingItem (defined in §7.3)
   // Drag from inventory pocket/backpack to an equipment slot to equip
   // Drag from equipment slot back to inventory to unequip
   // If no free inventory slot: can't unequip (must drop something first)
@@ -17293,7 +17301,7 @@ The player character ages in real-time — very slowly, because the world runs i
 
 ```
 AgingSystem {
-  // ── Time scale: 4× real life (from §6.7) ──────────────────────────────────
+  // ── Time scale: 4× real life (from §4.6) ──────────────────────────────────
   // 1 real hour = 4 game hours
   // 1 real year ≈ 4 game years
   //
@@ -17329,7 +17337,7 @@ AgingSystem {
   // Age 95+: death from old age becomes possible (daily survival check)
 
   // ── Stat effects of aging ─────────────────────────────────────────────────
-  // These modify the FITNESS CAPS from §6.8.11:
+  // These modify the FITNESS CAPS from §7.2:
   //
   // Age 18-35:  all caps at 1.0 (peak human)
   // Age 35-50:  speed cap = 1.0 - (age - 35) × 0.005       // loses 0.5% per year
@@ -17360,7 +17368,7 @@ AgingSystem {
   // knowledge, discoveries, and world modifications become legacy.
   //
   // When death from old age occurs:
-  //   - Same death mechanics as §6.8.2 (item drop, corpse, respawn)
+  //   - Same death mechanics as §7.6 (item drop, corpse, respawn)
   //   - BUT: the character is reborn as a NEW character (back to age 18)
   //   - They KEEP: discoveries, shelter, placed objects, friend list
   //   - They LOSE: physical appearance (must re-customize face), fitness progress,
@@ -17631,7 +17639,7 @@ AnimationStateMachine {
   }
 
   // ── Layer 2: Injury Modifiers (additive) ──────────────────────────────────
-  // These modify the base animations based on injury state (§6.8.4 injury system).
+  // These modify the base animations based on injury state (§7.1 injury system).
   // They are ALWAYS active but with weight = 0 when healthy.
 
   injuryModifiers: {
@@ -17851,9 +17859,9 @@ HumanBodyState {
 
   // Danger zones:
   //   > 40°C: heat exhaustion (vision blur, stamina drain ×3)
-  //   > 42°C: lethal (heat stroke, organ failure — see §6.8.2)
+  //   > 42°C: lethal (heat stroke, organ failure — see §7.6)
   //   < 35°C: hypothermia (shivering, stamina drain ×2, movement slow)
-  //   < 28°C: lethal (cardiac arrhythmia — see §6.8.2)
+  //   < 28°C: lethal (cardiac arrhythmia — see §7.6)
 
   // ── Sleep / Fatigue ───────────────────────────────────────────────────────
   fatigue: number                    // 0-100 (0 = fully rested, 100 = exhausted)
@@ -17882,9 +17890,9 @@ HumanBodyState {
   // ── Health / Hit Points ───────────────────────────────────────────────────
   health: number                     // 0-100
   // This is NOT an abstract HP bar. It represents overall body integrity.
-  // Damage comes from: physical injury (§6.8.4 injury system), disease, poison, starvation
+  // Damage comes from: physical injury (§7.1 injury system), disease, poison, starvation
   // Health regeneration: 0.5 HP/hour when well-fed, hydrated, rested, warm
-  // At 0 health: death (§6.8.2)
+  // At 0 health: death (§7.6)
 
   // ── Disease System ─────────────────────────────────────────────────────
   //
@@ -17944,7 +17952,7 @@ FoodSystem {
   //   Charred food: ~100 kcal/kg (mostly carbon)
 
   // Food poisoning:
-  //   Raw meat has a bacterial load that grows over time (see §6.8.2 infection model)
+  //   Raw meat has a bacterial load that grows over time (see §7.6 infection model)
   //   Fresh raw meat (just killed): low risk
   //   Meat left in warm environment for hours: high risk
   //   Preserved meat (salted, smoked, dried): low risk indefinitely
@@ -18043,7 +18051,7 @@ ItemSlot {
   maxWeight: number                    // kg — determined by clothing's slotCapacity
   // Pocket slots: maxWeight = 0.5 kg (small items only)
   // Backpack slots: maxWeight = 5.0 kg per slot
-  // Hand slots: maxWeight = player's carry strength (see §6.8.11 character body)
+  // Hand slots: maxWeight = player's carry strength (see §7.2 character body)
   // Belt slots: maxWeight = 2.0 kg (tool weight)
 }
 ```
@@ -18106,7 +18114,7 @@ LiquidInInventory {
   // - Jumping: spills if > 50% full
   // - Inverting (looking down): spills everything
 
-  // Container contents are ephemeral (see §6.8.3):
+  // Container contents are ephemeral (see §7.3):
   // On server restart, containers are empty. The container itself persists.
 }
 ```
@@ -18192,7 +18200,7 @@ DigSystem {
   //     iron pickaxe on rock: 0.4
   //     iron shovel on dirt: 1.0
   //
-  //   playerStrength: 0.5–1.0 based on character fitness (see §6.8.11)
+  //   playerStrength: 0.5–1.0 based on character fitness (see §7.2)
   //     newPlayer: 0.5, trained player: 0.8, maximum human: 1.0
   //
   //   swingEnergy: kinetic energy of the tool swing (joules)
@@ -18338,7 +18346,7 @@ PhysicsDamage {
   //   Steel armor: absorption = 0.85
 
   // Hit region determined by collision point:
-  // Raycast from tool/projectile → character mesh → which body region (§6.8.4 injury system)
+  // Raycast from tool/projectile → character mesh → which body region (§7.1 injury system)
   // Head hits deal more damage (lower threshold) AND have additional effects (daze, vision blur)
 
   // Tool sharpness matters:
@@ -18508,7 +18516,7 @@ CorpseEntity {
 
 - **Duration:** 60 seconds after death, the corpse fades out over 3 seconds and is removed from the server entity list.
 - **Duplicate prevention:** If the same `playerId` dies again while a previous corpse exists, the old corpse is **immediately removed** (server deletes the old CorpseEntity before creating the new one). This prevents a player dying repeatedly in the same spot from filling the server with corpse entities.
-- **Rendering:** The client renders corpses as the full player body model (same skeleton rig as §6.8.4) in a collapsed ragdoll pose. The pose is calculated once on the server when death occurs (simple ragdoll settle: body falls, limbs sprawl based on terrain slope) and sent as a static skeletal pose. No ongoing ragdoll physics — just a frozen body.
+- **Rendering:** The client renders corpses as the full player body model (same skeleton rig as §7.1) in a collapsed ragdoll pose. The pose is calculated once on the server when death occurs (simple ragdoll settle: body falls, limbs sprawl based on terrain slope) and sent as a static skeletal pose. No ongoing ragdoll physics — just a frozen body.
 
 **Step 3 — Dropped Item World Entities**
 
@@ -18717,7 +18725,7 @@ ChatSystem {
   // Messenger pigeon (medieval): send a written note to a known location (slow, unreliable)
   // Signal fire/mirror: visible at 1-5km, binary messaging
   // Telegraph (industrial): electrical signal over wire between two connected stations
-  // Radio (§6.9 late-game): wireless text over any distance to anyone with a receiver
+  // Radio (late-game): wireless text over any distance to anyone with a receiver
   // Phone: voice communication (future, requires advanced electronics)
 
   // Each advancement mirrors the real history of human communication technology.
@@ -18763,7 +18771,7 @@ SwimmingSystem {
   //                           training (endurance 1.0 → 120s max)
 
   // When breath runs out:
-  //   Health drains at 20 HP/s (drowning — see §6.8.2)
+  //   Health drains at 20 HP/s (drowning — see §7.6)
   //   Vision darkens from edges
   //   Player must surface or die
 
@@ -18798,7 +18806,7 @@ Light in reality comes from the sun, fire, and (later in the technology arc) art
 ```
 LightingSystem {
   // ── Sun ───────────────────────────────────────────────────────────────────
-  // Sun position is computed from: time of day + season (§6.7)
+  // Sun position is computed from: time of day + season (§4.6)
   sunAzimuth = (hourOfDay / 24) × 360 - 180          // degrees (east to west)
   sunElevation = maxElevation × sin(hourFraction × π)  // arc across sky
   // maxElevation depends on latitude + season (higher in summer, lower in winter)
@@ -19102,7 +19110,7 @@ Some ephemeral processes produce permanent results:
 
 #### What the Player Sees on First Login
 
-After character creation (§6.8.4), the player spawns in the world for the first time. This moment must be intuitive without tutorials.
+After character creation (§7.1), the player spawns in the world for the first time. This moment must be intuitive without tutorials.
 
 ```
 FirstSpawnDesign {
@@ -19145,7 +19153,7 @@ FirstSpawnDesign {
   //   They get hungry after a few game-hours → they look for food
   //   They notice it getting dark → the campfire becomes essential
   //
-  // The companion system (§6.8.7) can provide subtle hints if the player
+  // The companion system (§5.3) can provide subtle hints if the player
   // seems stuck (no actions for several minutes), but never explicit instructions.
 
   // ── Nearby resources guaranteed at spawn ──────────────────────────────────
