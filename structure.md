@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (62 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (68 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
@@ -152,7 +152,7 @@ For understanding the physics engine, read them in this dependency order:
 
 **Infrastructure (read last — implementation concerns):**
 12. §3.5 Networking — how physics reaches clients.
-13. §3.6 Cross-System Connections — data flow reference (62 connections).
+13. §3.6 Cross-System Connections — data flow reference (68 connections).
 14. §3.7 Optimization — tick scheduling, caching, degradation.
 
 #### The Unified Physics Tick (Rust Core)
@@ -593,6 +593,7 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | §3.13 circuits, Ohm's law (V=IR) |
 | Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
 | Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
+| Non-Newtonian params | Cross model fit: μ₀, μ_∞, K, n from molecular structure + concentration | Rheology | §3.2 SPH viscosity |
 | Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
 | Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
 | Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
@@ -4761,7 +4762,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 62 connections total (33 critical + 29 moderate).
+for every connection. 68 connections total (33 critical + 35 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -8005,6 +8006,8 @@ Profiling {
   //       structural:      { us: number, blocksChecked: number, failures: number },
   //       rigidBody:       { us: number, objects: number },
   //       sound:           { us: number, eventsGenerated: number },
+  //       electrical:     { us: number, circuits: number, coils: number },
+  //       flexibleBody:   { us: number, ropes: number, constraints: number },
   //     },
   //     totalUs: number,
   //     memoryMB: number,
@@ -8090,6 +8093,10 @@ RigidAssembly {
   //   orientation += ω × dt   (quaternion integration)
   //
   // Both linear and rotational are computed in Stage 6 (Rigid Body Physics).
+
+  Cd: number                          // drag coefficient, computed from aspect ratio (§3.9)
+  crossSectionalArea: number          // m², computed from bounding dimensions perpendicular to velocity
+  // Both computed once when assembly is created or changes shape.
 }
 ```
 
@@ -8592,6 +8599,10 @@ For arbitrary crafted objects, approximate Cd from dimensions:
   if aspectRatio < 0.5: Cd ≈ 1.2 (flat plate)
   else: Cd ≈ 0.47 (sphere-like default)
   Add roughness penalty: Cd += 0.1 × surfaceRoughness (rough surfaces drag more)
+  //   surfaceRoughness = (1 - hardness/10) × 0.3 + porosity × 0.7
+  //   Derived from MaterialPacket's hardness and porosity (§3.1).
+  //   Smooth hard dense materials (polished metal): roughness ≈ 0.03
+  //   Rough porous materials (sandstone): roughness ≈ 0.7
 ```
 
 #### Terminal Velocity
@@ -8893,6 +8904,8 @@ Rope material properties come from the fibers it's made of:
 | Silk             | 500-600 MPa     | 5-12 GPa       | 1300 kg/m³ | 39,000-47,000 N |
 | Wire (iron)      | 400 MPa         | 200 GPa        | 7800 kg/m³ | 31,400 N |
 | Wire (steel)     | 800-1500 MPa    | 200 GPa        | 7800 kg/m³ | 62,800-117,800 N |
+
+These values are read from the MaterialPacket of the rope material (tensileStrength, youngsModulus from §3.1).
 
 Cross-section area for a round rope: A = pi * (d/2)^2
 10mm diameter: A = 78.5 mm^2 = 0.0000785 m^2
@@ -9640,7 +9653,7 @@ The key insight is that heat engines are an *emergent configuration* of existing
 
 #### The Principle
 
-Light is electromagnetic radiation that travels in straight lines, bends when passing between materials (refraction), and bounces off surfaces (reflection). The game already computes `refractiveIndex` per material (S3.2 optical pipeline) and `reflectivity`. But these are used ONLY for rendering — the player cannot exploit optics as a physical system. A player who grinds glass into a curved shape should get a lens. Two lenses in a tube should make a telescope.
+Light is electromagnetic radiation that travels in straight lines, bends when passing between materials (refraction), and bounces off surfaces (reflection). The game already computes `refractiveIndex` per material (from S3.1 (computed by the property calculator, used by S3.2 for rendering and §3.12 for gameplay optics)) and `reflectivity`. But these are used ONLY for rendering — the player cannot exploit optics as a physical system. A player who grinds glass into a curved shape should get a lens. Two lenses in a tube should make a telescope.
 
 This section adds GAMEPLAY optics — not rendering improvements, but the ability for players to build optical instruments that actually work. The rendering pipeline already does the hard part (computing refractive indices, reflectivity, transparency). Gameplay optics piggybacks on that data to give it mechanical consequences.
 
@@ -10693,6 +10706,97 @@ ElectromagnetismPerformance {
 - Target: Reaction Engine (§3.1) — drives non-spontaneous electrochemical reactions
 - Data: when current flows through an electrolyte containing dissolved ions, Faraday's law determines the mass of material deposited or dissolved per tick: m = (M × I × dt) / (n × F). The reaction engine receives this as a forced reaction (bypassing the normal activation energy requirement). The minimum voltage is checked against the Nernst equation: V_min = E°_standard + (RT / nF) × ln(Q). If applied voltage < V_min, no reaction occurs. The deposited mass is added to the cathode's MaterialPacket; the dissolved mass is removed from the anode's MaterialPacket. Ion concentration in the electrolyte is tracked and affects both R_internal and V_min over time.
 - Trigger: when current flows through an electrolyte containing dissolved metal ions and applied voltage exceeds the Nernst threshold
+
+##### Connection 63: Aerodynamic Drag Torque on Rotating Assemblies (moderate)
+
+Air resistance decelerates spinning objects. A windmill in calm air, a flywheel
+after its drive disconnects, a potter's wheel after the player stops kicking —
+all slow down due to aerodynamic drag on their exposed surfaces. Without this,
+rotating assemblies spin forever once external driving forces stop.
+
+In plain English: spinning things slow down in air, just like a bicycle wheel
+eventually stops after you stop pedaling. The air pushes back.
+
+Source: Projectile Aerodynamics (§3.9) — air density and drag model
+Target: Rotational Mechanics (§3.8) — braking torque on axle joints
+Data: τ_drag = -0.5 × ρ_air × ω² × R³ × Cd_rot × A_surface
+Trigger: every tick for every rotating assembly with ω > 0.1 rad/s
+
+##### Connection 64: Rope Physics → Sound Events (moderate)
+
+Ropes produce distinctive sounds: snapping under tension (sharp crack),
+bowstring release (twang), wind humming through taut rope (aeolian tone),
+heavy-loaded rope creaking (fiber slip noise).
+
+In plain English: ropes make noise — they snap, twang, hum, and creak.
+Currently they're silent.
+
+Source: Rope System (§3.10) — break events, bowstring release, tension changes, wind
+Target: Sound Engine (§3.3) — modal synthesis for snap/twang, noise for creak/hum
+Data: Snap: f₀ = (1/2L)√(E/ρ). Twang: f₀ = (1/2L)√(T/μ), Q=20-50.
+      Wind hum: f = 0.2 × v_wind / d_rope. Creak: broadband when tension changes >10%/tick.
+Trigger: on rope break, bowstring release, continuous for wind-loaded ropes
+
+##### Connection 65: Heat Engine Thermoacoustic Events → Sound (moderate)
+
+Heat engines are among the loudest machines in the game. Steam exhaust chuffs,
+valve hisses, combustion bangs, and boiler rumbles are NOT covered by
+Connection 44 (which only handles gear/bearing noise from rotation).
+
+In plain English: steam engines go "chuff chuff," car engines go "vroom" —
+these sounds come from gas expanding and valves opening, not from gears turning.
+
+Source: Heat Engines (§3.11) — valve events, gas expansion, exhaust flow
+Target: Sound Engine (§3.3) — noise synthesis + modal synthesis
+Data: Steam chuff: periodic noise at crank frequency. Steam hiss: 2-8 kHz continuous.
+      Combustion bang: Helmholtz resonance of cylinder. Boiler rumble: 30-100 Hz.
+Trigger: per engine cycle phase — each valve event, each ignition
+
+##### Connection 66: Electromagnetism → Sound Events (moderate)
+
+Electrical systems produce characteristic sounds: arc buzz (plasma vibration),
+motor hum (magnetostriction), transformer hum (2× frequency), spark snap.
+
+In plain English: electric things buzz, hum, and crackle. A welding arc roars.
+A motor hums. A spark pops.
+
+Source: Electromagnetism (§3.13) — arc, motor operation, spark discharge
+Target: Sound Engine (§3.3) — noise synthesis + modal synthesis
+Data: Arc buzz: broadband, volume ∝ arc power. Motor hum: rotation freq × poles.
+      Transformer hum: 2× AC frequency. Spark: broadband impulse 1-10 kHz.
+Trigger: continuous while arc/motor/transformer active; impulse on spark
+
+##### Connection 67: Electrolysis → Gas-Phase Fluid Particles (moderate)
+
+Electrolysis of water produces hydrogen and oxygen gas as physical bubbles
+in the electrolyte. Connection 62 handles the chemistry (reaction engine),
+but the gas must also appear as SPH particles — bubbles that rise, accumulate,
+and can be collected.
+
+In plain English: when you run electricity through water, bubbles appear.
+Those bubbles are real gas (H₂ and O₂) that should physically exist in the sim.
+
+Source: Electromagnetism (§3.13) — electrolysis mass rate from Faraday's law
+Target: Fluid Simulation (§3.2) — spawn gas-phase SPH particles at electrodes
+Data: H₂ rate: m = (0.002 × I × dt)/(2 × 96485) kg/tick at cathode.
+      O₂ rate: m = (0.032 × I × dt)/(4 × 96485) kg/tick at anode.
+      Particles spawn with buoyancy-driven upward velocity.
+Trigger: every tick while electrolysis current flows
+
+##### Connection 68: Fluid Medium Query for Drag (moderate)
+
+The drag system needs to know if an object is underwater. Air drag uses
+ρ = 1.225 kg/m³. Water drag uses ρ = 1000 kg/m³ — 800× stronger.
+An arrow entering water stops almost instantly. A stone sinks slowly.
+
+In plain English: throwing something into water is very different from
+throwing it through air. Water pushes back 800 times harder.
+
+Source: Fluid Simulation (§3.2) — local fluid density at object position
+Target: Projectile Aerodynamics (§3.9) — ρ value in drag formula
+Data: If submerged: ρ = fluid density. If at surface: partial submersion.
+      If in air: ρ = ρ_air (altitude-adjusted).
+Trigger: every tick for every active rigid body
 
 
 ---
