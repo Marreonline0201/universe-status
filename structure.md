@@ -5836,9 +5836,12 @@ CombatDurabilitySystem {
   // but BRITTLE — it chips easily. Steel is hard AND tough.
   //
   // Wear per use:
-  //   wear = impactEnergy / (toolVolume × toolToughness × K_wear)
+  //   wear = impactEnergy / (toolVolume × toolToughness × 1,000,000)
   //   toolToughness = hardness × fractureToughness / 10
-  //   K_wear = 100
+  //   
+  //   The 1,000,000 factor converts from Joule-scale impact energy to 
+  //   the 0-1 wear fraction. It represents the total energy the tool can 
+  //   absorb before breaking: totalEnergy = toolVolume × toolToughness × 10⁶ J
   //
   //   impactEnergy: from §3.9 (projectile) or swing force × distance
   //   toolVolume: m³ (larger tools last longer — more material to wear through)
@@ -6457,39 +6460,37 @@ SoilErosionSystem {
 ```
 ClothingWarmthSystem {
   // Multiple clothing items combine to insulate the player.
+  // Insulation uses the CLO system (see Clothing Insulation Values below).
 
-  // Each ClothingItem has warmth: number (°C of insulation)
-  // Warmth values per slot:
-  //   head (hat/helmet): 1-3°C
-  //   torso (shirt): 2-5°C
-  //   outerLayer (jacket/cloak): 5-15°C
-  //   legs (pants): 2-5°C
-  //   feet (boots): 1-3°C
-  //   gloves: 1-2°C
+  // Each ClothingItem has insulation: number (CLO units)
+  // CLO values per slot (example materials):
+  //   head (hat/helmet):        wool 0.8 CLO, leather 0.5 CLO, linen 0.3 CLO
+  //   torso (shirt):            wool 0.8 CLO, leather 0.5 CLO, linen 0.3 CLO
+  //   outerLayer (jacket/cloak): fur 1.5 CLO, sheepskin 1.2 CLO, wool 0.8 CLO
+  //   legs (pants):             wool 0.8 CLO, leather 0.5 CLO, linen 0.3 CLO
+  //   feet (boots):             leather 0.5 CLO, fur 1.5 CLO
+  //   gloves:                   wool 0.8 CLO, leather 0.5 CLO
   //   No insulation from: belt, necklace, bracelet, ring, backpack
 
-  // COMBINATION FORMULA:
-  //   totalWarmth = head.warmth + torso.warmth + outer.warmth + legs.warmth + feet.warmth + gloves.warmth
-  //   Simple addition. No diminishing returns (layering IS additive in reality).
-  //   Full wool outfit: 3 + 5 + 12 + 5 + 3 + 2 = 30°C of insulation
-  //   Bare (no clothes): 0°C of insulation
-  //
-  // Clothing insulation uses the CLO system (see Clothing Insulation Values below):
+  // COMBINATION FORMULA (CLO system):
+  //   totalCLO = sum of CLO values for all worn clothing layers
   //   heatLoss = baseHeatLoss / (1 + totalCLO × 0.155)
-  //   where totalCLO = sum of CLO values for all worn clothing layers
   //   CLO values per material are derived from thermal conductivity (§3.1):
   //     CLO = thickness(m) / (0.155 × thermalConductivity)
   //   totalCLO 0 (naked): heatLoss = baseHeatLoss (full exposure)
   //   totalCLO 1 (light suit): heatLoss = baseHeatLoss / 1.155 (13% reduction)
   //   totalCLO 4 (full wool): heatLoss = baseHeatLoss / 1.62 (38% reduction)
   //
+  //   Full wool outfit: 0.8 + 0.8 + 0.8 + 0.8 + 0.5 + 0.8 = 4.5 CLO
+  //   Bare (no clothes): 0 CLO
+  //
   // WET CLOTHING:
   //   If raining AND exposed (shelter map) AND clothing.waterResistance < 1.0:
   //     clothing.moisture increases over time
-  //     wetWarmthMultiplier = 1.0 - clothing.moisture × 0.8
-  //     Wet wool retains 80% warmth (wool is remarkable this way)
-  //     Wet cotton retains 20% warmth (cotton is terrible when wet)
-  //     effectiveWarmth = item.warmth × wetWarmthMultiplier
+  //     wetCLOMultiplier = 1.0 - clothing.moisture × 0.8
+  //     Wet wool retains 75% CLO (wool is remarkable this way)
+  //     Wet cotton retains 17% CLO (cotton is terrible when wet)
+  //     effectiveCLO = item.insulation × wetCLOMultiplier
   //   Drying: when not raining and near fire or in sun:
   //     clothing.moisture decreases based on temperature and wind
 
@@ -12513,7 +12514,11 @@ FarmingActions {
   //
   // Water sources:
   //   Rain: automatically distributed by weather system (§4.6)
-  //     If precipitationRate × exposedArea > waterNeed: no irrigation needed
+  //     precipitationRate is in mm/hr from §4.6
+  //     waterNeed is in L/m²/day = mm/day (1 mm of rain = 1 L/m²)
+  //     Convert: dailyRain = precipitationRate × hoursOfRain (mm/day)
+  //     if dailyRain > waterNeed: crop is watered by rain, no irrigation needed
+  //     Example: 2 hours of 3 mm/hr rain = 6 mm/day = 6 L/m²/day → wheat (4-6 L/m²/day) is fine
   //   River/stream: player builds channel from water source to field
   //     Flow rate from §3.2 (Manning's equation in grid-based water)
   //     Channel capacity: Q = (1/n) × A × R^(2/3) × S^(1/2) m³/s
@@ -12644,17 +12649,16 @@ SoilFertilityManagement {
 
   // ── Depletion rates ───────────────────────────────────────────────────
   //
-  // Per harvest of wheat (1m² plot):
-  //   nitrogen -= 0.08 (heavy consumer)
-  //   phosphorus -= 0.03
-  //   potassium -= 0.02
+  // Per harvest (per m²) — see Fertilizer Replenishment Rates table below:
+  //   Wheat:  N -= 0.02, P -= 0.005, K -= 0.01
+  //   Potato: N -= 0.015, P -= 0.008, K -= 0.025
   //
   // Starting soil nitrogen = ~0.5 (forest floor)
-  // After 5 wheat harvests without restoration: nitrogen = 0.1 → crop barely grows
-  // After 7 harvests: nitrogen = 0.0 → crop dies, soil is "dead"
+  // After 25 harvests without restoration: nitrogen depleted
+  //   (0.5 / 0.02 = 25 wheat harvests to exhaust nitrogen)
   //
   // This is why slash-and-burn agriculture moves every few years:
-  //   Clear forest → farm 3-5 years → soil exhausted → abandon → clear new forest
+  //   Clear forest → farm many seasons → soil exhausted → abandon → clear new forest
   //   The abandoned plot takes 20-50 game-years to recover naturally (forest regrowth)
 
   // ── Restoration methods ───────────────────────────────────────────────
@@ -12682,11 +12686,12 @@ SoilFertilityManagement {
   // 2. MANURE (requires domesticated animals)
   manure {
     // Animal dung is the original fertilizer (§6.2.2):
-    //   Cow dung: nitrogen +0.06, phosphorus +0.03, potassium +0.04 per application
-    //   Pig dung: nitrogen +0.08 (highest N), phosphorus +0.04, potassium +0.03
-    //   Chicken droppings: nitrogen +0.10, phosphorus +0.06 (very concentrated — "hot" manure)
-    //   Horse dung: nitrogen +0.04, phosphorus +0.02, potassium +0.04
-    //   Sheep dung: nitrogen +0.05, phosphorus +0.03, potassium +0.03
+    // Per kg of manure applied per m² (see Fertilizer Replenishment Rates table below):
+    //   Cow manure:     N +0.005, P +0.002, K +0.005 (best all-round, slow release)
+    //   Chicken manure: N +0.008, P +0.006, K +0.003 (highest N and P, can burn plants if fresh)
+    //   Horse manure:   N +0.004, P +0.001, K +0.004 (similar to cow, slightly less)
+    //   Pig manure:     N +0.006, P +0.003, K +0.003
+    //   Sheep manure:   N +0.004, P +0.002, K +0.003
     //
     // Application: player collects dung from animal enclosures → carries to field → spreads
     // Or: graze animals directly on the field after harvest (they eat stubble, deposit manure)
@@ -18025,7 +18030,9 @@ ClothingItem {
   material: MaterialPacket             // what it's made of (affects durability, warmth, weight)
   slots: number                        // how many inventory slots it provides
   slotCapacity: number                 // max weight per slot (kg) — pockets hold less than backpack
-  warmth: number                       // °C of insulation (reduces heat loss to environment)
+  insulation: number                    // CLO units — derived from material thermal conductivity:
+                                        // CLO = thickness(m) / (0.155 × thermalConductivity(W/mK))
+                                        // See Clothing Insulation Values table for typical values
   waterResistance: number              // 0-1 (leather = 0.7, woven cloth = 0.2, fur = 0.5)
   durability: number                   // 0-1 (wears out from use, weather, damage)
   slotType: 'any' | 'tools_only'      // belt slots only hold tools
