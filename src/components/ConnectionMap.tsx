@@ -339,6 +339,11 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'C78', source: 'animal-system', target: 'property-calc', label: 'Live product \u2192 MaterialPacket', data: 'Wool={keratin 90%, lanolin 5%}, milk={water 87%, fat 4%}, eggs \u2014 real compositions, not abstract items.', severity: 'exists' },
   { id: 'C79', source: 'weather-system', target: 'property-calc', label: 'Rain \u2192 material moisture', data: 'Exposed MaterialPackets absorb rain. Wet wood flammability=0. Wet mortar weakens. Moisture from porosity.', severity: 'exists' },
   { id: 'C80', source: 'weather-system', target: 'phase-system', label: 'Cold \u2192 water freezing', data: 'Air T < 0\u00b0C \u2192 water cells cool \u2192 \u00a73.0 Stage 2 phase transition \u2192 ice. Rivers/lakes freeze in winter.', severity: 'exists' },
+
+  // Organism ecosystem connections
+  { id: 'C79b', source: 'weather-system', target: 'organism-system', label: 'Solar → photosynthesis', data: 'Solar irradiance + daylength from §4.6 drives autotroph photosynthesis rate. E = irradiance × leafArea × efficiency × daylight.', severity: 'exists' },
+  { id: 'C80b', source: 'organism-system', target: 'animal-system', label: 'Food chain', data: 'Lotka-Volterra predator-prey dynamics. Plants feed herbivores feed predators. 10% trophic efficiency per level.', severity: 'exists' },
+  { id: 'C80c', source: 'organism-system', target: 'farming-system', label: 'Wild plants → crops', data: 'Wild plant species domesticated through selection. Organism genome determines yield, growth rate, pest resistance.', severity: 'exists' },
 ]
 
 // Compute edge counts
