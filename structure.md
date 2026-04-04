@@ -169,6 +169,12 @@ PhysicsTick (Rust native addon, called from Node.js game server) {
   // Fire sources add heat. Environment (air temp from §4.6) absorbs/adds heat.
   // Output: updated temperature for every MaterialPacket in the simulation
 
+  // ── Stage 1b: Electrical Circuit Solving (§3.13) ─────────────────────────
+  //   Solve circuit graph for current in all active circuits
+  //   Compute Joule heating P = I²R per resistive element
+  //   Feed heat into Stage 1 temperature propagation
+  //   Compute magnetic fields from current-carrying coils
+
   // ── Stage 2: Phase Transitions ────────────────────────────────────────────
   // Check every packet: has temperature crossed melting/boiling point?
   // Uses: MaterialPacket.meltingPoint, boilingPoint (computed from composition)
@@ -251,6 +257,12 @@ PhysicsTick (Rust native addon, called from Node.js game server) {
   //   Apply gravity, detect terrain collision, apply friction
   //   Uses: MaterialPacket.density (weight), frictionCoefficient
   // Output: updated positions for all loose objects
+
+  // ── Stage 6b: Flexible Body Constraints (§3.10) ──────────────────────────
+  //   Verlet integration for all rope/cable particles
+  //   Constraint solving (4-8 iterations) to enforce rope lengths
+  //   Tension checking — break ropes that exceed tensile strength
+  //   Pulley force transmission through rope-axle contact points
 
   // ── Stage 7: Emit Sound Events ────────────────────────────────────────────
   // Every physical event from stages 1-6 that produces sound:
@@ -392,12 +404,26 @@ MaterialPacket {
                                         //          §3.4 structural (span limits, beam deflection)
   frictionCoefficient: number           // dimensionless — surface friction (μ)
                                         // Used by: §3.4 structural (stacked block stability)
+  poissonRatio: number                  // dimensionless — lateral strain / axial strain (0-0.5)
+                                        // Used by: §3.4 structural (multiaxial stress, plate bending)
+                                        // Steel: 0.27-0.30, rubber: 0.50, cork: 0.0, concrete: 0.15
+  fractureToughness: number             // MPa·√m — resistance to crack propagation
+                                        // Used by: §3.4 structural (Paris law fatigue, brittle fracture)
+                                        // Steel: 50-150, glass: 0.7, wood: 1-10, cast iron: 10-30
+  ductility: number                     // 0-1 — ability to deform plastically before fracture
+                                        // Used by: §3.4 structural (brittle vs ductile failure mode)
+                                        // Gold: 0.95, glass: 0.01, mild steel: 0.6, cast iron: 0.05
 
   // ── Thermal ───────────────────────────────────────────────────────────────
   thermalConductivity: number           // W/(m·K) — how fast heat moves through material
   specificHeatCapacity: number          // J/(kg·K) — energy needed to raise 1kg by 1°C
                                         // Used by: temperature propagation, cooling rate
-                                        // Water: 4186, iron: 449, granite: 790, wood: 1700
+                                        // Water: 4186, iron: 449, granite: 790
+  //   Wood: C_p ≈ 1100 + 4.5 × T (J/(kg·K)) for dry wood, where T in °C
+  //     At 20°C: C_p ≈ 1190 J/(kg·K)
+  //     At 100°C: C_p ≈ 1550 J/(kg·K)
+  //     At 200°C: C_p ≈ 2000 J/(kg·K)
+  //     Moisture increases C_p significantly (wet wood → C_p approaches water's 4186)
   thermalExpansion: number              // 1/K — how much material expands when heated
                                         // Used by: structural stress from temperature changes
   emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
@@ -420,7 +446,23 @@ MaterialPacket {
                                         // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
   surfaceTension: number                // N/m — surface cohesion
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
-                                        // Water: 0.072, mercury: 0.49, molten iron: 1.87
+                                        // Water: 0.072, mercury: 0.49
+  //   Molten iron: σ ≈ 1.86 - 0.0003 × (T - 1538) N/m (decreases with temperature)
+  //     At melting point (1538°C): σ ≈ 1.86 N/m  
+  //     At 1600°C: σ ≈ 1.84 N/m
+  //     At 1800°C: σ ≈ 1.78 N/m
+  //     Note: real measurements vary widely (1.3-1.9 N/m) depending on 
+  //     oxygen content and impurities. Pure iron in vacuum: ~1.86 N/m.
+  //     Iron exposed to air (oxidized): ~1.3-1.5 N/m.
+  //     The property calculator uses composition to determine which value applies.
+
+  // ── Non-Newtonian fluid properties ────────────────────────────────────────
+  isNonNewtonian: boolean               // true for honey, blood, ketchup, wet clay
+  zeroShearViscosity: number            // Pa·s — viscosity at rest (shear rate → 0)
+  infShearViscosity: number             // Pa·s — viscosity at very high shear rate
+  crossTimeConstant: number             // s — Cross model time constant (transition shear rate)
+  crossFlowIndex: number                // dimensionless — Cross model flow index (0-1)
+                                        // Non-Newtonian viscosity: μ(γ̇) = μ_∞ + (μ_0 - μ_∞) / (1 + (λγ̇)^n)
 
   // ── Mechanical (deformation state) ────────────────────────────────────────
   workHardeningState: number            // 0-1 — accumulated plastic strain from mechanical deformation
@@ -458,6 +500,15 @@ MaterialPacket {
                                         // Used by: §4.6 weather (rain → material gets wet)
                                         // Wood: 0.8, cloth: 0.9, stone: 0.05, metal: 0.0
 
+  // ── Optical ───────────────────────────────────────────────────────────────
+  refractiveIndex: number               // dimensionless — speed of light ratio (vacuum/material)
+                                        // Used by: §3.12 Optics (Snell's law, lens equation)
+                                        // Glass: 1.5, water: 1.33, diamond: 2.42, air: 1.0003
+  absorptionRGB: [number, number, number]  // 1/m — light absorption per color channel
+                                        // Used by: rendering (beer-lambert law for transparency)
+  scatteringRGB: [number, number, number]  // 1/m — light scattering per color channel
+                                        // Used by: rendering (subsurface scattering, turbidity)
+
   // ── Visual ────────────────────────────────────────────────────────────────
   color: [number, number, number]       // RGB — Drude model for metals, absorption for non-metals
   crystalStructure: string              // FCC, BCC, HCP, amorphous — Hume-Rothery rules
@@ -470,6 +521,12 @@ MaterialPacket {
                                         // Used by: §4.4 farming (manure, bone meal, wood ash)
 
   // ── Electromagnetic ──────────────────────────────────────────────────────
+  standardElectrodePotential: number   // V — standard reduction potential (E°)
+                                        // Used by: §3.13 battery voltage (V_cell = E_cathode - E_anode)
+                                        // Cu: +0.34V, Zn: -0.76V, Fe: -0.44V, Au: +1.50V
+  hydrophilicity: number               // 0-1 — affinity for water (surface wetting)
+                                        // Used by: §3.2 contact angle, §4.6 rain runoff behavior
+                                        // Glass: 0.9, wax: 0.05, metal: 0.7, leaves: 0.3
   magneticPermeability: number         // relative permeability (dimensionless)
                                         // Vacuum/air: 1, Iron: 200-5000, Nickel: 100-600
                                         // Used by: §3.13 electromagnets, compass, motors
@@ -482,7 +539,7 @@ MaterialPacket {
 }
 ```
 
-**Total: 39 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+**Total: 44 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
 
   // ── Element Property Reference Table ───────────────────────────────────
   //
@@ -1090,7 +1147,7 @@ SPH handles all of these because the particles move with the fluid — they go w
 
 ```
 SPHParticle {
-  // An SPH particle IS a MaterialPacket fragment. It inherits all 39 properties.
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 44 properties.
   packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
                                         // viscosity, surfaceTension, density etc. come from packet
 
@@ -1135,7 +1192,12 @@ Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dy
 - Water (H₂O): expected μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
 - Molten copper: expected μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
 - Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
-- Honey (sugar solution): expected μ ≈ 2–10 Pa·s — long sugar molecules tangle
+- Honey: μ varies enormously with temperature and water content
+  //     At 20°C (room temp): μ ≈ 10-100 Pa·s (thick paste — barely flows)
+  //     At 30°C: μ ≈ 5-30 Pa·s (flows slowly)
+  //     At 40°C: μ ≈ 2-10 Pa·s (pourable)
+  //     Water content matters: 14% water → μ ≈ 100 Pa·s. 20% water → μ ≈ 10 Pa·s.
+  //     Honey is non-Newtonian (shear-thinning) — stirring makes it flow easier.
 - Lava (basaltic): expected μ ≈ 10–100 Pa·s — silicate networks partially intact
 
 Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
@@ -3061,7 +3123,7 @@ produces a satisfying low resonance. All from physics, not sound files.
 | WebAudio processing | ~2-3ms total | Browser audio thread (not main thread) |
 | **Total main thread** | **<1ms** | Main thread computes parameters only |
 
-**Voice limiting:** Maximum 24 concurrent sound sources. Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots.
+**Voice limiting:** Maximum simultaneous sources: configurable (default 32, range 8-64). Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots. The degradation controller (§3.7) reduces this under load.
 
 #### Structure-Borne Sound — Impacts Travel Through Solids
 
@@ -3207,7 +3269,7 @@ StructuralBlock {
   // Additional per-block state (NOT from the property calculator):
   //
   //   StructuralBlock {
-  //     packet: MaterialPacket          // composition + all 39 derived properties
+  //     packet: MaterialPacket          // composition + all 44 derived properties
   //     position: Vec3                  // grid position (integer coordinates)
   //     connections: Connection[]       // bonds to adjacent blocks (up to 6 faces)
   //     load: number                    // accumulated gravity load from above (N)
@@ -7260,6 +7322,35 @@ TickScheduler {
   //
   //   Sequential pairs (must wait):
   //     Temperature → Phase transitions → Reactions → Fluid
+  //
+  // ── Additional systems (§3.8-§3.13) ────────────────────────────────────
+  //
+  //   Rotational mechanics (§3.8): runs within Stage 6 at 60 Hz
+  //     Joint constraint solving: 4-8 iterations per tick
+  //     Cost: ~0.06 ms for 6 joints, up to 1 ms for 100 joints
+  //
+  //   Projectile aerodynamics (§3.9): runs within Stage 6 at 60 Hz
+  //     One drag force per active rigid body
+  //     Cost: negligible (~0.0002 ms for 100 objects)
+  //
+  //   Rope/cable physics (§3.10): runs as Stage 6b at 60 Hz
+  //     Verlet integration + constraint solving, 4-8 iterations
+  //     Cost: ~0.2 ms for 100 ropes
+  //
+  //   Heat engines (§3.11): emergent from existing stages
+  //     Ideal gas law in Stage 4 (fluid), combustion in Stage 3 (reactions)
+  //     Piston force in Stage 6 (rigid body joints)
+  //     No separate stage needed
+  //
+  //   Optics (§3.12): mostly client-side (lens/telescope rendering)
+  //     Solar concentration: computed in Stage 1 (heat injection at focal point)
+  //     Cost: < 0.1 ms per frame (client), negligible server-side
+  //
+  //   Electromagnetism (§3.13): runs as Stage 1b at 30 Hz
+  //     Circuit graph solving (event-driven rebuild, per-tick current solve)
+  //     Magnetic field computation (cached, updated when magnets/current change)
+  //     Joule heating feeds into Stage 1 temperature propagation
+  //     Cost: 0.2-1.0 ms per tick when electrical systems exist near players
   //     Fluid → Structural → Rigid body → Sound → Broadcast
 }
 ```
@@ -7277,7 +7368,7 @@ PropertyCache {
   //   if compositionHash == lastComputedHash AND temperature == lastComputedTemp:
   //     return cached properties (0 cost)
   //   else:
-  //     recompute all 39 properties (~0.005ms per packet)
+  //     recompute all 44 properties (~0.005ms per packet)
   //     store in cache, update hash
   //
   // In practice: 95%+ of packets have stable composition.
@@ -7307,7 +7398,7 @@ PropertyCache {
   //   | Trigger                         | Threshold          | Properties affected |
   //   |--------------------------------|-------------------|-------------------|
   //   | Temperature change              | > 5C since last   | Viscosity, ductility, specific heat, thermal conductivity |
-  //   | Composition change              | Any change at all  | ALL 39 properties |
+  //   | Composition change              | Any change at all  | ALL 44 properties |
   //   | workHardeningState change        | > 0.01 since last | Tensile/compressive strength, hardness |
   //   | fatigueAccumulation change       | > 0.01 since last | Effective strength (reduced by damage) |
   //   | crackLength change               | Any change        | Effective strength (fracture toughness) |
@@ -7354,11 +7445,14 @@ The sound engine can generate hundreds of simultaneous events during action scen
 SoundOptimization {
   // ── Polyphony management ──────────────────────────────────────────────
   //
-  // Maximum simultaneous sound sources: 32 (configurable)
-  // Each source uses ~20 WebAudio nodes (oscillators + gains for modes)
-  // Total WebAudio nodes: 32 × 20 = 640 — well within budget
+  //   maxSimultaneousSources: configurable (default 32, range 8-64)
+  //   Each source uses ~20 WebAudio nodes
+  //   Total nodes at default: 32 × 20 = 640
+  //   Low-end hardware setting: 16 sources (320 nodes)
+  //   High-end: 64 sources (1280 nodes)
+  //   The degradation controller (§3.7) reduces this under load.
   //
-  // When a new sound event arrives and all 32 slots are full:
+  // When a new sound event arrives and all slots are full:
   //   Priority ranking:
   //     1. Distance to listener (closer = higher priority)
   //     2. Energy (louder = higher priority)
@@ -7475,9 +7569,9 @@ MaterialPacketFormat {
   // NOT all properties of one packet together.
   //
   //   AoS (Array of Structs — the slow way):
-  //     Packet 0: [density, meltingPt, boilingPt, ..., 39 properties, composition, state]
-  //     Packet 1: [density, meltingPt, boilingPt, ..., 39 properties, composition, state]
-  //     Reading all meltingPoints: jump 288 bytes between each one → cache misses
+  //     Packet 0: [density, meltingPt, boilingPt, ..., 44 properties, composition, state]
+  //     Packet 1: [density, meltingPt, boilingPt, ..., 44 properties, composition, state]
+  //     Reading all meltingPoints: jump 316 bytes between each one → cache misses
   //
   //   SoA (Structure of Arrays — the fast way):
   //     densities:      Float32Array(MAX_PACKETS)  → [pkt0, pkt1, pkt2, ...]
@@ -7494,7 +7588,7 @@ MaterialPacketFormat {
 
   // ── Complete property arrays ──────────────────────────────────────────
   //
-  // 39 derived properties (each is a Float32Array of MAX_PACKETS elements):
+  // 44 derived properties (each is a Float32Array of MAX_PACKETS elements):
   //
   //   // Thermal properties
   //   densities:              Float32Array    // kg/m³
@@ -7545,15 +7639,32 @@ MaterialPacketFormat {
   //   permanentMagnetizationZ: Float32Array   // Tesla (z component)
   //   triboelectricIndices:   Float32Array    // -1 to +1
   //
-  //   // Other
+  //   // Acoustic
   //   dampingLossTangents:    Float32Array    // dimensionless
   //   acousticEfficiencies:   Float32Array    // 0-1
+  //
+  //   // Combustion / thermal
   //   flammabilities:         Float32Array    // 0-1
   //   combustionEnergies:     Float32Array    // J/kg
+  //   ignitionTemperatures:   Float32Array    // °C
+  //
+  //   // Chemical
+  //   standardEnthalpies:     Float32Array    // J/mol (ΔH_f°)
+  //   standardEntropies:      Float32Array    // J/(mol·K) (S°)
+  //   activationEnergies:     Float32Array    // J/mol (Ea)
+  //
+  //   // Environmental
+  //   porosities:             Float32Array    // 0-1
   //   hydrophilicities:       Float32Array    // 0-1
   //
-  // Total arrays: ~45 (39 properties + 6 for Vec3 components split into x/y/z)
-  // Total memory: 45 × MAX_PACKETS × 4 bytes = 45 × 500,000 × 4 = 90 MB
+  //   // Biological
+  //   calorieContents:        Float32Array    // kcal/kg
+  //   nutrientN:              Float32Array    // kg/kg (nitrogen fraction)
+  //   nutrientP:              Float32Array    // kg/kg (phosphorus fraction)
+  //   nutrientK:              Float32Array    // kg/kg (potassium fraction)
+  //
+  // Total arrays: ~50 (44 properties + 6 for Vec3 components split into x/y/z)
+  // Total memory: 50 × MAX_PACKETS × 4 bytes = 50 × 500,000 × 4 = 100 MB
 
   // ── Composition storage ───────────────────────────────────────────────
   //
@@ -7609,14 +7720,14 @@ MaterialPacketFormat {
   //   // SIMD: Rust auto-vectorizes this to check 4-8 packets per instruction
   //
   // Reading all properties of ONE packet (e.g., property recomputation):
-  //   // Slower in SoA (must read from 39 different arrays)
+  //   // Slower in SoA (must read from 44 different arrays)
   //   // But this only happens for dirty packets (~5% per tick)
   //   // The other 95% benefit from the fast sequential access pattern
   //
   // Writing (property recomputation):
   //   densities[N] = computeDensity(compositions, N × 25)
   //   meltingPoints[N] = computeMeltingPoint(compositions, N × 25)
-  //   ...etc for all 39 properties...
+  //   ...etc for all 44 properties...
   //   // One write per property per dirty packet. Amortized cost: negligible.
 
   // ── Zero-copy sharing ─────────────────────────────────────────────────
@@ -7640,7 +7751,7 @@ MaterialPacketFormat {
   // To save the world state to disk:
   //   fs.writeFileSync('world.bin', new Uint8Array(sharedBuf))
   //   // One write, raw bytes. No JSON parsing, no field names, no overhead.
-  //   // 500,000 packets × ~300 bytes = 150 MB uncompressed
+  //   // 500,000 packets × ~316 bytes = 158 MB uncompressed
   //   // With LZ4 compression: ~30-50 MB (materials are repetitive)
   //
   // To load:
@@ -7651,11 +7762,11 @@ MaterialPacketFormat {
   // To send over network (for new chunk loading):
   //   Send raw bytes for the packets in the loaded chunk.
   //   Client reconstructs the SoA views from the received buffer.
-  //   // Much smaller than JSON: 300 bytes/packet vs ~2000 bytes/packet for JSON
+  //   // Much smaller than JSON: 316 bytes/packet vs ~2000 bytes/packet for JSON
 
   // ── Total memory budget (updated) ─────────────────────────────────────
   //
-  //   Property arrays (39 × 500k × 4):    90 MB
+  //   Property arrays (44 × 500k × 4):   100 MB
   //   Composition (500k × 25 × 4):         50 MB
   //   State (7 × 500k × 4):                14 MB
   //   Cache control (3 arrays):              3 MB
@@ -7664,10 +7775,10 @@ MaterialPacketFormat {
   //   Structural blocks (200k × 100):       20 MB
   //   Network/other:                        10 MB
   //   ─────────────────────────────────────────
-  //   TOTAL:                              ~222 MB
+  //   TOTAL:                              ~232 MB
   //
-  //   This is higher than the previous ~200 MB estimate because the SoA layout
-  //   trades memory for speed. The 22 MB increase buys 50× faster property access.
+  //   This is higher than the previous estimate because the SoA layout with 44 properties
+  //   trades memory for speed. The increase buys 50× faster property access.
   //   Still well under the 2 GB target.
 }
 ```
@@ -7681,9 +7792,9 @@ MemoryBudget {
   // Target: < 2 GB total for all physics systems (low-end server)
   //
   // MaterialPackets:
-  //   Size per packet: ~300 bytes in SoA format (see MaterialPacket Binary Format above). 39 properties + 25 elements + 7 state values + cache control.
+  //   Size per packet: ~316 bytes in SoA format (see MaterialPacket Binary Format above). 44 properties × 4 bytes = 176 bytes + 25 elements × 4 bytes = 100 bytes + 7 state values × 4 bytes = 28 bytes + 3 cache values × 4 bytes = 12 bytes.
   //   Max active packets: 500,000 (world chunks loaded for all players)
-  //   Total: 500,000 × 200 = 100 MB
+  //   Total: 500,000 × 316 = 158 MB
   //
   // Fluid particles:
   //   Size per particle: 64 bytes (position, velocity, density, pressure, flags)
@@ -7717,7 +7828,7 @@ MemoryBudget {
   //
   // ── TOTAL SERVER RAM ──────────────────────────────────────────────────
   //
-  //   MaterialPackets:     100 MB
+  //   MaterialPackets:     158 MB
   //   Fluid particles:      42 MB
   //   Spatial hash:          10 MB
   //   Structural blocks:     20 MB
@@ -7725,12 +7836,16 @@ MemoryBudget {
   //   Property cache:         5 MB
   //   Network buffers:        5 MB
   //   Rust overhead:         16 MB
+  //   Joint/assembly data (§3.8):     ~2 MB (1000 joints × 200 bytes/joint)
+  //   Rope particles (§3.10):         ~1 MB (10,000 particles × 100 bytes)
+  //   Circuit graph (§3.13):          ~0.5 MB (100 nodes × 5 KB/node)
+  //   Optics cache (§3.12):           ~0.1 MB (lens parameters per object)
   //   ─────────────────────────────
-  //   TOTAL:               ~200 MB
+  //   TOTAL:               ~262 MB
   //
-  //   This is 10% of the 2 GB target. Even with Node.js overhead (~300 MB),
+  //   This is ~13% of the 2 GB target. Even with Node.js overhead (~300 MB),
   //   game state (~200 MB), and NPC AI (~200 MB), total stays under 1 GB.
-  //   The 2 GB budget has ~50% headroom for growth.
+  //   The 2 GB budget has headroom for growth.
 }
 ```
 
@@ -7798,6 +7913,13 @@ CoreAllocation {
   //
   // Recovery: when load drops below threshold for 30 consecutive ticks,
   //   step back up one level. Hysteresis prevents oscillation.
+  //
+  //   Additional degradation for newer systems:
+  //   Level 1: reduce max rope segments from 100 to 50
+  //   Level 2: reduce joint constraint iterations from 8 to 4
+  //   Level 3: pause circuit solving for distant electrical systems (>100m from player)
+  //   Level 4: disable optics gameplay (lenses still render but solar concentration paused)
+  //   Level 5: rope physics frozen, only essential joints solved
 
   // ── Per-Player Crafting Particle Budget ────────────────────────────────
   //
@@ -8485,7 +8607,11 @@ Examples:
   Stone (1 kg, r=0.05m, Cd=0.47): v_t = √(2×1×9.81 / (1.225×0.47×0.00785)) = √(19.62/0.00452) = √4340 ≈ 66 m/s
   Arrow (0.05 kg, effective A=0.001m² including fletching drag, Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.001)) = √(0.981/0.00006125) = √16016 ≈ 127 m/s
   Feather (0.001 kg, A=0.003m², Cd=1.0): v_t = √(2×0.001×9.81 / (1.225×1.0×0.003)) = 2.3 m/s
-  Human (70 kg, A=0.7m², Cd=1.0): v_t = √(2×70×9.81 / (1.225×1.0×0.7)) = 40 m/s (~144 km/h)
+  Human (70 kg):
+    Belly-to-earth (A=0.7m², Cd=0.7): v_t = √(2×70×9.81 / (1.225×0.7×0.7)) = 53 m/s (~190 km/h)
+    Feet-first (A=0.2m², Cd=0.3): v_t = √(2×70×9.81 / (1.225×0.3×0.2)) = 137 m/s (~490 km/h)
+    The drag area (Cd×A) depends on body posture — the physics determines
+    terminal velocity from the player's actual pose, not a hardcoded number.
 ```
 
 A feather reaches terminal velocity in ~0.2 seconds (falls slowly).
@@ -9045,7 +9171,14 @@ When gas does work (W > 0), its internal energy decreases. Since internal energy
 delta_T = -W / (n * Cv)
 ```
 
-Where Cv = specific heat at constant volume (J/(mol*K)). For steam: Cv ~ 28.0 J/(mol*K). For air: Cv ~ 20.8 J/(mol*K).
+Where Cv = specific heat at constant volume (J/(mol*K)). For air: Cv ~ 20.8 J/(mol*K).
+
+  //   Cv for water vapor (temperature dependent):
+  //     At 100°C (373K): Cv ≈ 25.3 J/(mol·K) (= 3.04 × R, just above ideal diatomic 2.5R)
+  //     At 200°C (473K): Cv ≈ 26.5 J/(mol·K) (vibrational modes activating)
+  //     At 500°C (773K): Cv ≈ 28.5 J/(mol·K) (more vibrational contribution)
+  //     Approximation: Cv(T) ≈ 25.0 + 0.005 × (T - 373) J/(mol·K) for T in Kelvin
+  //     The property calculator computes this from the Debye/Einstein model.
 
 **Implementation:** Each tick, after computing the piston force and displacement:
 
@@ -9835,6 +9968,17 @@ Performance cost:
 - Trigger: on any optics calculation (lens detection, prism detection, total internal reflection check)
 
 
+// ── Connection to Electromagnetism (§3.13) ────────────────────────────
+//
+// Light IS electromagnetic radiation. When a wire carries enough current
+// to heat to >500°C (Joule heating from §3.13), it glows — this is
+// incandescent light, computed from Wien's law (§3.12 Planck emission).
+// The rendering system already handles blackbody emission from temperature.
+//
+// An incandescent lamp is just: §3.13 (current → heat) + §3.12 (heat → light).
+// No special "lamp" code needed — the physics produces visible light
+// from a hot wire filament automatically.
+
 ---
 
 ### 3.13 Electromagnetism — Charge, Current, Magnetism, Induction
@@ -10047,10 +10191,19 @@ Battery {
   //   V_cell = E_cathode - E_anode
   //   (electrode potentials from the element property table)
 
-  // Voltaic pile (first battery): zinc + copper + salt water
-  //   V = E_Cu - E_Zn = +0.34 - (-0.76) = 1.10 V per cell
-  //   Stack N cells in series: V_total = N × 1.10V
-  //   10 cells: 11V (enough to feel a shock, drive a small motor)
+  // Voltaic pile (first battery): zinc + copper + brine-soaked cardboard
+  //   Theoretical voltage (from electrode potentials): 1.10 V
+  //   Actual voltage with brine electrolyte: ~0.76 V per cell
+  //   (Lower because hydrogen evolution at the cathode wastes some voltage)
+  //   With copper sulfate solution (Daniell cell, improved design): 1.10 V per cell
+  //   
+  //   The game computes actual cell voltage from:
+  //     V_cell = (E_cathode - E_anode) × electrolyteEfficiency
+  //     electrolyteEfficiency: brine ~0.69, dilute acid ~0.85, CuSO4 solution ~1.0
+  //     This depends on the electrolyte's composition (§3.1 MaterialPacket).
+  //
+  //   Stack N cells in series: V_total = N × V_cell
+  //   10 cells with brine: 7.6V. 10 cells with CuSO4: 11V.
 
   // Lead-acid battery: lead + lead dioxide + sulfuric acid
   //   V = 2.05 V per cell (higher than zinc-copper)
@@ -13413,7 +13566,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
   // | Horn/antler| keratin 0.60, calcium_phosphate 0.30, water 0.10 | 80-120 | 1800 | 0.40 | Hard, workable. Tool handles, vessels |
   //
   // These compositions are set when the animal dies (§3.6 Connection 3: Death → MaterialPacket).
-  // The property calculator (§3.1) computes all 39 properties from these compositions.
+  // The property calculator (§3.1) computes all 44 properties from these compositions.
   // A player who skins a deer gets a MaterialPacket with the cowhide composition,
   // and the physics determines its behavior — not a lookup table.
 ```
