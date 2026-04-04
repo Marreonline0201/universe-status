@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization'
+type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization' | 'advanced'
 type EdgeSeverity = 'exists' | 'partial' | 'missing'
 
 interface GraphNode {
@@ -41,6 +41,7 @@ const GROUP_COLORS: Record<NodeGroup, string> = {
   network: '#a78bfa',
   tick: '#ffd700',
   optimization: '#ff9b3c',
+  advanced: '#ff6b9d',
 }
 
 const GROUP_LABELS: Record<NodeGroup, string> = {
@@ -51,6 +52,7 @@ const GROUP_LABELS: Record<NodeGroup, string> = {
   network: 'Networking 3.5',
   tick: 'Physics Tick Stages',
   optimization: 'Optimization 3.7',
+  advanced: 'Advanced Systems 3.9-3.13',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
@@ -122,6 +124,21 @@ const NODE_DEFS: NodeDef[] = [
   { id: 'tick-scheduler', label: 'Tick Scheduler', section: '3.7', group: 'optimization', description: 'Multi-rate pipeline: 60/30/1 Hz per stage', physics: "60 Hz: SPH crafting, rigid body, sound, broadcast\n30 Hz: temperature, MPM, structural\n1-10 Hz: phase transitions, reactions, grid water\nParallelizable: SPH || rigid body, temp || sound" },
   { id: 'degradation', label: 'Degradation Controller', section: '3.7', group: 'optimization', description: '5-level graceful degradation under load', physics: "Level 1: reduce particle cap (200k→50k)\nLevel 2: reduce tick rates (60→30, 30→15)\nLevel 3: skip distant structural checks\nLevel 4: pause distant reactions\nLevel 5: emergency — freeze background sim\nTrigger: tick_time/budget > threshold" },
   { id: 'profiler', label: 'Profiler & Monitor', section: '3.7', group: 'optimization', description: 'Per-stage timing, memory tracking, alerts', physics: "Reports per-stage microseconds every tick\nMemory tracking: ~200 MB target, alert at 1.5 GB\nSends monitoring data to status site at 1 Hz\nTriggers degradation when stage exceeds 2× budget" },
+
+  // §3.9 Projectile Aerodynamics
+  { id: 'drag-system', label: 'Drag & Aerodynamics', section: '3.9', group: 'advanced', description: 'Air resistance, terminal velocity, spin stabilization', physics: "F_drag = 0.5\u00d7\u03c1\u00d7v\u00b2\u00d7Cd\u00d7A\nTerminal velocity: v_t = \u221a(2mg/(\u03c1CdA))\nMagnus: F = S\u00d7(\u03c9\u00d7v)\nSpin stability: Sg = I\u03c9\u00b2/(\u03c1vAdC_M\u03b1)" },
+
+  // §3.10 Rope Physics
+  { id: 'rope-system', label: 'Rope & Cable Physics', section: '3.10', group: 'advanced', description: 'Verlet chains, pulleys, bows, catenary curves', physics: "Verlet: x_new = 2x - x_prev + a\u00d7dt\u00b2\nPulley MA = N segments\nBow: E = 0.5\u00d7k\u00d7x\u00b2\nCatenary: y = a\u00d7cosh(x/a)" },
+
+  // §3.11 Heat Engines
+  { id: 'heat-engine', label: 'Heat Engines', section: '3.11', group: 'advanced', description: 'Steam, combustion, refrigeration, thermodynamic cycles', physics: "Ideal gas: PV = nRT\nWork: W = \u222bP dV\nCarnot: \u03b7 = 1 - T_cold/T_hot\nOtto: \u03b7 = 1 - 1/r^(\u03b3-1)\nCOP = T_cold/(T_hot - T_cold)" },
+
+  // §3.12 Optics
+  { id: 'optics-system', label: 'Optics', section: '3.12', group: 'advanced', description: 'Lenses, mirrors, telescopes, solar concentration', physics: "Snell: n\u2081sin\u03b8\u2081 = n\u2082sin\u03b8\u2082\nLens: 1/f = (n-1)(1/R\u2081 - 1/R\u2082)\nMirror: 1/f = 2/R\nMagnification: M = f_obj/f_eye" },
+
+  // §3.13 Electromagnetism
+  { id: 'em-system', label: 'Electromagnetism', section: '3.13', group: 'advanced', description: 'Circuits, batteries, motors, generators, electrolysis', physics: "Ohm: V = IR\nFaraday: EMF = -N\u00d7d\u03a6/dt\nLorentz: F = qv\u00d7B\nSolenoid: B = \u03bc\u2080\u03bc\u1d63NI/L\nElectrolysis: m = MIt/(nF)" },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
@@ -257,6 +274,34 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'T8', source: 'degradation', target: 'mpm-solver', label: 'Reduces particle cap', data: 'Level 1: cap MPM at 50k instead of 200k. Aggressively merge distant particles. Close-up quality unaffected.', severity: 'exists' },
   { id: 'T9', source: 'degradation', target: 'broadcast', label: 'Adapts bandwidth per client', data: 'Per-client RTT monitoring. >150ms: skip Tier 1-3 particles. >300ms: WORLD_SNAPSHOT at 1 Hz only. Slow clients get reduced updates.', severity: 'exists' },
   { id: 'T10', source: 'profiler', target: 'broadcast', label: 'Monitoring to status site', data: 'Per-tick timing report sent to status site at 1 Hz. Includes per-stage microseconds, memory usage, degradation level, particle counts.', severity: 'exists' },
+
+  // Connection 45-47 (§3.9 Projectile Aerodynamics)
+  { id: 'C45', source: 'drag-system', target: 'rigid-body', label: 'Drag on rigid bodies', data: 'F_drag = 0.5\u00d7\u03c1\u00d7v\u00b2\u00d7Cd\u00d7A applied to every active rigid body per tick. Wind from weather affects v_relative.', severity: 'exists' },
+  { id: 'C46', source: 'drag-system', target: 'load-path', label: 'Drag \u2192 combat damage', data: 'Projectiles arrive with reduced velocity at range \u2192 reduced impact energy \u2192 less damage.', severity: 'exists' },
+  { id: 'C47', source: 'property-calc', target: 'drag-system', label: 'Crafting \u2192 Cd/stability', data: 'Fletched arrows Cd=0.05, Sg>1. Un-fletched Cd=0.20, tumbles. Shape determines aerodynamics.', severity: 'exists' },
+
+  // Connection 48-51 (§3.10 Rope Physics)
+  { id: 'C48', source: 'rope-system', target: 'load-path', label: 'Rope tension \u2192 structural', data: 'Rope anchors apply tension force to blocks. Crane lifting 500kg pulls anchor with 4900N.', severity: 'exists' },
+  { id: 'C49', source: 'rope-system', target: 'tick-scheduler', label: 'Rope + pulley \u2192 MA', data: 'Rope over axle joint = pulley. N segments = N\u00d7 mechanical advantage minus friction.', severity: 'exists' },
+  { id: 'C50', source: 'rope-system', target: 'drag-system', label: 'Bow \u2192 projectile velocity', data: 'Elastic energy E=0.5kx\u00b2 \u2192 arrow velocity v=\u221a(2E\u00d7eff/m). ~51 m/s for longbow.', severity: 'exists' },
+  { id: 'C51', source: 'rope-system', target: 'noise-synth', label: 'Wind on ropes', data: 'F = 0.5\u00d7\u03c1\u00d7v\u00b2\u00d7Cd\u00d7d\u00d7L. Ropes hum in wind. Rigging in storm \u2192 mast structural check.', severity: 'exists' },
+
+  // Connection 52-54 (§3.11 Heat Engines)
+  { id: 'C52', source: 'heat-engine', target: 'sph-solver', label: 'Gas pressure \u2192 piston', data: 'Gas SPH particles apply P\u00d7A force on slider joint piston. Ideal gas law: P=nRT/V.', severity: 'exists' },
+  { id: 'C53', source: 'heat-engine', target: 'tick-scheduler', label: 'Piston \u2192 crankshaft', data: 'Slider joint linear force \u2192 hinge joint \u2192 axle rotation. F\u00d7stroke = \u03c4\u00d7angle.', severity: 'exists' },
+  { id: 'C54', source: 'heat-engine', target: 'property-calc', label: 'Efficiency \u2192 fuel', data: 'Carnot limit: \u03b7_max = 1-T_cold/T_hot. Actual efficiency tracks work_out/heat_in.', severity: 'exists' },
+
+  // Connection 55-57 (§3.12 Optics)
+  { id: 'C55', source: 'optics-system', target: 'property-calc', label: 'Lens geometry \u2192 magnification', data: '1/f = (n-1)(1/R\u2081-1/R\u2082). Player grinds glass \u2192 R1,R2 \u2192 focal length \u2192 zoom.', severity: 'exists' },
+  { id: 'C56', source: 'optics-system', target: 'temp-propagation', label: 'Mirror \u2192 solar heat', data: 'Concave mirror: P = irradiance\u00d7area\u00d7reflectivity at focal point. 2m dish = 3kW.', severity: 'exists' },
+  { id: 'C57', source: 'optical-pipeline', target: 'optics-system', label: 'refractiveIndex \u2192 optics', data: 'n already computed for rendering. Now also used for gameplay optics (Snell, lenses).', severity: 'exists' },
+
+  // Connection 58-62 (§3.13 Electromagnetism)
+  { id: 'C58', source: 'property-calc', target: 'em-system', label: 'Electrode potential \u2192 battery', data: 'V_cell = E_cathode - E_anode. Zn+Cu = 1.10V. Already on MaterialPacket.', severity: 'exists' },
+  { id: 'C59', source: 'em-system', target: 'temp-propagation', label: 'Current \u2192 resistive heat', data: 'P = I\u00b2R. Nichrome wire glows. Iron wire at high current \u2192 melts \u2192 fuse.', severity: 'exists' },
+  { id: 'C60', source: 'tick-scheduler', target: 'em-system', label: 'Generator \u2190 rotation', data: 'EMF = N\u00d7B\u00d7A\u00d7\u03c9. Waterwheel/windmill axle spins coil \u2192 voltage in circuit.', severity: 'exists' },
+  { id: 'C61', source: 'em-system', target: 'tick-scheduler', label: 'Motor \u2192 rotation', data: '\u03c4 = N\u00d7I\u00d7A\u00d7B. Current + magnetic field \u2192 torque on axle. Motor = reverse generator.', severity: 'exists' },
+  { id: 'C62', source: 'em-system', target: 'reaction-rules', label: 'Electrolysis \u2192 reactions', data: 'Current through electrolyte forces non-spontaneous reactions. m = MIt/(nF).', severity: 'exists' },
 ]
 
 // Compute edge counts
@@ -285,13 +330,14 @@ const GROUP_ANGLE: Record<NodeGroup, number> = {
   structural: Math.PI * 1.5,  // left
   network: Math.PI * 1.85,    // upper left
   optimization: Math.PI * 1.2, // lower center
+  advanced: Math.PI * 0.5,     // bottom right
 }
 
 function initNodes(width: number, height: number): GraphNode[] {
   const cx = width / 2
   const cy = height / 2
-  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0 }
-  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0 }
+  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0 }
+  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0 }
   for (const nd of NODE_DEFS) groupTotals[nd.group]++
 
   return NODE_DEFS.map(nd => {
