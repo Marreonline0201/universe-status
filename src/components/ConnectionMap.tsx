@@ -52,7 +52,7 @@ const GROUP_LABELS: Record<NodeGroup, string> = {
   network: 'Networking 3.5',
   tick: 'Physics Tick Stages',
   optimization: 'Optimization 3.7',
-  advanced: 'Advanced Systems 3.9-3.13',
+  advanced: 'Advanced Systems 3.8-3.13',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
@@ -124,6 +124,9 @@ const NODE_DEFS: NodeDef[] = [
   { id: 'tick-scheduler', label: 'Tick Scheduler', section: '3.7', group: 'optimization', description: 'Multi-rate pipeline: 60/30/1 Hz per stage', physics: "60 Hz: SPH crafting, rigid body, sound, broadcast\n30 Hz: temperature, MPM, structural\n1-10 Hz: phase transitions, reactions, grid water\nParallelizable: SPH || rigid body, temp || sound" },
   { id: 'degradation', label: 'Degradation Controller', section: '3.7', group: 'optimization', description: '5-level graceful degradation under load', physics: "Level 1: reduce particle cap (200k→50k)\nLevel 2: reduce tick rates (60→30, 30→15)\nLevel 3: skip distant structural checks\nLevel 4: pause distant reactions\nLevel 5: emergency — freeze background sim\nTrigger: tick_time/budget > threshold" },
   { id: 'profiler', label: 'Profiler & Monitor', section: '3.7', group: 'optimization', description: 'Per-stage timing, memory tracking, alerts', physics: "Reports per-stage microseconds every tick\nMemory tracking: ~200 MB target, alert at 1.5 GB\nSends monitoring data to status site at 1 Hz\nTriggers degradation when stage exceeds 2× budget" },
+
+  // §3.8 Rotational Mechanics
+  { id: 'rotational-mechanics', label: 'Rotational Mechanics', section: '3.8', group: 'advanced', description: 'Wheels, gears, axles, crankshafts, flywheels, mechanical joints', physics: "Hinge joint: \u03c4_net = \u03a3\u03c4_ext - \u03c4_friction\n\u03b1 = \u03c4_net / I (angular accel)\nGear mesh: \u03c91\u00d7r1 = \u03c92\u00d7r2\nFlywheel: E = 0.5\u00d7I\u00d7\u03c9\u00b2\nBearing friction: \u03c4_f = \u03bc\u00d7F_n\u00d7r_bearing" },
 
   // §3.9 Projectile Aerodynamics
   { id: 'drag-system', label: 'Drag & Aerodynamics', section: '3.9', group: 'advanced', description: 'Air resistance, terminal velocity, spin stabilization', physics: "F_drag = 0.5\u00d7\u03c1\u00d7v\u00b2\u00d7Cd\u00d7A\nTerminal velocity: v_t = \u221a(2mg/(\u03c1CdA))\nMagnus: F = S\u00d7(\u03c9\u00d7v)\nSpin stability: Sg = I\u03c9\u00b2/(\u03c1vAdC_M\u03b1)" },
@@ -302,6 +305,14 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'C60', source: 'tick-scheduler', target: 'em-system', label: 'Generator \u2190 rotation', data: 'EMF = N\u00d7B\u00d7A\u00d7\u03c9. Waterwheel/windmill axle spins coil \u2192 voltage in circuit.', severity: 'exists' },
   { id: 'C61', source: 'em-system', target: 'tick-scheduler', label: 'Motor \u2192 rotation', data: '\u03c4 = N\u00d7I\u00d7A\u00d7B. Current + magnetic field \u2192 torque on axle. Motor = reverse generator.', severity: 'exists' },
   { id: 'C62', source: 'em-system', target: 'reaction-rules', label: 'Electrolysis \u2192 reactions', data: 'Current through electrolyte forces non-spontaneous reactions. m = MIt/(nF).', severity: 'exists' },
+
+  // Connection 63-68 (from /connect-chapter 3)
+  { id: 'C63', source: 'drag-system', target: 'rotational-mechanics', label: 'Drag torque on rotation', data: '\u03c4_drag = -0.5\u00d7\u03c1\u00d7\u03c9\u00b2\u00d7R\u00b3\u00d7Cd\u00d7A. Spinning windmills/flywheels slow down in still air. Without this, rotation is perpetual.', severity: 'exists' },
+  { id: 'C64', source: 'rope-system', target: 'noise-synth', label: 'Rope \u2192 sound events', data: 'Snap: f\u2080=(1/2L)\u221a(E/\u03c1). Twang: f\u2080=(1/2L)\u221a(T/\u03bc), Q=20-50. Wind hum: f=0.2\u00d7v/d. Creak: broadband on tension change.', severity: 'exists' },
+  { id: 'C65', source: 'heat-engine', target: 'noise-synth', label: 'Engine \u2192 sound', data: 'Steam chuff at crank freq. Hiss 2-8kHz from valves. Combustion bang (Helmholtz of cylinder). Boiler rumble 30-100Hz.', severity: 'exists' },
+  { id: 'C66', source: 'em-system', target: 'noise-synth', label: 'EM \u2192 sound events', data: 'Arc buzz: broadband \u221d power. Motor hum: freq\u00d7poles. Transformer: 2\u00d7AC freq. Spark: impulse 1-10kHz.', severity: 'exists' },
+  { id: 'C67', source: 'em-system', target: 'sph-solver', label: 'Electrolysis \u2192 gas bubbles', data: 'H\u2082: m=(0.002\u00d7I\u00d7dt)/(2\u00d796485) at cathode. O\u2082: m=(0.032\u00d7I\u00d7dt)/(4\u00d796485) at anode. Spawn as gas-phase SPH particles.', severity: 'exists' },
+  { id: 'C68', source: 'mpm-solver', target: 'drag-system', label: 'Fluid medium \u2192 drag density', data: 'Submerged: \u03c1=1000 (water). Surface: partial. Air: \u03c1=1.225. Underwater drag 800\u00d7 greater \u2014 arrows stop instantly.', severity: 'exists' },
 ]
 
 // Compute edge counts
