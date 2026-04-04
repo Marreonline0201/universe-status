@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (80 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (99 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
@@ -152,7 +152,7 @@ For understanding the physics engine, read them in this dependency order:
 
 **Infrastructure (read last — implementation concerns):**
 12. §3.5 Networking — how physics reaches clients.
-13. §3.6 Cross-System Connections — data flow reference (68 connections).
+13. §3.6 Cross-System Connections — data flow reference (99 connections).
 14. §3.7 Optimization — tick scheduling, caching, degradation.
 
 #### The Unified Physics Tick (Rust Core)
@@ -4762,7 +4762,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 80 connections total (37 critical + 43 moderate).
+for every connection. 99 connections total (44 critical + 55 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -11017,6 +11017,300 @@ Source: §4.6 AtmosphereCell.airTemperature
 Target: §3.2 grid cells with waterVolume > 0 → §3.0 Stage 2 phase transition
 Data: Q_exchange = h × A × (T_air - T_water) × dt. When T_water < 0°C → freeze.
 Trigger: per weather tick for water cells
+
+##### Connection 81: NPC Learning Curve ← §3.1 Process Complexity (moderate)
+
+In plain English: hard reactions should be harder for NPCs to learn. An NPC learning
+to start a fire (low activation energy, simple combustion) should reach proficiency
+faster than one learning iron smelting (high activation energy, strict temperature
+and atmosphere requirements). Currently the learning curve uses hardcoded constants.
+
+Source: §3.1 Reaction Engine — activationEnergy (Ea) and number of required conditions
+Target: §5.2 NPC Learning Curve — learnRate and maxRate parameters
+Data: learnRate = 10 × (Ea / Ea_fire) × conditionCount. maxRate = 0.95 - 0.05 × (conditionCount > 3 ? 1 : 0).
+  Ea_fire ~ 150 kJ/mol (wood combustion). Ea_copper_smelt ~ 200 kJ/mol → learnRate ~ 13.
+  Ea_iron_smelt ~ 250 kJ/mol + needs CO atmosphere → learnRate ~ 33 (3× harder).
+  conditionCount = number of strict conditions (temperature threshold, atmosphere type, flux presence).
+Trigger: when NPC first attempts a novel process, server computes learnRate from the process's §3.1 parameters
+
+**Validation-target**: §5.2 hardcodes learnRate = 10 and maxRate = 0.95. These should be replaced with per-process values derived from §3.1 activation energy and condition complexity.
+
+##### Connection 82: NPC Physics Observation → Discovery Memory (moderate)
+
+In plain English: NPCs should learn not just from crafting, but from witnessing any
+significant physics event. An NPC who sees a structural collapse learns about material
+limits. An NPC who watches ice melt learns about phase transitions. This observation
+channel is how NPCs accumulate understanding of the world's physics.
+
+Source: §3.0 Stages 2-5 — phase transition events, reaction events, structural failure events
+Target: §5.2 NPC Memory System — new memory with entities tagged from the physics event
+Data: PhysicsObservation { eventType: 'phase_transition' | 'reaction' | 'structural_failure' | 'fire_ignition',
+  materials: MaterialPacket[], conditions: { temperature, atmosphere }, outcome: string,
+  location: Vec3, npcDistance: number }
+  Only stored if NPC is within 20m and has line-of-sight to the event.
+  Memory description auto-generated: "green rock melted into orange liquid at the hot enclosure"
+  Adds +1 virtual attempt for any matching knownProcess (same mechanism as §5.2 knowledge transfer).
+Trigger: any Stage 2/3/5 event within 20m of an NPC with line-of-sight
+
+##### Connection 83: NPC Building → §3.4 Load Path Validation (moderate)
+
+In plain English: when an NPC places a block during construction, the server should
+run a quick structural check to prevent NPCs from building structures that immediately
+collapse. NPCs don't have engineering degrees, but they have intuition from experience.
+
+Source: §5.2 NPC Building action → §3.4 ForceSystem Phase 1 (connectivity BFS)
+Target: §3.4 structural check on the placed block + immediate neighbors
+Data: after NPC places block via placeObject(), server runs lightweight structural check:
+  1. BFS connectivity: is the new block supported? (< 0.1ms)
+  2. Load check on block below: does adding this block exceed compressive capacity?
+  If check fails: block falls immediately (NPC sees it fail).
+  NPC stores memory: "stone block fell off the wall — too heavy for mud mortar"
+  NPC adjusts future building: SLM receives "last build attempt failed: overloaded wall"
+  Experienced NPCs (high conscientiousness, many build memories) make fewer mistakes.
+Trigger: each NPC block placement event during construction
+
+##### Connection 84: NPC Speech Intent → §3.3 Voice Synthesis Pipeline (moderate)
+
+In plain English: when the NPC brain decides to speak, the decision must flow through
+the sound engine to produce audible speech. This connection maps the NPC brain's
+communication intent to the §3.3 source-filter voice synthesizer.
+
+Source: §5.2 SLM output action 'talk_to:*' → §5.3 intent mapping → phoneme sequence
+Target: §3.3 VoiceSynth source-filter method → SoundEvent type 'voice'
+Data: SoundEvent { type: 'voice', voice: { species: 'human', subtype: 'speech',
+  f0: 220 - (npc.height_cm × 0.7), formants: from phoneme→formant table,
+  phonemes: from §5.3 language generator, duration: phonemes.length × 0.15 } }
+  NPC emotional state modulates f0: fear → +20%, anger → -10% + louder,
+  sadness → -15% + slower rate, excitement → +10% + faster rate.
+Trigger: SLM outputs a 'talk_to' action and NPC is within speaking range of target
+
+##### Connection 85: Settlement Trade Valuation ← §3.1 Clarke Numbers (critical)
+
+In plain English: the base value of a material in trade should come from its real-world
+elemental rarity (Clarke numbers), not from hardcoded category weights. Connection 14
+already references Clarke numbers for element base values, but the needWeight categories
+(food: 10, fuel: 5, tools: 8, ore: 3, etc.) are hardcoded and override the physics.
+
+Source: §3.1 MaterialPacket.composition → element abundance from Clarke numbers (§4.1.1)
+Target: §5.1 TradeOffer and §3.6 Connection 14 needWeight categories
+Data: baseValue per element = 1 / (clarkeNumber × localGeologicalAbundance).
+  Category needWeights should be DERIVED from settlement survival model:
+  food needWeight = population × caloriesPerDay / (avg_kcal_per_kg of stored food)
+  fuel needWeight = activeCraftArrangements × fuelConsumptionRate
+  tools needWeight = brokenToolCount / totalToolCount × 10
+  The hardcoded [10, 5, 8, 3, 2, 1, 3, 7] should become dynamic functions of settlement state.
+Trigger: per-game-day trade offer recalculation
+
+**Validation-target**: Connection 14 hardcodes needWeight = {food:10, fuel:5, tools:8, ore:3, cloth:2, stone:1, wood:3, water:7}. These should be derived from settlement consumption rates and survival urgency, not static numbers.
+
+##### Connection 86: NPC-Built Arrangements → §6.3 CraftEnvironment Sampling (critical)
+
+In plain English: when NPCs build a smelting enclosure or kiln, the result must be
+evaluated by the same §6.3 CraftEnvironment sampling system that checks player-built
+arrangements. The arrangement's capability (max temperature, atmosphere, containment)
+is not stored as a property — it is computed from the physical blocks the NPC placed.
+
+Source: §5.1 settlement.structures (NPC-built arrangements)
+Target: §6.3 CraftEnvironment sampling at the arrangement's interaction point
+Data: CraftEnvironment { temperature: from §3.0 Stage 1 heat propagation through NPC-placed blocks,
+  atmosphere: from combustion + enclosure geometry, containment: from block connectivity,
+  airflow: from opening count + stack height of NPC-placed structure }.
+  An NPC-built bloomery with thin walls has lower heatRetention than one with thick walls.
+  An NPC who builds a taller stack gets higher natural draft → higher temperature.
+  The CraftEnvironment is NEVER hardcoded per structure type — always sampled from physics.
+Trigger: any craft attempt (NPC or player) at an NPC-built arrangement — server samples §6.3 conditions
+
+##### Connection 87: Settlement Temperature Thresholds ← §3.1 Melting Points (moderate)
+
+In plain English: the assessSettlement() function in §5.1 checks if structures can
+"reach 1300°C" or "reach 1500°C" to classify settlement sophistication. These thresholds
+should reference specific material melting points from §3.1, not magic numbers.
+
+Source: §3.1 MaterialPacket melting points (iron: 1538°C, copper: 1085°C, bronze: ~950°C)
+Target: §5.1 assessSettlement() temperature checks
+Data: canReach1300C should be canSmeltIron = structures.some(st =>
+  sampleCraftEnvironment(st).temperature >= Fe.meltingPoint × 0.85).
+  canReach1500C should be canCastSteel = structures.some(st =>
+  sampleCraftEnvironment(st).temperature >= 1500).
+  The 1300 and 1500 values are approximate but should be documented as derived from
+  iron melting point (1538°C) and steel casting requirements.
+Trigger: assessSettlement() evaluation (on-demand for UI display)
+
+**Validation-target**: §5.1 assessSettlement() hardcodes 1300 and 1500 as temperature thresholds. These should reference §3.1 iron melting point (1538°C) and be expressed as fractions of material-specific melting points.
+
+##### Connection 88: NPC Craft Failure → §3.1 Outcome Feedback Loop (moderate)
+
+In plain English: when an NPC's craft attempt fails, the failure reason comes from
+the §3.1 reaction engine (temperature too low, wrong atmosphere, missing reactant).
+This specific failure data should feed back into the NPC's memory so it can adjust
+its next attempt intelligently, not just record "it failed."
+
+Source: §3.1 Reaction Engine → CraftResult.failureReason (from Connection 5)
+Target: §5.2 NPC Memory System — structured failure memory
+Data: NPC memory stores: { process: 'copper_smelting', conditions: { temp: 400, atmosphere: 'oxidizing' },
+  failureReason: 'temperature_too_low', requiredTemp: 1085, actualTemp: 400 }.
+  SLM input includes: "Last attempt at copper smelting failed: temperature 400°C, needed ~1100°C.
+  The campfire was not hot enough. Need an enclosed space with bellows."
+  This converts raw physics outcomes into actionable NPC knowledge.
+Trigger: each failed craft attempt by an NPC (CraftResult.success === false)
+
+##### Connection 89: Structural Collapse → NPC Threat Memory (moderate)
+
+In plain English: when a structure collapses (§3.4 cascade failure), nearby NPCs should
+witness it and store it as a traumatic memory. This affects future building decisions —
+NPCs who witnessed a mud-brick wall collapse in rain will prefer stone when available.
+
+Source: §3.4 structural cascade event — blocks failing, debris spawning
+Target: §5.2 NPC Memory System — traumatic memory with structural context
+Data: Memory { description: "wall collapsed during rain — mud mortar dissolved",
+  emotionalWeight: -0.6, entities: ['wall', 'rain', 'mud_mortar'],
+  outcome: 'failure', location: Vec3 }.
+  SLM receives this in future build decisions: "I remember a mud wall collapsing in rain.
+  I should use stone or lime mortar for this wall."
+  NPCs within 30m of collapse: fear += 0.3, store memory.
+  NPCs inside the structure: potential injury (same damage system as players).
+Trigger: §3.4 cascade failure event within 30m of any NPC
+
+##### Connection 90: Production Processes → Reaction Engine (critical)
+
+Every transformation in §6.2 (smelting, calcination, vitrification, pyrolysis, fermentation)
+executes through the §3.1 reaction engine (Stage 3 of the physics tick). There is no
+separate crafting chemistry — the same Gibbs free energy check (ΔG = ΔH - TΔS) that
+governs all material interactions governs production. Smelting copper from malachite
+succeeds because CuO + CO → Cu + CO₂ has ΔG < 0 at 1100°C, not because a recipe says so.
+
+Source: §6.2 production inputs (ore + fuel + conditions) placed at a craft interaction point
+Target: §3.1 reaction engine — Stage 3 evaluates all contact pairs at sampled temperature
+Data: input MaterialPackets + CraftEnvironment.temperature + atmosphere.carbonMonoxide
+Trigger: player or NPC initiates craft action (§3.6 Connection 5 NPC Crafting API)
+
+##### Connection 91: Craft Environment Sampling → Temperature Propagation (critical)
+
+The CraftEnvironment (§6.3) samples temperature directly from §3.0 Stage 1 output
+at the interaction point. The temperature at that point is NOT a lookup from a
+"workstation type" — it is whatever the heat propagation system computed for that
+world position this tick. Enclosure insulation (block thermal conductivity), fuel
+energy, and airflow all feed into the Stage 1 result that the craft system reads.
+
+Source: §3.0 Stage 1 temperature propagation — computed temperature at world position
+Target: §6.3 CraftEnvironment.temperature
+Data: temperature (°C) at the interaction point, updated every physics tick
+Trigger: when server samples CraftEnvironment for a craft action
+
+##### Connection 92: Craft Environment → Containment and Atmosphere (critical)
+
+The CraftEnvironment (§6.3) queries §3.2 fluid simulation for atmosphere composition
+and §3.4 structural geometry for containment. Oxygen fraction drops as fuel burns
+in an enclosed space; CO rises with excess carbon. Containment volume and heat retention
+are measured from surrounding block geometry. A sealed clay cylinder with one tuyere hole
+is not a "bloomery" — it is a geometry that retains heat and restricts gas exchange.
+
+Source: §3.2 atmosphere cells (oxygenFraction, carbonMonoxide) + §3.4 block geometry
+Target: §6.3 CraftEnvironment.atmosphere + CraftEnvironment.containment
+Data: oxygenFraction (0-1), CO level (0-1), containment volume (m³), heatRetention (0-1)
+Trigger: sampled at craft action initiation and updated per tick during sustained processes
+
+##### Connection 93: Anvil Surface Hardness → Material Properties (moderate)
+
+The CraftEnvironment.surface (§6.3) reads hardness and flatness from the MaterialPacket
+of whatever block the player works on. A flat granite slab (hardness 6 Mohs, ~6 GPa)
+serves as an anvil because §3.1 computed those properties from its composition. An iron
+block (4 GPa) works better for metalwork because its higher mass absorbs less rebound
+energy. There is no "anvil" object — only material properties at the working surface.
+
+Source: §3.1 MaterialPacket.hardness + compressiveStrength at the surface block
+Target: §6.3 CraftEnvironment.surface.hardness + surface.flatness
+Data: hardness (Pa), flatness (0-1 from block geometry), mass (kg)
+Trigger: sampled when player enters precision craft mode or initiates mechanical action
+
+##### Connection 94: Skeleton Bone Strength → Structural Fracture Mechanics (critical)
+
+The player skeleton (§7.1, 67 bones) uses §3.4 structural physics for fracture
+calculations. Bone is a MaterialPacket (calcium_phosphate: 0.70, collagen: 0.20,
+water: 0.10) with computed tensile strength (~130 MPa) and fracture toughness
+(~3-6 MPa√m). Fall damage (§7.1) computes F_impact = m × v² / (2 × d_stop);
+when F_impact exceeds bone strength (~7,500 N for a leg bone), fracture occurs.
+Blunt combat (§3.6 Connection 13) also checks bone fracture probability.
+
+Source: §3.4 structural integrity check — stress vs. material strength
+Target: §7.1 skeleton bone fracture → injury system (region health, movement penalty)
+Data: F_impact (N), boneStrength (N) from MaterialPacket properties, d_stop from surface
+Trigger: any impact event on the player body (fall landing, blunt weapon hit)
+
+##### Connection 95: Body Temperature Regulation → Stage 1 Heat Exchange (critical)
+
+The player's body temperature (§7.2) is computed by §3.0 Stage 1 heat transfer.
+The body generates heat proportional to activity (BMR × activity multiplier).
+Heat loss follows Newton's law of cooling modified by clothing insulation (§3.6
+Connection 22) and wind convection. The formula dT_body/dt = (heatGeneration -
+heatLoss) / bodyThermalMass uses the same Fourier conduction, Stefan-Boltzmann
+radiation, and convective transfer equations as every other object in the world.
+
+Source: §3.0 Stage 1 — ambient temperature, wind speed, radiation from nearby heat sources
+Target: §7.2 HumanBodyState.bodyTemperature
+Data: Q_convection = h × A × (T_body - T_air), Q_radiation = ε × σ × A × (T_body⁴ - T_env⁴),
+      Q_conduction from surface contact (standing in snow, swimming in cold water)
+Trigger: every physics tick for each connected player and NPC
+
+##### Connection 96: Terrain Dig Rate → Material Hardness (moderate)
+
+Digging terrain (§7.4) depends on the terrain block's MaterialPacket properties
+from §3.1. terrainResistance is derived from compressive strength and hardness:
+granite (Mohs 7, ~200 MPa compressive) has terrainResistance 2000, while dirt
+(essentially no hardness) has resistance 50. The tool's effectiveness also
+depends on its §3.1 hardness — an iron pickaxe (Mohs 4) on granite is 2.7x
+more effective than a stone pickaxe (Mohs ~3) because higher hardness means
+less energy lost to tool deformation.
+
+Source: §3.1 MaterialPacket.hardness + compressiveStrength of terrain block
+Target: §7.4 DigSystem.terrainResistance
+Data: terrainResistance = f(compressiveStrength, hardness), toolEfficiency = f(toolHardness / terrainHardness)
+Trigger: each dig swing by player or NPC
+
+##### Connection 97: Combat Kinetic Energy → Material Mass and Density (moderate)
+
+Combat damage (§7.5) is KE = 0.5 x m x v^2 where m is the tool mass and v is swing velocity.
+Tool mass comes from §3.1: mass = density x volume. A steel sword (density 7800 kg/m3,
+volume 0.0003 m3 = 2.34 kg) at 6 m/s delivers 42 J. A stone axe (density 2700 kg/m3,
+volume 0.0005 m3 = 1.35 kg) at 4 m/s delivers 10.8 J. Tool hardness also modifies
+the sharpness factor (§3.6 Connection 11). Heavier, harder materials deal more damage
+because physics says so — not because of a "damage stat."
+
+Source: §3.1 MaterialPacket.density x object volume → tool mass
+Target: §7.5 PhysicsDamage.KE computation
+Data: m (kg) from density x volume, hardness for sharpness degradation rate
+Trigger: any rigid body collision with a character
+
+##### Connection 98: Fall Damage → Terminal Velocity + Bone Strength (critical)
+
+Fall damage (§7.1) chains two Ch3 systems. First, §3.9 aerodynamic drag determines
+actual impact velocity: v_terminal = sqrt(2mg / (rho x C_d x A)). A spread-eagle player
+(C_d ~ 1.0, A ~ 0.7 m2) has v_terminal ~ 56 m/s; a streamlined dive reduces drag area.
+For short falls (< 20m), drag barely matters, but for cliff falls it caps damage. Second,
+§3.4 bone strength sets the fracture threshold — leg bones fail at ~7,500 N, spine at
+~5,000 N. The stopping distance depends on surface material (§3.1): rock d_stop = 0.01m,
+sand d_stop = 0.30m. Same fall height, different surface → different injury.
+
+Source: §3.9 drag equation (terminal velocity) + §3.4 structural fracture threshold
+Target: §7.1 fall damage calculation (F_impact = m x v^2 / (2 x d_stop))
+Data: v (m/s) capped by terminal velocity, d_stop from surface MaterialPacket, bone strength (N)
+Trigger: player landing event after any fall > 1m
+
+##### Connection 99: Swimming Movement → Fluid Simulation + Drag (moderate)
+
+Swimming (§7.9) interacts with §3.2 fluid simulation for buoyancy and §3.9 for
+drag forces. The player body displaces fluid (Archimedes: F_buoyancy = rho_water x V_displaced x g).
+Movement through water applies drag: F_drag = 0.5 x rho_water x v^2 x C_d x A. Swim speed
+(§7.9: baseSpeed x 0.4) emerges from the balance between stroke force and fluid drag.
+Carried weight reduces effective buoyancy (§3.6 Connection 23). Water temperature
+affects the player through §3.0 Stage 1 conduction (swimming in cold water drains
+body heat faster than standing in cold air because water's thermal conductivity is
+~25x higher than air).
+
+Source: §3.2 fluid particles (density, viscosity) + §3.9 drag equation
+Target: §7.9 swim speed, buoyancy, stamina drain
+Data: F_buoyancy (N), F_drag (N), water temperature (°C) for conduction heat loss
+Trigger: continuous while player is in water (checked per physics tick)
 
 
 ---
