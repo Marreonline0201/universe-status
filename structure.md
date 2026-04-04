@@ -5831,36 +5831,42 @@ CombatDurabilitySystem {
   // ── Tool Durability ────────────────────────────────────────────────────
   //
   // In plain English: every time you use a tool, it wears a tiny bit.
-  // Harder materials last longer. Using a tool on something harder than itself
-  // wears it out faster.
+  // Tougher materials last longer. Toughness combines hardness (resists 
+  // scratching) with fracture toughness (resists cracking). Flint is HARD 
+  // but BRITTLE — it chips easily. Steel is hard AND tough.
   //
   // Wear per use:
-  //   wear = impactEnergy / (toolVolume × toolHardness × K_wear)
-  //   K_wear = 1000 (wear coefficient, dimensionless)
-  //   
+  //   wear = impactEnergy / (toolVolume × toolToughness × K_wear)
+  //   toolToughness = hardness × fractureToughness / 10
+  //   K_wear = 100
+  //
   //   impactEnergy: from §3.9 (projectile) or swing force × distance
   //   toolVolume: m³ (larger tools last longer — more material to wear through)
-  //   toolHardness: Mohs from §3.1 (harder tools resist wear better)
+  //   fractureToughness: K_IC in MPa√m from §3.1 (resists crack propagation)
   //
   // When accumulated wear reaches 1.0: tool breaks.
   //
-  // Examples (per standard use):
-  //   | Tool              | Hardness | Volume  | Energy/use | Wear/use   | Uses to break |
-  //   |------------------|----------|---------|-----------|------------|---------------|
-  //   | Flint pickaxe     | 7        | 0.0002  | 10 J      | 0.0071     | ~140          |
-  //   | Copper pickaxe    | 3        | 0.0003  | 10 J      | 0.0111     | ~90           |
-  //   | Iron pickaxe      | 4        | 0.0003  | 10 J      | 0.0083     | ~120          |
-  //   | Steel pickaxe     | 6        | 0.0003  | 10 J      | 0.0056     | ~180          |
+  // Examples (per standard use, 10 J per swing):
+  //   | Tool              | Hardness | K_IC  | Toughness | Volume  | Wear/use   | Uses to break |
+  //   |------------------|----------|-------|-----------|---------|------------|---------------|
+  //   | Flint pickaxe     | 7        | 0.7   | 0.49      | 0.0002  | 0.102      | ~10           |
+  //   | Copper pickaxe    | 3        | 100   | 30.0      | 0.0003  | 0.0011     | ~900          |
+  //   | Iron pickaxe      | 4        | 50    | 20.0      | 0.0003  | 0.0017     | ~600          |
+  //   | Steel pickaxe     | 6        | 150   | 90.0      | 0.0003  | 0.00037    | ~2,700        |
+  //
+  //   Now flint breaks after ~10 uses (realistic — flint chips easily).
+  //   Copper lasts ~900 uses. Steel lasts ~2,700 uses (270x longer than flint).
+  //   This matches the real-world technological progression.
   //
   // Hitting material harder than the tool accelerates wear:
   //   if targetHardness > toolHardness:
   //     wear *= (targetHardness / toolHardness)²
   //   A copper pickaxe (Mohs 3) hitting granite (Mohs 7):
-  //     wear × (7/3)² = wear × 5.4 → breaks in ~17 uses instead of 90
+  //     wear × (7/3)² = wear × 5.4 → breaks in ~170 uses instead of 900
   //
   // This is why you need iron/steel tools to mine hard rock efficiently.
-  // Flint is hard (Mohs 7) but small volume → breaks quickly.
-  // Steel is moderately hard AND large → lasts longest.
+  // Flint is hard (Mohs 7) but brittle (K_IC 0.7) → shatters quickly.
+  // Steel is hard AND tough (K_IC 150) → lasts longest by far.
 }
 ```
 
@@ -5985,6 +5991,42 @@ BarterSystem {
   //       gives: surplusMaterial, amount: surplus × 0.5 (offer half of surplus)
   //       wants: deficitMaterial, minAmount: computed from exchange rate
   //     Offer is broadcast to settlements within trade distance (walkable within 1 game-day)
+
+  // ── NPC Trade Valuation ────────────────────────────────────────────────
+  //
+  // In plain English: NPCs value items based on three things:
+  // 1. How rare is it? (scarcity — do they have lots or almost none?)
+  // 2. How useful is it? (utility — does the settlement need this?)
+  // 3. How hard was it to make? (labor — complex crafting = more valuable)
+  //
+  // Value formula:
+  //   value(item, settlement) = baseValue × scarcityMultiplier × utilityMultiplier
+  //
+  //   baseValue = sum of element values in the item's composition
+  //     Element value ∝ 1 / (Clarke number × local abundance)
+  //     Common elements (iron, silicon): low value
+  //     Rare elements (gold, tin): high value
+  //
+  //   scarcityMultiplier = 1 / (1 + stockpile / demandPerDay)
+  //     Settlement with 100 kg copper and needing 1 kg/day: multiplier = 1/101 = 0.01 (they have plenty)
+  //     Settlement with 0 kg copper needing 1 kg/day: multiplier = 1/1 = 1.0 (desperate need)
+  //
+  //   utilityMultiplier:
+  //     Food when hungry: 3.0
+  //     Tools when tools are broken: 2.0
+  //     Building materials when constructing: 1.5
+  //     Luxury items (gold, gems): 0.5 normally, 2.0 for wealthy settlements
+  //     Raw materials with no current use: 0.1
+  //
+  // Exchange rate between settlements:
+  //   rate = sqrt(value_A × value_B)  (geometric mean — fair to both sides)
+  //   Settlement A values copper at 10, settlement B values copper at 50:
+  //     exchange rate = sqrt(10 × 50) = 22.4 per unit
+  //
+  // This creates emergent trade patterns:
+  //   Mining settlements export ore, import food → geographic specialization
+  //   Coastal settlements export salt/fish, import metals
+  //   Desperate settlements accept bad deals (scarcity drives up value)
 }
 ```
 
@@ -6432,11 +6474,14 @@ ClothingWarmthSystem {
   //   Full wool outfit: 3 + 5 + 12 + 5 + 3 + 2 = 30°C of insulation
   //   Bare (no clothes): 0°C of insulation
   //
-  // Applied to body temperature:
-  //   heatLoss = baseHeatLoss / (1 + totalWarmth × 0.1)
-  //   totalWarmth 0 (naked): heatLoss = baseHeatLoss (full exposure)
-  //   totalWarmth 10 (light clothes): heatLoss = baseHeatLoss / 2.0 (halved)
-  //   totalWarmth 30 (full wool): heatLoss = baseHeatLoss / 4.0 (quarter)
+  // Clothing insulation uses the CLO system (see Clothing Insulation Values below):
+  //   heatLoss = baseHeatLoss / (1 + totalCLO × 0.155)
+  //   where totalCLO = sum of CLO values for all worn clothing layers
+  //   CLO values per material are derived from thermal conductivity (§3.1):
+  //     CLO = thickness(m) / (0.155 × thermalConductivity)
+  //   totalCLO 0 (naked): heatLoss = baseHeatLoss (full exposure)
+  //   totalCLO 1 (light suit): heatLoss = baseHeatLoss / 1.155 (13% reduction)
+  //   totalCLO 4 (full wool): heatLoss = baseHeatLoss / 1.62 (38% reduction)
   //
   // WET CLOTHING:
   //   If raining AND exposed (shelter map) AND clothing.waterResistance < 1.0:
@@ -12452,6 +12497,37 @@ FarmingActions {
   //     Fill with water → water stands in the paddy → rice grows in standing water
   //     Requires flat terrain + water source + berms to contain
 
+  // ── Irrigation Water Requirements ──────────────────────────────────────
+  //
+  // In plain English: crops need water. If rain isn't enough, the player 
+  // must bring water from a river, well, or reservoir.
+  //
+  // Water need per crop per m² per game-day:
+  //   | Crop    | Water need (L/m²/day) | Drought tolerance | Notes |
+  //   |--------|----------------------|------------------|-------|
+  //   | Wheat   | 4-6                  | Moderate          | Needs steady moisture during grain fill |
+  //   | Rice    | 8-12                 | None              | Standing water required (paddy) |
+  //   | Potato  | 3-5                  | Low               | Needs consistent soil moisture |
+  //   | Beans   | 2-4                  | High              | Deep roots, some drought tolerance |
+  //   | Flax    | 3-5                  | Moderate          | Needs water during flowering |
+  //
+  // Water sources:
+  //   Rain: automatically distributed by weather system (§4.6)
+  //     If precipitationRate × exposedArea > waterNeed: no irrigation needed
+  //   River/stream: player builds channel from water source to field
+  //     Flow rate from §3.2 (Manning's equation in grid-based water)
+  //     Channel capacity: Q = (1/n) × A × R^(2/3) × S^(1/2) m³/s
+  //   Well: player digs to water table → groundwater flows in (§3.2 Darcy's law)
+  //     Yield limited by hydraulic conductivity of soil
+  //   Reservoir: player builds a dam → collects rainwater → releases to fields
+  //
+  // Crop stress from insufficient water:
+  //   waterRatio = waterReceived / waterNeeded
+  //   if waterRatio >= 1.0: normal growth
+  //   if 0.5 ≤ waterRatio < 1.0: growth rate × waterRatio (reduced)
+  //   if waterRatio < 0.5: crop wilts → yield × 0.2 if it survives
+  //   if waterRatio < 0.1 for 5+ game-days: crop dies
+
   // ── 5. Maintain ───────────────────────────────────────────────────────
   //
   //   Weeding: unwanted plants grow in any tilled soil with nutrients
@@ -12502,6 +12578,31 @@ FarmingActions {
   //   Wild wheat: ~0.5 kg grain per m²
   //   Domestic wheat (after 10+ generations): ~2.0 kg grain per m²
   //   Modern wheat (real world): ~8.0 kg/m² — shows how far selective breeding goes
+
+  // ── Crop Yield Per Plant ───────────────────────────────────────────────
+  //
+  // In plain English: one wheat plant produces a handful of grain. 
+  // You need a field of them to feed yourself.
+  //
+  // | Crop         | Yield (kg/plant) | Plants/m² | Yield (kg/m²) | kcal/m² (raw) | Feeds 1 person (days/m²) |
+  // |-------------|-----------------|-----------|---------------|---------------|--------------------------|
+  // | Wheat        | 0.03            | 300       | 9.0           | 30,600        | 17                       |
+  // | Barley       | 0.025           | 350       | 8.75          | 29,750        | 16.5                     |
+  // | Rice         | 0.04            | 250       | 10.0          | 35,000        | 19.4                     |
+  // | Potato       | 0.30            | 6         | 1.8           | 1,440         | 0.8                      |
+  // | Carrot       | 0.15            | 16        | 2.4           | 1,440         | 0.8                      |
+  // | Beans        | 0.05            | 20        | 1.0           | 3,400         | 1.9                      |
+  // | Flax (fiber) | 0.01 (seed)     | 200       | 2.0           | —             | — (fiber crop)           |
+  //
+  // "Feeds 1 person" assumes 1,800 kcal/day (BMR from §7.2).
+  // A 10m × 10m wheat field: 100 m² × 17 days/m² = 1,700 person-days of food.
+  // That's ~4.7 years of wheat from a small garden plot. Enough for a family.
+  //
+  // Yield is modified by:
+  //   soilQuality: yield × (0.5 + 0.5 × soilFertility) — poor soil = half yield
+  //   water: yield × min(1.0, waterAvailable / waterNeeded) — drought reduces yield
+  //   temperature: yield × tempFactor(biome) — too hot or too cold reduces yield
+  //   season: only grows during the growing season (spring-summer in temperate)
 
   // ── 7. Process ────────────────────────────────────────────────────────
   //
@@ -12616,6 +12717,35 @@ SoilFertilityManagement {
     //   Plant clover → let it grow → till it under before it seeds
     //   nitrogen +0.08, organicMatter +0.04 (same as legume rotation but sacrifices a harvest)
   }
+
+  // ── Fertilizer Replenishment Rates ─────────────────────────────────────
+  //
+  // In plain English: harvesting crops takes nutrients out of the soil.
+  // Adding fertilizer puts them back. Different fertilizers restore different nutrients.
+  //
+  // Depletion per harvest (per m²):
+  //   Wheat: N -= 0.02, P -= 0.005, K -= 0.01
+  //   Potato: N -= 0.015, P -= 0.008, K -= 0.025
+  //   Beans: N += 0.01 (legumes FIX nitrogen from air!), P -= 0.003, K -= 0.008
+  //
+  // Replenishment per kg of fertilizer applied per m²:
+  //   | Fertilizer      | N restored | P restored | K restored | Notes |
+  //   |----------------|-----------|-----------|-----------|-------|
+  //   | Cow manure      | +0.005    | +0.002    | +0.005    | Best all-round, slow release |
+  //   | Horse manure    | +0.004    | +0.001    | +0.004    | Similar to cow, slightly less |
+  //   | Chicken manure  | +0.008    | +0.006    | +0.003    | Highest N and P, can burn plants if fresh |
+  //   | Wood ash        | +0.000    | +0.001    | +0.030    | Excellent K source, no nitrogen |
+  //   | Bone meal       | +0.001    | +0.015    | +0.000    | Best P source |
+  //   | Compost         | +0.003    | +0.002    | +0.003    | Balanced, improves soil structure |
+  //   | Green manure    | +0.010    | +0.001    | +0.002    | Cover crop plowed under (legumes) |
+  //   | Seaweed         | +0.002    | +0.001    | +0.008    | Good K, trace minerals |
+  //
+  // Crop rotation strategy:
+  //   Year 1: Wheat (depletes N heavily)
+  //   Year 2: Beans (restores N via nitrogen fixation)
+  //   Year 3: Potato (depletes K)
+  //   Year 4: Fallow + manure (restores everything)
+  //   This 4-year cycle maintains soil fertility indefinitely.
 
   // 4. FALLOW (simplest, slowest)
   fallow {
@@ -13988,7 +14118,7 @@ CuriositySystem {
   // The first time an NPC tries to smelt copper, it probably fails.
   // After 5-10 attempts, success rate improves. After 50 attempts, they're reliable.
   //
-  // Learning model (logistic curve):
+  // Learning model (exponential saturation curve):
   //   successRate(attempts) = maxRate × (1 - exp(-attempts / learnRate))
   //   maxRate = 0.95 (even experts fail 5% of the time)
   //   learnRate = 10 (attempts to reach ~63% of max skill)
@@ -17346,12 +17476,12 @@ AnimationStateMachine {
     //   m = player mass (~70 kg)
     //   v = impact velocity = √(2 × g × fallHeight)
     //   d_stop = stopping distance (how much the surface compresses):
-    //     Rock/stone: d_stop = 0.005m (nearly instant stop — maximum force)
-    //     Packed dirt: d_stop = 0.02m
-    //     Soft soil: d_stop = 0.05m
-    //     Sand: d_stop = 0.10m
-    //     Deep water: d_stop = 0.5m (if feet-first; 0.1m if belly flop)
-    //     Snow (deep): d_stop = 0.3m
+    //     Rock/stone: d_stop = 0.01m (nearly instant stop — maximum force)
+    //     Packed dirt: d_stop = 0.05m
+    //     Soft soil: d_stop = 0.15m
+    //     Sand: d_stop = 0.30m
+    //     Deep water: d_stop = 1.0m (if feet-first)
+    //     Snow (deep): d_stop = 0.5m
     //
     // Damage thresholds (from bone fracture mechanics, §3.1):
     //   Human leg bone breaks at ~7,500 N (Connection from §7.1 skeleton)
@@ -17359,11 +17489,11 @@ AnimationStateMachine {
     //
     //   | Fall height | v (m/s) | F on rock (N) | F on soil (N) | Result |
     //   |------------|---------|---------------|---------------|--------|
-    //   | 1 m         | 4.4     | 135,520       | 13,552        | Rock: broken legs. Soil: bruised |
-    //   | 2 m         | 6.3     | 277,830       | 27,783        | Rock: severe. Soil: fractures |
-    //   | 3 m         | 7.7     | 415,030       | 41,503        | Both: broken legs, possible death |
-    //   | 5 m         | 9.9     | 686,070       | 68,607        | Rock: lethal. Soil: severe |
-    //   | 10 m        | 14.0    | 1,372,000     | 137,200       | Lethal on all surfaces |
+    //   | 1 m         | 4.4     | 67,760        | 4,517         | Rock: bruised. Soil: fine |
+    //   | 2 m         | 6.3     | 138,915       | 9,261         | Rock: fracture. Soil: bruised |
+    //   | 3 m         | 7.7     | 207,515       | 13,834        | Rock: broken legs. Soil: sprain |
+    //   | 5 m         | 9.9     | 343,035       | 22,869        | Rock: severe. Soil: fractures |
+    //   | 10 m        | 14.0    | 686,000       | 45,733        | Both: lethal |
     //
     // Armor reduces damage by distributing impact over larger area:
     //   F_effective = F_impact / (1 + armorCoverage × armorHardness / 10)
@@ -17750,6 +17880,33 @@ HumanBodyState {
   // Damage comes from: physical injury (§6.8.4 injury system), disease, poison, starvation
   // Health regeneration: 0.5 HP/hour when well-fed, hydrated, rested, warm
   // At 0 health: death (§6.8.2)
+
+  // ── Disease System ─────────────────────────────────────────────────────
+  //
+  // In plain English: diseases spread between organisms. Crowded settlements 
+  // get sick more often. Clean water and good nutrition reduce risk.
+  //
+  // | Disease type    | R0 (spread rate) | Incubation (game-days) | Mortality | Cure |
+  // |----------------|-----------------|----------------------|-----------|------|
+  // | Food poisoning  | 0 (not contagious)| 0.5                 | 5%        | Rest + water |
+  // | Wound infection | 0 (not contagious)| 1-3                 | 15%       | Clean + herbal poultice |
+  // | Dysentery       | 2-4              | 1-2                  | 10%       | Clean water + rest |
+  // | Flu/cold        | 3-5              | 1-3                  | 2%        | Rest + warmth |
+  // | Plague          | 4-8              | 3-5                  | 30-60%    | Quarantine + herbal medicine |
+  //
+  // R0 = average number of organisms one sick individual infects.
+  // R0 > 1: disease spreads (epidemic). R0 < 1: disease dies out.
+  //
+  // Infection probability per contact:
+  //   P_infect = R0 / (avgContacts × infectiousDuration)
+  //   A settlement with 50 NPCs, each contacting ~10 others/day:
+  //     Flu: P = 4 / (10 × 5) = 0.08 per contact (8% per interaction)
+  //
+  // Resistance factors:
+  //   Well-fed (calories > 90% BMR): infection probability × 0.5
+  //   Warm shelter: × 0.7
+  //   Clean water source: × 0.3 for waterborne diseases
+  //   Previous infection (immunity): × 0.1 for same disease type
 }
 ```
 
@@ -18381,7 +18538,7 @@ Each death cause maps to a real physical condition crossing a lethal threshold:
 | Hypothermia | `bodyTemperature < 28°C` | Core temp below threshold → heart arrhythmia. Body temp follows Newton's law of cooling: `dT/dt = -k(T_body - T_env)` where k depends on clothing insulation |
 | Hyperthermia | `bodyTemperature > 42°C` | Protein denaturation → organ failure |
 | Drowning | `oxygenLevel ≤ 0` while submerged | Breath-hold timer (90s base) depletes, then health drops at 20 HP/s |
-| Fall damage | `impactVelocity > 8 m/s` | Damage = `mass × (v - 8)² / 2` (kinetic energy above safe threshold). Lethal above ~15 m/s (~11m fall) |
+| Fall damage | `impactVelocity > safe threshold` | Fall damage uses the physics-based impact force formula (§7.1): F_impact = m × v² / (2 × d_stop). See the detailed fall damage table in §7.1 for surface-specific stopping distances. Damage is proportional to F_impact / boneStrength. |
 | Burn | `skinTemperature > 60°C` for sustained contact | Tissue damage rate = `k × (T - 45)²` per second. Third-degree at >70°C |
 | Infection | `bacterialLoad > 10⁹` (logistic growth model) | Untreated wound → bacterial population doubles every ~4 hours at 37°C, slower when cold. Lethal when load overwhelms immune response |
 | Attack | `health ≤ 0` from physical damage | Impact force from another entity (animal, player, falling object) exceeds body's structural tolerance |
