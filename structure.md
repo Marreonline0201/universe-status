@@ -5471,10 +5471,12 @@ FireSpreadSystem {
   //       ≈ 0.9 × 5.67e-8 × 0.09 × 2.61e12 × 0.0167
   //       ≈ 222 J per tick (at 60 Hz)
   //     neighbor temperature rise per tick:
-  //       ΔT = Q / (mass × specificHeat) = 222 / (5.0 × 1700) ≈ 0.026°C per tick
-  //       Per second: 0.026 × 60 = 1.56°C/second
-  //     Time to reach ignition (300°C): (300 - 25) / 1.56 ≈ 176 seconds ≈ 3 minutes
-  //     REALISTIC: a wood wall 30cm from a fire catches in ~3 minutes. Correct.
+  //       Using temperature-dependent C_p for wood at ~250°C average:
+  //         C_p ≈ 1100 + 4.5 × 250 = 2225 J/(kg·K)
+  //       ΔT = Q / (mass × C_p) = 222 / (5.0 × 2225) ≈ 0.020°C per tick
+  //       Per second: 0.020 × 60 = 1.20°C/second
+  //     Time to reach ignition (300°C): (300 - 25) / 1.20 ≈ 229 seconds ≈ 3.8 minutes
+  //     REALISTIC: a wood wall 30cm from a fire catches in ~4 minutes. Correct.
 
   // WIND EFFECT on heat transfer:
   //   windMultiplier = 1.0 + cos(angleBetweenWindAndBlockDirection) × 1.0
@@ -7357,7 +7359,7 @@ TickScheduler {
 
 #### Property Calculator Caching
 
-Computing 39 material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
+Computing 44 material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
 
 ```
 PropertyCache {
@@ -7775,7 +7777,7 @@ MaterialPacketFormat {
   //   Structural blocks (200k × 100):       20 MB
   //   Network/other:                        10 MB
   //   ─────────────────────────────────────────
-  //   TOTAL:                              ~232 MB
+  //   TOTAL:                              ~262 MB
   //
   //   This is higher than the previous estimate because the SoA layout with 44 properties
   //   trades memory for speed. The increase buys 50× faster property access.
@@ -9216,11 +9218,11 @@ fn update_gas_after_expansion(
 - Stroke length: 0.1 m
 - Force on piston: 488,600 * 0.01 = 4,886 N (about 1,100 lbf)
 - Work per stroke: 4,886 * 0.1 = 488.6 J
-- Temperature drop: 488.6 / ((mass/0.018) * 28.0) — for 0.005 kg steam:
+- Temperature drop: 488.6 / ((mass/0.018) * 25.3) — for 0.005 kg steam:
   n = 0.005 / 0.018 = 0.278 mol
-  delta_T = -488.6 / (0.278 * 28.0) = -62.8 K
-- Steam cools from 423 K to 360 K (87C) during expansion
-- At 360 K the steam pressure has dropped significantly — time to exhaust and refill
+  delta_T = -488.6 / (0.278 * 25.3) = -69.5 K
+- Steam cools from 423 K to 354 K (81C) during expansion
+- At 354 K the steam pressure has dropped significantly — time to exhaust and refill
 
 ---
 
