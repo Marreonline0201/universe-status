@@ -5827,6 +5827,40 @@ CombatDurabilitySystem {
   //     durability restores to max(0.8, current + 0.3) — patches never fully restore
   //   Wood/bone armor: replace broken sections
   //     Essentially craft a new piece and swap it
+
+  // ── Tool Durability ────────────────────────────────────────────────────
+  //
+  // In plain English: every time you use a tool, it wears a tiny bit.
+  // Harder materials last longer. Using a tool on something harder than itself
+  // wears it out faster.
+  //
+  // Wear per use:
+  //   wear = impactEnergy / (toolVolume × toolHardness × K_wear)
+  //   K_wear = 1000 (wear coefficient, dimensionless)
+  //   
+  //   impactEnergy: from §3.9 (projectile) or swing force × distance
+  //   toolVolume: m³ (larger tools last longer — more material to wear through)
+  //   toolHardness: Mohs from §3.1 (harder tools resist wear better)
+  //
+  // When accumulated wear reaches 1.0: tool breaks.
+  //
+  // Examples (per standard use):
+  //   | Tool              | Hardness | Volume  | Energy/use | Wear/use   | Uses to break |
+  //   |------------------|----------|---------|-----------|------------|---------------|
+  //   | Flint pickaxe     | 7        | 0.0002  | 10 J      | 0.0071     | ~140          |
+  //   | Copper pickaxe    | 3        | 0.0003  | 10 J      | 0.0111     | ~90           |
+  //   | Iron pickaxe      | 4        | 0.0003  | 10 J      | 0.0083     | ~120          |
+  //   | Steel pickaxe     | 6        | 0.0003  | 10 J      | 0.0056     | ~180          |
+  //
+  // Hitting material harder than the tool accelerates wear:
+  //   if targetHardness > toolHardness:
+  //     wear *= (targetHardness / toolHardness)²
+  //   A copper pickaxe (Mohs 3) hitting granite (Mohs 7):
+  //     wear × (7/3)² = wear × 5.4 → breaks in ~17 uses instead of 90
+  //
+  // This is why you need iron/steel tools to mine hard rock efficiently.
+  // Flint is hard (Mohs 7) but small volume → breaks quickly.
+  // Steel is moderately hard AND large → lasts longest.
 }
 ```
 
@@ -6414,6 +6448,38 @@ ClothingWarmthSystem {
   //   Drying: when not raining and near fire or in sun:
   //     clothing.moisture decreases based on temperature and wind
 
+  // ── Clothing Insulation Values ─────────────────────────────────────────
+  //
+  // In plain English: clothing reduces heat loss. Wool is the best because 
+  // it traps air and works even when wet. Leather blocks wind. Linen barely helps.
+  //
+  // Insulation is measured in CLO units (1 CLO = enough for comfort at 21°C sitting):
+  //   heatLossReduction = 1 / (1 + totalCLO × 0.155)
+  //   At 0 CLO (naked): heatLossReduction = 1.0 (full heat loss)
+  //   At 1 CLO (light suit): heatLossReduction = 0.87 (13% reduction)
+  //   At 4 CLO (heavy winter): heatLossReduction = 0.62 (38% reduction)
+  //
+  // | Material        | CLO per layer | Wet CLO | Notes |
+  // |----------------|--------------|---------|-------|
+  // | Linen/cotton    | 0.3          | 0.05    | Useless when wet — loses 83% insulation |
+  // | Wool            | 0.8          | 0.6     | Retains 75% insulation when wet |
+  // | Leather         | 0.5          | 0.4     | Wind-blocking but moderate warmth |
+  // | Fur (animal)    | 1.5          | 0.8     | Best insulation — air trapped in fur |
+  // | Sheepskin       | 1.2          | 0.9     | Excellent — wool still attached to hide |
+  // | Feather-filled  | 2.0          | 0.3     | Best dry insulation, terrible when wet |
+  // | Bark/grass      | 0.2          | 0.1     | Emergency only |
+  //
+  // Layers stack: wearing wool (0.8) + leather (0.5) = 1.3 CLO total
+  // Each body region contributes proportionally:
+  //   Head: 10% of body heat (high priority to cover)
+  //   Torso: 40%
+  //   Legs: 30%
+  //   Hands/feet: 20%
+  //
+  // CLO values are derived from the material's thermal conductivity (§3.1):
+  //   CLO ≈ thickness(m) / (0.155 × thermalConductivity(W/mK))
+  //   Wool: 0.005m thick, κ=0.04 → CLO = 0.005/(0.155×0.04) = 0.81 ✓
+
   // BODY REGION COVERAGE:
   //   Injury from hot inventory items maps to clothing slot:
   //     Item in pants pocket → leg region
@@ -6932,6 +6998,44 @@ Source: Material System (§3.1) — fatigueAccumulation property
 Target: Crafting/Combat (§6.3, §7.5) — each use increments fatigue
 Data: fatigueAccumulation += 1/N_f(σ_applied) per strike/use
 Trigger: every tool use event (mining, combat, crafting)
+
+```
+  // ── Ore Extraction Yield ───────────────────────────────────────────────
+  //
+  // In plain English: not all the metal in ore comes out during smelting.
+  // Some stays trapped in slag. Better furnaces and better technique get more out.
+  //
+  // Yield = oreGrade × extractionEfficiency × (1 - slagLoss)
+  //
+  // Extraction efficiency depends on:
+  //   Temperature: must exceed reduction temperature (§6.3 craft environment)
+  //     Too cold: reaction doesn't complete → low yield
+  //     At temperature: normal yield
+  //     Above temperature: better yield (more complete reduction)
+  //   Time: longer smelting = more complete extraction (diminishing returns)
+  //     yield(t) = maxYield × (1 - exp(-t / halfTime))
+  //     halfTime ≈ 30 game-minutes for copper, 60 for iron
+  //   Flux: adding limestone or borax reduces slag loss by 10-30%
+  //
+  // | Ore type         | Grade (% metal) | Bloomery yield | Blast furnace yield |
+  // |-----------------|----------------|----------------|---------------------|
+  // | Malachite (Cu)   | 57% Cu          | 40-60%         | 70-85%              |
+  // | Hematite (Fe)    | 70% Fe          | 20-40%         | 85-95%              |
+  // | Cassiterite (Sn) | 78% Sn          | 50-70%         | 80-90%              |
+  // | Galena (Pb)      | 87% Pb          | 60-80%         | 90-95%              |
+  // | Gold (native)    | 80-99% Au       | 90-98%         | 98-99%              |
+  //
+  // Example: 10 kg of malachite (57% Cu = 5.7 kg Cu content)
+  //   In a basic clay furnace at 1100°C for 1 hour: yield ≈ 50%
+  //   Metal produced: 5.7 × 0.5 = 2.85 kg copper
+  //   Slag: 10 - 2.85 = 7.15 kg (can be re-smelted for marginal extra copper)
+  //
+  // The yield is NOT hardcoded per ore type. It emerges from:
+  //   reaction completeness (§3.1 Gibbs energy + time)
+  //   temperature (higher = faster reaction = better yield)
+  //   atmosphere (reducing = CO strips oxygen from ore)
+  //   furnace design (better containment + airflow = higher temperature = better yield)
+```
 
 ##### Connection 37: Ductility → Seasonal Structural Risk (moderate)
 
@@ -10656,6 +10760,42 @@ The planet is a sphere with a 4-kilometer radius. The terrain is generated using
 
 20 Whittaker biomes are assigned based on elevation and moisture (tundra, boreal forest, temperate forest, tropical rainforest, desert, grassland, etc.). Each biome has real ecological properties: net primary productivity (how much plant life grows), carrying capacity (how many organisms can live here), and decomposition rate (how quickly dead matter breaks down).
 
+```
+  // ── Biome Net Primary Productivity (NPP) ──────────────────────────────
+  //
+  // In plain English: NPP is how much plant life grows per year in each biome.
+  // Hot wet places (tropical forest) grow the most. Cold dry places (tundra) grow the least.
+  // This number determines how many animals can live in a biome, how fast crops grow,
+  // and how quickly resources regenerate.
+  //
+  // | Biome                    | NPP (g C/m²/year) | NPP (kcal/m²/year) | Carrying capacity multiplier |
+  // |--------------------------|--------------------|--------------------|------------------------------|
+  // | Tropical rainforest       | 1000-2000          | 10,000-20,000      | 1.0 (reference)              |
+  // | Tropical seasonal forest  | 700-1500           | 7,000-15,000       | 0.8                          |
+  // | Temperate deciduous forest| 600-1200           | 6,000-12,000       | 0.7                          |
+  // | Temperate rainforest      | 800-1500           | 8,000-15,000       | 0.85                         |
+  // | Boreal forest (taiga)     | 200-600            | 2,000-6,000        | 0.35                         |
+  // | Temperate grassland       | 200-600            | 2,000-6,000        | 0.35                         |
+  // | Tropical savanna          | 300-800            | 3,000-8,000        | 0.45                         |
+  // | Mediterranean shrub       | 200-500            | 2,000-5,000        | 0.30                         |
+  // | Desert (hot)              | 0-50               | 0-500              | 0.03                         |
+  // | Desert (cold)             | 0-50               | 0-500              | 0.03                         |
+  // | Tundra                    | 10-100             | 100-1,000          | 0.06                         |
+  // | Ice/polar                 | 0-10               | 0-100              | 0.01                         |
+  // | Freshwater wetland        | 800-2000           | 8,000-20,000       | 0.9                          |
+  // | Mangrove                  | 500-1500           | 5,000-15,000       | 0.7                          |
+  // | Coral reef (coastal)      | 1000-2500          | 10,000-25,000      | 1.0                          |
+  // | Open ocean                | 50-200             | 500-2,000          | 0.1                          |
+  // | Estuary                   | 500-1500           | 5,000-15,000       | 0.7                          |
+  //
+  // These values are from Lieth & Whittaker (1975) and updated IPCC data.
+  //
+  // Usage:
+  //   maxOrganisms(biome) = baseCapacity × carryingCapacityMultiplier
+  //   cropGrowthRate(biome) = baseGrowthRate × (NPP / 10000)
+  //   treeRegrowthTime(biome) = baseTime / (NPP / 1000)
+```
+
 River networks are generated with valley carving. Coastal areas are identified and affect settlement behavior.
 
 
@@ -10678,6 +10818,45 @@ dPredator/dt =  δ·Prey·Predator  −  γ·Predator
 ```
 
 When autotrophs (prey) are abundant, heterotrophs (predators) reproduce faster than they die. As heterotrophs grow, they deplete autotrophs. Autotroph population crashes. Heterotrophs starve and decline. Autotrophs recover. The cycle repeats. No designer writes this behavior — it emerges from energy accounting per organism per tick.
+
+```
+  // ── Organism Energy Budget ─────────────────────────────────────────────
+  //
+  // In plain English: every organism needs energy to live. Plants get it from 
+  // sunlight. Animals get it from eating plants or other animals. If energy in < 
+  // energy out, the organism starves and dies.
+  //
+  // Photosynthesis efficiency:
+  //   E_plant = solarIrradiance × leafArea × photosyntheticEfficiency × dayLength
+  //   solarIrradiance: ~1000 W/m² (peak), varies with latitude/season/clouds
+  //   leafArea: proportional to organism size (allometric: A ∝ mass^(2/3))
+  //   photosyntheticEfficiency: 1-2% for most plants (max theoretical ~11%)
+  //   dayLength: hours of sunlight per game-day (from §4.6 season system)
+  //
+  //   A 1m² plant in full sun: 1000 × 1 × 0.015 × 12 = 180 Wh/day = 155 kcal/day
+  //
+  // Metabolic rate (energy consumption):
+  //   Kleiber's law: BMR = 70 × mass^(0.75) kcal/day (for mammals)
+  //   mass in kg
+  //   A 1 kg rabbit: 70 × 1 = 70 kcal/day
+  //   A 50 kg deer: 70 × 50^0.75 = 70 × 18.8 = 1316 kcal/day
+  //   A 500 kg cow: 70 × 500^0.75 = 70 × 105.7 = 7400 kcal/day
+  //
+  // Energy balance per game-day:
+  //   energyBalance = energyIntake - metabolicRate
+  //   if energyBalance > 0: organism gains fat (stores energy)
+  //   if energyBalance < 0: organism loses fat (burns reserves)
+  //   if fatReserves <= 0: starvation → health decreases → death
+  //
+  // Food chain efficiency (trophic levels):
+  //   Plants capture ~1-2% of solar energy
+  //   Herbivores extract ~10% of plant energy
+  //   Predators extract ~10% of herbivore energy
+  //   This is why there are many plants, fewer herbivores, and few predators.
+  //   A biome with 10,000 kcal/m²/year of plant growth supports:
+  //     ~1,000 kcal/m²/year of herbivore biomass
+  //     ~100 kcal/m²/year of predator biomass
+```
 
 **Scientific grounding — genome and speciation:**
 The 256-bit genome and Hamming distance speciation threshold implement the conceptual framework from Richard Dawkins' *The Selfish Gene* (1976): evolution operates on genes, not individuals. Two populations that diverge beyond a Hamming distance of 32 bits are treated as separate species — a computational proxy for reproductive isolation. Traits encoded in the genome (size, metabolic rate, diet preference) determine fitness. Unfit organisms die sooner. Fit ones reproduce more. Selection pressure does the rest.
@@ -12975,6 +13154,30 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 *Game search signal:* Fauna spawn points by biome. Grassland and savanna have the greatest diversity and density of large ungulates. Tracking animals and hunting — no geological context. Animal products cannot be found in rock.
 
+```
+  // ── Animal Product Material Properties ─────────────────────────────────
+  //
+  // In plain English: every part of an animal is a MaterialPacket with real 
+  // physical properties. Leather isn't just "leather" — it's a composition of
+  // collagen, water, and fat that determines its strength, flexibility, and warmth.
+  //
+  // | Product    | Composition                          | Tensile (MPa) | Density (kg/m³) | Thermal κ (W/mK) | Notes |
+  // |-----------|--------------------------------------|--------------|----------------|------------------|-------|
+  // | Cowhide    | collagen 0.70, water 0.15, fat 0.15 | 20-30        | 1100           | 0.14             | Good leather, moderate warmth |
+  // | Sheepskin  | collagen 0.55, keratin 0.25, fat 0.20| 10-15       | 900            | 0.08             | Excellent insulation (wool fibers trap air) |
+  // | Bone       | calcium_phosphate 0.70, collagen 0.20, water 0.10 | 130-180 | 1900 | 0.32 | Hard, brittle. Tools, needles, buttons |
+  // | Sinew      | collagen 0.85, water 0.15           | 50-100       | 1100           | 0.20             | Strongest natural fiber. Bowstrings, lashing |
+  // | Fat/tallow | triglycerides 0.95, water 0.05      | ~0 (liquid)  | 920            | 0.17             | Fuel, waterproofing, soap, candles |
+  // | Wool       | keratin 0.90, lanolin 0.05, water 0.05 | 1-2       | 1300           | 0.04             | Best insulator. Retains warmth when wet |
+  // | Feathers   | keratin 0.95, air 0.05              | 2-5          | 8 (with air)   | 0.025            | Lightest insulator. Fletching for arrows |
+  // | Horn/antler| keratin 0.60, calcium_phosphate 0.30, water 0.10 | 80-120 | 1800 | 0.40 | Hard, workable. Tool handles, vessels |
+  //
+  // These compositions are set when the animal dies (§3.6 Connection 3: Death → MaterialPacket).
+  // The property calculator (§3.1) computes all 39 properties from these compositions.
+  // A player who skins a deer gets a MaterialPacket with the cowhide composition,
+  // and the physics determines its behavior — not a lookup table.
+```
+
 ---
 
 **Clay (for ceramics)** — see section 6.4.2 above.
@@ -13150,6 +13353,37 @@ Cloud formation process:
      if (T_ground ∈ [-2, 2]) → sleet (mixed)
      if (T_ground < -2°C)  → snow
      if (updraft > 10 m/s && T_cloud < -20°C) → hail (strong thunderstorm)
+```
+
+```
+  // ── Saturation and Condensation ────────────────────────────────────────
+  //
+  // In plain English: warm air holds more moisture than cold air. When air cools 
+  // enough, the moisture condenses into water droplets (clouds, fog, dew).
+  // The temperature at which this happens is the "dew point."
+  //
+  // Saturation vapor pressure (Magnus formula):
+  //   e_sat(T) = 6.1078 × exp(17.27 × T / (T + 237.3)) hPa
+  //   where T is in °C
+  //   At 20°C: e_sat = 23.4 hPa
+  //   At 30°C: e_sat = 42.4 hPa (warm air holds 81% more moisture)
+  //   At 0°C: e_sat = 6.1 hPa (cold air holds very little moisture)
+  //
+  // Relative humidity:
+  //   RH = (e_actual / e_sat) × 100%
+  //
+  // Dew point (temperature at which current moisture saturates):
+  //   T_dew = (237.3 × ln(e_actual / 6.1078)) / (17.27 - ln(e_actual / 6.1078))
+  //
+  // Condensation trigger:
+  //   if (cellTemperature <= T_dew): condensation occurs
+  //     Cloud formation: water droplets appear in atmosphere cell
+  //     When cloudWaterContent > 0.3 g/m³: precipitation begins
+  //     Precipitation rate = (cloudWaterContent - 0.3) × 2.0 mm/hour
+  //
+  // Fog:
+  //   if (groundTemperature <= T_dew AND windSpeed < 2 m/s): ground fog forms
+  //   Visibility reduced to: 1000 / (1 + fogDensity × 10) meters
 ```
 
 #### Rain Shadow Effect
@@ -13747,6 +13981,38 @@ CuriositySystem {
   //      Satisfaction: +0.5, curiosity: -0.3, pride: +0.4
   //   8. NPC repeats the process. Practice counter increases.
   //   9. Other NPCs observe. Knowledge spreads through the settlement.
+
+  // ── NPC Learning Curve ─────────────────────────────────────────────────
+  //
+  // In plain English: NPCs get better at crafting the more they practice.
+  // The first time an NPC tries to smelt copper, it probably fails.
+  // After 5-10 attempts, success rate improves. After 50 attempts, they're reliable.
+  //
+  // Learning model (logistic curve):
+  //   successRate(attempts) = maxRate × (1 - exp(-attempts / learnRate))
+  //   maxRate = 0.95 (even experts fail 5% of the time)
+  //   learnRate = 10 (attempts to reach ~63% of max skill)
+  //
+  //   After 1 attempt: successRate = 0.95 × (1 - e^(-0.1)) = 9%
+  //   After 5 attempts: 0.95 × (1 - e^(-0.5)) = 37%
+  //   After 10 attempts: 0.95 × (1 - e^(-1.0)) = 60%
+  //   After 20 attempts: 0.95 × (1 - e^(-2.0)) = 82%
+  //   After 50 attempts: 0.95 × (1 - e^(-5.0)) = 94%
+  //
+  // Each successful craft stores in NPC memory:
+  //   { inputs, conditions (temperature, atmosphere), output, attempts }
+  //   The NPC reuses the same conditions for future attempts.
+  //   Failed attempts also store — the NPC avoids conditions that failed.
+  //
+  // Knowledge transfer:
+  //   Watching another NPC succeed gives +3 "virtual attempts"
+  //   Being shown by a player gives +5 virtual attempts
+  //   Reading/hearing about it (through NPC language): +1 virtual attempt
+  //
+  // Discovery vs. known recipes:
+  //   For a NOVEL combination (no NPC has ever tried): start at 0 attempts
+  //   For a KNOWN combination (seen another NPC do it): start at 3-5 attempts
+  //   This means NPCs in established settlements learn faster than isolated NPCs
 }
 ```
 
@@ -17069,6 +17335,44 @@ AnimationStateMachine {
       // Player is immobilized during this animation
     }
 
+    // ── Fall Damage — From Physics, Not Magic Numbers ──────────────────────
+    //
+    // In plain English: falling hurts because you stop suddenly. The damage 
+    // depends on how fast you hit AND what you land on. Soft ground = less damage.
+    // Hard rock = more damage. Same fall, different outcome.
+    //
+    // Impact force:
+    //   F_impact = m × v² / (2 × d_stop)
+    //   m = player mass (~70 kg)
+    //   v = impact velocity = √(2 × g × fallHeight)
+    //   d_stop = stopping distance (how much the surface compresses):
+    //     Rock/stone: d_stop = 0.005m (nearly instant stop — maximum force)
+    //     Packed dirt: d_stop = 0.02m
+    //     Soft soil: d_stop = 0.05m
+    //     Sand: d_stop = 0.10m
+    //     Deep water: d_stop = 0.5m (if feet-first; 0.1m if belly flop)
+    //     Snow (deep): d_stop = 0.3m
+    //
+    // Damage thresholds (from bone fracture mechanics, §3.1):
+    //   Human leg bone breaks at ~7,500 N (Connection from §7.1 skeleton)
+    //   Human spine compresses dangerously at ~5,000 N
+    //
+    //   | Fall height | v (m/s) | F on rock (N) | F on soil (N) | Result |
+    //   |------------|---------|---------------|---------------|--------|
+    //   | 1 m         | 4.4     | 135,520       | 13,552        | Rock: broken legs. Soil: bruised |
+    //   | 2 m         | 6.3     | 277,830       | 27,783        | Rock: severe. Soil: fractures |
+    //   | 3 m         | 7.7     | 415,030       | 41,503        | Both: broken legs, possible death |
+    //   | 5 m         | 9.9     | 686,070       | 68,607        | Rock: lethal. Soil: severe |
+    //   | 10 m        | 14.0    | 1,372,000     | 137,200       | Lethal on all surfaces |
+    //
+    // Armor reduces damage by distributing impact over larger area:
+    //   F_effective = F_impact / (1 + armorCoverage × armorHardness / 10)
+    //
+    // Landing technique:
+    //   Roll on impact: d_stop × 3 (martial arts roll distributes deceleration over time)
+    //   Crouch landing: d_stop × 1.5
+    //   Stiff landing: d_stop × 1.0 (default)
+
     swim_surface: {
       clip: 'swim_surface'           // freestyle arms, kick, head above water
       loop: true
@@ -17316,6 +17620,42 @@ HumanBodyState {
   //   Fighting:     4.5 × BMR
   //   Crafting:     1.2 × BMR
   //   In cold (<10°C): BMR × (1 + (10 - T_ambient) × 0.03)  // shivering burns calories
+
+  // ── Food Calorie Values ────────────────────────────────────────────────
+  //
+  // In plain English: these are how many calories each food gives you back.
+  // Your body burns ~75 kcal/hour at rest. Running burns ~225 kcal/hour.
+  // So a piece of cooked meat (800 kcal) fuels about 3.5 hours of running.
+  //
+  // Raw food provides fewer calories than cooked (§3.6 Connection 29):
+  //   Raw multiplier: 1.0×
+  //   Cooked (70-100°C): 1.5×
+  //   Well-cooked (100-150°C): 1.8×
+  //   Baked/roasted (150-200°C): 2.0×
+  //
+  // | Food item          | Base kcal/kg (raw) | Cooked (×1.8) | Spoilage time (game-days) |
+  // |-------------------|--------------------|---------------|--------------------------|
+  // | Red meat (venison)  | 1200               | 2160          | 3 (raw), 7 (cooked), 30 (salted) |
+  // | Fish                | 800                | 1440          | 1 (raw), 5 (cooked), 20 (smoked) |
+  // | Berries/fruit       | 400                | —             | 5 (fresh), 60 (dried) |
+  // | Nuts/seeds          | 5500               | —             | 90 (shelled), 365 (whole) |
+  // | Root vegetables     | 600                | 1080          | 30 (raw), 14 (cooked) |
+  // | Grain (wheat/barley)| 3400               | —             | 365 (dry grain) |
+  // | Bread (baked grain) | —                  | 2500          | 5 |
+  // | Eggs                | 1500               | 2700          | 14 (raw), 7 (cooked) |
+  // | Honey               | 3000               | —             | Never (natural preservative) |
+  // | Milk                | 600                | —             | 2 (fresh), 30 (cheese), 365 (hard cheese) |
+  // | Insects             | 2000               | 3600          | 1 (raw), 14 (dried) |
+  //
+  // These values are per KILOGRAM of food. A typical meal is 0.2-0.5 kg.
+  // A 0.3 kg cooked venison steak: 0.3 × 2160 = 648 kcal ≈ 8.6 hours of rest.
+  //
+  // Calorie values are NOT hardcoded per food name. They come from the MaterialPacket
+  // composition via the property calculator (§3.1):
+  //   calorieContent = Σ(mass_fraction_i × energyDensity_i)
+  //   where energyDensity: protein = 4000 kcal/kg, fat = 9000 kcal/kg, 
+  //   carbohydrate = 4000 kcal/kg, fiber = 2000 kcal/kg
+  //   The cooking multiplier comes from denaturation improving digestibility.
 
   // ── Hydration (Water) ─────────────────────────────────────────────────────
   hydration: number                  // liters of body water
