@@ -442,17 +442,17 @@ MaterialPacket {
   // ── Fluid (liquid/gas phase only) ─────────────────────────────────────────
   viscosity: number                     // Pa·s — resistance to flow
                                         // Used by: §3.2 SPH (F_viscosity = μ · ∇²v)
-                                        // Water: 0.001, honey: 2-10, lava: 100-10⁶
+                                        // Water: 0.001, honey: μ depends strongly on temperature — see Non-Newtonian viscosity section (10-100 Pa·s at 20°C), lava: 100-10⁶
                                         // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
   surfaceTension: number                // N/m — surface cohesion
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
                                         // Water: 0.072, mercury: 0.49
-  //   Molten iron: σ ≈ 1.86 - 0.0003 × (T - 1538) N/m (decreases with temperature)
-  //     At melting point (1538°C): σ ≈ 1.86 N/m  
-  //     At 1600°C: σ ≈ 1.84 N/m
-  //     At 1800°C: σ ≈ 1.78 N/m
+  //   Molten iron: σ ≈ 1.87 - 0.0003 × (T - 1538) N/m (decreases with temperature)
+  //     At melting point (1538°C): σ ≈ 1.87 N/m  
+  //     At 1600°C: σ ≈ 1.85 N/m
+  //     At 1800°C: σ ≈ 1.79 N/m
   //     Note: real measurements vary widely (1.3-1.9 N/m) depending on 
-  //     oxygen content and impurities. Pure iron in vacuum: ~1.86 N/m.
+  //     oxygen content and impurities. Pure iron in vacuum: ~1.87 N/m (Keene 1993).
   //     Iron exposed to air (oxidized): ~1.3-1.5 N/m.
   //     The property calculator uses composition to determine which value applies.
 
@@ -541,6 +541,12 @@ MaterialPacket {
 
 **Total: 44 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
 
+  // NOTE: "44 properties" counts each named property as one, regardless of components.
+  // color (RGB), absorptionRGB, scatteringRGB, permanentMagnetization (Vec3), and
+  // nutrientContent (N,P,K) each count as one property but store multiple scalars.
+  // The SoA binary format uses ~53 Float32Arrays (splitting vectors into components)
+  // plus ~5 Uint8Arrays for flags. The "44" count is the logical property count.
+
   // ── Element Property Reference Table ───────────────────────────────────
   //
   // The property calculator requires per-element physical constants as inputs.
@@ -584,7 +590,7 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Ignition temperature | Bond dissociation energy of weakest organic bond | Combustion chemistry | Fire starting |
 | Combustion energy | Hess's law: sum of bond energies (products - reactants) | Thermochemistry | Fire heat, furnace temp |
 | Flammability | Ignition temp × surface area × moisture correction | Fire science | Fire success rate |
-| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | Future: electric circuits |
+| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | §3.13 circuits, Ohm's law (V=IR) |
 | Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
 | Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
 | Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
@@ -777,7 +783,7 @@ MaterialPacket addition:
 Brittle-Ductile Transition Temperature (BDTT):
 BCC metals (iron, chromium, tungsten) become brittle below a critical temperature:
   Iron/steel BDTT: -20°C to +20°C (depending on carbon content + impurities)
-  Tungsten BDTT: +400°C (brittle at room temperature!)
+  Tungsten BDTT: +200 to +400°C (brittle at room temperature!)
 
   if (temperature < BDTT):
     ductility drops to ~0.02 (almost brittle)
@@ -1198,7 +1204,7 @@ Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dy
   //     At 40°C: μ ≈ 2-10 Pa·s (pourable)
   //     Water content matters: 14% water → μ ≈ 100 Pa·s. 20% water → μ ≈ 10 Pa·s.
   //     Honey is non-Newtonian (shear-thinning) — stirring makes it flow easier.
-- Lava (basaltic): expected μ ≈ 10–100 Pa·s — silicate networks partially intact
+- Lava (basaltic): expected μ ≈ 100–1000 Pa·s — silicate networks partially intact
 
 Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
 
@@ -1380,7 +1386,7 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
 // Typical values (computed from composition by property calculator):
 //   Water: latentHeatFusion = 334 kJ/kg, latentHeatVaporization = 2260 kJ/kg
 //   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
-//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6090 kJ/kg
+//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6213 kJ/kg
 //   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
 //
 // Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
@@ -7573,7 +7579,7 @@ MaterialPacketFormat {
   //   AoS (Array of Structs — the slow way):
   //     Packet 0: [density, meltingPt, boilingPt, ..., 44 properties, composition, state]
   //     Packet 1: [density, meltingPt, boilingPt, ..., 44 properties, composition, state]
-  //     Reading all meltingPoints: jump 316 bytes between each one → cache misses
+  //     Reading all meltingPoints: jump 352 bytes between each one → cache misses
   //
   //   SoA (Structure of Arrays — the fast way):
   //     densities:      Float32Array(MAX_PACKETS)  → [pkt0, pkt1, pkt2, ...]
@@ -7665,8 +7671,8 @@ MaterialPacketFormat {
   //   nutrientP:              Float32Array    // kg/kg (phosphorus fraction)
   //   nutrientK:              Float32Array    // kg/kg (potassium fraction)
   //
-  // Total arrays: ~50 (44 properties + 6 for Vec3 components split into x/y/z)
-  // Total memory: 50 × MAX_PACKETS × 4 bytes = 50 × 500,000 × 4 = 100 MB
+  // Total arrays: ~53 (44 logical properties + 9 extra for Vec3/RGB components split into x/y/z)
+  // Total memory: 53 × MAX_PACKETS × 4 bytes = 53 × 500,000 × 4 = 106 MB
 
   // ── Composition storage ───────────────────────────────────────────────
   //
@@ -7753,7 +7759,7 @@ MaterialPacketFormat {
   // To save the world state to disk:
   //   fs.writeFileSync('world.bin', new Uint8Array(sharedBuf))
   //   // One write, raw bytes. No JSON parsing, no field names, no overhead.
-  //   // 500,000 packets × ~316 bytes = 158 MB uncompressed
+  //   // 500,000 packets × ~352 bytes = 176 MB uncompressed
   //   // With LZ4 compression: ~30-50 MB (materials are repetitive)
   //
   // To load:
@@ -7764,11 +7770,11 @@ MaterialPacketFormat {
   // To send over network (for new chunk loading):
   //   Send raw bytes for the packets in the loaded chunk.
   //   Client reconstructs the SoA views from the received buffer.
-  //   // Much smaller than JSON: 316 bytes/packet vs ~2000 bytes/packet for JSON
+  //   // Much smaller than JSON: 352 bytes/packet vs ~2000 bytes/packet for JSON
 
   // ── Total memory budget (updated) ─────────────────────────────────────
   //
-  //   Property arrays (44 × 500k × 4):   100 MB
+  //   Property arrays (53 Float32Arrays × 500k × 4 bytes): 106 MB
   //   Composition (500k × 25 × 4):         50 MB
   //   State (7 × 500k × 4):                14 MB
   //   Cache control (3 arrays):              3 MB
@@ -7777,9 +7783,9 @@ MaterialPacketFormat {
   //   Structural blocks (200k × 100):       20 MB
   //   Network/other:                        10 MB
   //   ─────────────────────────────────────────
-  //   TOTAL:                              ~262 MB
+  //   TOTAL:                              ~238 MB (see full MemoryBudget below for ~280 MB with all subsystems)
   //
-  //   This is higher than the previous estimate because the SoA layout with 44 properties
+  //   This is higher than the previous estimate because the SoA layout with 44 logical properties (53 arrays)
   //   trades memory for speed. The increase buys 50× faster property access.
   //   Still well under the 2 GB target.
 }
@@ -7794,9 +7800,9 @@ MemoryBudget {
   // Target: < 2 GB total for all physics systems (low-end server)
   //
   // MaterialPackets:
-  //   Size per packet: ~316 bytes in SoA format (see MaterialPacket Binary Format above). 44 properties × 4 bytes = 176 bytes + 25 elements × 4 bytes = 100 bytes + 7 state values × 4 bytes = 28 bytes + 3 cache values × 4 bytes = 12 bytes.
+  //   Size per packet: ~352 bytes in SoA format (see MaterialPacket Binary Format above). 53 arrays × 4 bytes = 212 bytes + 25 elements × 4 bytes = 100 bytes + 7 state values × 4 bytes = 28 bytes + 3 cache values × 4 bytes = 12 bytes.
   //   Max active packets: 500,000 (world chunks loaded for all players)
-  //   Total: 500,000 × 316 = 158 MB
+  //   Total: 500,000 × 352 = 176 MB
   //
   // Fluid particles:
   //   Size per particle: 64 bytes (position, velocity, density, pressure, flags)
@@ -7830,7 +7836,7 @@ MemoryBudget {
   //
   // ── TOTAL SERVER RAM ──────────────────────────────────────────────────
   //
-  //   MaterialPackets:     158 MB
+  //   MaterialPackets:     176 MB
   //   Fluid particles:      42 MB
   //   Spatial hash:          10 MB
   //   Structural blocks:     20 MB
@@ -7843,9 +7849,9 @@ MemoryBudget {
   //   Circuit graph (§3.13):          ~0.5 MB (100 nodes × 5 KB/node)
   //   Optics cache (§3.12):           ~0.1 MB (lens parameters per object)
   //   ─────────────────────────────
-  //   TOTAL:               ~262 MB
+  //   TOTAL:               ~280 MB
   //
-  //   This is ~13% of the 2 GB target. Even with Node.js overhead (~300 MB),
+  //   This is ~14% of the 2 GB target. Even with Node.js overhead (~300 MB),
   //   game state (~200 MB), and NPC AI (~200 MB), total stays under 1 GB.
   //   The 2 GB budget has headroom for growth.
 }
@@ -8421,7 +8427,7 @@ EnergySources {
   //   Implementation: if the material system tracks magnetic properties
   //   (ferromagnetic materials: Fe, Ni, Co), and the game adds electromagnetic
   //   coupling, then generators and motors emerge naturally.
-  //   This is a future extension — not required for initial implementation.
+  //   Fully specified in §3.13 Electromagnetism.
 }
 ```
 
@@ -8610,7 +8616,7 @@ Examples:
   Arrow (0.05 kg, effective A=0.001m² including fletching drag, Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.001)) = √(0.981/0.00006125) = √16016 ≈ 127 m/s
   Feather (0.001 kg, A=0.003m², Cd=1.0): v_t = √(2×0.001×9.81 / (1.225×1.0×0.003)) = 2.3 m/s
   Human (70 kg):
-    Belly-to-earth (A=0.7m², Cd=0.7): v_t = √(2×70×9.81 / (1.225×0.7×0.7)) = 53 m/s (~190 km/h)
+    Belly-to-earth (A=0.5m², Cd=0.8): v_t = √(2×70×9.81 / (1.225×0.8×0.5)) = √(1373.4/0.49) ≈ 53 m/s (~190 km/h)
     Feet-first (A=0.2m², Cd=0.3): v_t = √(2×70×9.81 / (1.225×0.3×0.2)) = 137 m/s (~490 km/h)
     The drag area (Cd×A) depends on body posture — the physics determines
     terminal velocity from the player's actual pose, not a hardcoded number.
@@ -10238,7 +10244,7 @@ Battery {
 
 **Worked Example — Voltaic Pile Construction:**
 
-A player has: 10 zinc ingots (each 50g, smelted from sphalerite ore §4.1), 10 copper plates (each 100g), and a bucket of salt water (NaCl dissolved in water). They stack alternating zinc-copper pairs with salt-water-soaked cloth separators. Each cell: V = 1.10V, R_internal ≈ 0.5 Ω (depends on cloth thickness and salt concentration — thinner cloth, more salt = lower resistance). 10 cells in series: V_total = 11.0V, R_internal_total = 5.0 Ω. Maximum current (short circuit): I_max = 11.0 / 5.0 = 2.2 A. Connected to a 10 Ω external load: I = 11.0 / 15.0 = 0.73 A, P_load = 0.73² × 10 = 5.3 W. Battery lifetime: Q = (0.5 / 0.0654) × 2 × 96,485 = 1,475,000 C per cell. At 0.73A: 1,475,000 / 0.73 = 2,020,000 s ≈ 561 hours ≈ 23 game-days. The zinc electrodes visibly thin over this period (mass decreases tracked by the reaction engine). When a zinc plate reaches zero mass, that cell dies, total voltage drops by 1.1V, and the remaining cells must supply the load at reduced voltage.
+A player has: 10 zinc ingots (each 50g, smelted from sphalerite ore §4.1), 10 copper plates (each 100g), and a bucket of salt water (NaCl dissolved in water). They stack alternating zinc-copper pairs with salt-water-soaked cloth separators. Each cell: V = 0.76V (brine electrolyte — see electrolyteEfficiency above), R_internal ≈ 0.5 Ω (depends on cloth thickness and salt concentration — thinner cloth, more salt = lower resistance). 10 cells in series: V_total = 7.6V, R_internal_total = 5.0 Ω. Maximum current (short circuit): I_max = 7.6 / 5.0 = 1.52 A. Connected to a 10 Ω external load: I = 7.6 / 15.0 = 0.507 A, P_load = 0.507² × 10 = 2.57 W. Battery lifetime: Q = (0.5 / 0.0654) × 2 × 96,485 = 1,475,000 C per cell. At 0.507A: 1,475,000 / 0.507 = 2,909,000 s ≈ 808 hours ≈ 33.7 game-days. The zinc electrodes visibly thin over this period (mass decreases tracked by the reaction engine). When a zinc plate reaches zero mass, that cell dies, total voltage drops by 0.76V, and the remaining cells must supply the load at reduced voltage.
 
 **Edge Cases:**
 - Wrong metal pairing: two pieces of the same metal in electrolyte → V_cell = 0. No current flows. Not an error — just physics.
