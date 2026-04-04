@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization' | 'advanced'
+type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization' | 'advanced' | 'world'
 type EdgeSeverity = 'exists' | 'partial' | 'missing'
 
 interface GraphNode {
@@ -42,6 +42,7 @@ const GROUP_COLORS: Record<NodeGroup, string> = {
   tick: '#ffd700',
   optimization: '#ff9b3c',
   advanced: '#ff6b9d',
+  world: '#2dd4bf',
 }
 
 const GROUP_LABELS: Record<NodeGroup, string> = {
@@ -53,6 +54,7 @@ const GROUP_LABELS: Record<NodeGroup, string> = {
   tick: 'Physics Tick Stages',
   optimization: 'Optimization 3.7',
   advanced: 'Advanced Systems 3.8-3.13',
+  world: 'World & Life Ch.4',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
@@ -142,6 +144,14 @@ const NODE_DEFS: NodeDef[] = [
 
   // §3.13 Electromagnetism
   { id: 'em-system', label: 'Electromagnetism', section: '3.13', group: 'advanced', description: 'Circuits, batteries, motors, generators, electrolysis', physics: "Ohm: V = IR\nFaraday: EMF = -N\u00d7d\u03a6/dt\nLorentz: F = qv\u00d7B\nSolenoid: B = \u03bc\u2080\u03bc\u1d63NI/L\nElectrolysis: m = MIt/(nF)" },
+
+  // Chapter 4 World & Life
+  { id: 'weather-system', label: 'Weather System', section: '4.6', group: 'world', description: 'Atmospheric model: temperature, humidity, wind, precipitation, seasons', physics: "T_base = -20 + 50\u00d7sin(solarAngle)\nLapse: -6.5\u00b0C/1000m\nMagnus: e_sat=6.1078\u00d7exp(17.27T/(T+237.3))\nWind from pressure gradients + Coriolis" },
+  { id: 'farming-system', label: 'Farming System', section: '4.4', group: 'world', description: 'Soil, crops, irrigation, pest management', physics: "NPK depletion/restoration\nCrop growth = f(temp, water, light, soil)\nSoil texture from geology\nIrrigation via \u00a73.2 channels" },
+  { id: 'organism-system', label: 'Organism Ecosystem', section: '4.2', group: 'world', description: 'Species populations, food chains, carrying capacity', physics: "Lotka-Volterra: dPrey/dt = \u03b1P - \u03b2PQ\nKleiber BMR = 70\u00d7M^0.75\nTrophic efficiency ~10%\nNPP drives carrying capacity" },
+  { id: 'animal-system', label: 'Animal Behavior', section: '4.3', group: 'world', description: 'Individual AI, domestication, products, sound', physics: "Taming score 0-1\nBreeding: heritability 0.4\nProducts: wool, milk, eggs, meat\nVocalizations \u2192 \u00a73.3 voice synthesis" },
+  { id: 'geology-system', label: 'Geology & Resources', section: '4.5', group: 'world', description: 'Ore deposits, mineral stability, rock types', physics: "Clarke numbers determine rarity\nPorphyry Cu: 0.3-1.5% grade\nBiome-specific resource distribution\nMined ore \u2192 MaterialPacket" },
+  { id: 'worldgen-system', label: 'World Generation', section: '4.1', group: 'world', description: 'Planetary formation, bulk geochemistry, terrain', physics: "Clarke number element distribution\nBowen reaction series crystallization\nMineral stability fields (P-T)\nTerrain \u2192 rock composition" },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
@@ -313,6 +323,22 @@ const EDGE_DEFS: EdgeDef[] = [
   { id: 'C66', source: 'em-system', target: 'noise-synth', label: 'EM \u2192 sound events', data: 'Arc buzz: broadband \u221d power. Motor hum: freq\u00d7poles. Transformer: 2\u00d7AC freq. Spark: impulse 1-10kHz.', severity: 'exists' },
   { id: 'C67', source: 'em-system', target: 'sph-solver', label: 'Electrolysis \u2192 gas bubbles', data: 'H\u2082: m=(0.002\u00d7I\u00d7dt)/(2\u00d796485) at cathode. O\u2082: m=(0.032\u00d7I\u00d7dt)/(4\u00d796485) at anode. Spawn as gas-phase SPH particles.', severity: 'exists' },
   { id: 'C68', source: 'mpm-solver', target: 'drag-system', label: 'Fluid medium \u2192 drag density', data: 'Submerged: \u03c1=1000 (water). Surface: partial. Air: \u03c1=1.225. Underwater drag 800\u00d7 greater \u2014 arrows stop instantly.', severity: 'exists' },
+
+  // Connections 69-72 (Chapter 4 -> Chapter 3)
+  { id: 'C69', source: 'farming-system', target: 'mpm-solver', label: 'Irrigation \u2192 soil moisture', data: 'Manning equation channel flow \u2192 SoilState.moisture for adjacent cells. Crops pull water from \u00a73.2 grid.', severity: 'exists' },
+  { id: 'C70', source: 'geology-system', target: 'property-calc', label: 'Mined ore \u2192 MaterialPacket', data: 'Mining extracts ore block \u2192 spawns MaterialPacket with mineral composition (malachite: Cu 39.6%, O 44.5%).', severity: 'exists' },
+  { id: 'C71', source: 'weather-system', target: 'em-system', label: 'Lightning \u2192 EM system', data: 'Lightning discharge routes through \u00a73.13. Lightning rods attract via conductivity. Induced EMF in nearby coils.', severity: 'exists' },
+  { id: 'C72', source: 'farming-system', target: 'reaction-rules', label: 'Composting via reaction engine', data: 'Organic decomposition: exothermic oxidation producing heat (up to 70\u00b0C), CO\u2082, NH\u2084\u207a. Arrhenius kinetics.', severity: 'exists' },
+
+  // Connections 73-80 (Chapter 4 -> Chapter 3, batch 2)
+  { id: 'C73', source: 'weather-system', target: 'temp-propagation', label: 'Air temp \u2192 Stage 1 ambient', data: 'T_ambient per atmosphere cell feeds every exposed MaterialPacket heat exchange. The entire thermal system depends on this.', severity: 'exists' },
+  { id: 'C74', source: 'geology-system', target: 'property-calc', label: 'Ore mining \u2192 MaterialPacket', data: 'Mined ore block becomes MaterialPacket with composition matching mineral (malachite, hematite, cassiterite, etc.).', severity: 'exists' },
+  { id: 'C75', source: 'worldgen-system', target: 'property-calc', label: 'Terrain rock \u2192 composition', data: 'Every terrain block has composition from rock type: granite={Si,Al,O,K}, limestone={Ca,C,O}, basalt={Si,Fe,Mg,O}.', severity: 'exists' },
+  { id: 'C76', source: 'farming-system', target: 'reaction-rules', label: 'Crop nutrient uptake', data: 'Gibbs-favorable N/P/K transfer from soil to plant. Reaction engine conserves mass \u2014 soil loses what plant gains.', severity: 'exists' },
+  { id: 'C77', source: 'animal-system', target: 'sph-solver', label: 'Fish \u2194 fluid interaction', data: 'Aquatic organisms feel drag F=0.5\u03c1v\u00b2CdA from current. Swimming pushes water aside (wake/splash).', severity: 'exists' },
+  { id: 'C78', source: 'animal-system', target: 'property-calc', label: 'Live product \u2192 MaterialPacket', data: 'Wool={keratin 90%, lanolin 5%}, milk={water 87%, fat 4%}, eggs \u2014 real compositions, not abstract items.', severity: 'exists' },
+  { id: 'C79', source: 'weather-system', target: 'property-calc', label: 'Rain \u2192 material moisture', data: 'Exposed MaterialPackets absorb rain. Wet wood flammability=0. Wet mortar weakens. Moisture from porosity.', severity: 'exists' },
+  { id: 'C80', source: 'weather-system', target: 'phase-system', label: 'Cold \u2192 water freezing', data: 'Air T < 0\u00b0C \u2192 water cells cool \u2192 \u00a73.0 Stage 2 phase transition \u2192 ice. Rivers/lakes freeze in winter.', severity: 'exists' },
 ]
 
 // Compute edge counts
@@ -342,13 +368,14 @@ const GROUP_ANGLE: Record<NodeGroup, number> = {
   network: Math.PI * 1.85,    // upper left
   optimization: Math.PI * 1.2, // lower center
   advanced: Math.PI * 0.5,     // bottom right
+  world: Math.PI * 1.6,       // upper left area
 }
 
 function initNodes(width: number, height: number): GraphNode[] {
   const cx = width / 2
   const cy = height / 2
-  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0 }
-  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0 }
+  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0 }
+  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0 }
   for (const nd of NODE_DEFS) groupTotals[nd.group]++
 
   return NODE_DEFS.map(nd => {
