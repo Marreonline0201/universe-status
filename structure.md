@@ -374,6 +374,11 @@ MaterialPacket {
 
   // ── Mechanical ────────────────────────────────────────────────────────────
   density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
+  // In plain English: mixing a small amount of one metal into another makes it harder.
+  // Pure copper is soft. Add 12% tin → bronze, which is much harder.
+  // Why? The tin atoms are a different size than copper atoms. They get stuck
+  // in the copper crystal and make it harder for layers to slide over each other.
+  // More tin = harder, but the effect gets weaker as you add more (square root).
   hardness: number                      // Mohs scale — solid solution strengthening:
                                         // Fleischer model at low concentration (c < 5 at.%): Δσ = B × c^(1/2)
                                         // Labusch model at high concentration (c ≥ 5 at.%): Δσ = B' × c^(2/3)
@@ -417,6 +422,11 @@ MaterialPacket {
   viscosity: number                     // Pa·s — resistance to flow
                                         // Used by: §3.2 SPH (F_viscosity = μ · ∇²v)
                                         // Water: 0.001, honey: 2-10, lava: 100-10⁶
+  // In plain English: this tells you how thick a liquid is at a given temperature.
+  // Cold honey is thick (high viscosity). Hot honey is thin (low viscosity).
+  // The formula says viscosity drops exponentially with temperature —
+  // meaning a little more heat makes a BIG difference in how runny things get.
+  // Ea is the "energy barrier" — how much energy molecules need to slide past each other.
                                         // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
   surfaceTension: number                // N/m — surface cohesion
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
@@ -548,6 +558,12 @@ Every derived property is **calculated**, not looked up. The calculation uses re
 | Permanent magnetization | From composition + processing (requires magnetizing exposure) | Electromagnetism | §3.13 compass, motors |
 | Triboelectric index | From surface chemistry: metals positive, polymers negative | Electrostatics | §3.13 static electricity |
 
+
+  // In plain English: heavy atoms heat up and cool down at a predictable rate.
+  // But light atoms (carbon, silicon) are weird — they heat up much faster than
+  // the simple rule predicts. The Debye correction fixes this for light elements.
+  // Without it: carbon heats up too slowly in the simulation. With it: correct.
+
 #### Specific Heat Capacity — Dulong-Petit Is Wrong for Light Elements
 
 The current model uses Dulong-Petit: C_v = 3R = 25 J/(mol·K) for all elements.
@@ -578,6 +594,12 @@ to temperature changes faster, which affects:
   - How quickly a stone furnace reaches operating temperature
   - How fast glass cools (and whether it shatters from thermal shock)
   - How quickly charcoal ignites
+
+
+  // In plain English: metals conduct heat well (touch a hot metal pan — instant burn).
+  // Stone, wood, and clay conduct heat poorly (you can hold a hot clay pot by the edge).
+  // This formula figures out HOW poorly, based on what the material is made of.
+  // Clay walls are good furnace insulation BECAUSE they conduct heat poorly.
 
 #### Non-Metal Thermal Conductivity — Computed from Composition, Not Looked Up
 
@@ -628,6 +650,13 @@ computed from the element property table, NOT from a material-name lookup:
   But now a novel material (player-invented ceramic with unusual composition)
   gets a physically reasonable κ without needing a new table entry.
 
+
+  // In plain English: hitting metal with a hammer makes it harder.
+  // Each hammer blow bends the crystal structure a little. The tangles build up
+  // and resist further bending. That is why blacksmiths hammer blades to harden them.
+  // But it also makes the metal more brittle — hit it too many times and it cracks.
+  // Heating it up (annealing) un-tangles the crystals and makes it soft again.
+
 #### Work Hardening — Hammered Metal Gets Harder
 
 When metals are plastically deformed (hammered, bent, drawn through a die), dislocations in the crystal lattice multiply and tangle, resisting further deformation. The Hollomon equation describes this:
@@ -643,6 +672,12 @@ Cold-worked copper (workHardeningState = 0.8) has ~2× the yield strength of ann
 Annealing (heating above ~0.4 × T_melt in Kelvin) recrystallizes the grain structure, resetting workHardeningState to 0. This softens the metal for further shaping. The cycle: shape → harden → anneal → reshape → harden → final product.
 
 This connects to sound (§3.3): as a metal workpiece hardens, its Young's modulus and density change slightly, so the pitch of each hammer strike shifts higher with successive blows. An experienced player can hear when the metal is fully work-hardened.
+
+
+  // In plain English: using something over and over eventually breaks it,
+  // even if each use is gentle. Bend a paperclip back and forth — it eventually snaps.
+  // This formula tells you HOW MANY bends (cycles) until it breaks.
+  // The harder you bend it each time, the fewer bends before it snaps.
 
 #### Fatigue — Repeated Use Wears Things Out
 
@@ -671,6 +706,14 @@ Gameplay: tools gradually degrade. A well-used copper pickaxe develops micro-cra
 after ~10,000 strikes. It doesn't break suddenly — the player notices reduced effectiveness
 as cracks grow (fracture toughness decreases). Eventually it snaps mid-use.
 A steel tool lasts 5-10× longer than copper because steel has a higher fatigue limit.
+
+
+  // In plain English: a scratch makes things MUCH weaker.
+  // An unscratched glass window is strong. A tiny scratch on the edge?
+  // It shatters easily. The scratch concentrates all the stress at its tip.
+  // This formula tells you how much weaker a cracked material is.
+  // Glass has very low fracture toughness (shatters easily from small cracks).
+  // Steel has high fracture toughness (cracks do not spread easily).
 
 #### Fracture Toughness — Cracked Materials Are Weaker
 
@@ -734,6 +777,12 @@ An iron bridge that holds fine in summer might shatter under load at -10°C.
 FCC metals (copper, gold, aluminum) have NO brittle transition — they stay ductile
 at all temperatures. This is an advantage of copper tools in cold climates.
 
+
+  // In plain English: hot metal slowly bends under its own weight, like silly putty.
+  // Leave a lead pipe in the sun for years — it sags. Put a steel beam near a furnace —
+  // it slowly droops. This only matters when things are hot (above ~40% of melting point).
+  // At room temperature, iron does not creep. Near a furnace, it does.
+
 #### Creep — Slow Deformation Under Sustained Load at High Temperature
 
 At temperatures above ~0.4 × T_melting (in Kelvin), materials deform slowly
@@ -763,6 +812,14 @@ Gameplay effects:
 Implementation: for blocks above 0.4 × T_melt, apply creep strain each game-day.
   Accumulated creep strain → permanent deformation → visual sag → eventual failure.
   Not computed per tick (too slow). Computed per game-day decay cycle.
+
+
+  // In plain English: how fast you cool steel completely changes what you get.
+  // Cool it slowly → soft and tough (pearlite). Easy to shape, hard to break.
+  // Cool it fast (dunk in water) → extremely hard but brittle (martensite).
+  // It is like freezing water slowly (clear ice) vs fast (cloudy ice) —
+  // same ingredients, completely different result based on cooling speed.
+  // This is THE most important discovery in metalworking history.
 
 #### Martensite Transformation — How Steel Gets Hard
 
@@ -840,6 +897,12 @@ This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The
 
 This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
 
+
+  // In plain English: some metal alloys get harder if you hold them at the right
+  // temperature for the right amount of time. Too short = no effect. Too long =
+  // it actually gets softer again. Like baking a cake — underdone is raw,
+  // overdone is burnt, but there is a sweet spot in the middle.
+
 #### Precipitation Hardening — Heat-Treating Alloys for Maximum Hardness
 
 Certain alloys become dramatically harder when held at a specific temperature
@@ -878,6 +941,13 @@ Implementation: when a MaterialPacket is held at 0.3-0.6 × T_melt for extended 
 When two packets meet under conditions, the **reaction engine** determines what happens. It does not look up recipes. It checks thermodynamics.
 
 **Step 1 — Can a reaction happen?**
+
+  // In plain English: Gibbs free energy tells you if a chemical reaction will happen on its own.
+  // Think of it like a ball on a hill — if ΔG is negative, the ball rolls downhill (reaction happens).
+  // If ΔG is positive, you would need to push the ball uphill (reaction needs energy input).
+  // ΔH is the heat released or absorbed. TΔS is about disorder — nature likes things messy.
+  // A reaction that releases heat AND increases disorder? Guaranteed to happen.
+
 Check Gibbs free energy: `ΔG = ΔH - TΔS`
 - If `ΔG < 0`: reaction is spontaneous (it wants to happen)
 - If `ΔG > 0`: reaction needs energy input
@@ -1122,6 +1192,13 @@ Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dy
 
 Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
 
+
+  // In plain English: some liquids change thickness when you push on them.
+  // Ketchup: will not come out of the bottle until you shake it, then it flows.
+  // Mud: solid when you stand still, liquefies when you struggle (quicksand!).
+  // Oobleck (cornstarch + water): flows like liquid normally, but hardens when punched.
+  // These are "non-Newtonian" — their thickness depends on how hard you push.
+
 **Non-Newtonian Viscosity — Mud Is Not Water**
 
 The Andrade/Arrhenius model gives viscosity as a function of temperature only. This is correct for simple liquids (water, molten metals, oils). But many gameplay-relevant materials are non-Newtonian — their viscosity depends on shear rate (how fast you stir/deform them):
@@ -1275,6 +1352,12 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
 ```
 
 // ── Latent Heat ──────────────────────────────────────────────────────
+  // In plain English: melting and boiling are not instant — they take energy.
+  // An ice cube at 0°C does not instantly become water when you heat it.
+  // It sits at 0°C absorbing heat until ALL the ice is gone, THEN the
+  // temperature starts rising again. That absorbed heat is "latent heat."
+  // Bigger latent heat = takes longer to melt. Iron takes a LOT of heat to melt.
+  //
 // Phase transitions are NOT instant. Melting absorbs energy without
 // raising temperature. Freezing releases energy without lowering it.
 //
@@ -1692,6 +1775,14 @@ absorptionRate = porosity × capillaryFactor × contactArea
   //     Oil (σ = 30 mN/m): cos(θ) = (surfaceEnergy - 30) / surfaceEnergy
   //     Oil on metal: cos(θ) = (2700-30)/2700 = 0.99 → θ = 8° (oil wets metal completely) ✓
   //     Oil on wax: cos(θ) = (1.25-30)/1.25 → capped → θ ≈ 120° (oil doesn't wet wax well) 
+
+// **What this means:** The individual droplets look blobby and ugly.
+// The bilateral blur smooths them into a continuous, shiny surface.
+// It is like looking at a pointillist painting -- up close you see dots,
+// but step back (or blur your eyes) and you see a smooth image.
+// The "bilateral" part means it smooths WITHIN the liquid but does not
+// smear the liquid edge into the background.
+
   //
   //   This replaces the previous hydrophilicity lookup table with a formula
   //   that derives θ from elemental surface tensions in the property table.
@@ -4022,6 +4113,11 @@ StructuralDecay {
   //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
   //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
   //     This happens when: fire on one side of a stone wall, sun on south face
+  //
+  // In plain English: some materials shatter when you heat or cool them suddenly.
+  // Pour boiling water into a cold glass → it cracks. But a metal cup is fine.
+  // This number tells you how much sudden temperature change a material can survive.
+  // Glass: very low R (shatters easily). Metal: very high R (survives quenching).
   //
   //   Thermal shock resistance parameter (R', second parameter — includes conductivity):
   //     R' = σ_t × k × (1 - ν) / (E × α)
@@ -6786,6 +6882,13 @@ Target: Material System (§3.1) — determines martensite vs. pearlite transform
 Data: coolingRate (°C/s) computed from fluid properties at the quenching point
 Trigger: when a MaterialPacket above 727°C is immersed in liquid
 
+
+  // In plain English: when two different metals touch in the rain, one of them
+  // rusts away faster. It is like a bully stealing lunch money — the "weaker"
+  // metal (more reactive) gives up its atoms to protect the "stronger" metal.
+  // Iron touching copper → iron corrodes faster, copper stays shiny.
+  // Zinc touching iron → zinc corrodes first, PROTECTING the iron (galvanizing).
+
 ##### Connection 34: Galvanic Corrosion → Structural Bond Decay (moderate)
 
 When two different metals are in contact at a structural connection (e.g., copper
@@ -8318,6 +8421,15 @@ Energy stored in a bent bow:
   //   For a longbow: E_stored ~ 0.7 * F_max * drawLength = 0.7 * 180 * 0.7 = 88.2 J
   //
   // Arrow speed (at ~75% energy transfer — rest goes to limb vibration):
+
+// **What this means (PV = nRT):** Gas in a sealed container gets pushier
+// when you heat it. The hotter the gas, the harder it pushes on the walls.
+// If you let it expand (like pushing a piston), it does work -- that is an engine.
+// If you compress it (push the piston in), it heats up -- that is why bike pumps get warm.
+//
+// In plain English for P_gas = rho * (R/M) * T: pressure equals density
+// times temperature, scaled by what kind of gas it is.
+
   //   v = sqrt(2 * 88.2 * 0.75 / 0.05) = sqrt(2646) = 51.4 m/s
   //   With a lighter arrow (0.03 kg): v = sqrt(2 * 88.2 * 0.75 / 0.03) = 66.4 m/s
   //   Real longbow speeds: 55-70 m/s for a 50g arrow. Our model is close.
@@ -8464,6 +8576,18 @@ fn pressure_for_particle(p: &Particle) -> f64 {
 ```
 
 **Worked example — steam pressure in a sealed boiler:**
+
+// **What this means:** No engine can convert ALL heat into useful work.
+// Some heat always escapes as waste. The Carnot limit tells you the BEST
+// possible efficiency, and it depends on two temperatures:
+//   - How hot your fire is (higher = more efficient)
+//   - How cold your exhaust is (lower = more efficient)
+// A steam engine running between boiling water (100C) and room temp (20C)
+// can NEVER exceed ~21% efficiency. The rest is wasted heat.
+//
+// In plain English for eta_max = 1 - T_cold / T_hot: efficiency equals
+// the temperature gap divided by the hot temperature. Bigger gap = better.
+
 - Water at 150C (423 K) boils to steam
 - Steam density in sealed container: ~2.5 kg/m^3 (constrained by container volume)
 - P = 2.5 * (8.314 / 0.018) * 423
@@ -8604,6 +8728,17 @@ struct HeatEngine {
         }
     }
 
+// **What this means (Otto Cycle):** Suck in air + fuel, squeeze it tight
+// (compression makes it hot), ignite it (explosion pushes the piston),
+// push out the exhaust. Repeat. The more you squeeze before igniting
+// (higher compression ratio), the more efficient the engine. But squeeze
+// too much and the fuel ignites on its own before you want it to
+// (engine knock -- bad).
+//
+// In plain English for eta_otto = 1 - 1/r^(gamma-1): the harder you
+// squeeze the air-fuel mix before igniting, the more energy you extract.
+
+
     fn carnot_limit(&self, t_hot: f64, t_cold: f64) -> f64 {
         1.0 - t_cold / t_hot
     }
@@ -8688,6 +8823,17 @@ fn update_valve_state(crank_angle: f64) -> ValveState {
 2. Cylinder: metal tube with smooth bore (precision craft, S6.4)
 3. Piston: metal disc that fits tightly in cylinder (precision craft, S6.4)
 4. Connecting rod + crankshaft: hinge and slider joints (S3.8)
+
+// **What this means:** A refrigerator is an engine running backwards.
+// Instead of heat -> work, it is work -> moving heat from cold to hot.
+// Compress gas (it heats up) -> dump that heat outside -> let gas expand
+// (it cools down) -> the cold gas absorbs heat from inside the fridge.
+// The simplest version: hang a wet cloth on a pot. Water evaporates,
+// absorbing heat from the pot, cooling it down. Free refrigeration.
+//
+// In plain English for COP = Q_cold / W_input: for every 1 joule of work
+// you put in, you move 2-4 joules of heat out of the cold space.
+
 5. Valves: moving parts that direct steam flow (simple mechanical linkage)
 6. Condenser (optional): cooling coils or surface to convert exhaust steam back to water
 7. Fuel supply: wood, charcoal, coal — anything that burns (S3.1)
@@ -9173,6 +9319,14 @@ For soda-lime glass (approximate):
   n(red,   0.656 um) = 1.5046 + 0.00420/0.430 = 1.514
   n(blue,  0.486 um) = 1.5046 + 0.00420/0.236 = 1.522
   Difference: 0.008 — small, but enough to split white light visibly
+
+// **What this means (Coulomb's Law):** Like charges repel, opposite charges attract.
+// Rub a balloon on your hair and the balloon sticks to the wall.
+// The force gets weaker with distance (4x farther = 16x weaker).
+// In plain English for F = k_e * q1 * q2 / r^2: the force between two
+// charged things depends on how much charge each has and drops off sharply
+// as they get farther apart.
+
 ```
 
 **Prism**: A triangular piece of glass. White light enters one face, each wavelength refracts at a slightly different angle, and the light exits the other face as a spread-out spectrum: red, orange, yellow, green, blue, violet.
@@ -9316,6 +9470,19 @@ A player rubs a wool cloth against an amber rod 50 times. Each cycle transfers ~
 
 #### Electric Current and Circuits
 
+// **What this means (Ohm's Law: V = IR):** Electricity flows through wires
+// like water through pipes. Voltage (V) is the pressure pushing it.
+// Current (I) is how much flows. Resistance (R) is how narrow the pipe is.
+// High voltage + low resistance = lots of current (dangerous).
+// Copper has low resistance (good wire). Wood has huge resistance (insulator).
+//
+// **Kirchhoff's Laws in plain English:**
+// Rule 1: electricity does not appear or disappear at a junction.
+//   Whatever current flows IN must flow OUT. Like water at a pipe T-junction.
+// Rule 2: the total voltage around any loop adds up to zero.
+//   Like hiking in a circle -- total altitude change is zero.
+
+
 ```
 CurrentFlow {
   // Current flows through connected conductive materials from high voltage to low voltage.
@@ -9427,6 +9594,14 @@ fn solve_circuit(world: &World) -> Vec<CircuitSolution> {
 
 #### Batteries (Electrochemical Cells)
 
+// **What this means:** Two different metals in salt water make electricity.
+// The more reactive metal (zinc) gives up electrons -- they flow through
+// a wire to the less reactive metal (copper) -- and current flows.
+// The voltage depends on HOW different the metals are in reactivity.
+// Zinc + copper = 1.1 volts. Stack 10 of these = 11 volts.
+// The zinc slowly dissolves -- when it is gone, the battery is dead.
+
+
 ```
 Battery {
   // A battery converts chemical energy into electrical energy.
@@ -9483,6 +9658,14 @@ A player has: 10 zinc ingots (each 50g, smelted from sphalerite ore §4.1), 10 c
 ---
 
 #### Magnetism
+
+// **What this means (Solenoid / Electromagnet):** Wrap wire in a coil,
+// run current through it, and you get a magnet. More coil turns = stronger magnet.
+// More current = stronger magnet. Put an iron core inside the coil = MUCH stronger
+// (iron amplifies ~1000x). Turn off the current = magnet stops. Unlike a permanent
+// magnet, you can switch an electromagnet on and off. That is how electric bells
+// and relays work.
+
 
 ```
 Magnetism {
@@ -9581,6 +9764,13 @@ fn compute_magnetic_field(world: &World, point: Vec3) -> Vec3 {
 ---
 
 #### Electromagnetic Induction (Generators and Motors)
+
+// **What this means (Faraday's Law):** Wave a magnet near a wire and
+// electricity flows in the wire. This is how EVERY generator and power plant works.
+// Spin a magnet near a coil of wire and voltage appears. Faster spinning = more voltage.
+// It also works backwards: push electricity through a wire near a magnet and
+// the wire moves. That is a motor. Generator and motor are the same device.
+
 
 ```
 Induction {
@@ -9682,6 +9872,14 @@ fn update_electromechanical(world: &mut World, dt: f64) {
 ---
 
 #### Electrolysis (Electricity Drives Chemistry)
+
+// **What this means:** Use electricity to force a chemical reaction that
+// would not happen on its own. This is how aluminum is made -- you cannot
+// melt aluminum out of its ore with any fire (it is too stubborn).
+// But run enough electricity through melted aluminum ore and pure aluminum separates out.
+// It uses ENORMOUS amounts of electricity, which is why aluminum was once
+// more expensive than gold.
+
 
 ```
 Electrolysis {
