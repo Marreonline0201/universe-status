@@ -10545,15 +10545,15 @@ ElectromagnetismPerformance {
 
 ---
 
-#### 6.1.0 Planetary Formation and Bulk Geochemistry
+#### 4.1.1 Planetary Formation and Bulk Geochemistry
 
 The current world-generation pipeline starts at tectonic plates. That is the wrong starting point. Tectonic plates are an emergent consequence of planetary cooling — they are not where resources come from. Resources come from the planet's bulk chemistry, which was set at accretion, then sorted by differentiation, then fractionated by partial melting, then concentrated by hydrothermal circulation. The tectonic plate is just the last step in a chain that starts in the solar nebula.
 
-This section documents that full chain. The tectonic rules in 6.4.1–6.4.8 are downstream consequences of what this section establishes. A resource node is only valid if it is consistent with the geochemical rules here. Nothing gets seeded by proximity to a boundary type alone — everything derives from the planet's initial chemistry.
+This section documents that full chain. The tectonic rules in 4.5.1–4.5.8 are downstream consequences of what this section establishes. A resource node is only valid if it is consistent with the geochemical rules here. Nothing gets seeded by proximity to a boundary type alone — everything derives from the planet's initial chemistry.
 
 ---
 
-##### 6.1.0.1 Planetary Accretion and Bulk Composition
+##### 4.1.1.1 Planetary Accretion and Bulk Composition
 
 A rocky planet forms by gravitational accretion of planetesimals from the protoplanetary disk. The disk's composition follows stellar abundances (solar composition), but the innermost zone where rocky planets form is depleted of volatile elements (H, He, C, N, noble gases) because the young star's heat drove them outward. What remains to build a rocky planet is dominated by refractory elements — those with high condensation temperatures from a cooling gas.
 
@@ -10577,7 +10577,7 @@ These numbers are not arbitrary — they are the cosmic abundances of refractory
 
 ---
 
-##### 6.1.0.2 Planetary Differentiation and Goldschmidt Classification
+##### 4.1.1.2 Planetary Differentiation and Goldschmidt Classification
 
 When a newly accreted planet is hot enough (from accretional energy + short-lived radioisotope decay — primarily ²⁶Al, with a 730,000-year half-life), the interior melts. This melting is the most important event in planetary history for resource distribution: elements sort themselves by chemical affinity.
 
@@ -10591,7 +10591,7 @@ These elements followed iron when it melted and sank to form the core. Earth's c
 **Lithophile elements** ("rock-loving") — partition into silicate minerals and melts:
 O, Si, Al, Mg, Ca, Na, K, Ti, P, Li, Be, B, Rb, Sr, Y, Zr, Nb, Ba, REEs (La–Lu), Hf, Ta, U, Th, Cs, F, Cl (partial)
 
-These stayed in the mantle and crust. U and Th are lithophile and radioactive — their ongoing decay (~45 TW globally) is the principal heat source driving mantle convection and therefore plate tectonics today. Without U and Th, Earth's interior would have cooled, tectonics would have ceased, and volcanism would have stopped billions of years ago.
+These stayed in the mantle and crust. U and Th are lithophile and radioactive — their ongoing decay (~20 TW globally from U, Th, and K combined — about half of Earth's ~47 TW total surface heat flow; the rest is primordial heat from formation) is the principal heat source driving mantle convection and therefore plate tectonics today. Without U and Th, Earth's interior would have cooled, tectonics would have ceased, and volcanism would have stopped billions of years ago.
 
 **Chalcophile elements** ("sulfur-loving") — partition into sulfide melt:
 S, Cu, Pb, Zn, Ag, Cd, In, Tl, Hg, As, Bi, Sb, Se, Te, Sn (partial), Mo (partial)
@@ -10607,7 +10607,7 @@ These form the hydrosphere, atmosphere, and biosphere. The oceans and atmosphere
 
 ---
 
-##### 6.1.0.3 Bowen's Reaction Series and Magmatic Differentiation
+##### 4.1.1.3 Bowen's Reaction Series and Magmatic Differentiation
 
 Once differentiation has established the mantle, further chemical fractionation occurs every time a piece of mantle melts. This is the second major sorting mechanism, and it controls which elements end up in which types of crustal rock.
 
@@ -10636,7 +10636,7 @@ As a basaltic magma cools from ~1200°C to ~600°C, minerals crystallize in a pr
 
 7. **Muscovite mica**, ~700°C.
 
-8. **Quartz** (SiO₂) crystallizes last, below ~600°C. The last liquid to crystallize is quartz-rich.
+8. **Quartz** (SiO₂) crystallizes last, below ~700°C. The last liquid to crystallize is quartz-rich.
 
 **Incompatible elements — the pegmatite concentration mechanism:**
 
@@ -10663,14 +10663,14 @@ With each melting and crystallization cycle at subduction zones, the crustal col
 
 ---
 
-##### 6.1.0.4 Planet Layer Model
+##### 4.1.1.4 Planet Layer Model
 
 The game must generate and track these layers. Each layer has a distinct composition and set of accessible resources:
 
 | Layer | Primary mineralogy | Elemental character | Avg. thickness | T range | Player-accessible |
 |-------|-------------------|---------------------|----------------|---------|-------------------|
 | **Inner core** | Fe–Ni alloy (solid) | Siderophile: Fe 85%, Ni 5%, Si+S 10% | 1220 km radius | ~5000–6000°C | No |
-| **Outer core** | Fe–Ni–S melt (liquid) | Siderophile: Fe 82%, Ni 5%, S 9%, O+Si 4% | 2260 km | 4000–5000°C | No — generates magnetic field via dynamo |
+| **Outer core** | Fe–Ni–S melt (liquid) | Siderophile: Fe 82%, Ni 5%, S 9%, O+Si 4% | 2260 km | 4400–5500°C | No — generates magnetic field via dynamo |
 | **Lower mantle** | Bridgmanite (MgSiO₃ perovskite), ferropericlase (MgO) | Lithophile, high-pressure phases | 2300 km | 1500–4000°C | No |
 | **Upper mantle** | Peridotite: olivine (Mg,Fe)₂SiO₄ + pyroxene MgSiO₃ | Lithophile: Mg, Fe, Si, O, Cr, Ni | 660 km | 500–1500°C | Only via volcanic transport (xenoliths, kimberlites) |
 | **Oceanic crust** | Basalt: SiO₂ 50%, Al₂O₃ 16%, FeO 10%, MgO 7%, CaO 11%, Na₂O 3% | Chalcophile enriched by seafloor hydrothermal vents | 5–10 km | surface–400°C | Yes — seafloor and island arcs |
@@ -10683,7 +10683,7 @@ The game must generate and track these layers. Each layer has a distinct composi
 
 ---
 
-##### 6.1.0.5 Crustal Abundance — Clarke Numbers
+##### 4.1.1.5 Crustal Abundance — Clarke Numbers
 
 The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–1931) is the average abundance of an element in the continental crust, in parts per million (ppm) by mass. These numbers define how common or rare a resource is in the game world. A resource with a Clarke number of 60 ppm (copper) is ~15,000 times more abundant than one with 0.004 ppm (gold). The game must respect these ratios in deposit size and discovery frequency.
 
@@ -10723,7 +10723,7 @@ The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–
 
 ---
 
-##### 6.1.0.6 Mineral Stability — Formation Conditions
+##### 4.1.1.6 Mineral Stability — Formation Conditions
 
 A resource node can only exist if the conditions that formed it actually existed at that location. The game's resource seeder must run a mineral stability check before placing any deposit. Each mineral has a valid temperature window, pressure window, chemical activity window, and atmospheric condition:
 
@@ -10754,7 +10754,7 @@ A resource node can only exist if the conditions that formed it actually existed
 
 ---
 
-##### 6.1.0.7 World Generation Algorithm — From First Principles
+##### 4.1.1.7 World Generation Algorithm — From First Principles
 
 This is the full ordered sequence the game runs when generating a new world:
 
@@ -10800,7 +10800,7 @@ Every resource node in the game has a surface expression that derives from the r
 
 ---
 
-#### 6.1.1 Surface Terrain and Biomes
+#### 4.1.2 Surface Terrain and Biomes
 
 The planet is a sphere with a 4-kilometer radius. The terrain is generated using a technique called 3D Fractional Brownian Motion (FBM) with domain warping — this produces natural-looking mountain ranges, valleys, and coastlines without any repetition. Additional passes add ridged mountains and Voronoi-based tectonic plates.
 
@@ -10835,6 +10835,13 @@ The planet is a sphere with a 4-kilometer radius. The terrain is generated using
   // | Estuary                   | 500-1500           | 5,000-15,000       | 0.7                          |
   //
   // These values are from Lieth & Whittaker (1975) and updated IPCC data.
+  //
+  // NOTE: These NPP values serve as VALIDATION TARGETS for the emergent biome
+  // productivity system. In the full implementation, NPP per cell should be
+  // computed from:
+  //   NPP = f(solar_irradiance(§4.6), T_air(§4.6), annual_rainfall(§4.6), soil_fertility(§4.4))
+  // The Whittaker values verify that the formula produces correct output.
+  // Until the NPP formula is implemented, these values are used directly.
   //
   // Usage:
   //   maxOrganisms(biome) = baseCapacity × carryingCapacityMultiplier
@@ -10907,9 +10914,13 @@ When autotrophs (prey) are abundant, heterotrophs (predators) reproduce faster t
 **Scientific grounding — genome and speciation:**
 The 256-bit genome and Hamming distance speciation threshold implement the conceptual framework from Richard Dawkins' *The Selfish Gene* (1976): evolution operates on genes, not individuals. Two populations that diverge beyond a Hamming distance of 32 bits are treated as separate species — a computational proxy for reproductive isolation. Traits encoded in the genome (size, metabolic rate, diet preference) determine fitness. Unfit organisms die sooner. Fit ones reproduce more. Selection pressure does the rest.
 
+// Mutation rate: 0.001 per bit per generation (1 in 1000 bits mutates).
+// At 256 bits: ~0.256 mutations per offspring on average.
+// This produces gradual drift without overwhelming selection.
+
 ---
 
-### 6.2.1 Full Organism Species Registry
+#### 4.2.1 Full Organism Species Registry
 
 Every living thing in the game is an organism in the simulation. There are no static resource nodes for biological materials — wood, grain, wool, wax, guano, and every other biological product comes from a living organism that was born, grew, and can die. This section documents every species that must exist in the system, organized by kingdom, with their ecological role, biome constraints, products they yield, and how their population dynamics interact with the rest of the simulation.
 
@@ -11428,7 +11439,7 @@ The current system models organisms as abstract entities with diet types and ene
 | ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `speciesId`       | string                 | Unique species identifier (e.g., `"quercus_robur"`, `"apis_mellifera"`)                  |
 | `kingdom`         | enum                   | `plant`, `animal`, `fungus`, `bacteria`                                                  |
-| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest                           |
+| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest. NOTE: bodyMass is currently a standalone stat. In the full implementation, it should be the sum of component MaterialPacket masses: bodyMass = skeleton.mass + muscle.mass + fat.mass + organ.mass. Fat reserves change with feeding (increase) and starvation (decrease). This makes Kleiber's law truly emergent from the material system (§3.1). |
 | `growthStage`     | enum                   | `seed`, `juvenile`, `mature`, `senescent` (plants); `pup`, `juvenile`, `adult` (animals) |
 | `biomeAffinity`   | number[]               | Compatibility score per biome (0–1 per biome type) — replaces binary biome assignment    |
 | `contaminantLoad` | Record<string, number> | Accumulated contaminant concentrations — e.g., `{ "DDT": 0.003 }` in mg/kg body fat      |
@@ -11440,7 +11451,7 @@ The current system models organisms as abstract entities with diet types and ene
 
 - Plants grow biomass per tick proportional to sunlight × biome productivity × soil nitrogen × mycorrhizal network density. They yield products proportional to current biomass.
 - Animals move toward food sources. Herbivores graze plant patches. Carnivores pursue prey. Prey flees (behavioral state machine).
-- Contaminant transfer: at each feeding interaction, transfer a fraction of predator's contaminant load × bioaccumulation factor to prey's load.
+- Contaminant transfer: at each feeding interaction, transfer a fraction of prey's contaminant load to predator's load (bioaccumulation — toxins concentrate UP the food chain) × bioaccumulation factor.
 - Decomposition: dead organisms lose mass at decomposition rate. Nutrients released to soil cell.
 - Bee pollination: each tick, bees within territory radius increase seed production of nearby flowering plants by a pollination factor. Without bees, seed production drops.
 
@@ -11456,7 +11467,7 @@ The current system models organisms as abstract entities with diet types and ene
 
 #### The Principle
 
-Every animal in the species registry (§6.2.1) is not just a walking resource bag. Each animal is an individual with real behavioral traits based on its species' biology. A wolf doesn't just "patrol" — it hunts in a pack, communicates with howls, establishes territory, avoids larger predators, raises pups, and remembers where prey was found before. A sheep doesn't just "graze" — it follows the flock, panics when separated, recognizes individual faces (sheep can remember 50 faces for years — real research), and moves toward fresh grass while avoiding areas that smell like predators.
+Every animal in the species registry (§4.2.1) is not just a walking resource bag. Each animal is an individual with real behavioral traits based on its species' biology. A wolf doesn't just "patrol" — it hunts in a pack, communicates with howls, establishes territory, avoids larger predators, raises pups, and remembers where prey was found before. A sheep doesn't just "graze" — it follows the flock, panics when separated, recognizes individual faces (sheep can remember 50 faces for years — real research), and moves toward fresh grass while avoiding areas that smell like predators.
 
 The animal AI uses the **same three-tier system as NPCs** (§5.2), but with a species-specific Tier 2 model fine-tuned on animal behavior rather than human behavior.
 
@@ -11789,9 +11800,14 @@ DomesticationSystem {
     //   Chicken: 21 game-days (~5.25 real days) — eggs hatch
 
     // Offspring traits:
-    //   Genome: crossover + mutation from parents (§6.2 genome system)
+    //   Genome: crossover + mutation from parents (§4.2 genome system)
     //   Tameness: offspring inherit partial tameness from parents
-    //     offspringTameness = (parent1.tameness + parent2.tameness) / 2 × 0.7
+    //     offspringTameness = populationMeanTameness + heritability × (midParent - populationMeanTameness)
+    //     heritability ≈ 0.4 for behavioral traits
+    //     This regresses toward the POPULATION MEAN, not toward zero.
+    //     populationMeanTameness starts at ~0.1 for wild animals.
+    //     As the domesticated population grows tamer, the mean rises, so offspring
+    //     start from a higher baseline each generation.
     //     Plus imprinting bonus if the player is present at birth: +0.2
     //
     //   If the player consistently breeds the TAMEST individuals:
@@ -11990,7 +12006,7 @@ AnimalNeeds {
   //   Or isolate sick animals to prevent spread
 
   // ── Reproduction ──────────────────────────────────────────────────────
-  // Wild animals reproduce according to species parameters (§6.2 genome system)
+  // Wild animals reproduce according to species parameters (§4.2 genome system)
   // Domesticated animals: player controls breeding by keeping male + female together
   // Without player breeding control: domesticated animals breed freely → population explosion
   //   → food shortage → mass starvation in the enclosure
@@ -11999,9 +12015,17 @@ AnimalNeeds {
   // ── Death ─────────────────────────────────────────────────────────────
   // Animals die from: starvation, dehydration, predation, disease, old age, player hunting
   // On death: corpse remains (same as §7.6 but no respawn)
-  //   Corpse can be harvested for products (hide, meat, bone, etc. per §6.2.1)
+  //   Corpse can be harvested for products (hide, meat, bone, etc. per §4.2.1)
   //   Unharvested corpse decomposes (turns into organic matter → soil nutrients)
-  //   Decomposition time: ~7 game-days (fungal decomposers from §6.2.1)
+
+  // ── Butchering ─────────────────────────────────────────────────────────
+  // When an animal dies, the corpse can be butchered by interacting with a cutting tool.
+  // Butchering uses precision craft mode (§6.4) — the player cuts along the body
+  // to separate products. Each cut uses the tool's sharpness (§3.6 Connection 11).
+  // Better tools = cleaner cuts = less wasted material = more yield.
+  // Without a tool: bare hands can tear ~30% of available meat (slow, wasteful).
+  // With stone knife: ~60% yield. With iron knife: ~85%. With steel knife: ~95%.
+  //   Decomposition time: ~7 game-days (fungal decomposers from §4.2.1)
   //
   // Lifespan:
   //   Dog: 10-15 game-years    Cattle: 15-20 game-years
@@ -12071,11 +12095,43 @@ AnimalPlayerInteraction {
 
 ### 4.4 Farming and Agriculture — Growing Food from Soil
 
+```
+  // ── Gathering and Harvesting Rates ─────────────────────────────────────
+  //
+  // In plain English: how fast can a player collect resources?
+  // These rates come from the tool's impact energy (§3.9) and the target's
+  // material hardness (§3.1) — NOT from hardcoded constants.
+  //
+  // Base gathering formula:
+  //   harvestTime = targetVolume × targetHardness / (toolForce × toolSharpness)
+  //   where:
+  //     targetVolume: m³ of material to remove
+  //     targetHardness: Mohs from §3.1 property calculator
+  //     toolForce: player strength × tool mass × swing speed (from §7.2 stamina)
+  //     toolSharpness: edge sharpness from §3.6 Connection 11
+  //
+  // Approximate times (for a player with basic stone tools):
+  //   | Action              | Target hardness | Time per unit | Yield |
+  //   |--------------------|----|-------------|-------|
+  //   | Pick berries        | 0 (no tool needed) | 3 sec/bush | 0.3-0.5 kg berries |
+  //   | Dig root vegetables | 1 (soft soil)   | 10 sec/plant | 0.15-0.30 kg |
+  //   | Chop small tree     | 3 (wood)        | 60 sec       | 5-10 kg wood |
+  //   | Mine soft stone     | 4 (limestone)   | 30 sec/block | 50-100 kg stone |
+  //   | Mine hard rock      | 7 (granite)     | 120 sec/block| 50-100 kg stone |
+  //   | Knap flint          | 7 (hard)        | 15 sec/tool  | 1 cutting edge |
+  //
+  //   Better tools = faster:
+  //     Iron pickaxe on limestone: 30 × (4/4) / (3×1.5) = 6.7 sec (5× faster than stone)
+  //     Steel pickaxe on granite: 120 × (7/6) / (3×2) = 23 sec (5× faster than stone)
+  //
+  //   These emerge from the formula, not from a lookup table.
+```
+
 #### The Principle
 
 Farming is not a minigame. It is the application of soil science, plant biology, weather, and seasonal cycles to produce food at scale. The player does not "plant wheat seed → wait → harvest wheat." They clear land, prepare soil that has real nutrient content, plant seeds in soil that may or may not support that crop, provide water if rain is insufficient, protect from pests and disease, harvest at the right moment, process the harvest, and manage soil fertility across seasons so the land doesn't die.
 
-Every step interacts with systems already specified: weather (§4.6) provides rain and temperature, seasons (§4.6) determine growing windows, terrain (§7.4) determines soil access, animals (§4.3) provide manure and plowing, organisms (§6.2.1) define plant species, and the material system (§3.1) handles everything as MaterialPackets.
+Every step interacts with systems already specified: weather (§4.6) provides rain and temperature, seasons (§4.6) determine growing windows, terrain (§7.4) determines soil access, animals (§4.3) provide manure and plowing, organisms (§4.2.1) define plant species, and the material system (§3.1) handles everything as MaterialPackets.
 
 #### Soil Model
 
@@ -12083,6 +12139,13 @@ Every terrain cell has soil properties tracked by the server. Soil is not just "
 
 ```
 SoilState {
+  // NOTE: Soil nutrient changes (NPK depletion from crops, NPK restoration from
+  // fertilizer) are computed as chemical transfers, not arbitrary constants.
+  // When a crop absorbs nitrogen: the soil's N composition decreases and the
+  // plant's N composition increases, conserving total nitrogen (§3.1 mass conservation).
+  // The per-harvest depletion values below are EXPECTED RESULTS of this transfer,
+  // not hardcoded constants. They serve as validation targets for the reaction engine.
+
   // Per terrain cell (~2m × 2m resolution, same as nav mesh)
 
   // ── Composition ───────────────────────────────────────────────────────
@@ -12093,7 +12156,7 @@ SoilState {
     // sand + silt + clay = 1.0 always
     // Ideal for most crops: "loam" = roughly equal parts (~0.4 sand, 0.4 silt, 0.2 clay)
   }
-  // Soil texture is determined by geology (§6.4):
+  // Soil texture is determined by geology (§4.5):
   //   Near rivers: silty (flood deposits)
   //   Volcanic areas: fertile loam (volcanic ash → nutriite-rich)
   //   Desert: sandy
@@ -12139,7 +12202,7 @@ SoilState {
   // Increased by: composting, mulching, leaving crop residue, manure
   // Decreased by: erosion, over-tilling, removing all crop material
 
-  earthwormDensity: 0.0–1.0         // from §6.2.1 — earthworms improve soil structure
+  earthwormDensity: 0.0–1.0         // from §4.2.1 — earthworms improve soil structure
   // High: better aeration, better drainage, nutrient cycling
   // Killed by: heavy tilling, waterlogging, extreme cold, no organic matter
 
@@ -12152,7 +12215,7 @@ SoilState {
 
 #### Plant Growth Simulation
 
-Every planted crop is a living organism running the same energy model as §6.2. Growth rate is computed from real inputs, not a timer.
+Every planted crop is a living organism running the same energy model as §4.2. Growth rate is computed from real inputs, not a timer.
 
 ```
 CropGrowth {
@@ -12255,7 +12318,7 @@ CropGrowth {
 
 ```
 CropSpecies {
-  // Crops exist in the wild as organisms (§6.2.1). The player domesticates them
+  // Crops exist in the wild as organisms (§4.2.1). The player domesticates them
   // the same way they domesticate animals — by selection over generations.
 
   // ── Wild vs. domestic ─────────────────────────────────────────────────
@@ -12286,7 +12349,13 @@ CropSpecies {
       waterRange: [0.3, 0.5]
       photoperiod: 'long-day'        // needs summer to flower
       daysToHarvest: 100             // game-days from planting to harvest
-      caloriesPerKg: 3400
+      caloriesPerKg: 3400            // EXPECTED computed value — see composition below
+      // Wheat composition (per kg):
+      //   protein: 0.13, fat: 0.02, carbohydrate: 0.71, fiber: 0.12, water: 0.02
+      //   caloriesPerKg = protein×4000 + fat×9000 + carb×4000 + fiber×2000
+      //                 = 520 + 180 + 2840 + 240 = 3780 kcal/kg (theoretical)
+      //   Actual (USDA): 3400 kcal/kg (digestibility reduces theoretical value)
+      //   The property calculator (§3.1) computes this from composition.
       products: ['grain (flour → bread)', 'straw (animal bedding, thatching, rope)']
       wildYield: 0.3                 // fraction of potential harvest from wild type
       domesticYield: 1.0             // after full domestication
@@ -12300,7 +12369,12 @@ CropSpecies {
       waterRange: [0.2, 0.4]         // less water than wheat
       photoperiod: 'long-day'
       daysToHarvest: 90
-      caloriesPerKg: 3200
+      caloriesPerKg: 3500            // EXPECTED computed value — see composition below
+      // Barley composition (per kg):
+      //   protein: 0.12, fat: 0.02, carbohydrate: 0.73, fiber: 0.10, water: 0.03
+      //   caloriesPerKg = 480 + 180 + 2920 + 200 = 3780 kcal/kg (theoretical)
+      //   Actual (USDA): 3500 kcal/kg (digestibility reduces theoretical value)
+      //   The property calculator (§3.1) computes this from composition.
       products: ['grain (beer fermentation, bread, animal feed)', 'straw']
       // Barley was the first grain used for beer (~10,000 BC)
       // Beer was actually a primary motivation for early agriculture
@@ -12314,7 +12388,11 @@ CropSpecies {
       waterRange: [0.7, 0.95]        // paddy rice: grows in standing water
       photoperiod: 'short-day'
       daysToHarvest: 130
-      caloriesPerKg: 3600
+      caloriesPerKg: 3600            // EXPECTED computed value
+      // Rice composition (per kg):
+      //   protein: 0.07, fat: 0.01, carbohydrate: 0.80, fiber: 0.01, water: 0.11
+      //   caloriesPerKg = 280 + 90 + 3200 + 20 = 3590 kcal/kg (theoretical)
+      //   Actual (USDA): 3600 kcal/kg. The property calculator (§3.1) computes this.
       products: ['grain (staple food for half the world)', 'straw (weaving, thatching)']
       specialRequirement: 'paddy'    // needs flooded field — player must build berms to hold water
       nutrientDemand: { N: 'very high', P: 'high', K: 'medium' }
@@ -12327,7 +12405,11 @@ CropSpecies {
       waterRange: [0.4, 0.6]         // heavy water demand
       photoperiod: 'day-neutral'
       daysToHarvest: 80
-      caloriesPerKg: 3600
+      caloriesPerKg: 3600            // EXPECTED computed value
+      // Corn composition (per kg):
+      //   protein: 0.09, fat: 0.04, carbohydrate: 0.74, fiber: 0.07, water: 0.06
+      //   caloriesPerKg = 360 + 360 + 2960 + 140 = 3820 kcal/kg (theoretical)
+      //   Actual (USDA): 3600 kcal/kg. The property calculator (§3.1) computes this.
       products: ['grain (food, animal feed)', 'stalk (fuel, building)', 'cob (fuel)']
       nutrientDemand: { N: 'very high', P: 'medium', K: 'high' }
       // Corn depletes soil extremely fast — requires heavy fertilization or rotation
@@ -12341,7 +12423,11 @@ CropSpecies {
       waterRange: [0.3, 0.5]
       photoperiod: 'short-day'
       daysToHarvest: 70
-      caloriesPerKg: 3400
+      caloriesPerKg: 3400            // EXPECTED computed value
+      // Bean composition (per kg):
+      //   protein: 0.21, fat: 0.01, carbohydrate: 0.63, fiber: 0.12, water: 0.03
+      //   caloriesPerKg = 840 + 90 + 2520 + 240 = 3690 kcal/kg (theoretical)
+      //   Actual (USDA): 3400 kcal/kg. The property calculator (§3.1) computes this.
       products: ['beans (protein-rich food, dried storage)', 'plant matter (compost)']
       nitrogenFixing: true           // ADDS nitrogen to soil instead of depleting it
       // Legume roots host Rhizobium bacteria that convert atmospheric N₂ → NH₃
@@ -12358,7 +12444,11 @@ CropSpecies {
       tempRange: [5, 30]
       optimalTemp: [15, 25]
       daysToHarvest: 80
-      caloriesPerKg: 3500
+      caloriesPerKg: 3500            // EXPECTED computed value
+      // Lentil composition (per kg):
+      //   protein: 0.25, fat: 0.01, carbohydrate: 0.60, fiber: 0.11, water: 0.03
+      //   caloriesPerKg = 1000 + 90 + 2400 + 220 = 3710 kcal/kg (theoretical)
+      //   Actual (USDA): 3500 kcal/kg. The property calculator (§3.1) computes this.
       nitrogenFixing: true
       nutrientDemand: { N: 'negative', P: 'low', K: 'low' }
     }
@@ -12580,6 +12670,8 @@ FarmingActions {
   //   Knife: fruit, vegetables
   //
   // Yield: determined by quality × species domestication level × soil health
+  //   The yield table uses INTERMEDIATE domestic yields (after ~5 generations of selection).
+  //   Wild: 0.5 kg/m². Early domestic: 1.0 kg/m². Improved domestic: 1.5 kg/m². Modern: 2.0 kg/m².
   //   Wild wheat: ~0.5 kg grain per m²
   //   Domestic wheat (after 10+ generations): ~2.0 kg grain per m²
   //   Modern wheat (real world): ~8.0 kg/m² — shows how far selective breeding goes
@@ -12705,7 +12797,7 @@ SoilFertilityManagement {
   // 3. OTHER FERTILIZERS
   otherFertilizers {
     // Bone meal: ground animal bones → best P source.
-    //   Made at grinding stone from any bone (§6.2.1 animal products)
+    //   Made at grinding stone from any bone (§4.2.1 animal products)
     //   See Fertilizer Replenishment Rates table below for per-kg values.
     //
     // Wood ash: from any fire → excellent K source, raises pH.
@@ -12813,7 +12905,7 @@ FoodPreservation {
 
   salting {
     // Salt draws water out of food (osmosis) → bacteria can't grow in high-salt environment
-    // Requires: salt (from §6.4 evaporite deposits or coastal evaporation)
+    // Requires: salt (from §4.5 evaporite deposits or coastal evaporation)
     // Application: rub salt into meat/fish, or brine (soak in saturated salt water)
     // Result: food moisture effectively 0 for bacterial purposes
     // Salted food lasts 1-2 game-years
@@ -12948,7 +13040,7 @@ NPCFarming {
 
 ### 4.5 Geology & Resource Distribution
 
-Resource distribution builds on the planetary formation and tectonic structure defined in §6.1. Resource nodes are concentrated according to real geological processes. Settlement specialties assigned by server-side geology query (matching the client algorithm exactly).
+Resource distribution builds on the planetary formation and tectonic structure defined in §4.1. Resource nodes are concentrated according to real geological processes. Settlement specialties assigned by server-side geology query (matching the client algorithm exactly).
 
 **Scientific grounding — why geology determines civilization:**
 Jared Diamond's *Guns, Germs, and Steel* (1997) argues that geography is the primary driver of civilizational development — not intelligence, culture, or luck. Societies that happened to sit on land with domesticable crops, workable metals, and navigable rivers developed faster and outcompeted those that did not. The same logic applies here. A player who starts near a copper-rich volcanic zone has access to metal tools earlier than one who starts in a sedimentary basin with only flint. This is not unfair — it is how reality works. The world rewards exploration and trade precisely because different regions have different resources.
@@ -12957,7 +13049,7 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 6.4.1 Metals and Ores
+#### 4.5.1 Metals and Ores
 
 **Copper** (native copper, malachite, azurite, chalcopyrite)
 
@@ -13089,7 +13181,7 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 6.4.2 Non-Metallic Rock and Mineral Resources
+#### 4.5.2 Non-Metallic Rock and Mineral Resources
 
 **Limestone and chalk** (calcite CaCO₃, aragonite CaCO₃)
 
@@ -13215,6 +13307,11 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 **Diamond** (C — cubic crystal structure)
 
+// Diamond forms where the carbon phase diagram (§3.1) indicates diamond stability:
+//   T > 900°C AND P > 4.5 GPa (~150 km depth)
+//   These conditions are computed from the carbon allotrope phase diagram,
+//   not hardcoded — graphite and diamond are two phases of the same composition (pure C).
+
 *Formation mechanism 1 — Kimberlite pipes:* Diamonds form under extreme pressure and temperature (>45 kbar, >900°C) in the mantle, at depths of 150–200 km, within the ancient, cold keels of cratons (stable continental cores). They are brought to the surface by kimberlite eruptions — rare, violent volcanic intrusions that ascend so rapidly (several hours) that diamonds have no time to convert back to graphite. Kimberlites are funnel-shaped pipes of dark, altered volcanic rock found exclusively on ancient cratons (Africa, Siberia, Canada, Australia). Not all kimberlites are diamond-bearing; only those from depths below the continental lithosphere.
 
 *Formation mechanism 2 — Alluvial/marine placer diamonds:* Diamonds eroded from kimberlites accumulate in river and coastal deposits. Many of the world's gem diamonds (Namibia, Sierra Leone, Botswana coast) were mined from alluvial gravels downstream of ancient kimberlites. Diamonds are dense and inert — they survive transport intact.
@@ -13223,13 +13320,13 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 6.4.3 Evaporite and Sedimentary Resources
+#### 4.5.3 Evaporite and Sedimentary Resources
 
 These are addressed with their minerals above (salt, gypsum, potash). See entries above.
 
 ---
 
-#### 6.4.4 Carbon-Bearing Materials
+#### 4.5.4 Carbon-Bearing Materials
 
 **Coal** (peat → lignite → sub-bituminous → bituminous → anthracite)
 
@@ -13257,7 +13354,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 6.4.5 Radioactive Materials
+#### 4.5.5 Radioactive Materials
 
 **Uranium** (uraninite/pitchblende UO₂, carnotite K₂(UO₂)₂(VO₄)₂, coffinite USiO₄)
 
@@ -13273,7 +13370,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 6.4.6 Biogenic and Organic Resources
+#### 4.5.6 Biogenic and Organic Resources
 
 **Wood**
 
@@ -13327,7 +13424,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 6.4.7 Rare and Strategic Materials
+#### 4.5.7 Rare and Strategic Materials
 
 **Platinum group metals** (platinum Pt, palladium Pd, rhodium Rh, iridium Ir, osmium Os, ruthenium Ru)
 
@@ -13349,7 +13446,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 6.4.8 How the Game Uses This Information
+#### 4.5.8 How the Game Uses This Information
 
 All resource node placement derives from these formation rules. The game runs a geological simulation at world generation time:
 
@@ -13451,8 +13548,11 @@ Where:
   ΔT_wind(windSpeed):
     // Wind chill: effective temperature drop from wind
     // Uses the NWS wind chill formula (simplified):
+    //   windChill = 13.12 + 0.6215×T - 11.37×(v×3.6)^0.16 + 0.3965×T×(v×3.6)^0.16
+    //   NOTE: v×3.6 converts m/s to km/h (NWS formula expects km/h)
     if (T_air < 10 && windSpeed > 1.3)
-      ΔT = 13.12 + 0.6215 × T_air - 11.37 × windSpeed^0.16 + 0.3965 × T_air × windSpeed^0.16 - T_air
+      v_kmh = windSpeed × 3.6                // convert m/s → km/h for NWS coefficients
+      ΔT = 13.12 + 0.6215 × T_air - 11.37 × v_kmh^0.16 + 0.3965 × T_air × v_kmh^0.16 - T_air
     else ΔT = 0
 ```
 
@@ -13481,7 +13581,9 @@ Wind generation:
 ```
 Cloud formation process:
   1. Air rises (updraft from heating, terrain uplift, or pressure convergence)
-  2. Rising air cools at the adiabatic lapse rate (9.8°C/km dry, 6.5°C/km wet)
+  2. Rising air cools at the adiabatic lapse rate (9.8°C/km dry, ~4-6°C/km saturated — varies
+     with temperature; lower at warm surface temps, higher at cold temps).
+     Note: 6.5°C/km is the ENVIRONMENTAL lapse rate (average observed), not the moist adiabatic rate.
   3. When air cools below dew point → water vapor condenses → cloud forms
      dewPoint = T - (100 - humidity × 100) / 5    // simplified Magnus formula
      if (T_air < dewPoint) → cloudCover increases, cloudWaterContent increases
@@ -13489,7 +13591,9 @@ Cloud formation process:
   4. When cloudWaterContent exceeds threshold → precipitation begins
      precipThreshold = 0.3    // g/m³ — typical for real clouds
      if (cloudWaterContent > precipThreshold)
-       precipitationRate = (cloudWaterContent - precipThreshold) × 10    // mm/hour
+       precipitationRate = (cloudWaterContent - precipThreshold) × 2.0   // mm/hour
+       // (multiplier 2.0 produces realistic rain: at LWC=1.0, rate = 1.4 mm/hr = light rain)
+       // Previous multiplier 10 was unrealistically high — removed
 
   5. Precipitation type depends on air temperature at ground level:
      if (T_ground > 2°C)   → rain
@@ -17896,6 +18000,16 @@ HumanBodyState {
 
   // ── Disease System ─────────────────────────────────────────────────────
   //
+  // NOTE: Disease parameters (R0, mortality, incubation) are simplified models
+  // for the current implementation. In the full system, pathogens would be
+  // MaterialPackets with compositions (protein coat, nucleic acid core) and
+  // transmission properties derived from material properties:
+  //   - Airborne persistence: from particle size and surface tension (§3.2)
+  //   - Surface survival: from thermal stability and UV sensitivity (§3.1, §3.12)
+  //   - Virulence: from binding affinity computed by reaction engine (§3.1)
+  // The current R0 constants are placeholders until the full pathogen model
+  // is implemented. They are calibrated against historical epidemiology data.
+  //
   // In plain English: diseases spread between organisms. Crowded settlements 
   // get sick more often. Clean water and good nutrition reduce risk.
   //
@@ -17936,7 +18050,7 @@ FoodSystem {
 
   // Caloric content (kcal per kg) — derived from material composition:
   //   Raw meat: ~1500 kcal/kg
-  //   Cooked meat: ~2500 kcal/kg (cooking breaks down proteins → more digestible)
+  //   Cooked meat: ~2700 kcal/kg (cooking breaks down proteins → more digestible)
   //   Raw fish: ~1000 kcal/kg
   //   Berries: ~500 kcal/kg
   //   Grain: ~3500 kcal/kg (very calorie-dense when processed)
@@ -19108,6 +19222,41 @@ Some ephemeral processes produce permanent results:
 
 ### 7.13 New Player Experience — First Spawn
 
+```
+  // ── First Tool: Spawn to Cutting Edge ──────────────────────────────────
+  //
+  // In plain English: the first thing a player must do is make a cutting tool.
+  // Without one, they can't chop trees, harvest animals, or shape materials.
+  //
+  // Path (works in ANY biome):
+  //   1. Pick up a loose stone (interact with ground — no tool needed)
+  //      Every biome has stones within 50m of spawn (§7.13 guarantees this)
+  //   2. Find a hard stone surface (boulder, cliff face, large rock)
+  //   3. Strike the loose stone against the hard surface (§3.1 impact → fracture)
+  //      The stone breaks along fracture planes determined by its composition:
+  //        Flint/obsidian/chert (SiO₂ amorphous): conchoidal fracture → sharp edge
+  //        Granite/basalt: irregular fracture → rough edge (weaker tool)
+  //        Quartz: conchoidal fracture → decent edge
+  //   4. The resulting fragment has an edge. Edge sharpness depends on fracture
+  //      type (§3.6 Connection 11: sharpness from edge radius).
+  //
+  // Biome-specific stone availability:
+  //   Temperate forest: flint in river beds, quartz in rock outcrops
+  //   Tropical: basalt, obsidian near volcanic terrain
+  //   Desert: flint, chert in exposed sedimentary layers
+  //   Tundra: any exposed rock (granite, gneiss)
+  //   Beach/coast: cobbles of mixed composition
+  //
+  // The game does NOT need to know "flint." It needs to know:
+  //   - This stone has high SiO₂ content (amorphous)
+  //   - Amorphous SiO₂ fractures conchoidally (§3.1 fracture toughness: low K_IC)
+  //   - Conchoidal fracture produces sharp edges (small edge radius)
+  //   - Sharp edges cut (§3.6 Connection 11)
+  //
+  // A player who picks up ANY stone and hits it against a rock gets SOME kind
+  // of edge. The quality depends on the stone's composition through §3.1.
+```
+
 #### What the Player Sees on First Login
 
 After character creation (§7.1), the player spawns in the world for the first time. This moment must be intuitive without tutorials.
@@ -19155,6 +19304,15 @@ FirstSpawnDesign {
   //
   // The companion system (§5.3) can provide subtle hints if the player
   // seems stuck (no actions for several minutes), but never explicit instructions.
+
+  // ── Starting equipment ──────────────────────────────────────────────────
+  // Starting equipment: basic cloth wrapping (linen, 0.3 CLO per piece):
+  //   Torso wrap: 0.3 CLO
+  //   Leg wrap: 0.3 CLO
+  //   Total: 0.6 CLO — enough for temperate climate, not winter.
+  // Cold biome spawn: add fur scrap (1.0 CLO torso) found near spawn shelter.
+  // The game guarantees survivability for 1 game-day at any spawn location
+  // by providing a campfire in the initial shelter (§7.13).
 
   // ── Nearby resources guaranteed at spawn ──────────────────────────────────
   // The server ensures every new player shelter has within 50m:
