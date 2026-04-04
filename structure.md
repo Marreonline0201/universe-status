@@ -7306,6 +7306,222 @@ StructuralOptimization {
 }
 ```
 
+#### MaterialPacket Binary Format — How Every Material Is Stored in Memory
+
+Every MaterialPacket in the game is stored as raw bytes in a flat buffer — not as a JavaScript/Rust object with named fields. This eliminates hash lookups, garbage collection, and cache misses.
+
+```
+MaterialPacketFormat {
+  // ── Why binary format matters ──────────────────────────────────────────
+  //
+  // In plain English: instead of looking up properties by name (like finding 
+  // a word in a dictionary), we read them by position (like reading the 5th 
+  // column in a spreadsheet). Name lookup: ~50 nanoseconds. Position read: ~1 nanosecond.
+  // With 500,000 packets checked 60 times per second, this saves ~1.5 ms per tick.
+
+  // ── Structure of Arrays (SoA) layout ──────────────────────────────────
+  //
+  // All values of ONE property are stored together in a single Float32Array,
+  // NOT all properties of one packet together.
+  //
+  //   AoS (Array of Structs — the slow way):
+  //     Packet 0: [density, meltingPt, boilingPt, ..., 39 properties, composition, state]
+  //     Packet 1: [density, meltingPt, boilingPt, ..., 39 properties, composition, state]
+  //     Reading all meltingPoints: jump 288 bytes between each one → cache misses
+  //
+  //   SoA (Structure of Arrays — the fast way):
+  //     densities:      Float32Array(MAX_PACKETS)  → [pkt0, pkt1, pkt2, ...]
+  //     meltingPoints:  Float32Array(MAX_PACKETS)  → [pkt0, pkt1, pkt2, ...]
+  //     boilingPoints:  Float32Array(MAX_PACKETS)  → [pkt0, pkt1, pkt2, ...]
+  //     ...one array per property...
+  //
+  //     Reading all meltingPoints: sequential memory access → CPU cache loads 
+  //     16 values at once → 16× fewer cache misses → SIMD processes 4-8 at once
+  //
+  // In plain English: imagine you need to check the age of everyone in a school.
+  // AoS = go to each student's locker, open it, find their file, read the age. Slow.
+  // SoA = one list with everyone's age in order. Just read down the list. Fast.
+
+  // ── Complete property arrays ──────────────────────────────────────────
+  //
+  // 39 derived properties (each is a Float32Array of MAX_PACKETS elements):
+  //
+  //   // Thermal properties
+  //   densities:              Float32Array    // kg/m³
+  //   meltingPoints:          Float32Array    // °C
+  //   boilingPoints:          Float32Array    // °C
+  //   latentHeatFusions:      Float32Array    // J/kg
+  //   latentHeatVaporizations: Float32Array   // J/kg
+  //   specificHeatCapacities: Float32Array    // J/(kg·K)
+  //   thermalConductivities:  Float32Array    // W/(m·K)
+  //   thermalExpansionCoeffs: Float32Array    // 1/K
+  //   emissivities:           Float32Array    // 0-1
+  //
+  //   // Mechanical properties
+  //   youngsModuli:           Float32Array    // Pa
+  //   poissonRatios:          Float32Array    // dimensionless
+  //   tensileStrengths:       Float32Array    // Pa
+  //   compressiveStrengths:   Float32Array    // Pa
+  //   shearStrengths:         Float32Array    // Pa
+  //   hardnesses:             Float32Array    // Mohs scale
+  //   frictionCoefficients:   Float32Array    // dimensionless
+  //   fractureToughnesses:    Float32Array    // MPa·√m
+  //   ductilities:            Float32Array    // 0-1
+  //
+  //   // Fluid properties
+  //   viscosities:            Float32Array    // Pa·s
+  //   surfaceTensions:        Float32Array    // N/m
+  //   zeroShearViscosities:   Float32Array    // Pa·s (non-Newtonian)
+  //   infShearViscosities:    Float32Array    // Pa·s (non-Newtonian)
+  //   crossTimeConstants:     Float32Array    // s
+  //   crossFlowIndices:       Float32Array    // dimensionless
+  //   isNonNewtonianFlags:    Uint8Array      // 0 or 1
+  //
+  //   // Optical properties
+  //   refractiveIndices:      Float32Array    // dimensionless
+  //   absorptionR:            Float32Array    // 1/m (red channel)
+  //   absorptionG:            Float32Array    // 1/m (green channel)
+  //   absorptionB:            Float32Array    // 1/m (blue channel)
+  //   scatteringR:            Float32Array    // 1/m
+  //   scatteringG:            Float32Array    // 1/m
+  //   scatteringB:            Float32Array    // 1/m
+  //
+  //   // Electrical/magnetic properties
+  //   electricalConductivities: Float32Array  // S/m
+  //   standardElectrodePotentials: Float32Array // V
+  //   magneticPermeabilities: Float32Array    // relative (dimensionless)
+  //   permanentMagnetizationX: Float32Array   // Tesla (x component)
+  //   permanentMagnetizationY: Float32Array   // Tesla (y component)
+  //   permanentMagnetizationZ: Float32Array   // Tesla (z component)
+  //   triboelectricIndices:   Float32Array    // -1 to +1
+  //
+  //   // Other
+  //   dampingLossTangents:    Float32Array    // dimensionless
+  //   acousticEfficiencies:   Float32Array    // 0-1
+  //   flammabilities:         Float32Array    // 0-1
+  //   combustionEnergies:     Float32Array    // J/kg
+  //   hydrophilicities:       Float32Array    // 0-1
+  //
+  // Total arrays: ~45 (39 properties + 6 for Vec3 components split into x/y/z)
+  // Total memory: 45 × MAX_PACKETS × 4 bytes = 45 × 500,000 × 4 = 90 MB
+
+  // ── Composition storage ───────────────────────────────────────────────
+  //
+  // Each packet's elemental composition is stored separately:
+  //   compositions: Float32Array(MAX_PACKETS × 25)
+  //   // 25 elements per packet, each a mass fraction (0-1)
+  //   // Packet N, element E: compositions[N × 25 + E]
+  //   // Total: 500,000 × 25 × 4 = 50 MB
+  //
+  //   Element index mapping (same order as docs/element-properties.md):
+  //     0=H, 1=C, 2=N, 3=O, 4=Na, 5=Mg, 6=Al, 7=Si, 8=P, 9=S,
+  //     10=Cl, 11=K, 12=Ca, 13=Ti, 14=Cr, 15=Mn, 16=Fe, 17=Ni,
+  //     18=Cu, 19=Zn, 20=Sn, 21=Pb, 22=Ag, 23=Au, 24=W
+
+  // ── Per-packet mutable state ──────────────────────────────────────────
+  //
+  // State that changes from usage/damage (not derived from composition):
+  //   temperatures:           Float32Array    // °C (changes every tick from Stage 1)
+  //   workHardeningStates:    Float32Array    // 0-1 (changes when hammered)
+  //   fatigueAccumulations:   Float32Array    // 0-1 (changes with each use)
+  //   crackLengths:           Float32Array    // m (grows from fatigue/freeze-thaw)
+  //   creepStrains:           Float32Array    // dimensionless (grows near heat)
+  //   phaseProgresses:        Float32Array    // 0-1 (during melting/boiling)
+  //   phases:                 Uint8Array      // 0=solid, 1=liquid, 2=gas
+  //
+  // Total state arrays: 7 × 500,000 × 4 = 14 MB (Uint8Array = 0.5 MB)
+  // Total state: ~14.5 MB
+
+  // ── Cache control ─────────────────────────────────────────────────────
+  //
+  // Property recomputation tracking:
+  //   compositionHashes:      Uint32Array     // CRC32 of composition (changes = recompute)
+  //   lastRecomputedTemps:    Float32Array    // last temp where properties were computed
+  //   dirtyFlags:             Uint8Array      // bit flags: 0=clean, 1=temp dirty, 
+  //                                           // 2=composition dirty, 4=phase dirty
+  //
+  // Recomputation rule:
+  //   if dirtyFlags[N] != 0 OR abs(temperatures[N] - lastRecomputedTemps[N]) > 5.0:
+  //     recomputeAllProperties(N)
+  //     compositionHashes[N] = crc32(compositions, N × 25, 25)
+  //     lastRecomputedTemps[N] = temperatures[N]
+  //     dirtyFlags[N] = 0
+
+  // ── Access patterns ───────────────────────────────────────────────────
+  //
+  // Reading one property of one packet:
+  //   tensileStrengths[packetIndex]    // 1 array read, ~1 nanosecond
+  //
+  // Reading one property of ALL packets (e.g., temperature check):
+  //   for i in 0..activeCount:
+  //     if temperatures[i] > meltingPoints[i]:   // sequential reads, cache-friendly
+  //       triggerPhaseTransition(i)
+  //   // SIMD: Rust auto-vectorizes this to check 4-8 packets per instruction
+  //
+  // Reading all properties of ONE packet (e.g., property recomputation):
+  //   // Slower in SoA (must read from 39 different arrays)
+  //   // But this only happens for dirty packets (~5% per tick)
+  //   // The other 95% benefit from the fast sequential access pattern
+  //
+  // Writing (property recomputation):
+  //   densities[N] = computeDensity(compositions, N × 25)
+  //   meltingPoints[N] = computeMeltingPoint(compositions, N × 25)
+  //   ...etc for all 39 properties...
+  //   // One write per property per dirty packet. Amortized cost: negligible.
+
+  // ── Zero-copy sharing ─────────────────────────────────────────────────
+  //
+  // All arrays are backed by SharedArrayBuffer:
+  //   const sharedBuf = new SharedArrayBuffer(TOTAL_BYTES)
+  //   const densities = new Float32Array(sharedBuf, DENSITY_OFFSET, MAX_PACKETS)
+  //   const meltingPoints = new Float32Array(sharedBuf, MELTING_OFFSET, MAX_PACKETS)
+  //   ...
+  //
+  // Node.js creates the SharedArrayBuffer once at startup.
+  // Rust (via napi-rs) receives a pointer to the same memory.
+  // Both read and write the same bytes — no copying, no serialization.
+  //
+  // The GPU (via WebGPU) can also read from SharedArrayBuffer for rendering:
+  //   device.queue.writeBuffer(gpuBuffer, 0, densities.buffer, DENSITY_OFFSET, MAX_PACKETS × 4)
+  //   // Or with mappedAtCreation: zero-copy GPU access to the same memory
+
+  // ── Serialization (save/load/network) ─────────────────────────────────
+  //
+  // To save the world state to disk:
+  //   fs.writeFileSync('world.bin', new Uint8Array(sharedBuf))
+  //   // One write, raw bytes. No JSON parsing, no field names, no overhead.
+  //   // 500,000 packets × ~300 bytes = 150 MB uncompressed
+  //   // With LZ4 compression: ~30-50 MB (materials are repetitive)
+  //
+  // To load:
+  //   const data = fs.readFileSync('world.bin')
+  //   sharedBuf.set(new Uint8Array(data))
+  //   // Instant load — no parsing. The arrays point to the same buffer.
+  //
+  // To send over network (for new chunk loading):
+  //   Send raw bytes for the packets in the loaded chunk.
+  //   Client reconstructs the SoA views from the received buffer.
+  //   // Much smaller than JSON: 300 bytes/packet vs ~2000 bytes/packet for JSON
+
+  // ── Total memory budget (updated) ─────────────────────────────────────
+  //
+  //   Property arrays (39 × 500k × 4):    90 MB
+  //   Composition (500k × 25 × 4):         50 MB
+  //   State (7 × 500k × 4):                14 MB
+  //   Cache control (3 arrays):              3 MB
+  //   Fluid particles (400k × 64):          25 MB
+  //   Spatial hash:                         10 MB
+  //   Structural blocks (200k × 100):       20 MB
+  //   Network/other:                        10 MB
+  //   ─────────────────────────────────────────
+  //   TOTAL:                              ~222 MB
+  //
+  //   This is higher than the previous ~200 MB estimate because the SoA layout
+  //   trades memory for speed. The 22 MB increase buys 50× faster property access.
+  //   Still well under the 2 GB target.
+}
+```
+
 #### Memory Budget
 
 ```
@@ -7315,7 +7531,7 @@ MemoryBudget {
   // Target: < 2 GB total for all physics systems (low-end server)
   //
   // MaterialPackets:
-  //   Size per packet: ~212 bytes (composition map + 39 properties + cache)
+  //   Size per packet: ~300 bytes in SoA format (see MaterialPacket Binary Format above). 39 properties + 25 elements + 7 state values + cache control.
   //   Max active packets: 500,000 (world chunks loaded for all players)
   //   Total: 500,000 × 200 = 100 MB
   //
