@@ -12118,7 +12118,7 @@ AnimalPlayerInteraction {
   //   | Chop small tree     | 3 (wood)        | 60 sec       | 5-10 kg wood |
   //   | Mine soft stone     | 4 (limestone)   | 30 sec/block | 50-100 kg stone |
   //   | Mine hard rock      | 7 (granite)     | 120 sec/block| 50-100 kg stone |
-  //   | Knap flint          | 7 (hard)        | 15 sec/tool  | 1 cutting edge |
+  //   | Knap flint          | 7 (hard)        | 15 sec/tool  | 1 cutting edge (§3.1 fracture mechanics) |
   //
   //   Better tools = faster:
   //     Iron pickaxe on limestone: 30 × (4/4) / (3×1.5) = 6.7 sec (5× faster than stone)
@@ -12684,10 +12684,10 @@ FarmingActions {
   // | Crop         | Yield (kg/plant) | Plants/m² | Yield (kg/m²) | kcal/m² (raw) | Feeds 1 person (days/m²) |
   // |-------------|-----------------|-----------|---------------|---------------|--------------------------|
   // | Wheat        | 0.005           | 300       | 1.5           | 5,100         | 2.8                      |
-  // | Barley       | 0.004           | 350       | 1.4           | 4,480         | 2.5                      |
+  // | Barley       | 0.004           | 350       | 1.4           | 4,900         | 2.7                      |
   // | Rice         | 0.003           | 250       | 0.75          | 2,700         | 1.5                      |
-  // | Potato       | 0.50            | 8         | 4.0           | 3,200         | 1.8                      |
-  // | Carrot       | 0.15            | 16        | 2.4           | 1,440         | 0.8                      |
+  // | Potato       | 0.50            | 8         | 4.0           | 3,080         | 1.7                      |
+  // | Carrot       | 0.15            | 16        | 2.4           | 984           | 0.55                     |
   // | Beans        | 0.02            | 20        | 0.4           | 1,360         | 0.75                     |
   // | Flax (fiber) | 0.01 (seed)     | 200       | 2.0           | —             | — (fiber crop)           |
   //
@@ -13420,7 +13420,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-**Clay (for ceramics)** — see section 6.4.2 above.
+**Clay (for ceramics)** — see §4.5.2.
 
 ---
 
