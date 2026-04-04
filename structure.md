@@ -2696,6 +2696,11 @@ This technique is called **Modal Synthesis** — a proven method used in academi
 #### How Sound Actually Works (The Physics)
 
 ```
+// In plain English: when you hit something, it vibrates at specific pitches.
+// A short, stiff, light object vibrates fast (high pitch — like a small bell).
+// A long, heavy, flexible object vibrates slow (low pitch — like a large bell).
+// This formula calculates the exact pitch from the object's size and material.
+
 The Physics of Vibration {
   // When an object is struck, it vibrates. The vibration is NOT random —
   // it is a precise set of frequencies called MODES (eigenmodes).
@@ -2749,6 +2754,11 @@ SoundEngine {
   //   3. Set each mode's initial amplitude from the excitation (where/how hard it was hit)
   //   4. Apply exponential decay to each mode (rate from material damping)
   //   5. Sum all modes → output waveform → speaker
+
+  // In plain English: Q is how long a sound rings after you hit something.
+  // High Q = rings for a long time (metal bell: Q=3000, rings for seconds).
+  // Low Q = dies quickly (wooden block: Q=15, thud with no ring).
+  // A wine glass has high Q (you can hear it sing). A cardboard box has low Q (dull thump).
 
   ModalSynth {
     computeModes(material: MaterialPacket, geometry: ObjectGeometry): Mode[] {
@@ -2899,6 +2909,10 @@ Step 6: Output → speaker
 
 #### Doppler Effect — Moving Sounds Shift Pitch
 
+// In plain English: an ambulance siren sounds higher-pitched when coming toward you
+// and lower-pitched when driving away. Same for arrows, thrown rocks, galloping horses.
+// The faster the object moves, the bigger the pitch shift.
+
 When a sound source moves toward a listener, the frequency shifts upward. When moving away, it shifts downward:
 
 ```
@@ -2927,6 +2941,10 @@ WebAudio's PannerNode supports Doppler natively — set the source's positionX/Y
 This connects to networking (§3.5): source velocity must be included in SOUND_EVENT messages. For most events (impacts, breaks), velocity is zero (the sound source is stationary). For projectiles, thrown objects, and moving entities, velocity comes from the physics simulation.
 
 #### Frequency-Dependent Atmospheric Absorption — Distant Sounds Lose Their Sharpness
+
+// In plain English: distant sounds lose their sharpness. Nearby thunder CRACKS.
+// Distant thunder RUMBLES. The sharp high-frequency part gets absorbed by air
+// over long distances, leaving only the low rumble.
 
 Sound doesn't just get quieter with distance — it changes character. High frequencies are absorbed more by air than low frequencies.
 
@@ -2991,6 +3009,11 @@ Dry desert: sounds die quickly at distance. Humid jungle: sounds carry farther.
 
 #### Helmholtz Resonance — Enclosed Spaces Have a Voice
 
+// In plain English: blow across the top of a bottle — it makes a tone.
+// The air inside the bottle bounces back and forth through the opening.
+// Bigger bottle = lower tone. Smaller opening = lower tone.
+// A furnace chimney does this in wind — it hums.
+
 A cavity with a narrow opening acts as a resonator, amplifying a specific frequency:
   f = (v_sound / 2π) × √(A / (V × L_neck))
   where:
@@ -3041,6 +3064,11 @@ produces a satisfying low resonance. All from physics, not sound files.
 **Voice limiting:** Maximum 24 concurrent sound sources. Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots.
 
 #### Structure-Borne Sound — Impacts Travel Through Solids
+
+// In plain English: put your ear on a railroad track — you hear the train
+// coming LONG before the sound through air reaches you. Sound travels
+// through metal 17x faster than through air. You can hear someone mining
+// through a stone wall before you hear it through the air around the wall.
 
 Sound travels through solid materials much faster than through air:
 
@@ -3211,6 +3239,11 @@ ForceSystem {
   // THE LOAD PATH ALGORITHM (4 phases, runs on structural change events)
   // ═══════════════════════════════════════════════════════════════════════
 
+  // In plain English: gravity pulls every block downward. The weight of the roof
+  // pushes down on the walls. The walls push down on the foundation. The foundation
+  // pushes down on the ground. If any link in this chain is too weak — it breaks,
+  // and everything above falls. The algorithm traces this chain from top to bottom.
+
   // ── Phase 1: Connectivity — which blocks can reach ground? ─────────────
   //
   // BFS flood fill starting from all ground-touching blocks.
@@ -3343,6 +3376,11 @@ ForceSystem {
   //       if lateralForce > frictionResistance → block slides off
   //
   //   BUCKLING (slender column failure):
+  //     In plain English: a tall thin column doesn't get crushed from the top —
+  //     it bows sideways like a drinking straw when you push on both ends.
+  //     The taller and thinner it is, the easier it buckles. This is why skyscrapers
+  //     are wider at the base and Gothic cathedrals need flying buttresses.
+  //
   //     Tall, thin columns fail by sideways bowing, NOT by crushing.
   //     Euler's critical load: P_cr = π² × E × I / (K × L)²
   //     where:
@@ -3394,6 +3432,11 @@ ForceSystem {
   //     The interaction check catches the subtle combined cases.
 
   // ── Phase 4: Cascade collapse ──────────────────────────────────────────
+  //
+  // In plain English: when one block breaks, the blocks above it lose support and fall.
+  // The falling blocks hit the floor below with much MORE force than their own weight
+  // (because they're falling, not just sitting). So the floor breaks too. And THAT
+  // falls onto the next floor. This domino effect is how real buildings collapse.
   //
   // When a block fails, process the collapse in batched waves:
   //
@@ -3584,6 +3627,12 @@ ForceSystem {
   // BEAM DETECTION AND BENDING ANALYSIS
   // ═══════════════════════════════════════════════════════════════════════
 
+  // In plain English: a plank spanning a gap bends in the middle. The longer the span,
+  // the more it bends. If it bends too much, the bottom of the plank stretches and
+  // snaps (tension failure). Stone is terrible at this — it can't stretch at all.
+  // Wood is great — it bends a lot before breaking. This is why stone buildings
+  // have lots of pillars and wood buildings have wide open rooms.
+
   // A beam is a horizontal run of blocks with air below and supports at the ends.
   // The system scans along X and Z axes to find these automatically.
   //
@@ -3683,6 +3732,12 @@ ForceSystem {
   // ═══════════════════════════════════════════════════════════════════════
   // ARCH DETECTION AND THRUST ANALYSIS
   // ═══════════════════════════════════════════════════════════════════════
+
+  // In plain English: an arch is a clever trick — it turns the stretching problem
+  // into a squeezing problem. Instead of the bottom stretching (which stone can't do),
+  // each block pushes SIDEWAYS against its neighbors (compression, which stone is great at).
+  // But that sideways push goes all the way to the base — you need thick walls or
+  // buttresses to stop the arch from pushing its supports apart.
 
   // An arch converts tensile stress (spanning) into compressive stress
   // (pushing down the sides). Stone is great in compression → arches let
@@ -3819,6 +3874,11 @@ ForceSystem {
 
   // ── Lateral earth pressure (retaining walls, basements, mine tunnels) ──
   //
+  // In plain English: dirt pushes sideways on walls that hold it back.
+  // Dig a basement and the soil around it pushes inward on the walls.
+  // The deeper you go, the harder it pushes. Add water (rain) and it
+  // pushes even harder. That's why retaining walls need to be thick.
+  //
   // Soil pushes horizontally against walls that hold it back.
   // Rankine active earth pressure:
   //   σ_h = K_a × γ_soil × z
@@ -3861,6 +3921,11 @@ FoundationSystem {
   // Different terrain has different bearing capacity.
 
   // ── Terrain bearing capacity (simplified Terzaghi) ─────────────────────
+  //
+  // In plain English: how much weight the ground can hold before the building sinks.
+  // Rock = holds anything. Clay = squishy, heavy buildings sink. Mud = almost nothing.
+  // If your building is too heavy for the soil, it slowly sinks and tilts —
+  // that's what happened to the Leaning Tower of Pisa.
   //
   // q_ult = c × Nc + γ × D × Nq + 0.5 × γ × B × Nγ
   // where:
@@ -7503,6 +7568,11 @@ RigidAssembly {
   //   centerOfMass: Vec3                // mass-weighted average position
   //   momentOfInertia: Mat3             // 3×3 inertia tensor (kg·m²)
   //
+  // In plain English: moment of inertia is how hard it is to spin something.
+  // A figure skater with arms out spins slowly (high moment of inertia).
+  // Pull arms in = spins fast (low moment of inertia). Same idea for wheels,
+  // flywheels, and gears. Heavy things far from the center = hard to spin.
+  //
   // Moment of inertia tensor for a collection of point masses:
   //   I_xx = Σ m_i × (y_i² + z_i²)
   //   I_yy = Σ m_i × (x_i² + z_i²)
@@ -7648,6 +7718,11 @@ PowerTransmission {
 
   // ── GEAR MESH ──────────────────────────────────────────────────────────
   //
+  // In plain English: a big gear driving a small gear makes the small one spin FASTER
+  // but with LESS force. A small gear driving a big gear is the opposite —
+  // slower but more powerful. Like bicycle gears: low gear = slow but easy to pedal
+  // uphill, high gear = fast but hard to pedal.
+  //
   // Two wheels with interlocking teeth. Gear ratio = teeth_A / teeth_B.
   //   ω_B = ω_A × (teeth_A / teeth_B)     // speed scales inversely with teeth count
   //   τ_B = τ_A × (teeth_B / teeth_A)     // torque scales directly
@@ -7750,6 +7825,12 @@ WheelMotion {
   //     Wet mud: μ ≈ 0.2 (wheels spin, vehicle gets stuck)
   //     Sand: μ ≈ 0.3 (sinks in — rolling resistance increases)
   //     Ice: μ ≈ 0.05 (almost no traction)
+  //
+  // In plain English: wheels on a road lose energy because the road (or wheel)
+  // squishes slightly at the contact point. Hard wheel on hard road = very little loss
+  // (this is why paved roads changed everything). Wheel on soft mud = lots of loss
+  // (cart gets stuck). This is separate from friction — even a perfectly slippery
+  // wheel still has rolling resistance from deformation.
   //
   // Rolling resistance (energy lost to terrain deformation):
   //   F_rolling = C_rr × W_on_wheel
@@ -7966,6 +8047,11 @@ Adding drag to Stage 6 fixes ALL of these with one force term.
 
 #### Drag Force
 
+// In plain English: air pushes back on anything moving through it.
+// Move your hand slowly out a car window — barely feel it. Move it fast — strong push.
+// Drag grows with speed SQUARED — twice as fast = four times the push.
+// Streamlined shapes (arrows) feel much less drag than flat shapes (shields).
+
 Every rigid body in flight experiences aerodynamic drag:
 
 ```
@@ -8014,6 +8100,11 @@ For arbitrary crafted objects, approximate Cd from dimensions:
 
 #### Terminal Velocity
 
+// In plain English: when something falls long enough, air resistance equals gravity
+// and it stops accelerating. A skydiver maxes out at about 200 km/h.
+// A feather reaches its terminal velocity in less than a second and drifts down slowly.
+// Heavy, compact objects have high terminal velocity. Light, spread-out objects have low.
+
 When drag equals gravity, the object stops accelerating:
 
 ```
@@ -8036,6 +8127,11 @@ A stone barely slows down over a 5m fall (terminal velocity >> fall speed).
 This is physically correct — heavy dense objects are less affected by drag.
 
 #### Spin and Magnus Effect
+
+// In plain English: a spinning ball curves in flight. Backspin makes it rise.
+// Topspin makes it dive. Sidespin makes it curve left or right.
+// This is why pitchers throw curveballs and why fletching on arrows matters —
+// the spin keeps the arrow pointed forward instead of tumbling.
 
 A spinning projectile curves in flight due to the Magnus effect:
 
@@ -8204,6 +8300,12 @@ The game currently has no flexible body simulation. Rope exists as a crafting in
 
 #### Verlet Chain Simulation
 
+// In plain English: simulate a rope as a chain of beads connected by stiff springs.
+// Each bead remembers where it was last frame. Gravity pulls it down. The springs
+// pull neighboring beads toward each other to keep the rope from stretching.
+// Do this 4-8 times per frame and the rope looks and behaves realistically —
+// it sags, swings, wraps around things, and snaps if pulled too hard.
+
 A rope is modeled as a chain of particles connected by distance constraints. This is Position-Based Dynamics (PBD), the standard technique for real-time rope/cloth simulation (Jakobsen 2001).
 
 ```
@@ -8298,6 +8400,11 @@ Breaking force = tensileStrength * A
 
 #### Catenary Curve — How Ropes Hang
 
+// In plain English: a rope hanging between two posts makes a specific shape —
+// NOT a circle, NOT a parabola, but a "catenary" (from the Latin word for chain).
+// You don't need to calculate this shape — the rope simulation produces it
+// automatically from gravity + constraints. Math emerges from physics.
+
 A rope hanging under its own weight forms a catenary curve (not a parabola):
   y(x) = a * cosh(x/a)
   where a = T_horizontal / (w * g)
@@ -8313,6 +8420,11 @@ A loose rope (low tension) sags deeply.
 The player sees this visually and understands intuitively.
 
 #### Pulleys — Changing Force Direction
+
+// In plain English: a rope over a wheel lets you change the direction of pulling —
+// pull down to lift up. Add more wheels and you multiply your strength:
+// two pulleys = lift twice as much. Four pulleys = four times as much.
+// The catch: you have to pull the rope four times farther. Free lunch doesn't exist.
 
 A pulley is an axle joint (S3.8) that a rope wraps around.
 
@@ -9027,6 +9139,11 @@ This section adds GAMEPLAY optics — not rendering improvements, but the abilit
 
 #### Snell's Law — Refraction at Material Boundaries
 
+// In plain English: light bends when it enters a different material.
+// A straw in a glass of water looks bent at the surface — that's refraction.
+// The AMOUNT of bending depends on how different the two materials are
+// (air vs. glass bends a lot, air vs. water bends less).
+
 When light crosses from one material into another with a different refractive index, it bends. The angle of bending is governed by Snell's Law:
 
 ```
@@ -9059,6 +9176,11 @@ When the player looks THROUGH a transparent material (`opacity < 0.5` in Materia
 **Total Internal Reflection**: When light tries to exit a dense material at a steep angle, Snell's law gives `sin(theta2) > 1`, which is impossible. The light bounces back entirely — total internal reflection. Critical angle: `theta_c = arcsin(n2/n1)`. For glass-to-air: `theta_c = arcsin(1.0/1.52) = 41.1 degrees`. This is how fiber optics and gemstone sparkle work. A player who discovers this can trap light inside a glass rod.
 
 #### Lenses — Curved Glass Focuses Light
+
+// In plain English: a curved piece of glass bends light so that it focuses
+// to a point. The distance to that focus point is the "focal length."
+// A more curved lens = shorter focal length = stronger magnification.
+// This is how magnifying glasses, eyeglasses, telescopes, and cameras work.
 
 A lens is a piece of transparent material with at least one curved surface. The curvature causes different parts of the incoming light to refract by different amounts, converging or diverging the rays.
 
@@ -9208,6 +9330,11 @@ Magnification: M = -di/do             (same as lenses)
 A polished metal dish (copper, bronze, silver) with a concave curve acts as a focusing mirror. Unlike lenses, mirrors have no chromatic aberration (reflection doesn't depend on wavelength). They are also easier to make large — a lens must be transparent and uniform throughout; a mirror only needs a good front surface.
 
 **Solar Concentration — Free Energy from Sunlight**:
+
+// In plain English: a curved shiny surface (like a satellite dish but reflective)
+// focuses sunlight to a tiny spot. That spot gets EXTREMELY hot — hot enough to
+// melt metal. A 2-meter mirror can concentrate nearly 3,000 watts into a point.
+// This is free energy from the sun — no fuel needed.
 
 At the focal point of a concave mirror, solar energy concentrates from the entire mirror area into a small spot:
 
