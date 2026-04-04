@@ -1,7 +1,7 @@
 # Universe Sim — Structure & Design Document
 
-**Last Updated**: 2026-04-03
-**Report Version**: 31
+**Last Updated**: 2026-04-04
+**Report Version**: 32
 
 ---
 
@@ -18,7 +18,7 @@
     - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
     - 3.4 Structural Physics (Stage 5: Integrity)
     - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
-    - 3.6 Cross-System Connections — Complete Data Flow Map (68 connections)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (80 connections)
     - 3.7 System-Wide Optimization — Tick scheduling, caching, memory, threading
     - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
     - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
@@ -4762,7 +4762,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 68 connections total (33 critical + 35 moderate).
+for every connection. 80 connections total (37 critical + 43 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
@@ -6485,6 +6485,10 @@ SoilErosionSystem {
 
   // Per terrain cell, per weather tick (when raining):
   //   erosionRate = precipitationRate × slopeAngle × (1 - vegetationCover) × (1 - organicMatter) × 0.00001
+  //
+  // VALIDATION TARGET for §3.2 surface water flow + sediment transport: erosion
+  // should be driven by fluid sim runoff carrying soil particles, not this
+  // simplified formula. This formula is a calibration target for the fluid approach.
   //
   //   precipitationRate: mm/hour from weather system (direct value)
   //   slopeAngle: radians — computed from height difference between adjacent cells
@@ -10798,6 +10802,222 @@ Data: If submerged: ρ = fluid density. If at surface: partial submersion.
       If in air: ρ = ρ_air (altitude-adjusted).
 Trigger: every tick for every active rigid body
 
+##### Connection 69: Irrigation Channel Flow → Soil Moisture (moderate)
+
+When a player or NPC digs an irrigation channel from a river or well to a crop
+field, the fluid simulation (§3.2) moves water through that channel using
+Manning's equation. But there is no connection that delivers that grid-cell
+water volume into the farming system's SoilState.moisture. Without this link,
+crops only receive water from rain (Connection 8) — irrigation channels would
+fill with visible water but the adjacent soil would stay dry.
+
+In plain English: digging a trench from a river to your field should water your
+crops. The water simulation already moves the water; this connection makes the
+soil absorb it.
+
+Source: Fluid Simulation (§3.2) — waterVolume in grid cells adjacent to crop
+        entities, fed by channel flow (Manning's equation) or well output
+        (Darcy's law)
+Target: Farming System (§4.4) — SoilState.moisture for each terrain cell
+        containing or adjacent to a crop
+Data: For each terrain cell with waterVolume > 0 AND a crop within 2m:
+        absorptionRate = min(waterVolume, soil.porosity × (1 - soil.moisture)
+                             × cellArea × 0.01) per game-hour
+        soil.moisture += absorptionRate / (cellArea × soilDepth)
+        gridCell.waterVolume -= absorptionRate
+      Rice paddy special case: if berms contain water AND crop.species == 'rice':
+        soil.moisture = min(0.95, soil.moisture + waterVolume × 0.1)
+      Over-irrigation: if soil.moisture > 0.8 AND crop is NOT rice:
+        waterStress increases (root suffocation)
+Trigger: every weather tick (1 Hz), for grid cells within 2m of any crop entity
+         that have waterVolume > 0
+
+##### Connection 70: Geological Deposit Mining → MaterialPacket Creation (moderate)
+
+When a player mines a geological deposit (§4.5), the terrain block must convert
+into a MaterialPacket with the correct mineral composition defined by the deposit's
+formation type. Without this connection, mining produces generic "rock" instead of
+ore with the specific elemental composition that the reaction engine (§3.1) needs
+for smelting.
+
+In plain English: hitting a copper deposit with a pickaxe should give you a chunk
+of malachite with the right copper content — not just a grey rock.
+
+Source: Geology System (§4.5) — deposit type, formation mechanism, ore grade
+        at the mined terrain cell
+Target: Material System (§3.1) — spawns a MaterialPacket with composition
+        matching the geological deposit
+Data: When player mines a block within a deposit zone:
+        oreGrade = deposit.baseGrade × (1 ± 0.2 random variation)
+        packet.composition = deposit.mineralComposition
+          (e.g., malachite: { Cu:0.57, CO₃:0.23, OH:0.10, gangue:0.10 })
+        packet.mass = blockVolume × deposit.density × oreGrade
+        packet.hardness = deposit.mineralHardness (Mohs from §3.1)
+        Gangue fraction: non-ore rock mixed in, reduces effective grade
+          gangue = 1 - oreGrade → must be separated by crushing/washing
+        Native metal deposits (native copper, native gold):
+          packet contains metallic element directly — no smelting required,
+          just hammering (cold-working)
+      Mining time: from §4.4 gathering formula (toolForce × toolSharpness
+        vs. targetHardness × targetVolume)
+Trigger: player or NPC completes a mining action on a terrain block tagged
+         with a geological deposit ID
+
+##### Connection 71: Lightning Discharge → Electromagnetism System (moderate)
+
+Connection 18 models lightning as a weather event with fire/damage/sound effects.
+But lightning IS an electrical discharge — a massive current pulse (~30,000 A for
+~0.001 s) that should interact with the electromagnetism system (§3.13). Without
+this link, lightning cannot magnetize iron objects, induce current in nearby
+conductors, or be attracted to lightning rods through the EM system's
+conductivity model.
+
+In plain English: lightning is electricity. The EM system should know about it
+so lightning rods work for real physics reasons, not as a special case.
+
+Source: Weather System (§4.6) — lightning strike event (position, energy)
+Target: Electromagnetism (§3.13) — impulse current injection at strike point
+Data: When a lightning strike fires (from Connection 18 trigger):
+        peakCurrent = 30,000 A (typical first return stroke)
+        duration = 0.001 s (1 ms)
+        totalCharge = peakCurrent × duration = 30 C
+        energy = 1–5 GJ (most dissipated as heat and light)
+      Effects via §3.13:
+        1. Current flows through strike point into ground via lowest-resistance
+           path — conductive objects (metal structures, wet wood, water) carry
+           more current than resistive ones (dry stone, air)
+        2. Induced EMF in nearby conductors (Faraday's law):
+           V_induced = -dΦ/dt where Φ from the lightning current pulse
+           Metal loops within 50m experience a voltage spike
+        3. Magnetization: iron/steel objects at strike point may become
+           permanently magnetized (remanent magnetism from impulse field)
+           This is how natural lodestones formed historically
+        4. Lightning rod effect: tall conductive objects reduce breakdown
+           distance → preferential strike target (already in Connection 18
+           target selection, but now grounded in §3.13 field calculations)
+Trigger: each lightning strike event from the weather system
+
+##### Connection 72: Composting → Reaction Engine (Organic Decomposition) (moderate)
+
+Composting in §4.4 is currently a flat timer: pile manure + plant waste → wait
+30-60 game-days → compost. But organic decomposition is a biochemical reaction
+that the reaction engine (§3.1) should drive. Compost piles generate heat
+(up to 70°C internally), consume oxygen, produce CO₂, and convert organic
+nitrogen into plant-available ammonium. Without this connection, composting
+is a magic timer instead of emergent chemistry.
+
+In plain English: a compost pile is a slow-burning chemical reaction. It gets
+hot in the middle, it needs air, and it breaks down faster when turned. The
+chemistry engine should run this, not a countdown timer.
+
+Source: Farming System (§4.4) — compost pile entity (organic MaterialPackets
+        piled together: manure, crop residue, food waste)
+Target: Reaction Engine (§3.1) — exothermic oxidation of organic compounds
+Data: Composting reaction (simplified):
+        C_xH_yO_z (organic) + O₂ → CO₂ + H₂O + NH₄⁺ + heat
+      Rate: Arrhenius-driven from pile temperature
+        k = A × exp(-E_a / (R × T))
+        Optimal T: 55-65°C (thermophilic phase — kills pathogens and weed seeds)
+        Below 40°C: slow mesophilic decomposition (rate × 0.3)
+        Above 70°C: too hot — beneficial bacteria die (rate × 0.1)
+      Heat generation: Q = reactionRate × organicMass × 17 MJ/kg_organic
+        (typical for aerobic decomposition of plant matter)
+      Oxygen requirement:
+        If pile is compact (not turned): O₂ depletes in center → anaerobic
+          → rate drops 90%, produces methane and H₂S (bad smell)
+        If turned (player flips pile): O₂ restored → rate spikes back up
+        Turning frequency: every 7-14 game-days for optimal speed
+      Moisture requirement: 40-60% moisture content for optimal rate
+        Too dry (<30%): rate × 0.2. Too wet (>70%): anaerobic conditions
+      Completion: when organic carbon drops below 20% of original →
+        stable humus MaterialPacket with:
+        { organicMatter: high, N: from_input_nitrogen, P: from_input_phosphorus,
+          K: from_input_potassium, pH: ~7.0 (neutral) }
+      Duration: 30-60 game-days at optimal conditions (matches §4.4 existing
+        estimate but now derived from reaction kinetics, not hardcoded)
+Trigger: every game-hour for each compost pile entity (pile = 3+ organic
+         MaterialPackets placed within 1m of each other on the ground)
+
+##### Connection 73: Atmospheric Temperature → Heat Transfer Ambient (critical)
+
+In plain English: the weather tells the physics engine how warm the air is,
+so materials can heat up or cool down to match.
+
+Source: §4.6 AtmosphereCell.airTemperature (per 64m grid, 1 Hz)
+Target: §3.0 Stage 1 — T_ambient for every surface-exposed MaterialPacket
+Data: T_ambient per cell, interpolated to packet position
+Trigger: every 30 Hz tick (Stage 1 reads the cached weather cell temperature)
+
+##### Connection 74: Ore Block Mining → MaterialPacket Creation (critical)
+
+In plain English: when you dig up ore, it becomes a real material with the
+correct chemical composition — not just an abstract "ore item."
+
+Source: §4.5 ore deposit (mineral composition from world generation)
+Target: §3.1 MaterialPacket — mined block gets a composition matching the ore mineral
+Data: oreComposition → packet.composition (e.g., malachite: Cu 39.6%, C 5.3%, O 44.5%, H 1.8%)
+Trigger: player/NPC mining action completes on ore block
+
+##### Connection 75: Terrain Rock → MaterialPacket Composition (critical)
+
+In plain English: every rock in the world has a real chemical composition —
+granite is different from limestone is different from basalt.
+
+Source: §4.1 rock type per terrain cell (from world generation)
+Target: §3.1 MaterialPacket for every mineable terrain block
+Data: terrainBlock.composition = rockTypeComposition[cell.rockType]
+Trigger: at world generation (persistent) and when player mines terrain
+
+##### Connection 76: Crop Nutrient Uptake via Reaction Engine (critical)
+
+In plain English: when crops grow, they pull nitrogen/phosphorus/potassium from
+the soil. This is chemistry — the reaction engine handles it, not hardcoded constants.
+
+Source: §4.4 crop root zone (plant tissue MaterialPacket)
+Target: §3.1 Stage 3 reaction engine (soil MaterialPacket in contact with root)
+Data: Gibbs-favorable N/P/K transfer from soil to plant, conserving mass
+Trigger: reaction engine contact pair check per growth tick
+
+##### Connection 77: Aquatic Organism ↔ Fluid Interaction (moderate)
+
+In plain English: fish swim through water — they feel drag from the current
+and push water aside when they move.
+
+Source: §4.3 fish/swimming animal velocity + body volume
+Target: §3.2 fluid sim — drag on organism, wake displacement on fluid
+Data: F_drag = 0.5 × ρ_water × v² × Cd × A; organism pushes fluid aside
+Trigger: every tick for aquatic organisms in fluid cells
+
+##### Connection 78: Live Animal Product Harvest → MaterialPacket (moderate)
+
+In plain English: shearing a sheep gives you wool, milking a cow gives you milk —
+these are real materials with compositions, not abstract items.
+
+Source: §4.3 domesticated animal (tameness > 0.6, species-specific timer)
+Target: §3.1 MaterialPacket creation
+Data: wool = {keratin:0.90, lanolin:0.05, water:0.05}; milk = {water:0.87, fat:0.04, protein:0.03}
+Trigger: species-specific interval (wool: yearly, milk: daily, eggs: 1-2 days)
+
+##### Connection 79: Weather Precipitation → Material Moisture (moderate)
+
+In plain English: when it rains, exposed materials get wet — wet wood won't
+burn, wet mortar weakens, wet ground is soft.
+
+Source: §4.6 precipitationRate + shelter map
+Target: §3.1 exposed MaterialPacket moisture and flammability
+Data: moisture += precipRate × 0.001 × dt (capped by maxAbsorption). Wet: flammability = 0.
+Trigger: per weather tick for exposed packets
+
+##### Connection 80: Water Body Temperature → Freezing (moderate)
+
+In plain English: when air temperature drops below freezing, rivers and lakes
+freeze over — the water becomes ice through the phase transition system.
+
+Source: §4.6 AtmosphereCell.airTemperature
+Target: §3.2 grid cells with waterVolume > 0 → §3.0 Stage 2 phase transition
+Data: Q_exchange = h × A × (T_air - T_water) × dt. When T_water < 0°C → freeze.
+Trigger: per weather tick for water cells
+
 
 ---
 
@@ -11704,7 +11924,7 @@ The current system models organisms as abstract entities with diet types and ene
 | ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `speciesId`       | string                 | Unique species identifier (e.g., `"quercus_robur"`, `"apis_mellifera"`)                  |
 | `kingdom`         | enum                   | `plant`, `animal`, `fungus`, `bacteria`                                                  |
-| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest. NOTE: bodyMass is currently a standalone stat. In the full implementation, it should be the sum of component MaterialPacket masses: bodyMass = skeleton.mass + muscle.mass + fat.mass + organ.mass. Fat reserves change with feeding (increase) and starvation (decrease). This makes Kleiber's law truly emergent from the material system (§3.1). |
+| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest. NOTE: bodyMass is currently a standalone stat. In the full implementation, it should be the sum of component MaterialPacket masses: bodyMass = skeleton.mass + muscle.mass + fat.mass + organ.mass. Fat reserves change with feeding (increase) and starvation (decrease). This makes Kleiber's law truly emergent from the material system (§3.1). VALIDATION TARGET — species body masses (cattle 400-800kg, sheep 40-100kg, etc.) should be the sum of component MaterialPacket masses, not standalone numbers. |
 | `growthStage`     | enum                   | `seed`, `juvenile`, `mature`, `senescent` (plants); `pup`, `juvenile`, `adult` (animals) |
 | `biomeAffinity`   | number[]               | Compatibility score per biome (0–1 per biome type) — replaces binary biome assignment    |
 | `contaminantLoad` | Record<string, number> | Accumulated contaminant concentrations — e.g., `{ "DDT": 0.003 }` in mg/kg body fat      |
@@ -12237,6 +12457,10 @@ AnimalNeeds {
   //   Dog (30kg): ~2 kg meat per game-day
   //   Chicken (3kg): ~0.1 kg grain per game-day
   //
+  // VALIDATION TARGET — these food requirements should be derived from
+  // Kleiber's BMR (70 × mass^0.75 kcal/day) × food energy density (§3.1).
+  // Values here are calibration targets, not hardcoded constants.
+  //
   // Wild animals forage automatically (Tier 2 AI decides where to graze/hunt)
   // Domesticated animals in enclosures must be FED by the player
   // If not fed: health declines → starvation → death (same timeline as §7.2)
@@ -12439,6 +12663,10 @@ SoilState {
   //   Desert: N=0.05, P=0.05, K=0.1 (almost nothing)
   //   Volcanic: N=0.3, P=0.6, K=0.5 (phosphorus-rich volcanic minerals)
   //   River floodplain: N=0.6, P=0.4, K=0.45 (annual flood deposits — best farmland)
+  //
+  // VALIDATION TARGET for §3.1 reaction engine + §4.5 geology: these starting NPK
+  // values should emerge from geological mineral composition and centuries of organic
+  // decomposition. Until then, these serve as calibration targets.
 
   // ── Water ─────────────────────────────────────────────────────────────
   moisture: 0.0–1.0                  // current water saturation
@@ -12461,6 +12689,10 @@ SoilState {
   //   rain (slightly acidic — pH drops over time in wet climates),
   //   wood ash addition (+0.5 pH per application),
   //   lime addition (+1.0 pH per application)
+  //
+  // VALIDATION TARGET for §3.1 acid-base chemistry: pH shifts from ash, lime,
+  // and rain should be computed from ion exchange reactions, not flat deltas.
+  // These +0.5/+1.0 values are calibration targets for the reaction engine.
 
   organicMatter: 0.0–1.0            // decomposed plant/animal material (humus)
   // High organic matter: better water retention, more nutrients, healthier microbes
@@ -12547,6 +12779,10 @@ CropGrowth {
     //   nitrogen -= 0.005 × growthRate (wheat is nitrogen-hungry)
     //   phosphorus -= 0.003 × growthRate
     //   potassium -= 0.002 × growthRate
+    //
+    // VALIDATION TARGET for §3.1 reaction engine: these per-day rates should
+    // emerge from Gibbs-favorable N/P/K transfer (Connection 76), not be
+    // hardcoded. Values here are calibration targets.
     //
     // When a nutrient drops below 0.05: nutrientFactor for that nutrient = 0.3
     // When a nutrient = 0: nutrientFactor = 0 (growth stops, plant yellows and dies)
@@ -13088,6 +13324,10 @@ SoilFertilityManagement {
 
   // ── Fertilizer Replenishment Rates ─────────────────────────────────────
   //
+  // VALIDATION TARGET for §3.1 decomposition chemistry: these per-kg
+  // replenishment rates should emerge from organic decomposition reactions
+  // in the reaction engine, not be applied as flat additions.
+  //
   // In plain English: harvesting crops takes nutrients out of the soil.
   // Adding fertilizer puts them back. Different fertilizers restore different nutrients.
   //
@@ -13126,6 +13366,10 @@ SoilFertilityManagement {
     //   earthwormDensity += 0.02 per game-month (worms return to undisturbed soil)
     // Full recovery from depleted to healthy: ~12-18 game-months (3-4.5 real months)
     // Faster than natural forest regrowth but slower than active fertilization
+    //
+    // VALIDATION TARGET for §3.1 reaction engine + §4.2 ecosystem: fallow
+    // recovery rates should emerge from weed decomposition, microbial activity,
+    // and atmospheric nitrogen fixation — not flat per-month increments.
   }
 
   // ── Erosion ───────────────────────────────────────────────────────────
