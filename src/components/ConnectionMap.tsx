@@ -1,12 +1,12 @@
 // ── ConnectionMap ────────────────────────────────────────────────────────────
-// Interactive force-directed graph of Chapter 3 internal physics connections.
+// Interactive force-directed graph of Chapters 3-7 internal physics connections.
 // No external deps — force simulation implemented from scratch.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization' | 'advanced' | 'world'
+type NodeGroup = 'material' | 'fluid' | 'sound' | 'structural' | 'network' | 'tick' | 'optimization' | 'advanced' | 'world' | 'civilization' | 'crafting' | 'player'
 type EdgeSeverity = 'exists' | 'partial' | 'missing'
 
 interface GraphNode {
@@ -43,6 +43,9 @@ const GROUP_COLORS: Record<NodeGroup, string> = {
   optimization: '#ff9b3c',
   advanced: '#ff6b9d',
   world: '#2dd4bf',
+  civilization: '#f472b6',
+  crafting: '#fb923c',
+  player: '#facc15',
 }
 
 const GROUP_LABELS: Record<NodeGroup, string> = {
@@ -55,6 +58,9 @@ const GROUP_LABELS: Record<NodeGroup, string> = {
   optimization: 'Optimization 3.7',
   advanced: 'Advanced Systems 3.8-3.13',
   world: 'World & Life Ch.4',
+  civilization: 'Civilization Ch.5',
+  crafting: 'Crafting Ch.6',
+  player: 'Player Ch.7',
 }
 
 const SEVERITY_COLORS: Record<EdgeSeverity, string> = {
@@ -152,6 +158,22 @@ const NODE_DEFS: NodeDef[] = [
   { id: 'animal-system', label: 'Animal Behavior', section: '4.3', group: 'world', description: 'Individual AI, domestication, products, sound', physics: "Taming score 0-1\nBreeding: heritability 0.4\nProducts: wool, milk, eggs, meat\nVocalizations \u2192 \u00a73.3 voice synthesis" },
   { id: 'geology-system', label: 'Geology & Resources', section: '4.5', group: 'world', description: 'Ore deposits, mineral stability, rock types', physics: "Clarke numbers determine rarity\nPorphyry Cu: 0.3-1.5% grade\nBiome-specific resource distribution\nMined ore \u2192 MaterialPacket" },
   { id: 'worldgen-system', label: 'World Generation', section: '4.1', group: 'world', description: 'Planetary formation, bulk geochemistry, terrain', physics: "Clarke number element distribution\nBowen reaction series crystallization\nMineral stability fields (P-T)\nTerrain \u2192 rock composition" },
+
+  // Chapter 5 Civilization
+  { id: 'settlement-system', label: 'Settlements', section: '5.1', group: 'civilization', description: 'Population, storage, structures, knowledge, trade', physics: "Trade valuation from Clarke number scarcity\nKnowledge spread via observation\nSophistication from physical structures" },
+  { id: 'npc-brain', label: 'NPC Brain', section: '5.2', group: 'civilization', description: 'Three-tier AI: simple model + full LLM for key moments', physics: "Learning curve: successRate = 0.95\u00d7(1-e^(-attempts/learnRate))\nPersonality: 5 traits from normal distribution\nMemory: episodic + procedural" },
+  { id: 'npc-language', label: 'NPC Language', section: '5.3', group: 'civilization', description: 'Knowledge transfer through demonstration and speech', physics: "Phoneme synthesis via \u00a73.3 voice\nKnowledge = observed physics outcomes\nCultural divergence over generations" },
+
+  // Chapter 6 Crafting
+  { id: 'craft-system', label: 'Physics-Based Crafting', section: '6.3', group: 'crafting', description: 'No workstations \u2014 only physical conditions (temp, atmosphere, containment)', physics: "CraftEnvironment samples: temperature, O\u2082/CO,\ncontainment volume, surface hardness, airflow\nReaction engine determines outcome" },
+  { id: 'precision-craft', label: 'Precision Craft Mode', section: '6.4', group: 'crafting', description: 'Zoom-in interaction for fine motor control', physics: "Camera zooms to workpiece\nHand IK tracks mouse\nReal-time deformation feedback" },
+  { id: 'production-system', label: 'Production System', section: '6.2', group: 'crafting', description: 'How every material is made \u2014 smelting, ceramics, textiles', physics: "All processes run through \u00a73.1 reaction engine\nTemperature determines what smelts\nNo recipes \u2014 physics determines outcome" },
+
+  // Chapter 7 Player
+  { id: 'player-body', label: 'Player Body & Stats', section: '7.2', group: 'player', description: 'Calories, hydration, stamina, temperature, fatigue', physics: "BMR = 75 kcal/hr\nRunning = 8\u00d7 BMR\nBody temp: Fourier heat exchange\nCLO insulation system" },
+  { id: 'player-combat', label: 'Combat System', section: '7.5', group: 'player', description: 'Physics-based damage from material properties', physics: "KE = 0.5\u00d7m\u00d7v\u00b2\nDamage from hardness \u00d7 density\nLocation-based hit detection\nArmor from material strength" },
+  { id: 'player-terrain', label: 'Terrain Interaction', section: '7.4', group: 'player', description: 'Digging and building with structural checks', physics: "Dig rate = f(tool force, material hardness)\nBuilding triggers \u00a73.4 load path check\nSlope stability constraints" },
+  { id: 'player-swimming', label: 'Swimming & Underwater', section: '7.9', group: 'player', description: 'Buoyancy, drag, breath, underwater sound', physics: "Buoyancy from \u00a73.2 fluid\nDrag 800\u00d7 in water (\u00a73.9)\nBreath timer 15 game-seconds\nSound low-pass at 800 Hz" },
 ]
 
 // ── Edge definitions ─────────────────────────────────────────────────────────
@@ -343,7 +365,34 @@ const EDGE_DEFS: EdgeDef[] = [
   // Organism ecosystem connections
   { id: 'C79b', source: 'weather-system', target: 'organism-system', label: 'Solar → photosynthesis', data: 'Solar irradiance + daylength from §4.6 drives autotroph photosynthesis rate. E = irradiance × leafArea × efficiency × daylight.', severity: 'exists' },
   { id: 'C80b', source: 'organism-system', target: 'animal-system', label: 'Food chain', data: 'Lotka-Volterra predator-prey dynamics. Plants feed herbivores feed predators. 10% trophic efficiency per level.', severity: 'exists' },
-  { id: 'C80c', source: 'organism-system', target: 'farming-system', label: 'Wild plants → crops', data: 'Wild plant species domesticated through selection. Organism genome determines yield, growth rate, pest resistance.', severity: 'exists' },
+  { id: 'C80c', source: 'organism-system', target: 'farming-system', label: 'Wild plants \u2192 crops', data: 'Wild plant species domesticated through selection. Organism genome determines yield, growth rate, pest resistance.', severity: 'exists' },
+
+  // Ch5 connections (81-89)
+  { id: 'C81', source: 'npc-brain', target: 'reaction-rules', label: 'NPC learning \u2190 process complexity', data: 'Hard reactions (high Ea) need more practice. learnRate scales with \u00a73.1 activation energy.', severity: 'exists' },
+  { id: 'C82', source: 'npc-brain', target: 'phase-system', label: 'NPC observes physics', data: 'NPCs learn from witnessing phase transitions, collapses, fire. Stores as discovery memory.', severity: 'exists' },
+  { id: 'C83', source: 'npc-brain', target: 'load-path', label: 'NPC building \u2192 structural check', data: 'NPC block placements run \u00a73.4 load path validation. Prevents instant-collapse buildings.', severity: 'exists' },
+  { id: 'C84', source: 'npc-language', target: 'voice-synth', label: 'NPC speech \u2192 voice synthesis', data: 'SLM talk action \u2192 language generator \u2192 \u00a73.3 source-filter model with formants and pitch.', severity: 'exists' },
+  { id: 'C85', source: 'settlement-system', target: 'property-calc', label: 'Trade values \u2190 Clarke numbers', data: 'Item rarity from elemental abundance. Scarcity from settlement stockpile. Dynamic pricing.', severity: 'exists' },
+  { id: 'C86', source: 'npc-brain', target: 'craft-system', label: 'NPC arrangements \u2192 CraftEnvironment', data: 'NPC-built enclosures evaluated by same physics sampling as player builds. No workstation objects.', severity: 'exists' },
+  { id: 'C87', source: 'settlement-system', target: 'property-calc', label: 'Settlement thresholds \u2190 melting pts', data: 'assessSettlement() checks if arrangements reach Fe melting point (1538\u00b0C), not hardcoded 1500.', severity: 'exists' },
+  { id: 'C88', source: 'reaction-rules', target: 'npc-brain', label: 'Craft failure \u2192 NPC memory', data: 'Reaction engine returns structured failure reason. NPC stores for intelligent retry.', severity: 'exists' },
+  { id: 'C89', source: 'load-path', target: 'npc-brain', label: 'Collapse \u2192 NPC trauma', data: 'NPCs witnessing structural collapse store traumatic memory \u2192 avoid similar designs.', severity: 'exists' },
+
+  // Ch6 connections (90-93)
+  { id: 'C90', source: 'production-system', target: 'reaction-rules', label: 'Production \u2192 reaction engine', data: 'Smelting, calcination, fermentation all run through \u00a73.1 Gibbs free energy. No recipes.', severity: 'exists' },
+  { id: 'C91', source: 'craft-system', target: 'temp-propagation', label: 'Craft temp \u2190 Stage 1', data: 'CraftEnvironment.temperature reads from \u00a73.0 heat propagation at the interaction point.', severity: 'exists' },
+  { id: 'C92', source: 'craft-system', target: 'sph-solver', label: 'Craft atmosphere \u2190 fluid sim', data: 'O\u2082 and CO levels from \u00a73.2 gas composition. Containment geometry from \u00a73.4 block connectivity.', severity: 'exists' },
+  { id: 'C93', source: 'craft-system', target: 'property-calc', label: 'Surface hardness \u2190 material', data: 'Anvil hardness from \u00a73.1 MaterialPacket. Harder surface = better metalworking.', severity: 'exists' },
+  { id: 'C93b', source: 'precision-craft', target: 'video-mode', label: 'Precision craft \u2192 video stream', data: 'Zoom-in triggers H.264 server-side rendering. Hand IK deformation needs per-pixel fidelity from \u00a73.5 video mode.', severity: 'exists' },
+  { id: 'C93c', source: 'precision-craft', target: 'craft-system', label: 'Precision mode \u2192 CraftEnvironment', data: 'Precision craft zoom reads same CraftEnvironment physics sampling. Fine motor adds sub-voxel deformation control.', severity: 'exists' },
+
+  // Ch7 connections (94-99)
+  { id: 'C94', source: 'player-body', target: 'load-path', label: 'Bone fracture \u2190 structural', data: 'Bone is MaterialPacket. F_impact vs bone tensileStrength. Fall height \u2192 force \u2192 fracture check.', severity: 'exists' },
+  { id: 'C95', source: 'player-body', target: 'temp-propagation', label: 'Body temp \u2190 Stage 1', data: 'Player body exchanges heat with environment via Fourier conduction + Stefan-Boltzmann radiation.', severity: 'exists' },
+  { id: 'C96', source: 'player-terrain', target: 'property-calc', label: 'Dig rate \u2190 material hardness', data: 'terrainResistance = compressiveStrength \u00d7 (1 + hardness/10). Better tools reduce time.', severity: 'exists' },
+  { id: 'C97', source: 'player-combat', target: 'property-calc', label: 'Combat KE \u2190 density \u00d7 volume', data: 'Tool mass = density \u00d7 volume from \u00a73.1. Heavier denser tools hit harder.', severity: 'exists' },
+  { id: 'C98', source: 'player-body', target: 'drag-system', label: 'Fall damage chain', data: '\u00a73.9 terminal velocity \u2192 \u00a73.4 bone strength \u2192 \u00a73.1 surface d_stop. Full physics chain.', severity: 'exists' },
+  { id: 'C99', source: 'player-swimming', target: 'sph-solver', label: 'Swimming \u2190 fluid + drag', data: 'Buoyancy from \u00a73.2, drag 800\u00d7 in water from \u00a73.9, heat loss from water conduction \u00a73.0.', severity: 'exists' },
 ]
 
 // Compute edge counts
@@ -374,13 +423,16 @@ const GROUP_ANGLE: Record<NodeGroup, number> = {
   optimization: Math.PI * 1.2, // lower center
   advanced: Math.PI * 0.5,     // bottom right
   world: Math.PI * 1.6,       // upper left area
+  civilization: Math.PI * 1.8,
+  crafting: Math.PI * 0.2,
+  player: Math.PI * 0.8,
 }
 
 function initNodes(width: number, height: number): GraphNode[] {
   const cx = width / 2
   const cy = height / 2
-  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0 }
-  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0 }
+  const groupCounts: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0, civilization: 0, crafting: 0, player: 0 }
+  const groupTotals: Record<NodeGroup, number> = { material: 0, fluid: 0, sound: 0, structural: 0, network: 0, tick: 0, optimization: 0, advanced: 0, world: 0, civilization: 0, crafting: 0, player: 0 }
   for (const nd of NODE_DEFS) groupTotals[nd.group]++
 
   return NODE_DEFS.map(nd => {
@@ -888,7 +940,7 @@ export function ConnectionMap() {
           zIndex: 20,
           fontFamily: "'IBM Plex Mono', monospace",
         }}>
-          CHAPTER 3 PHYSICS // INTERNAL CONNECTIONS {iterRef.current >= MAX_ITERATIONS ? '// SETTLED' : `// SIMULATING ${iterRef.current}/${MAX_ITERATIONS}`}
+          CHAPTERS 3-7 PHYSICS // INTERNAL CONNECTIONS {iterRef.current >= MAX_ITERATIONS ? '// SETTLED' : `// SIMULATING ${iterRef.current}/${MAX_ITERATIONS}`}
         </div>
 
         {/* Zoom indicator */}
