@@ -4762,7 +4762,7 @@ For hybrid mode (state + video):
 
 Every system in the game sends data to other systems. This section specifies the exact
 data structures, trigger conditions, conversion formulas, algorithms, and edge cases
-for every connection. 99 connections total (44 critical + 55 moderate).
+for every connection. 99 connections total (45 critical + 54 moderate).
 
 If a connection between two systems isn't listed here, it doesn't exist.
 
