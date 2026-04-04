@@ -285,13 +285,13 @@ const EDGE_DEFS: EdgeDef[] = [
 
   // Connection 48-51 (§3.10 Rope Physics)
   { id: 'C48', source: 'rope-system', target: 'load-path', label: 'Rope tension \u2192 structural', data: 'Rope anchors apply tension force to blocks. Crane lifting 500kg pulls anchor with 4900N.', severity: 'exists' },
-  { id: 'C49', source: 'rope-system', target: 'tick-scheduler', label: 'Rope + pulley \u2192 MA', data: 'Rope over axle joint = pulley. N segments = N\u00d7 mechanical advantage minus friction.', severity: 'exists' },
+  { id: 'C49', source: 'rope-system', target: 'rotational-mechanics', label: 'Rope + pulley \u2192 MA', data: 'Rope over axle joint = pulley. N segments = N\u00d7 mechanical advantage minus friction.', severity: 'exists' },
   { id: 'C50', source: 'rope-system', target: 'drag-system', label: 'Bow \u2192 projectile velocity', data: 'Elastic energy E=0.5kx\u00b2 \u2192 arrow velocity v=\u221a(2E\u00d7eff/m). ~51 m/s for longbow.', severity: 'exists' },
   { id: 'C51', source: 'rope-system', target: 'noise-synth', label: 'Wind on ropes', data: 'F = 0.5\u00d7\u03c1\u00d7v\u00b2\u00d7Cd\u00d7d\u00d7L. Ropes hum in wind. Rigging in storm \u2192 mast structural check.', severity: 'exists' },
 
   // Connection 52-54 (§3.11 Heat Engines)
   { id: 'C52', source: 'heat-engine', target: 'sph-solver', label: 'Gas pressure \u2192 piston', data: 'Gas SPH particles apply P\u00d7A force on slider joint piston. Ideal gas law: P=nRT/V.', severity: 'exists' },
-  { id: 'C53', source: 'heat-engine', target: 'tick-scheduler', label: 'Piston \u2192 crankshaft', data: 'Slider joint linear force \u2192 hinge joint \u2192 axle rotation. F\u00d7stroke = \u03c4\u00d7angle.', severity: 'exists' },
+  { id: 'C53', source: 'heat-engine', target: 'rotational-mechanics', label: 'Piston \u2192 crankshaft', data: 'Slider joint linear force \u2192 hinge joint \u2192 axle rotation. F\u00d7stroke = \u03c4\u00d7angle.', severity: 'exists' },
   { id: 'C54', source: 'heat-engine', target: 'property-calc', label: 'Efficiency \u2192 fuel', data: 'Carnot limit: \u03b7_max = 1-T_cold/T_hot. Actual efficiency tracks work_out/heat_in.', severity: 'exists' },
 
   // Connection 55-57 (§3.12 Optics)
@@ -302,8 +302,8 @@ const EDGE_DEFS: EdgeDef[] = [
   // Connection 58-62 (§3.13 Electromagnetism)
   { id: 'C58', source: 'property-calc', target: 'em-system', label: 'Electrode potential \u2192 battery', data: 'V_cell = E_cathode - E_anode. Zn+Cu = 1.10V. Already on MaterialPacket.', severity: 'exists' },
   { id: 'C59', source: 'em-system', target: 'temp-propagation', label: 'Current \u2192 resistive heat', data: 'P = I\u00b2R. Nichrome wire glows. Iron wire at high current \u2192 melts \u2192 fuse.', severity: 'exists' },
-  { id: 'C60', source: 'tick-scheduler', target: 'em-system', label: 'Generator \u2190 rotation', data: 'EMF = N\u00d7B\u00d7A\u00d7\u03c9. Waterwheel/windmill axle spins coil \u2192 voltage in circuit.', severity: 'exists' },
-  { id: 'C61', source: 'em-system', target: 'tick-scheduler', label: 'Motor \u2192 rotation', data: '\u03c4 = N\u00d7I\u00d7A\u00d7B. Current + magnetic field \u2192 torque on axle. Motor = reverse generator.', severity: 'exists' },
+  { id: 'C60', source: 'rotational-mechanics', target: 'em-system', label: 'Generator \u2190 rotation', data: 'EMF = N\u00d7B\u00d7A\u00d7\u03c9. Waterwheel/windmill axle spins coil \u2192 voltage in circuit.', severity: 'exists' },
+  { id: 'C61', source: 'em-system', target: 'rotational-mechanics', label: 'Motor \u2192 rotation', data: '\u03c4 = N\u00d7I\u00d7A\u00d7B. Current + magnetic field \u2192 torque on axle. Motor = reverse generator.', severity: 'exists' },
   { id: 'C62', source: 'em-system', target: 'reaction-rules', label: 'Electrolysis \u2192 reactions', data: 'Current through electrolyte forces non-spontaneous reactions. m = MIt/(nF).', severity: 'exists' },
 
   // Connection 63-68 (from /connect-chapter 3)
