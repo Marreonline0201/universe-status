@@ -10703,11 +10703,11 @@ The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–
 | Phosphorus (P) | 1,050 | Lithophile | Apatite — ubiquitous accessory mineral |
 | Manganese (Mn) | 950 | Lithophile/siderophile | Pyrolusite, seafloor nodules |
 | Fluorine (F) | 585 | Lithophile | Fluorapatite, fluorite |
-| Chlorine (Cl) | 130 | Atmophile | Halite — concentrated by evaporation |
+| Chlorine (Cl) | 145 | Atmophile | Halite — concentrated by evaporation |
 | Chromium (Cr) | 102 | Siderophile | Chromite in mafic/ultramafic rock |
 | Zinc (Zn) | 70 | Chalcophile | Sphalerite — hydrothermal concentration |
 | Copper (Cu) | 60 | Chalcophile | Sulfide minerals — hydrothermal concentration |
-| Nickel (Ni) | 59 | Siderophile | Pentlandite in mafic intrusions |
+| Nickel (Ni) | 84 | Siderophile | Pentlandite in mafic intrusions |
 | Lithium (Li) | 20 | Lithophile (incompatible) | Pegmatite and continental brine |
 | Lead (Pb) | 14 | Chalcophile | Galena — MVT and hydrothermal veins |
 | Cobalt (Co) | 25 | Siderophile | Ni–Cu sulfide deposits |
@@ -12591,17 +12591,17 @@ FarmingActions {
   //
   // | Crop         | Yield (kg/plant) | Plants/m² | Yield (kg/m²) | kcal/m² (raw) | Feeds 1 person (days/m²) |
   // |-------------|-----------------|-----------|---------------|---------------|--------------------------|
-  // | Wheat        | 0.03            | 300       | 9.0           | 30,600        | 17                       |
-  // | Barley       | 0.025           | 350       | 8.75          | 29,750        | 16.5                     |
-  // | Rice         | 0.04            | 250       | 10.0          | 35,000        | 19.4                     |
-  // | Potato       | 0.30            | 6         | 1.8           | 1,440         | 0.8                      |
+  // | Wheat        | 0.005           | 300       | 1.5           | 5,100         | 2.8                      |
+  // | Barley       | 0.004           | 350       | 1.4           | 4,480         | 2.5                      |
+  // | Rice         | 0.003           | 250       | 0.75          | 2,700         | 1.5                      |
+  // | Potato       | 0.50            | 8         | 4.0           | 3,200         | 1.8                      |
   // | Carrot       | 0.15            | 16        | 2.4           | 1,440         | 0.8                      |
-  // | Beans        | 0.05            | 20        | 1.0           | 3,400         | 1.9                      |
+  // | Beans        | 0.02            | 20        | 0.4           | 1,360         | 0.75                     |
   // | Flax (fiber) | 0.01 (seed)     | 200       | 2.0           | —             | — (fiber crop)           |
   //
   // "Feeds 1 person" assumes 1,800 kcal/day (BMR from §7.2).
-  // A 10m × 10m wheat field: 100 m² × 17 days/m² = 1,700 person-days of food.
-  // That's ~4.7 years of wheat from a small garden plot. Enough for a family.
+  // A 10m × 10m wheat field: 100 m² × 2.8 days/m² = 280 person-days of food.
+  // That's about 9 months of wheat from a small garden — enough for one person.
   //
   // Yield is modified by:
   //   soilQuality: yield × (0.5 + 0.5 × soilFertility) — poor soil = half yield
@@ -15569,7 +15569,7 @@ The game has no recipe database. Instead it has **transformation rules** — phy
 - Inputs: Large animal tendons (Achilles tendon or backstrap from deer, cattle, horse)
 - Assembly: Drying rack, rounded stone for pounding
 - Conditions: Dry 1–3 days. Pound dried tendon to separate fiber bundles. Moisten and twist like rope
-- Physics: Dried tendon is nearly pure collagen — tensile strength ~1000 MPa, stronger than most plant fibers. Stretches when wet, shrinks dry — bowstrings tighten in humidity (this is a material property the interaction engine tracks)
+- Physics: Dried tendon is nearly pure collagen — Young's modulus ~1000 MPa (stiffness), ultimate tensile strength ~100-150 MPa, stronger than most plant fibers. Stretches when wet, shrinks dry — bowstrings tighten in humidity (this is a material property the interaction engine tracks)
 
 **Bone tools**
 
@@ -17756,10 +17756,10 @@ HumanBodyState {
   // Calorie drain rates by activity:
   //   Sleeping:     0.8 × BMR
   //   Standing:     1.0 × BMR
-  //   Walking:      1.5 × BMR
-  //   Running:      3.0 × BMR
-  //   Mining:       4.0 × BMR
-  //   Swimming:     5.0 × BMR
+  //   Walking:      3.5 × BMR
+  //   Running:      8.0 × BMR
+  //   Mining:       5.5 × BMR
+  //   Swimming:     7.0 × BMR
   //   Fighting:     4.5 × BMR
   //   Crafting:     1.2 × BMR
   //   In cold (<10°C): BMR × (1 + (10 - T_ambient) × 0.03)  // shivering burns calories
@@ -17767,8 +17767,8 @@ HumanBodyState {
   // ── Food Calorie Values ────────────────────────────────────────────────
   //
   // In plain English: these are how many calories each food gives you back.
-  // Your body burns ~75 kcal/hour at rest. Running burns ~225 kcal/hour.
-  // So a piece of cooked meat (800 kcal) fuels about 3.5 hours of running.
+  // Your body burns ~75 kcal/hour at rest. Running burns ~600 kcal/hour.
+  // So a piece of cooked meat (800 kcal) fuels about 1.3 hours of running.
   //
   // Raw food provides fewer calories than cooked (§3.6 Connection 29):
   //   Raw multiplier: 1.0×
@@ -17778,7 +17778,7 @@ HumanBodyState {
   //
   // | Food item          | Base kcal/kg (raw) | Cooked (×1.8) | Spoilage time (game-days) |
   // |-------------------|--------------------|---------------|--------------------------|
-  // | Red meat (venison)  | 1200               | 2160          | 3 (raw), 7 (cooked), 30 (salted) |
+  // | Red meat (venison)  | 1500               | 2700          | 3 (raw), 7 (cooked), 30 (salted) |
   // | Fish                | 800                | 1440          | 1 (raw), 5 (cooked), 20 (smoked) |
   // | Berries/fruit       | 400                | —             | 5 (fresh), 60 (dried) |
   // | Nuts/seeds          | 5500               | —             | 90 (shelled), 365 (whole) |
@@ -17791,7 +17791,7 @@ HumanBodyState {
   // | Insects             | 2000               | 3600          | 1 (raw), 14 (dried) |
   //
   // These values are per KILOGRAM of food. A typical meal is 0.2-0.5 kg.
-  // A 0.3 kg cooked venison steak: 0.3 × 2160 = 648 kcal ≈ 8.6 hours of rest.
+  // A 0.3 kg cooked venison steak: 0.3 × 2700 = 810 kcal ≈ 10.8 hours of rest.
   //
   // Calorie values are NOT hardcoded per food name. They come from the MaterialPacket
   // composition via the property calculator (§3.1):
@@ -17904,8 +17904,8 @@ HumanBodyState {
   // | Food poisoning  | 0 (not contagious)| 0.5                 | 5%        | Rest + water |
   // | Wound infection | 0 (not contagious)| 1-3                 | 15%       | Clean + herbal poultice |
   // | Dysentery       | 2-4              | 1-2                  | 10%       | Clean water + rest |
-  // | Flu/cold        | 3-5              | 1-3                  | 2%        | Rest + warmth |
-  // | Plague          | 4-8              | 3-5                  | 30-60%    | Quarantine + herbal medicine |
+  // | Flu/cold        | 1.3-2.1          | 1-3                  | 2%        | Rest + warmth |
+  // | Plague          | 1.5-3.5          | 3-5                  | 30-60%    | Quarantine + herbal medicine |
   //
   // R0 = average number of organisms one sick individual infects.
   // R0 > 1: disease spreads (epidemic). R0 < 1: disease dies out.
@@ -17913,7 +17913,7 @@ HumanBodyState {
   // Infection probability per contact:
   //   P_infect = R0 / (avgContacts × infectiousDuration)
   //   A settlement with 50 NPCs, each contacting ~10 others/day:
-  //     Flu: P = 4 / (10 × 5) = 0.08 per contact (8% per interaction)
+  //     Flu: P = 1.7 / (10 × 5) = 0.034 per contact (3.4% per interaction)
   //
   // Resistance factors:
   //   Well-fed (calories > 90% BMR): infection probability × 0.5
