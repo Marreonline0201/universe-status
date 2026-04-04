@@ -9676,7 +9676,7 @@ where:
   theta2 = angle of refraction (measured from the surface normal)
 ```
 
-The `refractiveIndex` field already exists on every `MaterialPacket` from S3.2. Typical values:
+The `refractiveIndex` field already exists on every `MaterialPacket` from §3.1 (computed by the property calculator, used by §3.2 for rendering and §3.12 for gameplay optics). Typical values:
 
 ```
 Refractive Indices (from MaterialPacket):
