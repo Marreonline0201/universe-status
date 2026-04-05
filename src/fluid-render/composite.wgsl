@@ -160,6 +160,9 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var H2 = normalize(light2 - ray_dir);
     specular += 0.3 * pow(max(0.0, dot(H2, normal)), uniforms.specular_power * 0.5);
 
+    // Fluid opacity — must be computed before SSS which depends on it
+    var opacity = 1.0 - exp(-uniforms.density * thickness * 3.0);
+
     // Diffuse lighting for non-metals (Lambertian + secondary + SSS approximation)
     var NdotL = max(dot(normal, light_dir), 0.0);
     var NdotL2 = max(dot(normal, light2), 0.0);
@@ -167,9 +170,6 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     // Cheap subsurface scattering: light wraps around thin edges
     var sss = max(0.0, dot(-ray_dir, light_dir)) * (1.0 - opacity) * 0.3;
     diffuse_light += sss;
-
-    // Fluid color contribution — thicker = more opaque, thinner = more transparent
-    var opacity = 1.0 - exp(-uniforms.density * thickness * 3.0);
     var fluid_contribution = diffuse_color * diffuse_light * opacity;
 
     // Emissive glow: lava and molten copper emit their own light
