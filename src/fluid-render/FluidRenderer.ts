@@ -292,7 +292,7 @@ export class FluidRenderer {
         targets: [{
           format: this.presentationFormat,
           blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
             alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
           },
         }],
