@@ -524,7 +524,7 @@ export function FluidTest() {
             // Sphere size must be large enough for depth sprites to overlap
             // At SPACING=0.02, adjacent particles are 0.02 apart.
             // Sphere diameter should be >= spacing so sprites overlap: size >= 0.04
-            sim.fluidRenderer.updateCamera(viewMat, projMat, 0.06)
+            sim.fluidRenderer.updateCamera(viewMat, projMat, 0.3) // DEBUG: very large to verify billboards
           }
 
           if (count > 0) sim.avgTemp = avgTemp / count
