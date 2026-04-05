@@ -411,9 +411,24 @@ MaterialPacket {
                                         // Steel: 0.27-0.30, rubber: 0.50, cork: 0.0, concrete: 0.15
   fractureToughness: number             // MPa·√m — resistance to crack propagation
                                         // Used by: §3.4 structural (Paris law fatigue, brittle fracture)
-                                        // Steel: 50-150, glass: 0.7, wood: 1-10, cast iron: 10-30
+  //   Derivation: Griffith-Irwin relation K_IC ≈ √(2 × E × γ_s)
+  //     E = Young's modulus (from composition)
+  //     γ_s = surface energy (J/m²) — derived from bond strength per unit area
+  //       Metals: γ_s ≈ 1-3 J/m² (metallic bonds)
+  //       Ceramics: γ_s ≈ 0.5-2 J/m² (ionic/covalent bonds)
+  //       Glass: γ_s ≈ 0.3-0.5 J/m² (amorphous, no grain boundaries)
+  //     This gives: steel (E=200GPa, γ_s=2) → K_IC ≈ √(800) ≈ 28 MPa·√m (base)
+  //     Multiply by grain boundary toughening factor (1-5×) for polycrystalline metals
+  //   Typical: Steel: 50-150, glass: 0.7, wood: 1-10, cast iron: 10-30
   ductility: number                     // 0-1 — ability to deform plastically before fracture
                                         // Used by: §3.4 structural (brittle vs ductile failure mode)
+  //   Derivation: primarily from crystal structure
+  //     FCC metals (Cu, Au, Al, Ni): high ductility (0.3-0.95) — many slip systems
+  //     BCC metals (Fe, Cr, W): moderate (0.1-0.6) — fewer slip systems
+  //     HCP metals (Zn, Mg, Ti): low-moderate (0.05-0.3) — limited slip
+  //     Ceramics/glass: very low (0.0-0.02) — no dislocation mobility
+  //     Temperature effect (BCC only): below BDTT, ductility drops to ~0.02
+  //       BDTT ≈ 0.1-0.2 × T_melt(K) for BCC metals
                                         // Gold: 0.95, glass: 0.01, mild steel: 0.6, cast iron: 0.05
 
   // ── Thermal ───────────────────────────────────────────────────────────────
@@ -428,6 +443,13 @@ MaterialPacket {
   //     Moisture increases C_p significantly (wet wood → C_p approaches water's 4186)
   thermalExpansion: number              // 1/K — how much material expands when heated
                                         // Used by: structural stress from temperature changes
+  //   Derivation: Grüneisen relation α = γ·Cv / (3·B·V)
+  //     γ = Grüneisen parameter (~1.5-2.5 for most metals, ~1.0 for ceramics)
+  //     Cv = specific heat at constant volume (from Debye model)
+  //     B = bulk modulus (from Young's modulus: B = E / (3×(1-2ν)))
+  //     V = molar volume = M / ρ
+  //   Typical values: Al: 23×10⁻⁶/K, Fe: 12×10⁻⁶/K, Cu: 17×10⁻⁶/K
+  //   Glass/ceramic: 3-9×10⁻⁶/K, wood: 3-5×10⁻⁶/K (along grain)
   emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
                                         // Used by: radiative heat loss, fire radiation
   ignitionTemperature: number           // °C — minimum temp for combustion (organic materials only)
@@ -479,7 +501,15 @@ MaterialPacket {
   // ── Acoustic ──────────────────────────────────────────────────────────────
   acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
                                         // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
-                                        // Metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001
+  //   Derivation: η ≈ (ρ × c_sound × A) / (ρ × c_sound × A + Z_internal)
+  //     where Z_internal = internal impedance from damping.
+  //     Simplified approximation: η scales with E/ρ (specific stiffness)
+  //     and inversely with dampingLossTangent:
+  //       η ≈ 0.02 × (E / (ρ × 10⁶)) / (1 + 100 × dampingLossTangent)
+  //     Metal (E/ρ high, damping low): η ≈ 0.01
+  //     Stone (E/ρ moderate, damping moderate): η ≈ 0.005
+  //     Wood (E/ρ low, damping high): η ≈ 0.002
+  //     Sand/soil (no rigidity): η ≈ 0.0001
   dampingLossTangent: number         // dimensionless — internal friction of the material
                                       // Determines how quickly vibrations decay (Q factor)
                                       // Low = rings long (metals: 0.0001-0.001)
@@ -1391,6 +1421,11 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
 //   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
 //   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6213 kJ/kg
 //   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
+//   Mercury: latentHeatFusion = 11.3 kJ/kg, latentHeatVaporization = 295 kJ/kg
+//     Tm = -38.83°C (liquid at room temperature), Tb = 356.7°C
+//     ρ = 13,534 kg/m³, cp = 139 J/(kg·K), k = 8.3 W/(m·K)
+//     μ = 0.00153 Pa·s at 20°C, σ = 0.49 N/m, emissivity ≈ 0.1
+//     M = 0.2006 kg/mol (molar mass for ideal gas law)
 //
 // Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
 //   247,000 J of sustained heat input before it becomes liquid.
