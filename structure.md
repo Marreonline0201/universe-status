@@ -448,7 +448,7 @@ MaterialPacket {
                                         // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
   surfaceTension: number                // N/m — surface cohesion
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
-                                        // Water: 0.073, mercury: 0.49
+                                        // Water: 0.0728 (IAPWS 2014), mercury: 0.49
   //   Molten iron: σ ≈ 1.87 - 0.0003 × (T - 1538) N/m (decreases with temperature)
   //     At melting point (1538°C): σ ≈ 1.87 N/m  
   //     At 1600°C: σ ≈ 1.85 N/m
@@ -1302,7 +1302,7 @@ On a sphere, the "down" direction is toward the planet center: `down = -normaliz
 Formula: `F_surface = σ · κ · n̂` where σ is surface tension coefficient, κ is surface curvature, n̂ is surface normal.
 
 Surface tension is computed from composition:
-- Water: σ ≈ 0.073 N/m (hydrogen bonds pull surface inward)
+- Water: σ ≈ 0.0728 N/m (IAPWS 2014; hydrogen bonds pull surface inward)
 - Molten iron: σ ≈ 1.87 N/m (Keene 1993; strong metallic bonds)
 - Mercury: σ ≈ 0.49 N/m (why mercury forms perfect spherical droplets)
 - Ethanol: σ ≈ 0.022 N/m (weak intermolecular forces)
@@ -3222,7 +3222,7 @@ StructuralBlock {
   //   Mud brick (clay + straw + water, dried):
   //     compressive: ~2 MPa, tensile: ~0.2 MPa, shear: ~0.5 MPa
   //   Oak wood (cellulose + lignin):
-  //     compressive: ~50 MPa (along grain), tensile: ~50 MPa (structural timber with defects; clear wood up to 100 MPa)
+  //     compressive: ~50 MPa (along grain), tensile: ~80 MPa (clear wood along grain; USDA Wood Handbook FPL-GTR-282)
   //     Wood is STRONGER in tension than compression — opposite of stone
   //     This is why wood beams span gaps but stone beams don't
   //   Copper:
@@ -3728,7 +3728,7 @@ ForceSystem {
   //
   //   | Material          | Density  | Tensile   | Max self-weight span | With 5× load |
   //   |-------------------|----------|-----------|---------------------|--------------|
-  //   | Oak wood          | 600      | 50 MPa   | ~106 m (extraordinary — 1m block artifact)| ~47 m |
+  //   | Oak wood          | 600      | 80 MPa   | ~134 m (1m block artifact — real beams span 6-10m)| ~59 m |
   //   | Granite           | 2700     | 10 MPa   | ~22 m               | ~10 m        |
   //   | Limestone         | 2400     | 3 MPa    | ~13 m               | ~6 m         |
   //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
