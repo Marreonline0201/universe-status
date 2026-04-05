@@ -22,8 +22,7 @@ fn vs(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     );
 
     let pos = corner_positions[vertex_index];
-    // Flip Y: WebGPU framebuffer has Y=0 at top, NDC has Y=1 at top
-    let uv = vec2f(pos.x * 0.5 + 0.5, -pos.y * 0.5 + 0.5);
+    let uv = pos * 0.5 + 0.5;
     let iuv = uv * vec2f(screenWidth, screenHeight);
 
     return VertexOutput(vec4f(pos, 0.0, 1.0), uv, iuv);
