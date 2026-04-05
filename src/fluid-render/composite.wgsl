@@ -39,10 +39,11 @@ fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
 }
 
 @fragment
-fn fs(input: FragmentInput) -> @location(0) vec4f {
+fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) vec4f {
+    var pixel = frag_pos.xy;
     // Sample textures BEFORE any non-uniform branches (WGSL requirement)
     var scene_color = textureSample(scene_texture, texture_sampler, input.uv);
-    var depth = abs(textureLoad(depth_texture, vec2u(input.iuv), 0).r);
+    var depth = abs(textureLoad(depth_texture, vec2u(pixel), 0).r);
 
     // No fluid — pass through scene
     if (depth >= 1e4) {
@@ -55,13 +56,13 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
     var view_pos = computeViewPos(input.uv, depth);
 
     var ddx = computeViewPos(input.uv + vec2f(uniforms.texel_size.x, 0.0),
-        abs(textureLoad(depth_texture, vec2u(input.iuv + vec2f(1.0, 0.0)), 0).r)) - view_pos;
+        abs(textureLoad(depth_texture, vec2u(pixel + vec2f(1.0, 0.0)), 0).r)) - view_pos;
     var ddy = computeViewPos(input.uv + vec2f(0.0, uniforms.texel_size.y),
-        abs(textureLoad(depth_texture, vec2u(input.iuv + vec2f(0.0, 1.0)), 0).r)) - view_pos;
+        abs(textureLoad(depth_texture, vec2u(pixel + vec2f(0.0, 1.0)), 0).r)) - view_pos;
     var ddx2 = view_pos - computeViewPos(input.uv - vec2f(uniforms.texel_size.x, 0.0),
-        abs(textureLoad(depth_texture, vec2u(input.iuv - vec2f(1.0, 0.0)), 0).r));
+        abs(textureLoad(depth_texture, vec2u(pixel - vec2f(1.0, 0.0)), 0).r));
     var ddy2 = view_pos - computeViewPos(input.uv - vec2f(0.0, uniforms.texel_size.y),
-        abs(textureLoad(depth_texture, vec2u(input.iuv - vec2f(0.0, 1.0)), 0).r));
+        abs(textureLoad(depth_texture, vec2u(pixel - vec2f(0.0, 1.0)), 0).r));
 
     // Pick the closer neighbor to avoid silhouette artifacts
     if (abs(ddx.z) > abs(ddx2.z)) { ddx = ddx2; }
@@ -70,7 +71,7 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
     var normal = normalize(cross(ddy, ddx));
 
     // §3.2 Pass 5: Compositing
-    var thickness = textureLoad(thickness_texture, vec2u(input.iuv), 0).r;
+    var thickness = textureLoad(thickness_texture, vec2u(pixel), 0).r;
     var ray_dir = normalize(view_pos);
 
     // Fresnel: F = F0 + (1-F0)(1 - N·V)^5
@@ -79,7 +80,7 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
 
     // Refraction: offset background UV (use textureLoad to avoid uniform control flow issue)
     var refract_dir = refract(ray_dir, normal, 1.0 / 1.333);
-    var refract_uv = input.iuv + refract_dir.xy * thickness * 30.0;
+    var refract_uv = pixel + refract_dir.xy * thickness * 30.0;
     var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u)))), 0);
 
     // Beer's law absorption: color = exp(-absorption × thickness)

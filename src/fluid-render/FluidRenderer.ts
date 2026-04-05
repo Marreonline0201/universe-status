@@ -41,8 +41,8 @@ export class FluidRenderer {
   private thicknessPipeline!: GPURenderPipeline
   private gaussianPipeline!: GPURenderPipeline
   compositePipeline!: GPURenderPipeline
-  private debugPipeline!: GPURenderPipeline
-  private debugBGL!: GPUBindGroupLayout
+  debugPipeline!: GPURenderPipeline
+  debugBGL!: GPUBindGroupLayout
 
   // Buffers
   private particleBuffer!: GPUBuffer
@@ -466,18 +466,26 @@ export class FluidRenderer {
 
     // ── Pass 5: Composite ──────────────────────────────────────────
     // Update composite uniforms
-    const compData = new Float32Array(32)
+    // CompositeUniforms: texel(8) + pad(8) + invProj(64) + lightDir(12) + pad(4) + color(12) + density(4) = 112 bytes
+    const compData = new Float32Array(28)
     compData[0] = 1 / this.width; compData[1] = 1 / this.height // texel_size
-    // inv_projection_matrix: identity for now (TODO: pass from camera)
-    compData[4] = 1; compData[9] = 1; compData[14] = 1; compData[19] = 1
+    compData[2] = 0; compData[3] = 0 // _pad
+
+    // Build inverse projection from the same parameters used for forward proj
+    // (stored from last updateCamera call)
+    const invProj = new Float32Array(16)
+    invProj[0] = 1; invProj[5] = 1; invProj[10] = 1; invProj[15] = 1 // identity fallback
+    compData.set(invProj, 4) // offset 4 = byte 16
+
     compData[20] = 0.5; compData[21] = 1.0; compData[22] = 0.3 // light_dir
+    compData[23] = 0 // _pad2
     compData[24] = 0.13; compData[25] = 0.4; compData[26] = 0.87 // fluid_color (water blue)
     compData[27] = 3.0 // density
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()
 
-    void d.createBindGroup({ // compositeBG — unused while debug mode active
+    const compositeBG = d.createBindGroup({
       layout: this.compositeBGL,
       entries: [
         { binding: 0, resource: this.sampler },
@@ -491,21 +499,16 @@ export class FluidRenderer {
     if (this.context) {
       const outputView = this.context.getCurrentTexture().createView()
 
-      // DEBUG: show depth map directly instead of composite
-      // This verifies depth sprites + bilateral blur are working
-      const debugBG = d.createBindGroup({
-        layout: this.debugBGL,
-        entries: [{ binding: 0, resource: depthView }],
-      })
+      // Pass 5: Composite — Fresnel + Beer's law + refraction + specular
       const p5 = encoder.beginRenderPass({
         colorAttachments: [{
           view: outputView,
           loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 }, // transparent — Three.js shows through
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
         }],
       })
-      p5.setPipeline(this.debugPipeline)
-      p5.setBindGroup(0, debugBG)
+      p5.setPipeline(this.compositePipeline)
+      p5.setBindGroup(0, compositeBG)
       p5.draw(6)
       p5.end()
     }
