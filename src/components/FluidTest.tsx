@@ -92,7 +92,7 @@ const MATERIALS: MaterialPacket[] = [
     density: 1060,
     viscosity: 0.004,
     surfaceTension: 0.058,
-    color: 0x8b0000,
+    color: 0xcc2222,
     restDensity: 1060,
     description: 'Slightly thicker than water. Non-Newtonian \u2014 thins under shear.',
   },
@@ -160,16 +160,18 @@ export function FluidTest() {
     const matIdx = simRef.current.selectedMaterial
 
     // Spawn a cluster of particles: 7x7x7 = 343 per click
-    const spacing = PARTICLE_RADIUS * 2.2
+    // Spacing matches WASM rest spacing (H*0.5 = 0.02) + jitter to break grid symmetry
+    const spacing = 0.022
     const gridSize = 7
+    const jitter = spacing * 0.25
     const positions: number[] = []
 
     for (let xi = 0; xi < gridSize; xi++) {
       for (let yi = 0; yi < gridSize; yi++) {
         for (let zi = 0; zi < gridSize; zi++) {
-          const x = worldPos.x + (xi - gridSize / 2) * spacing
-          const y = worldPos.y + (yi - gridSize / 2) * spacing
-          const z = worldPos.z + (zi - gridSize / 2) * spacing
+          const x = worldPos.x + (xi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+          const y = worldPos.y + (yi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+          const z = worldPos.z + (zi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
           if (Math.abs(x) < HALF_W - PARTICLE_RADIUS &&
               Math.abs(y) < HALF_H - PARTICLE_RADIUS &&
               Math.abs(z) < HALF_D - PARTICLE_RADIUS) {
