@@ -2106,7 +2106,7 @@ Lava flowing over water produces instant steam (boiling) + rapid cooling of the 
 | Scale | Method | Particle/cell count | Tick rate | Rust CPU cost per tick |
 |-------|--------|-------------------|-----------|----------------------|
 | Crafting | SPH | 100–5,000 | 60 Hz | ~0.5 ms |
-| Local env | MLS-MPM | 5,000–200,000 | 30 Hz | ~2.0 ms (50k active) / ~8.0 ms (200k active peak) |
+| Local env | MLS-MPM | 5,000–200,000 | 30 Hz | ~2.0 ms (50k, 4 substeps) / ~8.0 ms (200k, 4 substeps) |
 | Regional | Grid | 10,000–50,000 cells | 1 Hz | ~2.0 ms |
 | Global | Math | 0 | On demand | < 0.1 ms |
 | Redistribution | Amortized | — | Per tick | ~0.3 ms |
@@ -3772,6 +3772,12 @@ ForceSystem {
   //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
   //   | Iron              | 7800     | 200 MPa  | ~53 m               | ~24 m        |
   //   | Steel             | 7800     | 500 MPa  | ~84 m               | ~38 m        |
+  //
+  // NOTE: Self-weight spans above assume 1m × 1m cross-section (BLOCK_SIZE).
+  // Real timber beams are ~0.15m × 0.30m, giving L_max ≈ 8-12m — realistic.
+  // The 1m block size makes all beams enormously strong. In practice, players
+  // will never see the self-weight limit for wood/metal; the "with 5× load"
+  // column is the relevant gameplay constraint.
   //
   // These match real-world experience:
   //   Stone buildings need close-spaced columns (Parthenon: columns 2.5m apart)
