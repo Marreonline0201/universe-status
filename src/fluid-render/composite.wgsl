@@ -27,7 +27,7 @@ struct CompositeUniforms {
     specular_power: f32,    // Blinn-Phong exponent (250 water, 500 mercury)
     metalness: f32,         // 0 = dielectric, 1 = metallic (tints reflections)
     time: f32,              // seconds since start — for animated ripples
-    _pad3: f32,
+    ior: f32,               // index of refraction (water=1.333, honey=1.5)
     _pad4: f32,
     _pad5: f32,
 }
@@ -112,8 +112,8 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var f0 = uniforms.F0;
     var fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0), 0.0, 1.0);
 
-    // Refraction: offset background UV — IOR varies (water=1.333, mercury≈infinite, honey=1.5)
-    var ior = mix(1.333, 1.0, uniforms.metalness); // metals: no refraction
+    // Refraction: offset background UV — IOR from material properties
+    var ior = mix(uniforms.ior, 1.0, uniforms.metalness); // metals: no refraction
     var refract_dir = refract(ray_dir, normal, 1.0 / max(ior, 1.001));
     var refract_strength = mix(50.0, 0.0, uniforms.metalness); // metals don't refract
     var refract_uv = pixel + refract_dir.xy * thickness * refract_strength;

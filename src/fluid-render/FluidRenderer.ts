@@ -66,6 +66,7 @@ export class FluidRenderer {
   private fluidEmissive = 0.0
   private fluidSpecPower = 250.0
   private fluidMetalness = 0.0
+  private fluidIOR = 1.333
   private invProj = new Float32Array(16) // cached inverse projection for composite
 
   /**
@@ -306,6 +307,7 @@ export class FluidRenderer {
     emissive?: number,
     specularPower?: number,
     metalness?: number,
+    ior?: number,
   }) {
     this.fluidColor = [opts.r, opts.g, opts.b]
     this.fluidDensity = opts.density
@@ -313,6 +315,7 @@ export class FluidRenderer {
     this.fluidEmissive = opts.emissive ?? 0.0
     this.fluidSpecPower = opts.specularPower ?? 250.0
     this.fluidMetalness = opts.metalness ?? 0.0
+    this.fluidIOR = opts.ior ?? 1.333
   }
 
   updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
@@ -540,7 +543,8 @@ export class FluidRenderer {
     compData[30] = this.fluidSpecPower
     compData[31] = this.fluidMetalness
     compData[32] = time
-    // 33-35: padding
+    compData[33] = this.fluidIOR
+    // 34-35: padding
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()
