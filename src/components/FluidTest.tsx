@@ -441,14 +441,22 @@ export function FluidTest() {
             tempColor.setHex(mat.color)
 
             if (phase === 1) {
-              // Gas phase: white/light, faded
-              tempColor.lerp(new THREE.Color(0xffffff), 0.6)
-              tempColor.multiplyScalar(0.5 + Math.random() * 0.3) // shimmer
+              // Gas: white, shimmering, semi-transparent look
+              tempColor.set(0xccddff)
+              tempColor.multiplyScalar(0.4 + Math.random() * 0.4)
             } else if (phase === 2) {
-              // Solid/frozen: darken and desaturate
-              tempColor.lerp(new THREE.Color(0x334455), 0.5)
+              // Solid: dramatically darken — cooled basalt is dark gray,
+              // frozen water is pale blue, solidified metal is dark metallic
+              const solidColor = new THREE.Color(0x222233)
+              // Mix 80% toward dark to make solidification very visible
+              tempColor.lerp(solidColor, 0.8)
+              // Slight warmth if still above ambient
+              if (temp > 50) {
+                const warmth = Math.min(1.0, (temp - 50) / 500)
+                tempColor.lerp(new THREE.Color(0x662200), warmth * 0.4)
+              }
             } else {
-              // Liquid: brightness from velocity + temperature glow
+              // Liquid: velocity brightness + temperature-dependent color
               const svx = velocities[i3]
               const svy = velocities[i3 + 1]
               const svz = velocities[i3 + 2]
@@ -456,14 +464,19 @@ export function FluidTest() {
               const brightness = Math.min(1.0, 0.6 + speed * 0.15)
               tempColor.multiplyScalar(brightness)
 
-              // Hot glow: shift toward orange/white above 200°C
+              // Hot glow: real blackbody-like color progression
+              // 200-600°C: dark red, 600-1000°C: bright orange, 1000+°C: yellow-white
               if (temp > 200) {
-                const hotFactor = Math.min(1.0, (temp - 200) / 1000)
-                const hotColor = new THREE.Color(0xff6600).lerp(new THREE.Color(0xffffff), hotFactor * 0.5)
-                tempColor.lerp(hotColor, hotFactor * 0.7)
+                const t = Math.min(1.0, (temp - 200) / 1200)
+                // Blackbody approximation: dark red → orange → yellow → white
+                const r = Math.min(1.0, t * 2.5)
+                const g = Math.min(1.0, Math.max(0, (t - 0.3) * 2.0))
+                const b = Math.min(1.0, Math.max(0, (t - 0.7) * 3.0))
+                const hotColor = new THREE.Color(r, g, b)
+                tempColor.lerp(hotColor, Math.min(0.9, t * 1.2))
               }
 
-              // Cold tint: shift toward ice blue below 0°C
+              // Cold: ice blue tint below 0°C
               if (temp < 0) {
                 const coldFactor = Math.min(1.0, -temp / 50)
                 tempColor.lerp(new THREE.Color(0x88ccff), coldFactor * 0.5)
