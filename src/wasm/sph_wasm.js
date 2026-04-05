@@ -120,6 +120,15 @@ export class Simulation {
         wasm.simulation_reset(this.__wbg_ptr);
     }
     /**
+     * Set box boundaries and push particles inside. Handles collision when shrinking.
+     * @param {number} hw
+     * @param {number} hh
+     * @param {number} hd
+     */
+    set_bounds(hw, hh, hd) {
+        wasm.simulation_set_bounds(this.__wbg_ptr, hw, hh, hd);
+    }
+    /**
      * @param {number} gravity
      * @param {number} dt
      * @param {number} sub_steps

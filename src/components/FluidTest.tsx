@@ -134,6 +134,8 @@ export function FluidTest() {
   const [showInfo, setShowInfo] = useState(true)
   const [fpsWarning, setFpsWarning] = useState(false)
   const [wasmReady, setWasmReady] = useState(false)
+  const [showParticles, setShowParticles] = useState(false) // toggle raw particle spheres
+  const [boxScale, setBoxScale] = useState(1.0) // 0.5 to 1.0 — shrink/expand box
 
   // Refs for simulation state
   const simRef = useRef<{
@@ -159,7 +161,14 @@ export function FluidTest() {
     raycaster: THREE.Raycaster
     mouse: THREE.Vector2
     boxMesh: THREE.LineSegments
+    glassBox: THREE.Mesh
+    floorMesh: THREE.Mesh
+    wallMesh: THREE.Mesh
+    leftWall: THREE.Mesh
+    rightWall: THREE.Mesh
     avgTemp: number
+    showParticles: boolean
+    boxScale: number
   } | null>(null)
 
   const resetSim = useCallback(() => {
@@ -216,6 +225,30 @@ export function FluidTest() {
   useEffect(() => {
     if (simRef.current) simRef.current.timeScale = timeScale
   }, [timeScale])
+  useEffect(() => {
+    if (simRef.current) simRef.current.showParticles = showParticles
+  }, [showParticles])
+  useEffect(() => {
+    if (!simRef.current) return
+    const sim = simRef.current
+    sim.boxScale = boxScale
+
+    // Update box geometry — scale from center
+    const sw = BOX_W * boxScale, sh = BOX_H * boxScale, sd = BOX_D * boxScale
+    sim.boxMesh.scale.set(boxScale, boxScale, boxScale)
+    sim.glassBox.scale.set(boxScale, boxScale, boxScale)
+    sim.floorMesh.position.y = -sh / 2 + 0.001
+    sim.floorMesh.scale.set(boxScale, 1, boxScale)
+    sim.wallMesh.position.z = -sd / 2 + 0.001
+    sim.wallMesh.scale.set(boxScale, boxScale, 1)
+    sim.leftWall.position.x = -sw / 2 + 0.001
+    sim.leftWall.scale.set(boxScale, boxScale, 1)
+    sim.rightWall.position.x = sw / 2 - 0.001
+    sim.rightWall.scale.set(boxScale, boxScale, 1)
+
+    // Update WASM boundary — particles must be pushed inside new bounds
+    sim.simulation.set_bounds(sw / 2, sh / 2, sd / 2)
+  }, [boxScale])
 
   // ── Main Three.js setup and render loop ─────────────────────────────────
   useEffect(() => {
@@ -440,12 +473,19 @@ export function FluidTest() {
         raycaster,
         mouse,
         boxMesh,
+        glassBox,
+        floorMesh,
+        wallMesh,
+        leftWall,
+        rightWall,
         avgTemp: AMBIENT_TEMP,
         sprayPoints,
         sprayPosAttr,
         sprayColAttr,
         mcubes,
         fluidRenderer,
+        showParticles: false,
+        boxScale: 1.0,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -537,7 +577,8 @@ export function FluidTest() {
           const ssfrActive = sim.fluidRenderer?.isInitialized ?? false
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
-            im.visible = !ssfrActive
+            // Show particles when: SSFR off, OR user toggled showParticles on
+            im.visible = !ssfrActive || sim.showParticles
           })
 
           // Upload particles to WebGPU fluid renderer
@@ -914,6 +955,40 @@ export function FluidTest() {
           >
             RESET
           </button>
+
+          {/* Show/Hide Particles */}
+          <button
+            onClick={() => setShowParticles(!showParticles)}
+            style={{
+              width: '100%', padding: '6px 0', cursor: 'pointer',
+              background: showParticles ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.05)',
+              border: '1px solid rgba(0,180,255,0.2)', borderRadius: 3,
+              color: '#c0d0e0', fontFamily: 'inherit', fontSize: 11, letterSpacing: 1,
+              marginBottom: 6,
+            }}
+          >
+            {showParticles ? 'HIDE PARTICLES' : 'SHOW PARTICLES'}
+          </button>
+
+          {/* Box Scale */}
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, letterSpacing: 2, color: 'rgba(0,180,255,0.5)', marginBottom: 2 }}>
+              BOX SIZE
+            </div>
+            <input
+              type="range" min={0.4} max={1.0}
+              step={0.05}
+              value={boxScale}
+              onChange={(e) => setBoxScale(Number(e.target.value))}
+              style={{
+                width: '100%', accentColor: '#00bbff',
+                background: 'transparent', cursor: 'pointer',
+              }}
+            />
+            <div style={{ fontSize: 10, textAlign: 'right', color: 'rgba(0,180,255,0.4)' }}>
+              {(boxScale * 100).toFixed(0)}%
+            </div>
+          </div>
 
           {/* Separator */}
           <div style={{

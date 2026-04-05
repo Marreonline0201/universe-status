@@ -15,6 +15,7 @@ export const simulation_get_temperatures: (a: number) => [number, number];
 export const simulation_get_velocities: (a: number) => [number, number];
 export const simulation_new: () => number;
 export const simulation_reset: (a: number) => void;
+export const simulation_set_bounds: (a: number, b: number, c: number, d: number) => void;
 export const simulation_step: (a: number, b: number, c: number, d: number) => void;
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;

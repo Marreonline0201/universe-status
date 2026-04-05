@@ -27,10 +27,10 @@ const PARTICLE_SPACING: f32 = H * 0.5;  // rest spacing = h/2
 const GAMMA: f32 = 7.0;                 // Tait exponent (§3.2)
 const CS: f32 = 8.0;                    // speed of sound (normalized)
 
-// Box boundaries
-const HALF_W: f32 = 1.0;
-const HALF_H: f32 = 0.75;
-const HALF_D: f32 = 0.75;
+// Box boundaries (default values, can be changed at runtime)
+const DEFAULT_HALF_W: f32 = 1.0;
+const DEFAULT_HALF_H: f32 = 0.75;
+const DEFAULT_HALF_D: f32 = 0.75;
 
 // Spatial hash
 const TABLE_SIZE: usize = 16381;
@@ -375,6 +375,8 @@ impl Grid {
 #[wasm_bindgen]
 pub struct Simulation {
     n: usize,
+    // Mutable box bounds (can be shrunk at runtime)
+    half_w: f32, half_h: f32, half_d: f32,
     // Position, velocity, force (normalized units)
     px: Vec<f32>, py: Vec<f32>, pz: Vec<f32>,
     vx: Vec<f32>, vy: Vec<f32>, vz: Vec<f32>,
@@ -417,6 +419,7 @@ impl Simulation {
         let m = MAX_PARTICLES;
         Simulation {
             n: 0,
+            half_w: DEFAULT_HALF_W, half_h: DEFAULT_HALF_H, half_d: DEFAULT_HALF_D,
             px: vec![0.0; m], py: vec![0.0; m], pz: vec![0.0; m],
             vx: vec![0.0; m], vy: vec![0.0; m], vz: vec![0.0; m],
             fx: vec![0.0; m], fy: vec![0.0; m], fz: vec![0.0; m],
@@ -441,6 +444,27 @@ impl Simulation {
 
     #[wasm_bindgen]
     pub fn get_count(&self) -> usize { self.n }
+
+    /// Set box boundaries and push particles inside. Handles collision when shrinking.
+    #[wasm_bindgen]
+    pub fn set_bounds(&mut self, hw: f32, hh: f32, hd: f32) {
+        self.half_w = hw;
+        self.half_h = hh;
+        self.half_d = hd;
+        // Push particles inside new bounds
+        let pad = PARTICLE_SPACING;
+        for i in 0..self.n {
+            if self.px[i] < -hw + pad { self.px[i] = -hw + pad; self.vx[i] *= -0.1; }
+            if self.px[i] > hw - pad { self.px[i] = hw - pad; self.vx[i] *= -0.1; }
+            if self.py[i] < -hh + pad { self.py[i] = -hh + pad; self.vy[i] *= -0.1; }
+            if self.py[i] > hh - pad { self.py[i] = hh - pad; self.vy[i] *= -0.1; }
+            if self.pz[i] < -hd + pad { self.pz[i] = -hd + pad; self.vz[i] *= -0.1; }
+            if self.pz[i] > hd - pad { self.pz[i] = hd - pad; self.vz[i] *= -0.1; }
+            // Wake any sleeping particles that got pushed
+            self.is_sleeping[i] = false;
+            self.sleep_counter[i] = 0;
+        }
+    }
 
     #[wasm_bindgen]
     pub fn add_particles(&mut self, positions: &[f32], mat_idx: u8) -> usize {
@@ -946,7 +970,7 @@ impl Simulation {
 
             // ── Walls ───────────────────────────────────────────────────
             let pad = PARTICLE_SPACING;
-            if self.py[i] < -HALF_H + pad {
+            if self.py[i] < -self.half_h + pad {
                 // §3.2: Weber number spray on floor impact
                 // We = ρ × v² × d / σ (lines 2470-2540)
                 let impact_speed = (-self.vy[i]).max(0.0);
@@ -973,7 +997,7 @@ impl Simulation {
                     }
                 }
 
-                self.py[i] = -HALF_H + pad;
+                self.py[i] = -self.half_h + pad;
                 if self.vy[i] < 0.0 { self.vy[i] *= -0.02; }
                 self.vx[i] *= 0.98; self.vz[i] *= 0.98;
                 // §3.0: Floor heat exchange (Fourier's law with floor)
@@ -982,24 +1006,24 @@ impl Simulation {
                 let t_scale_floor = THERMAL_SPEEDUP / (1.0 + (self.temp[i] - AMBIENT_TEMP).abs() / 100.0);
                 self.temp[i] += q_floor / (mat.density_si * mat.specific_heat) * dt * t_scale_floor;
             }
-            if self.py[i] > HALF_H - pad {
-                self.py[i] = HALF_H - pad;
+            if self.py[i] > self.half_h - pad {
+                self.py[i] = self.half_h - pad;
                 if self.vy[i] > 0.0 { self.vy[i] *= -0.1; }
             }
-            if self.px[i] < -HALF_W + pad {
-                self.px[i] = -HALF_W + pad;
+            if self.px[i] < -self.half_w + pad {
+                self.px[i] = -self.half_w + pad;
                 if self.vx[i] < 0.0 { self.vx[i] *= -0.1; }
             }
-            if self.px[i] > HALF_W - pad {
-                self.px[i] = HALF_W - pad;
+            if self.px[i] > self.half_w - pad {
+                self.px[i] = self.half_w - pad;
                 if self.vx[i] > 0.0 { self.vx[i] *= -0.1; }
             }
-            if self.pz[i] < -HALF_D + pad {
-                self.pz[i] = -HALF_D + pad;
+            if self.pz[i] < -self.half_d + pad {
+                self.pz[i] = -self.half_d + pad;
                 if self.vz[i] < 0.0 { self.vz[i] *= -0.1; }
             }
-            if self.pz[i] > HALF_D - pad {
-                self.pz[i] = HALF_D - pad;
+            if self.pz[i] > self.half_d - pad {
+                self.pz[i] = self.half_d - pad;
                 if self.vz[i] > 0.0 { self.vz[i] *= -0.1; }
             }
         }
@@ -1032,8 +1056,8 @@ impl Simulation {
             self.spray_pz[i] += self.spray_vz[i] * dt;
 
             // Remove if out of bounds
-            if self.spray_py[i] < -HALF_H || self.spray_py[i] > HALF_H
-                || self.spray_px[i].abs() > HALF_W || self.spray_pz[i].abs() > HALF_D {
+            if self.spray_py[i] < -self.half_h || self.spray_py[i] > self.half_h
+                || self.spray_px[i].abs() > self.half_w || self.spray_pz[i].abs() > self.half_d {
                 self.spray_life[i] = 0.0;
                 continue;
             }

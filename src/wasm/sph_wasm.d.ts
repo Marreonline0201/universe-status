@@ -29,6 +29,10 @@ export class Simulation {
     get_velocities(): Float32Array;
     constructor();
     reset(): void;
+    /**
+     * Set box boundaries and push particles inside. Handles collision when shrinking.
+     */
+    set_bounds(hw: number, hh: number, hd: number): void;
     step(gravity: number, dt: number, sub_steps: number): void;
 }
 
@@ -50,6 +54,7 @@ export interface InitOutput {
     readonly simulation_get_velocities: (a: number) => [number, number];
     readonly simulation_new: () => number;
     readonly simulation_reset: (a: number) => void;
+    readonly simulation_set_bounds: (a: number, b: number, c: number, d: number) => void;
     readonly simulation_step: (a: number, b: number, c: number, d: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
