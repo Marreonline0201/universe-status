@@ -154,7 +154,7 @@ static MATS: [Mat; NMAT] = [
     // Lf=334000 J/kg, Lv=2260000 J/kg
     // Arrhenius Ea/R ≈ 1800K for water (literature value)
     Mat {
-        rho0: 1.0, mu_ref: 0.01, surface_tension: 0.073,
+        rho0: 1.0, mu_ref: 0.01, surface_tension: 0.0728, // IAPWS 2014
         thermal_conductivity: 0.6,
         specific_heat: 4186.0,
         melting_point: 0.0,
@@ -223,7 +223,7 @@ static MATS: [Mat; NMAT] = [
     Mat {
         rho0: 13.5, mu_ref: 0.015, surface_tension: 0.49,
         thermal_conductivity: 8.3,
-        specific_heat: 140.0,
+        specific_heat: 139.5,
         melting_point: -39.0,
         boiling_point: 357.0,
         latent_heat_fusion: 11_300.0,

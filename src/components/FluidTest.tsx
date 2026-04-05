@@ -31,7 +31,7 @@ const MATERIALS: MaterialPacket[] = [
     composition: 'H\u2082O',
     density: 1000,
     viscosity: 0.001,
-    surfaceTension: 0.073,
+    surfaceTension: 0.0728, // IAPWS 2014
     color: 0x3399ff,
     restDensity: 1000,
     description: 'The most common liquid. Low viscosity \u2014 flows freely and splashes easily.',
@@ -61,7 +61,7 @@ const MATERIALS: MaterialPacket[] = [
     name: 'Mercury',
     composition: 'Hg',
     density: 13546,
-    viscosity: 0.0015,
+    viscosity: 0.00153,
     surfaceTension: 0.49,
     color: 0xc0c0c0,
     restDensity: 13546,
