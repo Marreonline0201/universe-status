@@ -365,7 +365,17 @@ export function FluidTest() {
       // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
       // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
       // MC provides smooth surface shape; Points provide per-material color
-      // MC material: mostly transparent, slight tint, doesn't impose a color
+      // Use clipping planes to prevent MC from extending outside box
+      const boxClipPlanes = [
+        new THREE.Plane(new THREE.Vector3(1, 0, 0), HALF_W),
+        new THREE.Plane(new THREE.Vector3(-1, 0, 0), HALF_W),
+        new THREE.Plane(new THREE.Vector3(0, 1, 0), HALF_H),
+        new THREE.Plane(new THREE.Vector3(0, -1, 0), HALF_H),
+        new THREE.Plane(new THREE.Vector3(0, 0, 1), HALF_D),
+        new THREE.Plane(new THREE.Vector3(0, 0, -1), HALF_D),
+      ]
+      renderer.localClippingEnabled = true
+
       const mcMaterial = new THREE.MeshPhysicalMaterial({
         color: 0xaaccee,
         roughness: 0.05,
@@ -376,12 +386,13 @@ export function FluidTest() {
         opacity: 0.35,
         side: THREE.DoubleSide,
         depthWrite: false,
+        clippingPlanes: boxClipPlanes,
       })
       const mcubes = new MarchingCubes(28, mcMaterial, false, true, 50000)
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = 8.0
+      mcubes.isolation = 20
       mcubes.visible = true
       scene.add(mcubes)
 
@@ -623,54 +634,20 @@ export function FluidTest() {
             mcMat.opacity = 0.7
           }
 
-          // Splat particle density directly onto MC grid using SPH-like kernel
-          // Each particle contributes to a 5×5×5 neighborhood of grid cells
-          const mcRes = 28
-          const splatR = 2
-          const fieldArr = (sim.mcubes as any).field as Float32Array
-          // Map particles slightly inward to prevent MC surface leaking outside box
-          const margin = 3.0 / mcRes  // keep 3 cells margin from edges to prevent bleed
+          // Use MC's own addBall API — coordinates in [0,1] range
+          // Map world particle positions to MC [0,1] with margin
+          const margin = 0.08
+          const str = 0.005  // ball strength — positive field only
+          const sub = 0      // no per-ball subtract — isolation is the only threshold
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-            // Map world position to grid coordinates with margin
-            const nx = (positions[i3]     + HALF_W) / BOX_W
-            const ny = (positions[i3 + 1] + HALF_H) / BOX_H
-            const nz = (positions[i3 + 2] + HALF_D) / BOX_D
-            // Clamp to inner region to prevent edge bleed
-            const gx = (margin + nx * (1 - 2 * margin)) * mcRes
-            const gy = (margin + ny * (1 - 2 * margin)) * mcRes
-            const gz = (margin + nz * (1 - 2 * margin)) * mcRes
-            const cx = Math.floor(gx), cy = Math.floor(gy), cz = Math.floor(gz)
-
-            for (let dx = -splatR; dx <= splatR; dx++) {
-              for (let dy = -splatR; dy <= splatR; dy++) {
-                for (let dz = -splatR; dz <= splatR; dz++) {
-                  const ix = cx + dx, iy = cy + dy, iz = cz + dz
-                  if (ix < 1 || ix >= mcRes - 1 || iy < 1 || iy >= mcRes - 1 || iz < 1 || iz >= mcRes - 1) continue
-                  const fx = gx - ix - 0.5, fy = gy - iy - 0.5, fz = gz - iz - 0.5
-                  const r2 = fx * fx + fy * fy + fz * fz
-                  if (r2 > splatR * splatR + 0.5) continue
-                  const w = Math.max(0, 1.0 - r2 / (splatR * splatR + 0.5))
-                  const idx = mcRes * mcRes * iz + mcRes * iy + ix
-                  fieldArr[idx] += w * 0.8
-                }
-              }
-            }
+            // World to MC [0,1] with margin to keep surface inside box
+            const bx = margin + ((positions[i3]     + HALF_W) / BOX_W) * (1 - 2 * margin)
+            const by = margin + ((positions[i3 + 1] + HALF_H) / BOX_H) * (1 - 2 * margin)
+            const bz = margin + ((positions[i3 + 2] + HALF_D) / BOX_D) * (1 - 2 * margin)
+            sim.mcubes.addBall(bx, by, bz, str, sub)
           }
-          sim.mcubes.blur(1)
-
-          // Zero out boundary cells to prevent MC surface bleeding outside box
-          for (let z = 0; z < mcRes; z++) {
-            for (let y = 0; y < mcRes; y++) {
-              for (let x = 0; x < mcRes; x++) {
-                if (x < 2 || x >= mcRes - 2 || y < 2 || y >= mcRes - 2 || z < 2 || z >= mcRes - 2) {
-                  fieldArr[mcRes * mcRes * z + mcRes * y + x] = 0
-                }
-              }
-            }
-          }
-
           sim.mcubes.update()
 
           setParticleCount(count)
