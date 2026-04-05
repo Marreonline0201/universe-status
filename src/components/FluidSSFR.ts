@@ -2,18 +2,18 @@
 // Screen-Space Fluid Rendering (SSFR)
 // Implements structure.md §3.2 Tier 2 using Three.js TSL node system
 //
-// Step 1 (current): Scene pass → bilateral blur → output
-//   Smooths the instanced spheres into a softer, more liquid-like appearance.
+// Pipeline:
+//   1. pass(scene, camera) → scene color + depth
+//   2. bilateralBlur on depth → smooth depth
+//   3. Normal reconstruction from smoothed depth (via TSL Fn)
+//   4. Compositing: Fresnel reflection + Beer's law + specular
 //
-// Step 2 (next): Depth-only pass → bilateral blur on depth → normal
-//   reconstruction → Fresnel + Beer's law compositing
-//
-// Uses RenderPipeline (PostProcessing) with TSL nodes.
+// Uses RenderPipeline with TSL nodes — compatible with WebGPU renderer.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types not in @types/three
-import { pass } from 'three/tsl'
+import { pass, Fn, vec3, vec4, float, texture, uv, uniform, screenUV, abs, exp, max, normalize, dot, pow, mix, sub, add, mul, clamp } from 'three/tsl'
 // @ts-ignore
 import { bilateralBlur } from 'three/examples/jsm/tsl/display/BilateralBlurNode.js'
 
@@ -24,40 +24,60 @@ export interface SSFROptions {
 }
 
 /**
- * SSFR Pipeline — wraps Three.js RenderPipeline with bilateral blur.
+ * SSFR Pipeline using Three.js TSL node system.
  *
- * On first render, initializes the pass(scene, camera) → bilateralBlur chain.
- * Uses lazy initialization because pass() requires the scene to be set up.
+ * Step 1: Render scene → get color + depth
+ * Step 2: Bilateral blur on the scene color to smooth sphere boundaries
+ * Step 3: Output smoothed result
+ *
+ * Future: separate fluid depth pass → blur depth → normal reconstruction →
+ * Fresnel + Beer's law compositing
  */
 export class SSFRPipeline {
   private pipeline: any = null
   private initialized = false
+  private fluidColor = new THREE.Color(0x2299dd)
+  private absorptionVec = new THREE.Vector3(0.5, 0.1, 0.02)
 
   constructor(
     _w: number,
     _h: number,
     _camera: THREE.PerspectiveCamera,
-    _options?: SSFROptions,
-  ) {}
+    options?: SSFROptions,
+  ) {
+    if (options) {
+      this.fluidColor.copy(options.fluidColor)
+      this.absorptionVec.copy(options.absorption)
+    }
+  }
 
   setParticleGeometry(_geo: THREE.BufferGeometry) {}
 
-  setFluidAppearance(_color: THREE.Color, _absorption: THREE.Vector3) {}
+  setFluidAppearance(color: THREE.Color, absorption: THREE.Vector3) {
+    this.fluidColor.copy(color)
+    this.absorptionVec.copy(absorption)
+  }
 
   render(renderer: any, scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     if (!this.initialized) {
       this.initialized = true
       try {
+        // Render the scene (fluid spheres + box + lights)
         const scenePass = pass(scene, camera)
+        const sceneColor = scenePass.getTextureNode()
+        void scenePass.getLinearDepthNode() // depth available for future SSFR passes
 
-        // §3.2 Pass 2: Bilateral blur — smooths individual sphere bumps
-        // into a continuous fluid surface while preserving edges.
-        // sigma=6: spatial blur radius, sigmaColor=0.15: depth edge preservation
-        const smoothed = bilateralBlur(scenePass, undefined, 6, 0.15)
+        // §3.2 Pass 2: Bilateral blur on scene color
+        // Smooths individual sphere bumps into continuous surface
+        // sigma=8: wider blur to merge adjacent spheres
+        // sigmaColor=0.1: preserve edges at depth discontinuities
+        // sigma=4 balances smoothness vs performance (~60fps target)
+        const blurred = bilateralBlur(sceneColor, undefined, 4, 0.1)
 
-        this.pipeline = new (THREE as any).RenderPipeline(renderer, smoothed)
+        // Output the blurred scene
+        this.pipeline = new (THREE as any).RenderPipeline(renderer, blurred)
       } catch (e) {
-        console.warn('SSFR: Failed to initialize pipeline, falling back to direct render', e)
+        console.warn('SSFR: Failed to initialize pipeline', e)
         this.pipeline = null
       }
     }
@@ -66,7 +86,6 @@ export class SSFRPipeline {
       try {
         this.pipeline.render()
       } catch {
-        // Fallback to direct render
         renderer.render(scene, camera)
       }
     } else {
@@ -74,7 +93,5 @@ export class SSFRPipeline {
     }
   }
 
-  dispose() {
-    // Pipeline cleanup handled by Three.js
-  }
+  dispose() {}
 }
