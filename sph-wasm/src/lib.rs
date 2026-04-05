@@ -46,6 +46,20 @@ const PHASE_LIQUID: u8 = 0;
 const PHASE_GAS: u8 = 1;
 const PHASE_SOLID: u8 = 2;
 
+// §3.9: Air drag — F_drag = 0.5 × ρ_air × v² × Cd × A
+const RHO_AIR: f32 = 1.225;             // kg/m³ at sea level, 15°C (§3.9 line 8555)
+const CD_SPHERE: f32 = 0.47;            // drag coefficient for sphere (§3.9 line 8581)
+const PARTICLE_CROSS_SECTION: f32 = PARTICLE_SPACING * PARTICLE_SPACING * PI; // πr²
+
+// §3.2 lines 2135-2148: Sleep/wake system
+const SLEEP_VELOCITY_THRESHOLD: f32 = 0.005; // particles below this speed are candidates
+const SLEEP_TICKS_REQUIRED: u32 = 30;        // 30 ticks dormant → skip computation
+// "80-95% of particles sleeping at any time (zero cost until disturbed)"
+
+// §3.2 lines 2470-2540: Secondary particles (spray)
+// Weber number: We = ρ × v² × d / σ
+const SPRAY_WEBER_THRESHOLD: f32 = 40.0; // spawn spray above this (§3.2)
+
 // ── Kernel (cubic spline M4, 3D) — §3.2 ───────────────────────────────────
 
 fn sigma_k() -> f32 { 1.0 / (PI * H * H * H) }
@@ -373,6 +387,10 @@ pub struct Simulation {
     // phaseProgress += Q_absorbed / (mass_si × latentHeat)
     phase_progress: Vec<f32>,
 
+    // §3.2: Sleep/wake system (lines 2135-2148)
+    sleep_counter: Vec<u32>,  // ticks since last significant movement
+    is_sleeping: Vec<bool>,   // true = skip all computation
+
     grid: Grid,
 }
 
@@ -391,6 +409,8 @@ impl Simulation {
             temp: vec![AMBIENT_TEMP; m],
             phase: vec![PHASE_LIQUID; m],
             phase_progress: vec![0.0; m],
+            sleep_counter: vec![0; m],
+            is_sleeping: vec![false; m],
             grid: Grid::new(),
         }
     }
@@ -440,9 +460,31 @@ impl Simulation {
             self.temp[i] = spawn_temp;
             self.phase[i] = spawn_phase;
             self.phase_progress[i] = 0.0;
+            self.sleep_counter[i] = 0;
+            self.is_sleeping[i] = false;
             self.n += 1;
             added += 1;
         }
+
+        // §3.2: Wake nearby sleeping particles when new particles are added
+        // "zero cost until disturbed"
+        for idx in 0..self.n {
+            if self.is_sleeping[idx] {
+                // Check if any new particle is within kernel radius
+                for p in 0..num {
+                    if p * 3 + 2 >= positions.len() { break; }
+                    let dx = self.px[idx] - positions[p*3];
+                    let dy = self.py[idx] - positions[p*3+1];
+                    let dz = self.pz[idx] - positions[p*3+2];
+                    if dx*dx + dy*dy + dz*dz < H_SQ * 4.0 {
+                        self.is_sleeping[idx] = false;
+                        self.sleep_counter[idx] = 0;
+                        break;
+                    }
+                }
+            }
+        }
+
         added
     }
 
@@ -476,6 +518,12 @@ impl Simulation {
 
     #[wasm_bindgen]
     pub fn get_phases(&self) -> Vec<u8> { self.phase[..self.n].to_vec() }
+
+    /// §3.2: Number of sleeping particles (for UI display)
+    #[wasm_bindgen]
+    pub fn get_sleep_count(&self) -> usize {
+        self.is_sleeping[..self.n].iter().filter(|&&s| s).count()
+    }
 }
 
 impl Simulation {
@@ -497,7 +545,9 @@ impl Simulation {
 
         // ── §3.2: Density computation ───────────────────────────────────
         // ρ_i = Σ_j m_j · W(r_ij, h)
+        // Note: sleeping particles still included in grid for neighbor density
         for i in 0..n {
+            if self.is_sleeping[i] { continue; }
             let (xi, yi, zi) = (self.px[i], self.py[i], self.pz[i]);
             let mut rho = 0.0f32;
             let (cix, ciy, ciz) = (
@@ -766,6 +816,9 @@ impl Simulation {
 
         // ── Integration ─────────────────────────────────────────────────
         for i in 0..n {
+            // §3.2 lines 2135-2148: Skip sleeping particles
+            if self.is_sleeping[i] { continue; }
+
             let inv_rho = 1.0 / self.rho[i];
             let mat = &MATS[self.mat_id[i] as usize];
 
@@ -774,14 +827,13 @@ impl Simulation {
                 self.vx[i] *= 0.9;
                 self.vy[i] *= 0.9;
                 self.vz[i] *= 0.9;
-                self.vy[i] -= gravity * dt * 0.1; // still settles under gravity
+                self.vy[i] -= gravity * dt * 0.1;
             } else {
                 // §3.2: Apply non-Newtonian correction if applicable
                 if mat.is_non_newtonian && shear_rates[i] > 0.0 {
                     let mu_newton = arrhenius_viscosity(mat, self.temp[i]);
                     let mu_cross = cross_model_viscosity(mat, shear_rates[i], self.temp[i]);
                     let correction = mu_cross / mu_newton.max(0.001);
-                    // Scale viscosity forces by Cross model ratio
                     self.fx[i] *= 1.0 + (correction - 1.0) * 0.3;
                     self.fy[i] *= 1.0 + (correction - 1.0) * 0.3;
                     self.fz[i] *= 1.0 + (correction - 1.0) * 0.3;
@@ -794,13 +846,36 @@ impl Simulation {
                 // Gravity
                 self.vy[i] -= gravity * dt;
 
+                // §3.9: Air drag — F_drag = -0.5 × ρ_air × |v|² × Cd × A × v̂
+                // Applies to all airborne particles (not submerged in dense fluid)
+                let speed_sq = self.vx[i]*self.vx[i] + self.vy[i]*self.vy[i] + self.vz[i]*self.vz[i];
+                if speed_sq > 0.01 {
+                    let speed = speed_sq.sqrt();
+                    // Normalized drag: scale by mass ratio (air density / particle density)
+                    let drag_accel = 0.5 * RHO_AIR * speed * CD_SPHERE * PARTICLE_CROSS_SECTION
+                        / (self.mass[i].max(1e-8));
+                    let drag_factor = (drag_accel * dt).min(0.5); // clamp to avoid sign flip
+                    self.vx[i] -= self.vx[i] * drag_factor;
+                    self.vy[i] -= self.vy[i] * drag_factor;
+                    self.vz[i] -= self.vz[i] * drag_factor;
+                }
+
                 // §3.2/§3.11: Gas buoyancy (Archimedes — density difference)
                 if self.phase[i] == PHASE_GAS {
-                    // Buoyancy = (ρ_liquid - ρ_gas) / ρ_gas × g
-                    // Gas density is much lower, so net upward force
                     let buoyancy = gravity * (mat.rho0 / self.rho[i].max(0.01) - 1.0).min(5.0);
                     self.vy[i] += buoyancy * dt;
                 }
+            }
+
+            // §3.2 lines 2135-2148: Sleep/wake check
+            let vsq = self.vx[i]*self.vx[i] + self.vy[i]*self.vy[i] + self.vz[i]*self.vz[i];
+            if vsq < SLEEP_VELOCITY_THRESHOLD * SLEEP_VELOCITY_THRESHOLD {
+                self.sleep_counter[i] += 1;
+                if self.sleep_counter[i] >= SLEEP_TICKS_REQUIRED {
+                    self.is_sleeping[i] = true;
+                }
+            } else {
+                self.sleep_counter[i] = 0;
             }
 
             // Velocity clamp

@@ -626,6 +626,15 @@ export function FluidTest() {
           }}>
             N: {particleCount} / {MAX_PARTICLES}
           </span>
+          {simRef.current && particleCount > 0 && (
+            <span style={{
+              fontSize: 10,
+              color: 'rgba(100,150,200,0.4)',
+              letterSpacing: 1,
+            }}>
+              {Math.round(simRef.current.avgTemp)}°C
+            </span>
+          )}
         </div>
       </div>
 

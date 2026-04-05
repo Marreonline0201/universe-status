@@ -7,6 +7,7 @@ export const simulation_get_count: (a: number) => number;
 export const simulation_get_materials: (a: number) => [number, number];
 export const simulation_get_phases: (a: number) => [number, number];
 export const simulation_get_positions: (a: number) => [number, number];
+export const simulation_get_sleep_count: (a: number) => number;
 export const simulation_get_temperatures: (a: number) => [number, number];
 export const simulation_get_velocities: (a: number) => [number, number];
 export const simulation_new: () => number;

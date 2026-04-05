@@ -57,6 +57,14 @@ export class Simulation {
         return v1;
     }
     /**
+     * §3.2: Number of sleeping particles (for UI display)
+     * @returns {number}
+     */
+    get_sleep_count() {
+        const ret = wasm.simulation_get_sleep_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * @returns {Float32Array}
      */
     get_temperatures() {

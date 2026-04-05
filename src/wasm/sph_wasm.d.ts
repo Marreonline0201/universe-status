@@ -9,6 +9,10 @@ export class Simulation {
     get_materials(): Uint8Array;
     get_phases(): Uint8Array;
     get_positions(): Float32Array;
+    /**
+     * §3.2: Number of sleeping particles (for UI display)
+     */
+    get_sleep_count(): number;
     get_temperatures(): Float32Array;
     get_velocities(): Float32Array;
     constructor();
@@ -26,6 +30,7 @@ export interface InitOutput {
     readonly simulation_get_materials: (a: number) => [number, number];
     readonly simulation_get_phases: (a: number) => [number, number];
     readonly simulation_get_positions: (a: number) => [number, number];
+    readonly simulation_get_sleep_count: (a: number) => number;
     readonly simulation_get_temperatures: (a: number) => [number, number];
     readonly simulation_get_velocities: (a: number) => [number, number];
     readonly simulation_new: () => number;
