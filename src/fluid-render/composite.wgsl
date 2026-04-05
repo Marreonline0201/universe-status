@@ -178,8 +178,11 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var ao_strength = mix(0.7, 1.0, max(edge_ao, uniforms.emissive_intensity * 0.5));
     final_color *= ao_strength;
 
-    // Alpha: fluid pixels are semi-transparent at thin edges, emissive fluids more opaque
-    var alpha = clamp(opacity * 1.5 + uniforms.emissive_intensity * 0.3, 0.3, 1.0);
+    // Alpha: smooth falloff at thin edges, emissive materials more opaque
+    // Dielectrics: softer edges (min alpha 0.15), metals/emissive: harder edges (min 0.5)
+    var min_alpha = mix(0.15, 0.5, max(uniforms.metalness, uniforms.emissive_intensity * 0.3));
+    var alpha = clamp(opacity * 2.0, min_alpha, 1.0);
 
+    // Premultiply: final_color is already pre-blended, just clamp output
     return vec4f(final_color, alpha);
 }
