@@ -65,6 +65,34 @@ export class Simulation {
         return ret >>> 0;
     }
     /**
+     * §3.2: Get spray particle count
+     * @returns {number}
+     */
+    get_spray_count() {
+        const ret = wasm.simulation_get_spray_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * §3.2: Get spray materials for coloring
+     * @returns {Uint8Array}
+     */
+    get_spray_materials() {
+        const ret = wasm.simulation_get_spray_materials(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * §3.2: Get spray particle positions for rendering
+     * @returns {Float32Array}
+     */
+    get_spray_positions() {
+        const ret = wasm.simulation_get_spray_positions(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * @returns {Float32Array}
      */
     get_temperatures() {

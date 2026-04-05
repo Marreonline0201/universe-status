@@ -13,6 +13,18 @@ export class Simulation {
      * §3.2: Number of sleeping particles (for UI display)
      */
     get_sleep_count(): number;
+    /**
+     * §3.2: Get spray particle count
+     */
+    get_spray_count(): number;
+    /**
+     * §3.2: Get spray materials for coloring
+     */
+    get_spray_materials(): Uint8Array;
+    /**
+     * §3.2: Get spray particle positions for rendering
+     */
+    get_spray_positions(): Float32Array;
     get_temperatures(): Float32Array;
     get_velocities(): Float32Array;
     constructor();
@@ -31,6 +43,9 @@ export interface InitOutput {
     readonly simulation_get_phases: (a: number) => [number, number];
     readonly simulation_get_positions: (a: number) => [number, number];
     readonly simulation_get_sleep_count: (a: number) => number;
+    readonly simulation_get_spray_count: (a: number) => number;
+    readonly simulation_get_spray_materials: (a: number) => [number, number];
+    readonly simulation_get_spray_positions: (a: number) => [number, number];
     readonly simulation_get_temperatures: (a: number) => [number, number];
     readonly simulation_get_velocities: (a: number) => [number, number];
     readonly simulation_new: () => number;

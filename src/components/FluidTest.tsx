@@ -136,6 +136,9 @@ export function FluidTest() {
     points: THREE.Points
     posAttr: THREE.BufferAttribute
     colAttr: THREE.BufferAttribute
+    sprayPoints: THREE.Points
+    sprayPosAttr: THREE.BufferAttribute
+    sprayColAttr: THREE.BufferAttribute
     animId: number
     lastTime: number
     fpsAccum: number
@@ -331,6 +334,26 @@ export function FluidTest() {
       points.frustumCulled = false
       scene.add(points)
 
+      // §3.2: Spray particles (secondary particles — smaller, brighter)
+      const sprayGeo = new THREE.BufferGeometry()
+      const sprayPosAttr = new THREE.BufferAttribute(new Float32Array(2000 * 3), 3)
+      const sprayColAttr = new THREE.BufferAttribute(new Float32Array(2000 * 3), 3)
+      sprayPosAttr.setUsage(THREE.DynamicDrawUsage)
+      sprayColAttr.setUsage(THREE.DynamicDrawUsage)
+      sprayGeo.setAttribute('position', sprayPosAttr)
+      sprayGeo.setAttribute('color', sprayColAttr)
+      sprayGeo.setDrawRange(0, 0)
+      const sprayMat = new THREE.PointsMaterial({
+        size: 3,
+        sizeAttenuation: false,
+        vertexColors: true,
+        map: circleTexture,
+        alphaTest: 0.5,
+      })
+      const sprayPoints = new THREE.Points(sprayGeo, sprayMat)
+      sprayPoints.frustumCulled = false
+      scene.add(sprayPoints)
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -356,6 +379,9 @@ export function FluidTest() {
         mouse,
         boxMesh,
         avgTemp: AMBIENT_TEMP,
+        sprayPoints,
+        sprayPosAttr,
+        sprayColAttr,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -498,6 +524,30 @@ export function FluidTest() {
           sim.points.geometry.setDrawRange(0, count)
 
           setParticleCount(count)
+
+          // §3.2: Render spray particles
+          const sprayCount = sim.simulation.get_spray_count()
+          if (sprayCount > 0) {
+            const sprayPos = sim.simulation.get_spray_positions()
+            const sprayMats = sim.simulation.get_spray_materials()
+            const sPosArr = sim.sprayPosAttr.array as Float32Array
+            const sColArr = sim.sprayColAttr.array as Float32Array
+            for (let s = 0; s < sprayCount; s++) {
+              const s3 = s * 3
+              sPosArr[s3]     = sprayPos[s3]
+              sPosArr[s3 + 1] = sprayPos[s3 + 1]
+              sPosArr[s3 + 2] = sprayPos[s3 + 2]
+              // Bright white-tinted version of material color
+              const sm = MATERIALS[sprayMats[s]]
+              tempColor.setHex(sm.color).lerp(new THREE.Color(0xffffff), 0.5)
+              sColArr[s3]     = tempColor.r
+              sColArr[s3 + 1] = tempColor.g
+              sColArr[s3 + 2] = tempColor.b
+            }
+            sim.sprayPosAttr.needsUpdate = true
+            sim.sprayColAttr.needsUpdate = true
+          }
+          sim.sprayPoints.geometry.setDrawRange(0, sprayCount)
         }
 
         // Update controls and render

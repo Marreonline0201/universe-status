@@ -58,7 +58,7 @@ const SLEEP_TICKS_REQUIRED: u32 = 30;        // 30 ticks dormant → skip comput
 
 // §3.2 lines 2470-2540: Secondary particles (spray)
 // Weber number: We = ρ × v² × d / σ
-const SPRAY_WEBER_THRESHOLD: f32 = 40.0; // spawn spray above this (§3.2)
+const SPRAY_WEBER_THRESHOLD: f32 = 40.0; // §3.2: Weber number threshold for spray
 
 // ── Kernel (cubic spline M4, 3D) — §3.2 ───────────────────────────────────
 
@@ -395,6 +395,14 @@ pub struct Simulation {
     sleep_counter: Vec<u32>,  // ticks since last significant movement
     is_sleeping: Vec<bool>,   // true = skip all computation
 
+    // §3.2 lines 2470-2540: Secondary particles (spray/foam)
+    // Lightweight particles: gravity + drag only, no SPH. Short lifetime.
+    spray_n: usize,
+    spray_px: Vec<f32>, spray_py: Vec<f32>, spray_pz: Vec<f32>,
+    spray_vx: Vec<f32>, spray_vy: Vec<f32>, spray_vz: Vec<f32>,
+    spray_life: Vec<f32>,  // remaining lifetime in seconds
+    spray_mat: Vec<u8>,     // material (for color)
+
     grid: Grid,
 }
 
@@ -415,6 +423,11 @@ impl Simulation {
             phase_progress: vec![0.0; m],
             sleep_counter: vec![0; m],
             is_sleeping: vec![false; m],
+            spray_n: 0,
+            spray_px: vec![0.0; 2000], spray_py: vec![0.0; 2000], spray_pz: vec![0.0; 2000],
+            spray_vx: vec![0.0; 2000], spray_vy: vec![0.0; 2000], spray_vz: vec![0.0; 2000],
+            spray_life: vec![0.0; 2000],
+            spray_mat: vec![0; 2000],
             grid: Grid::new(),
         }
     }
@@ -528,6 +541,26 @@ impl Simulation {
     pub fn get_sleep_count(&self) -> usize {
         self.is_sleeping[..self.n].iter().filter(|&&s| s).count()
     }
+
+    /// §3.2: Get spray particle positions for rendering
+    #[wasm_bindgen]
+    pub fn get_spray_positions(&self) -> Vec<f32> {
+        let mut b = Vec::with_capacity(self.spray_n * 3);
+        for i in 0..self.spray_n {
+            b.push(self.spray_px[i]);
+            b.push(self.spray_py[i]);
+            b.push(self.spray_pz[i]);
+        }
+        b
+    }
+
+    /// §3.2: Get spray particle count
+    #[wasm_bindgen]
+    pub fn get_spray_count(&self) -> usize { self.spray_n }
+
+    /// §3.2: Get spray materials for coloring
+    #[wasm_bindgen]
+    pub fn get_spray_materials(&self) -> Vec<u8> { self.spray_mat[..self.spray_n].to_vec() }
 }
 
 impl Simulation {
@@ -908,6 +941,32 @@ impl Simulation {
             // ── Walls ───────────────────────────────────────────────────
             let pad = PARTICLE_SPACING;
             if self.py[i] < -HALF_H + pad {
+                // §3.2: Weber number spray on floor impact
+                // We = ρ × v² × d / σ (lines 2470-2540)
+                let impact_speed = (-self.vy[i]).max(0.0);
+                // §3.2: We = ρ × v² × d / σ — use SI density for correct Weber number
+                let we = mat.density_si * impact_speed * impact_speed * PARTICLE_SPACING / mat.surface_tension.max(0.001);
+                if we > SPRAY_WEBER_THRESHOLD && self.spray_n < 1990 && self.phase[i] == PHASE_LIQUID {
+                    // Spawn 2-5 spray particles
+                    let spray_count = ((we / SPRAY_WEBER_THRESHOLD) as usize).min(5).max(1);
+                    for _ in 0..spray_count {
+                        if self.spray_n >= 2000 { break; }
+                        let si = self.spray_n;
+                        self.spray_px[si] = self.px[i];
+                        self.spray_py[si] = self.py[i] + 0.01;
+                        self.spray_pz[si] = self.pz[i];
+                        // Random upward + sideways velocity
+                        let rx = (((i * 73 + si * 37) % 100) as f32 / 50.0 - 1.0) * impact_speed * 0.5;
+                        let rz = (((i * 91 + si * 53) % 100) as f32 / 50.0 - 1.0) * impact_speed * 0.5;
+                        self.spray_vx[si] = self.vx[i] + rx;
+                        self.spray_vy[si] = impact_speed * 0.3 + (si as f32 * 0.1);
+                        self.spray_vz[si] = self.vz[i] + rz;
+                        self.spray_life[si] = 0.5 + (si as f32 * 0.1); // 0.5-1.0s lifetime
+                        self.spray_mat[si] = self.mat_id[i];
+                        self.spray_n += 1;
+                    }
+                }
+
                 self.py[i] = -HALF_H + pad;
                 if self.vy[i] < 0.0 { self.vy[i] *= -0.02; }
                 self.vx[i] *= 0.98; self.vz[i] *= 0.98;
@@ -937,5 +996,54 @@ impl Simulation {
                 if self.vz[i] > 0.0 { self.vz[i] *= -0.1; }
             }
         }
+
+        // ── §3.2: Update spray particles ────────────────────────────────
+        // Spray: gravity + air drag only, no SPH forces. Short lifetime.
+        let mut alive = 0;
+        for i in 0..self.spray_n {
+            self.spray_life[i] -= dt;
+            if self.spray_life[i] <= 0.0 { continue; }
+
+            // Gravity
+            self.spray_vy[i] -= gravity * dt;
+
+            // §3.9: Air drag on spray (stronger — small particles)
+            let speed_sq = self.spray_vx[i]*self.spray_vx[i]
+                + self.spray_vy[i]*self.spray_vy[i]
+                + self.spray_vz[i]*self.spray_vz[i];
+            if speed_sq > 0.01 {
+                let drag = (0.5 * RHO_AIR * speed_sq.sqrt() * CD_SPHERE * PARTICLE_CROSS_SECTION * 4.0
+                    / (PARTICLE_SPACING * PARTICLE_SPACING * PARTICLE_SPACING * 500.0) * dt).min(0.3);
+                self.spray_vx[i] *= 1.0 - drag;
+                self.spray_vy[i] *= 1.0 - drag;
+                self.spray_vz[i] *= 1.0 - drag;
+            }
+
+            // Position
+            self.spray_px[i] += self.spray_vx[i] * dt;
+            self.spray_py[i] += self.spray_vy[i] * dt;
+            self.spray_pz[i] += self.spray_vz[i] * dt;
+
+            // Remove if out of bounds
+            if self.spray_py[i] < -HALF_H || self.spray_py[i] > HALF_H
+                || self.spray_px[i].abs() > HALF_W || self.spray_pz[i].abs() > HALF_D {
+                self.spray_life[i] = 0.0;
+                continue;
+            }
+
+            // Compact: move alive particle to front
+            if alive != i {
+                self.spray_px[alive] = self.spray_px[i];
+                self.spray_py[alive] = self.spray_py[i];
+                self.spray_pz[alive] = self.spray_pz[i];
+                self.spray_vx[alive] = self.spray_vx[i];
+                self.spray_vy[alive] = self.spray_vy[i];
+                self.spray_vz[alive] = self.spray_vz[i];
+                self.spray_life[alive] = self.spray_life[i];
+                self.spray_mat[alive] = self.spray_mat[i];
+            }
+            alive += 1;
+        }
+        self.spray_n = alive;
     }
 }
