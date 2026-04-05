@@ -528,7 +528,7 @@ export function FluidTest() {
           // Hide instanced spheres — SSFR provides the smooth surface
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
-            im.visible = false // SSFR replaces individual spheres
+            im.visible = true // visible — SSFR renders via pass(scene)
           })
 
           // Update SSFR particle positions
