@@ -201,7 +201,7 @@ export function ConnectionMap() {
   const stateRef = useRef<{
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
-    renderer: THREE.WebGLRenderer
+    renderer: any
     controls: OrbitControls
     nodes: SimNode[]
     edgeLines: THREE.Line[]
@@ -250,7 +250,7 @@ export function ConnectionMap() {
     camera.position.set(0, 0, 50)
 
     // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+    const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
     renderer.setSize(w, h)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     container.appendChild(renderer.domElement)
@@ -552,7 +552,8 @@ export function ConnectionMap() {
       st.controls.update()
       st.renderer.render(st.scene, st.camera)
     }
-    animate()
+    // Init WebGPU renderer, then start animation
+    renderer.init().then(() => animate())
 
     // ── Mouse events ─────────────────────────────────────────────────────
     const canvas = renderer.domElement

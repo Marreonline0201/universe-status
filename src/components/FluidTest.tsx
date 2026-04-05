@@ -5,7 +5,6 @@
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-// Vite aliases 'three' → 'three/webgpu' so all imports use one unified module
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
