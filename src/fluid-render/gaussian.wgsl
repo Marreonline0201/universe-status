@@ -23,7 +23,7 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
         return vec4f(0.0, 0.0, 0.0, 1.0);
     }
 
-    var filter_size: i32 = 30;
+    var filter_size: i32 = 15;
     var sigma = f32(filter_size) / 3.0;
     var two_sigma = 2.0 * sigma * sigma;
 

@@ -133,6 +133,8 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var sky_color = mix(vec3f(0.15, 0.2, 0.3), vec3f(0.5, 0.6, 0.8), sky_up)  // ground→sky
                   + vec3f(0.3, 0.25, 0.2) * exp(-8.0 * sky_down)                // warm horizon
                   + vec3f(0.1, 0.1, 0.12) * exp(-3.0 * abs(reflect_dir.y));     // horizon band
+    // Metals reflect more brightly — boost environment for mirror-like materials
+    sky_color *= mix(1.0, 1.8, uniforms.metalness);
     var reflection_color = mix(sky_color, sky_color * diffuse_color, uniforms.metalness);
 
     // Specular highlights (Blinn-Phong) — primary + rim light
