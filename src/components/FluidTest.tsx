@@ -303,18 +303,31 @@ export function FluidTest() {
       clickPlane.position.y = 0
       scene.add(clickPlane)
 
-      // Floor grid inside box
-      const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 10, 10)
+      // Floor grid inside box — visible enough for refraction distortion
+      const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 20, 20)
       const floorMat = new THREE.MeshBasicMaterial({
-        color: 0x0a1828,
+        color: 0x1a3050,
         wireframe: true,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.4,
       })
       const floorMesh = new THREE.Mesh(floorGeo, floorMat)
       floorMesh.rotation.x = -Math.PI / 2
       floorMesh.position.y = -HALF_H + 0.001
       scene.add(floorMesh)
+
+      // Back wall grid — makes refraction visible from the front
+      const wallGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_H - 0.02, 20, 15)
+      const wallMat = new THREE.MeshBasicMaterial({
+        color: 0x1a3050,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide,
+      })
+      const wallMesh = new THREE.Mesh(wallGeo, wallMat)
+      wallMesh.position.z = -HALF_D + 0.001
+      scene.add(wallMesh)
 
       // ── InstancedMesh per material (works on WebGL and WebGPU) ────
       // One InstancedMesh per material type with correct color baked in
