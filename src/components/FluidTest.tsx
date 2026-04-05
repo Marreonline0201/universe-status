@@ -233,7 +233,7 @@ export function FluidTest() {
 
       // Scene
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0x060810)
+      scene.background = new THREE.Color(0xf5deb3) // sandy yellow for debug visibility
 
       // Camera
       const camera = new THREE.PerspectiveCamera(
