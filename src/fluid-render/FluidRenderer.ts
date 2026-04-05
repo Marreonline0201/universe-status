@@ -443,7 +443,7 @@ export class FluidRenderer {
 
     const sceneView = this.sceneTexture.createView()
 
-    const compositeBG = d.createBindGroup({
+    void d.createBindGroup({ // compositeBG — unused while debug mode active
       layout: this.compositeBGL,
       entries: [
         { binding: 0, resource: this.sampler },
@@ -467,7 +467,7 @@ export class FluidRenderer {
         colorAttachments: [{
           view: outputView,
           loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 }, // transparent where no fluid
+          clearValue: { r: 0.96, g: 0.87, b: 0.7, a: 1 }, // sandy yellow background for debug visibility
         }],
       })
       p5.setPipeline(this.debugPipeline)
