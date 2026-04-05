@@ -99,11 +99,18 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var H = normalize(light_dir - ray_dir);
     var specular = pow(max(0.0, dot(H, normal)), 250.0);
 
-    // Add fluid's own color (visible even without background)
-    var fluid_contribution = diffuse_color * (1.0 - exp(-uniforms.density * thickness * 2.0));
+    // Fluid color contribution — thicker = more opaque, thinner = more transparent
+    var opacity = 1.0 - exp(-uniforms.density * thickness * 3.0);
+    var fluid_contribution = diffuse_color * opacity;
 
-    // Final composite
-    var final_color = mix(refraction_color + fluid_contribution, reflection_color, fresnel * 0.5) + vec3f(specular);
+    // Mix: transparent fluid shows background through, opaque shows color
+    var base_color = mix(refraction_color, fluid_contribution, opacity * 0.7);
 
-    return vec4f(final_color, 1.0);
+    // Add Fresnel reflection and specular
+    var final_color = mix(base_color, reflection_color, fresnel * 0.4) + vec3f(specular * 0.8);
+
+    // Alpha: fluid pixels are semi-transparent at thin edges
+    var alpha = clamp(opacity * 1.5, 0.3, 1.0);
+
+    return vec4f(final_color, alpha);
 }

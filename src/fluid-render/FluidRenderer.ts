@@ -209,7 +209,7 @@ export class FluidRenderer {
       fragment: {
         module: bilateralMod, entryPoint: 'fs',
         targets: [{ format: 'r32float' }],
-        constants: { depth_threshold: 10.0, projected_particle_constant: 200.0, max_filter_size: 30.0 },
+        constants: { depth_threshold: 20.0, projected_particle_constant: 400.0, max_filter_size: 40.0 },
       },
       primitive: { topology: 'triangle-list' },
     })
@@ -253,7 +253,16 @@ export class FluidRenderer {
     this.compositePipeline = d.createRenderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.compositeBGL] }),
       vertex: { module: fullScreenMod, entryPoint: 'vs', constants: { screenWidth: w, screenHeight: h } },
-      fragment: { module: compositeMod, entryPoint: 'fs', targets: [{ format: this.presentationFormat }] },
+      fragment: {
+        module: compositeMod, entryPoint: 'fs',
+        targets: [{
+          format: this.presentationFormat,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
+        }],
+      },
       primitive: { topology: 'triangle-list' },
     })
 
@@ -424,8 +433,8 @@ export class FluidRenderer {
     p1.draw(6, numParticles)
     p1.end()
 
-    // ── Pass 2: Bilateral blur × 4 ───────────────────────────────
-    for (let i = 0; i < 4; i++) {
+    // ── Pass 2: Bilateral blur × 6 — smoother flat surface ──────
+    for (let i = 0; i < 6; i++) {
       // H blur: depth → tmpDepth
       const bh = encoder.beginRenderPass({
         colorAttachments: [{ view: tmpDepthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],
