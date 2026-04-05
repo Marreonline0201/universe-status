@@ -152,9 +152,8 @@ export function FluidTest() {
     camera: THREE.PerspectiveCamera
     renderer: any /* WebGPURenderer */
     controls: OrbitControls
-    points: THREE.Points
-    posAttr: THREE.BufferAttribute
-    colAttr: THREE.BufferAttribute
+    instMesh: THREE.InstancedMesh
+    dummy: THREE.Matrix4
     sprayPoints: THREE.Points
     sprayPosAttr: THREE.BufferAttribute
     sprayColAttr: THREE.BufferAttribute
@@ -175,7 +174,7 @@ export function FluidTest() {
   const resetSim = useCallback(() => {
     if (!simRef.current) return
     simRef.current.simulation.reset()
-    simRef.current.points.geometry.setDrawRange(0, 0)
+    simRef.current.instMesh.count = 0
     simRef.current.sprayPoints.geometry.setDrawRange(0, 0)
     simRef.current.mcubes.reset()
     simRef.current.mcubes.update()
@@ -326,38 +325,19 @@ export function FluidTest() {
       floorMesh.position.y = -HALF_H + 0.001
       scene.add(floorMesh)
 
-      // ── Points-based rendering (much faster than InstancedMesh) ────────
-      const pointsGeo = new THREE.BufferGeometry()
-      const posAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
-      const colAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
-      posAttr.setUsage(THREE.DynamicDrawUsage)
-      colAttr.setUsage(THREE.DynamicDrawUsage)
-      pointsGeo.setAttribute('position', posAttr)
-      pointsGeo.setAttribute('color', colAttr)
-      pointsGeo.setDrawRange(0, 0)
-
-      // §3.2 Tier 2: Soft fluid sprite — solid circle with soft edge
-      const metaballCanvas = document.createElement('canvas')
-      metaballCanvas.width = 64
-      metaballCanvas.height = 64
-      const ctx2d = metaballCanvas.getContext('2d')!
-      // Solid circle with slight soft edge for fluid blending
-      const grad = ctx2d.createRadialGradient(32, 32, 0, 32, 32, 30)
-      grad.addColorStop(0, '#ffffff')
-      grad.addColorStop(0.85, '#ffffff')
-      grad.addColorStop(1.0, 'rgba(255,255,255,0)')
-      ctx2d.fillStyle = grad
-      ctx2d.fillRect(0, 0, 64, 64)
-      const circleTexture = new THREE.CanvasTexture(metaballCanvas)
-
-      const pointsMat = new THREE.PointsMaterial({
-        size: 50,
-        sizeAttenuation: false,
+      // ── InstancedMesh for particles (works on both WebGL and WebGPU) ────
+      // Points have 1px limit in WebGPU. InstancedMesh with spheres works everywhere.
+      const sphereGeo = new THREE.SphereGeometry(SPACING * 0.5, 8, 6)
+      const sphereMat = new THREE.MeshStandardMaterial({
+        roughness: 0.3,
+        metalness: 0.0,
         vertexColors: true,
       })
-      const points = new THREE.Points(pointsGeo, pointsMat)
-      points.frustumCulled = false
-      scene.add(points)
+      const instMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, MAX_PARTICLES)
+      instMesh.count = 0
+      instMesh.frustumCulled = false
+      scene.add(instMesh)
+      const dummy = new THREE.Matrix4()
 
       // §3.2: Spray particles (secondary particles — smaller, brighter)
       const sprayGeo = new THREE.BufferGeometry()
@@ -369,11 +349,9 @@ export function FluidTest() {
       sprayGeo.setAttribute('color', sprayColAttr)
       sprayGeo.setDrawRange(0, 0)
       const sprayMat = new THREE.PointsMaterial({
-        size: 5,
+        size: 3,
         sizeAttenuation: false,
         vertexColors: true,
-        map: circleTexture,
-        alphaTest: 0.1,
       })
       const sprayPoints = new THREE.Points(sprayGeo, sprayMat)
       sprayPoints.frustumCulled = false
@@ -411,9 +389,8 @@ export function FluidTest() {
         camera,
         renderer,
         controls,
-        points,
-        posAttr,
-        colAttr,
+        instMesh,
+        dummy,
         animId: 0,
         lastTime: performance.now(),
         fpsAccum: 0,
@@ -492,83 +469,44 @@ export function FluidTest() {
           const temps = sim.simulation.get_temperatures()
           const phases = sim.simulation.get_phases()
 
-          // Write positions and colors directly into GPU buffers
-          const posArr = sim.posAttr.array as Float32Array
-          const colArr = sim.colAttr.array as Float32Array
-
+          // Update InstancedMesh — set position and color per particle
           let avgTemp = 0
+          sim.instMesh.count = count
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-            posArr[i3]     = positions[i3]
-            posArr[i3 + 1] = positions[i3 + 1]
-            posArr[i3 + 2] = positions[i3 + 2]
 
+            // Position
+            sim.dummy.makeTranslation(positions[i3], positions[i3 + 1], positions[i3 + 2])
+            sim.instMesh.setMatrixAt(i, sim.dummy)
+
+            // Color from material + temperature + phase
             const mat = MATERIALS[mats[i]]
             const temp = temps[i]
             const phase = phases[i]
             avgTemp += temp
 
-            // §3.0: Color encodes temperature + phase
-            // Base: material color, then shift toward orange/white as temperature rises
             tempColor.setHex(mat.color)
-
             if (phase === 1) {
-              // Gas: white, shimmering, semi-transparent look
-              tempColor.set(0xccddff)
-              tempColor.multiplyScalar(0.4 + Math.random() * 0.4)
+              tempColor.set(0xccddff).multiplyScalar(0.5)
             } else if (phase === 2) {
-              // Solid: dramatically darken — cooled basalt is dark gray,
-              // frozen water is pale blue, solidified metal is dark metallic
-              const solidColor = new THREE.Color(0x222233)
-              // Mix 80% toward dark to make solidification very visible
-              tempColor.lerp(solidColor, 0.8)
-              // Slight warmth if still above ambient
-              if (temp > 50) {
-                const warmth = Math.min(1.0, (temp - 50) / 500)
-                tempColor.lerp(new THREE.Color(0x662200), warmth * 0.4)
-              }
+              tempColor.lerp(new THREE.Color(0x222233), 0.8)
             } else {
-              // Liquid: velocity brightness + temperature-dependent color
-              const svx = velocities[i3]
-              const svy = velocities[i3 + 1]
-              const svz = velocities[i3 + 2]
-              const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
-              const brightness = Math.min(1.0, 0.6 + speed * 0.15)
-              tempColor.multiplyScalar(brightness)
-
-              // Hot glow: real blackbody-like color progression
-              // 200-600°C: dark red, 600-1000°C: bright orange, 1000+°C: yellow-white
+              const svx = velocities[i3], svy = velocities[i3+1], svz = velocities[i3+2]
+              const speed = Math.sqrt(svx*svx + svy*svy + svz*svz)
+              tempColor.multiplyScalar(Math.min(1.0, 0.6 + speed * 0.15))
               if (temp > 200) {
                 const t = Math.min(1.0, (temp - 200) / 1200)
-                // Blackbody approximation: dark red → orange → yellow → white
-                const r = Math.min(1.0, t * 2.5)
-                const g = Math.min(1.0, Math.max(0, (t - 0.3) * 2.0))
-                const b = Math.min(1.0, Math.max(0, (t - 0.7) * 3.0))
-                const hotColor = new THREE.Color(r, g, b)
-                tempColor.lerp(hotColor, Math.min(0.9, t * 1.2))
-              }
-
-              // Cold: ice blue tint below 0°C
-              if (temp < 0) {
-                const coldFactor = Math.min(1.0, -temp / 50)
-                tempColor.lerp(new THREE.Color(0x88ccff), coldFactor * 0.5)
+                tempColor.lerp(new THREE.Color(Math.min(1,t*2.5), Math.max(0,(t-0.3)*2), Math.max(0,(t-0.7)*3)), t * 0.9)
               }
             }
-
-            colArr[i3]     = tempColor.r
-            colArr[i3 + 1] = tempColor.g
-            colArr[i3 + 2] = tempColor.b
+            sim.instMesh.setColorAt(i, tempColor)
           }
 
-          // Update average temperature display
-          if (count > 0) {
-            sim.avgTemp = avgTemp / count
-          }
+          sim.instMesh.instanceMatrix.needsUpdate = true
+          if (sim.instMesh.instanceColor) sim.instMesh.instanceColor.needsUpdate = true
 
-          sim.posAttr.needsUpdate = true
-          sim.colAttr.needsUpdate = true
-          sim.points.geometry.setDrawRange(0, count)
+          if (count > 0) sim.avgTemp = avgTemp / count
 
           // §3.2 Tier 1: Marching Cubes surface extraction
           // Feed particle positions as metaballs into MC grid
