@@ -1,16 +1,14 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // Raw WebGPU Fluid Renderer — §3.2 SSFR Pipeline
 //
-// Uses raw WebGPU API for proper multi-pass fluid rendering.
-// Three.js handles the scene (box, lights, camera).
-// This module handles ONLY the fluid particle rendering with:
-//   Pass 1: Depth sprites (sphere-shaped depth per particle)
-//   Pass 2: Bilateral blur on depth (4 iterations, H+V)
-//   Pass 3: Thickness map (additive blending)
-//   Pass 4: Gaussian blur on thickness (1 iteration, H+V)
-//   Pass 5: Composite (Fresnel + Beer's law + specular)
+// 5-pass rendering:
+//   1. Depth sprites (sphere depth per particle)
+//   2. Bilateral blur × 4 iterations (smooth depth, preserve edges)
+//   3. Thickness map (additive)
+//   4. Gaussian blur × 1 iteration (smooth thickness)
+//   5. Composite (Fresnel + Beer's law + refraction + specular)
 //
-// Adapted from WaterBall (MIT license) + structure.md §3.2
+// Adapted from WaterBall (MIT) + structure.md §3.2 lines 1898-1946
 // ══════════════════════════════════════════════════════════════════════════════
 
 import depthMapWGSL from './depthMap.wgsl?raw'
@@ -21,201 +19,154 @@ import compositeWGSL from './composite.wgsl?raw'
 import fullScreenWGSL from './fullScreen.wgsl?raw'
 
 export class FluidRenderer {
-  private device: GPUDevice | null = null
+  private device!: GPUDevice
+  private context!: GPUCanvasContext
   private initialized = false
   private width = 0
   private height = 0
+  private presentationFormat!: GPUTextureFormat
 
-  // Render targets
-  private depthMapTexture!: GPUTexture
-  private depthMapView!: GPUTextureView
-  private tmpDepthMapTexture!: GPUTexture
-  private tmpDepthMapView!: GPUTextureView
-  private thicknessTexture!: GPUTexture
-  private thicknessView!: GPUTextureView
-  private tmpThicknessTexture!: GPUTexture
-  private tmpThicknessView!: GPUTextureView
-  private depthTestTexture!: GPUTexture
-  private depthTestView!: GPUTextureView
+  // Textures
+  private depthMapTex!: GPUTexture
+  private tmpDepthMapTex!: GPUTexture
+  private thicknessTex!: GPUTexture
+  private tmpThicknessTex!: GPUTexture
+  private depthTestTex!: GPUTexture
+  private sceneTexture!: GPUTexture
 
   // Pipelines
   private depthPipeline!: GPURenderPipeline
   private bilateralPipeline!: GPURenderPipeline
   private thicknessPipeline!: GPURenderPipeline
   private gaussianPipeline!: GPURenderPipeline
-  private compositePipeline!: GPURenderPipeline
+  compositePipeline!: GPURenderPipeline
 
   // Buffers
   private particleBuffer!: GPUBuffer
   private uniformBuffer!: GPUBuffer
-  private filterXBuffer!: GPUBuffer
-  private filterYBuffer!: GPUBuffer
-  private compositeUniformBuffer!: GPUBuffer
+  private filterXBuf!: GPUBuffer
+  private filterYBuf!: GPUBuffer
+  private compositeUniformBuf!: GPUBuffer
 
-  // Bind groups
-  private depthBindGroup!: GPUBindGroup
-  private bilateralBindGroupX!: GPUBindGroup
-  private bilateralBindGroupY!: GPUBindGroup
-  private thicknessBindGroup!: GPUBindGroup
-  private gaussianBindGroupX!: GPUBindGroup
-  private gaussianBindGroupY!: GPUBindGroup
-  private compositeBindGroup!: GPUBindGroup
+  // Bind group layouts
+  private depthBGL!: GPUBindGroupLayout
+  private filterBGL!: GPUBindGroupLayout
+  private compositeBGL!: GPUBindGroupLayout
 
   private sampler!: GPUSampler
+  private maxParticles = 10000
 
   async init(canvas: HTMLCanvasElement): Promise<boolean> {
     if (!navigator.gpu) {
-      console.warn('WebGPU not supported')
+      console.warn('FluidRenderer: WebGPU not available')
       return false
     }
 
     const adapter = await navigator.gpu.requestAdapter()
-    if (!adapter) {
-      console.warn('No GPU adapter found')
-      return false
-    }
+    if (!adapter) return false
 
     this.device = await adapter.requestDevice()
-    this.width = canvas.width
-    this.height = canvas.height
+    this.width = canvas.width || 1280
+    this.height = canvas.height || 720
+    this.presentationFormat = navigator.gpu.getPreferredCanvasFormat()
 
-    // Create render targets
-    this.createRenderTargets()
-
-    // Create sampler
-    this.sampler = this.device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
+    this.context = canvas.getContext('webgpu') as GPUCanvasContext
+    this.context.configure({
+      device: this.device,
+      format: this.presentationFormat,
+      alphaMode: 'premultiplied',
     })
 
-    // Create uniform buffers
-    this.createBuffers()
+    this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
 
-    // Create pipelines
-    await this.createPipelines(canvas)
+    this.createTextures()
+    this.createBuffers()
+    this.createPipelines()
 
     this.initialized = true
-    console.log('FluidRenderer: WebGPU SSFR pipeline initialized')
+    console.log(`FluidRenderer: SSFR initialized (${this.width}×${this.height})`)
     return true
   }
 
-  private createRenderTargets() {
-    const d = this.device!
+  private createTextures() {
+    const d = this.device
     const w = this.width, h = this.height
+    const rt = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
 
-    // Depth map (r32float) — stores linear view-space depth
-    this.depthMapTexture = d.createTexture({
-      size: [w, h], format: 'r32float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.depthMapView = this.depthMapTexture.createView()
-
-    this.tmpDepthMapTexture = d.createTexture({
-      size: [w, h], format: 'r32float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.tmpDepthMapView = this.tmpDepthMapTexture.createView()
-
-    // Thickness map (r16float) — stores accumulated thickness
-    this.thicknessTexture = d.createTexture({
-      size: [w, h], format: 'r16float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.thicknessView = this.thicknessTexture.createView()
-
-    this.tmpThicknessTexture = d.createTexture({
-      size: [w, h], format: 'r16float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.tmpThicknessView = this.tmpThicknessTexture.createView()
-
-    // Depth test (depth32float) — for depth comparison in depth map pass
-    this.depthTestTexture = d.createTexture({
-      size: [w, h], format: 'depth32float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    })
-    this.depthTestView = this.depthTestTexture.createView()
+    this.depthMapTex = d.createTexture({ size: [w, h], format: 'r32float', usage: rt })
+    this.tmpDepthMapTex = d.createTexture({ size: [w, h], format: 'r32float', usage: rt })
+    this.thicknessTex = d.createTexture({ size: [w, h], format: 'r16float', usage: rt })
+    this.tmpThicknessTex = d.createTexture({ size: [w, h], format: 'r16float', usage: rt })
+    this.depthTestTex = d.createTexture({ size: [w, h], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    this.sceneTexture = d.createTexture({ size: [w, h], format: this.presentationFormat, usage: rt | GPUTextureUsage.COPY_DST })
   }
 
   private createBuffers() {
-    const d = this.device!
+    const d = this.device
+    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 28, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    this.uniformBuffer = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.filterXBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.filterYBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.compositeUniformBuf = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
 
-    // Particle buffer — will be updated each frame with positions from WASM
-    this.particleBuffer = d.createBuffer({
-      size: 10000 * 7 * 4, // 10k particles × 7 floats (x,y,z,vx,vy,vz,mat_id)
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    })
-
-    // Render uniforms (matrices, sphere size, texel size)
-    this.uniformBuffer = d.createBuffer({
-      size: 256, // 2 mat4x4 + misc
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    })
-
-    // Filter direction buffers
-    this.filterXBuffer = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    this.filterYBuffer = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    d.queue.writeBuffer(this.filterXBuffer, 0, new Float32Array([1, 0, 0, 0]))
-    d.queue.writeBuffer(this.filterYBuffer, 0, new Float32Array([0, 1, 0, 0]))
-
-    // Composite uniforms
-    this.compositeUniformBuffer = d.createBuffer({
-      size: 128,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    })
+    d.queue.writeBuffer(this.filterXBuf, 0, new Float32Array([1, 0, 0, 0]))
+    d.queue.writeBuffer(this.filterYBuf, 0, new Float32Array([0, 1, 0, 0]))
   }
 
-  private async createPipelines(_canvas: HTMLCanvasElement) {
-    const d = this.device!
-    const presentationFormat = navigator.gpu.getPreferredCanvasFormat()
+  private createPipelines() {
+    const d = this.device
+    const w = this.width, h = this.height
 
-    // ── Depth map pipeline ────────────────────────────────────────
-    const depthModule = d.createShaderModule({ code: depthMapWGSL })
+    // Shader modules
+    const depthMod = d.createShaderModule({ code: depthMapWGSL })
+    const fullScreenMod = d.createShaderModule({ code: fullScreenWGSL })
+    const bilateralMod = d.createShaderModule({ code: bilateralWGSL })
+    const thicknessMod = d.createShaderModule({ code: thicknessMapWGSL })
+    const gaussianMod = d.createShaderModule({ code: gaussianWGSL })
+    const compositeMod = d.createShaderModule({ code: compositeWGSL })
+
+    // ── Depth pipeline (particles → depth map) ────────────────────
+    this.depthBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    })
+
     this.depthPipeline = d.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: depthModule, entryPoint: 'vs' },
-      fragment: {
-        module: depthModule, entryPoint: 'fs',
-        targets: [{ format: 'r32float' }],
-      },
-      depthStencil: {
-        format: 'depth32float',
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthBGL] }),
+      vertex: { module: depthMod, entryPoint: 'vs' },
+      fragment: { module: depthMod, entryPoint: 'fs', targets: [{ format: 'r32float' }] },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
       primitive: { topology: 'triangle-list' },
     })
 
     // ── Bilateral blur pipeline ───────────────────────────────────
-    const fullScreenModule = d.createShaderModule({
-      code: fullScreenWGSL,
+    this.filterBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
     })
-    const bilateralModule = d.createShaderModule({ code: bilateralWGSL })
+
     this.bilateralPipeline = d.createRenderPipeline({
-      layout: 'auto',
-      vertex: {
-        module: fullScreenModule, entryPoint: 'vs',
-        constants: { screenWidth: this.width, screenHeight: this.height },
-      },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.filterBGL] }),
+      vertex: { module: fullScreenMod, entryPoint: 'vs', constants: { screenWidth: w, screenHeight: h } },
       fragment: {
-        module: bilateralModule, entryPoint: 'fs',
+        module: bilateralMod, entryPoint: 'fs',
         targets: [{ format: 'r32float' }],
-        constants: {
-          depth_threshold: 5.0,
-          projected_particle_constant: 100.0,
-          max_filter_size: 20.0,
-        },
+        constants: { depth_threshold: 5.0, projected_particle_constant: 100.0, max_filter_size: 20.0 },
       },
       primitive: { topology: 'triangle-list' },
     })
 
-    // ── Thickness pipeline (uses depth map vertex shader) ─────────
-    const thicknessModule = d.createShaderModule({ code: thicknessMapWGSL })
+    // ── Thickness pipeline (same vertex as depth, additive blend) ─
     this.thicknessPipeline = d.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: depthModule, entryPoint: 'vs' },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthBGL] }),
+      vertex: { module: depthMod, entryPoint: 'vs' },
       fragment: {
-        module: thicknessModule, entryPoint: 'fs',
+        module: thicknessMod, entryPoint: 'fs',
         targets: [{
           format: 'r16float',
           blend: {
@@ -228,198 +179,201 @@ export class FluidRenderer {
     })
 
     // ── Gaussian blur pipeline ────────────────────────────────────
-    const gaussianModule = d.createShaderModule({ code: gaussianWGSL })
     this.gaussianPipeline = d.createRenderPipeline({
-      layout: 'auto',
-      vertex: {
-        module: fullScreenModule, entryPoint: 'vs',
-        constants: { screenWidth: this.width, screenHeight: this.height },
-      },
-      fragment: {
-        module: gaussianModule, entryPoint: 'fs',
-        targets: [{ format: 'r16float' }],
-      },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.filterBGL] }),
+      vertex: { module: fullScreenMod, entryPoint: 'vs', constants: { screenWidth: w, screenHeight: h } },
+      fragment: { module: gaussianMod, entryPoint: 'fs', targets: [{ format: 'r16float' }] },
       primitive: { topology: 'triangle-list' },
     })
 
     // ── Composite pipeline ────────────────────────────────────────
-    const compositeModule = d.createShaderModule({ code: compositeWGSL })
+    this.compositeBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // depth
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // thickness
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },                                   // scene
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: 'cube' } },            // env cubemap
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    })
+
     this.compositePipeline = d.createRenderPipeline({
-      layout: 'auto',
-      vertex: {
-        module: fullScreenModule, entryPoint: 'vs',
-        constants: { screenWidth: this.width, screenHeight: this.height },
-      },
-      fragment: {
-        module: compositeModule, entryPoint: 'fs',
-        targets: [{ format: presentationFormat }],
-      },
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.compositeBGL] }),
+      vertex: { module: fullScreenMod, entryPoint: 'vs', constants: { screenWidth: w, screenHeight: h } },
+      fragment: { module: compositeMod, entryPoint: 'fs', targets: [{ format: this.presentationFormat }] },
       primitive: { topology: 'triangle-list' },
     })
   }
 
-  /**
-   * Upload particle positions from WASM to GPU buffer
-   */
-  updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
-    if (!this.device || !this.initialized) return
-
-    // Pack into the particle buffer format: x,y,z,vx,vy,vz,mat_id per particle
+  updateParticles(positions: Float32Array, velocities: Float32Array, _matIds: Uint8Array, count: number) {
+    if (!this.initialized) return
     const data = new Float32Array(count * 7)
     for (let i = 0; i < count; i++) {
-      const i3 = i * 3
-      const i7 = i * 7
-      data[i7]     = positions[i3]
-      data[i7 + 1] = positions[i3 + 1]
-      data[i7 + 2] = positions[i3 + 2]
-      data[i7 + 3] = velocities[i3]
-      data[i7 + 4] = velocities[i3 + 1]
-      data[i7 + 5] = velocities[i3 + 2]
-      data[i7 + 6] = matIds[i] // stored as float for alignment
+      const i3 = i * 3, i7 = i * 7
+      data[i7] = positions[i3]; data[i7+1] = positions[i3+1]; data[i7+2] = positions[i3+2]
+      data[i7+3] = velocities[i3]; data[i7+4] = velocities[i3+1]; data[i7+5] = velocities[i3+2]
+      data[i7+6] = 0
     }
-
-    this.device.queue.writeBuffer(this.particleBuffer, 0, data)
+    this.device.queue.writeBuffer(this.particleBuffer, 0, data, 0, count * 7)
   }
 
-  /**
-   * Update camera matrices for rendering
-   */
-  updateUniforms(
-    viewMatrix: Float32Array,
-    projectionMatrix: Float32Array,
-    sphereSize: number,
-  ) {
-    if (!this.device) return
-
-    const data = new Float32Array(36) // texel_size(2) + sphere_size(1) + pad(1) + proj(16) + view(16)
-    data[0] = 1.0 / this.width
-    data[1] = 1.0 / this.height
-    data[2] = sphereSize
-    data[3] = 0 // padding
-    data.set(projectionMatrix, 4)
-    data.set(viewMatrix, 20)
-
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, data)
+  updateCamera(viewMatrix: Float32Array, projMatrix: Float32Array, sphereSize: number) {
+    if (!this.initialized) return
+    const buf = new Float32Array(36)
+    buf[0] = 1 / this.width; buf[1] = 1 / this.height; buf[2] = sphereSize; buf[3] = 0
+    buf.set(projMatrix, 4)
+    buf.set(viewMatrix, 20)
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, buf)
   }
 
-  /**
-   * Execute the full SSFR rendering pipeline
-   */
-  render(numParticles: number, _sceneTextureView: GPUTextureView, _outputView: GPUTextureView) {
-    if (!this.device || !this.initialized || numParticles === 0) return
+  render(numParticles: number) {
+    if (!this.initialized || numParticles === 0) return
 
-    // Use all resources to suppress TS unused warnings during development
-    void this.depthMapView; void this.tmpDepthMapView
-    void this.thicknessView; void this.tmpThicknessView; void this.depthTestView
-    void this.depthPipeline; void this.bilateralPipeline
-    void this.thicknessPipeline; void this.gaussianPipeline; void this.compositePipeline
-    void this.depthBindGroup; void this.bilateralBindGroupX; void this.bilateralBindGroupY
-    void this.thicknessBindGroup; void this.gaussianBindGroupX; void this.gaussianBindGroupY
-    void this.compositeBindGroup; void this.sampler
+    const d = this.device
+    const depthView = this.depthMapTex.createView()
+    const tmpDepthView = this.tmpDepthMapTex.createView()
+    const thickView = this.thicknessTex.createView()
+    const tmpThickView = this.tmpThicknessTex.createView()
+    const depthTestView = this.depthTestTex.createView()
 
-    const encoder = this.device.createCommandEncoder()
+    // Create bind groups fresh each frame (views may change)
+    const depthBG = d.createBindGroup({
+      layout: this.depthBGL,
+      entries: [
+        { binding: 0, resource: { buffer: this.particleBuffer } },
+        { binding: 1, resource: { buffer: this.uniformBuffer } },
+      ],
+    })
 
-    // Pass 1: Render particle depth sprites
-    const depthPass = encoder.beginRenderPass({
+    const filterBG_depthX = d.createBindGroup({
+      layout: this.filterBGL,
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: depthView },
+        { binding: 2, resource: { buffer: this.filterXBuf } },
+      ],
+    })
+    const filterBG_depthY = d.createBindGroup({
+      layout: this.filterBGL,
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: tmpDepthView },
+        { binding: 2, resource: { buffer: this.filterYBuf } },
+      ],
+    })
+    const filterBG_thickX = d.createBindGroup({
+      layout: this.filterBGL,
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: thickView },
+        { binding: 2, resource: { buffer: this.filterXBuf } },
+      ],
+    })
+    const filterBG_thickY = d.createBindGroup({
+      layout: this.filterBGL,
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: tmpThickView },
+        { binding: 2, resource: { buffer: this.filterYBuf } },
+      ],
+    })
+
+    const encoder = d.createCommandEncoder()
+
+    // ── Pass 1: Depth sprites ─────────────────────────────────────
+    const p1 = encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.depthMapView,
-        clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
+        view: depthView, clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
         loadOp: 'clear', storeOp: 'store',
       }],
       depthStencilAttachment: {
-        view: this.depthTestView,
-        depthClearValue: 1.0,
+        view: depthTestView, depthClearValue: 1.0,
         depthLoadOp: 'clear', depthStoreOp: 'store',
       },
     })
-    depthPass.setPipeline(this.depthPipeline)
-    // depthPass.setBindGroup(0, this.depthBindGroup) // TODO: create bind groups
-    depthPass.draw(6, numParticles)
-    depthPass.end()
+    p1.setPipeline(this.depthPipeline)
+    p1.setBindGroup(0, depthBG)
+    p1.draw(6, numParticles)
+    p1.end()
 
-    // Pass 2: Bilateral blur on depth (4 iterations × H+V)
-    for (let iter = 0; iter < 4; iter++) {
-      // Horizontal
-      const blurHPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: this.tmpDepthMapView,
-          loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
-        }],
+    // ── Pass 2: Bilateral blur × 4 ───────────────────────────────
+    for (let i = 0; i < 4; i++) {
+      // H blur: depth → tmpDepth
+      const bh = encoder.beginRenderPass({
+        colorAttachments: [{ view: tmpDepthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],
       })
-      blurHPass.setPipeline(this.bilateralPipeline)
-      // blurHPass.setBindGroup(0, this.bilateralBindGroupX)
-      blurHPass.draw(6)
-      blurHPass.end()
+      bh.setPipeline(this.bilateralPipeline)
+      bh.setBindGroup(0, filterBG_depthX)
+      bh.draw(6)
+      bh.end()
 
-      // Vertical
-      const blurVPass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: this.depthMapView,
-          loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
-        }],
+      // V blur: tmpDepth → depth
+      const bv = encoder.beginRenderPass({
+        colorAttachments: [{ view: depthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],
       })
-      blurVPass.setPipeline(this.bilateralPipeline)
-      // blurVPass.setBindGroup(0, this.bilateralBindGroupY)
-      blurVPass.draw(6)
-      blurVPass.end()
+      bv.setPipeline(this.bilateralPipeline)
+      bv.setBindGroup(0, filterBG_depthY)
+      bv.draw(6)
+      bv.end()
     }
 
-    // Pass 3: Thickness map (additive blending)
-    const thickPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.thicknessView,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        loadOp: 'clear', storeOp: 'store',
-      }],
+    // ── Pass 3: Thickness (additive) ──────────────────────────────
+    const p3 = encoder.beginRenderPass({
+      colorAttachments: [{ view: thickView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' }],
     })
-    thickPass.setPipeline(this.thicknessPipeline)
-    // thickPass.setBindGroup(0, this.thicknessBindGroup)
-    thickPass.draw(6, numParticles)
-    thickPass.end()
+    p3.setPipeline(this.thicknessPipeline)
+    p3.setBindGroup(0, depthBG)
+    p3.draw(6, numParticles)
+    p3.end()
 
-    // Pass 4: Gaussian blur on thickness (1 iteration × H+V)
-    const gaussHPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.tmpThicknessView,
-        loadOp: 'clear', storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      }],
+    // ── Pass 4: Gaussian blur × 1 ────────────────────────────────
+    const g1 = encoder.beginRenderPass({
+      colorAttachments: [{ view: tmpThickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
     })
-    gaussHPass.setPipeline(this.gaussianPipeline)
-    // gaussHPass.setBindGroup(0, this.gaussianBindGroupX)
-    gaussHPass.draw(6)
-    gaussHPass.end()
+    g1.setPipeline(this.gaussianPipeline)
+    g1.setBindGroup(0, filterBG_thickX)
+    g1.draw(6)
+    g1.end()
 
-    const gaussVPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.thicknessView,
-        loadOp: 'clear', storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      }],
+    const g2 = encoder.beginRenderPass({
+      colorAttachments: [{ view: thickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
     })
-    gaussVPass.setPipeline(this.gaussianPipeline)
-    // gaussVPass.setBindGroup(0, this.gaussianBindGroupY)
-    gaussVPass.draw(6)
-    gaussVPass.end()
+    g2.setPipeline(this.gaussianPipeline)
+    g2.setBindGroup(0, filterBG_thickY)
+    g2.draw(6)
+    g2.end()
 
-    // Pass 5: Final composite
-    // TODO: Need scene texture and output view bind group
+    // ── Pass 5: Composite to screen ───────────────────────────────
+    // TODO: Need scene background texture and environment cubemap
+    // For now, output depth visualization directly
+    const outputView = this.context.getCurrentTexture().createView()
+    const p5 = encoder.beginRenderPass({
+      colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 } }],
+    })
+    // When composite bind group is ready, use compositePipeline here
+    // p5.setPipeline(this.compositePipeline)
+    // p5.setBindGroup(0, compositeBG)
+    // p5.draw(6)
+    p5.end()
 
-    this.device.queue.submit([encoder.finish()])
+    d.queue.submit([encoder.finish()])
   }
 
+  get isInitialized() { return this.initialized }
+  get gpuDevice() { return this.device }
+
   dispose() {
-    this.depthMapTexture?.destroy()
-    this.tmpDepthMapTexture?.destroy()
-    this.thicknessTexture?.destroy()
-    this.tmpThicknessTexture?.destroy()
-    this.depthTestTexture?.destroy()
+    this.depthMapTex?.destroy()
+    this.tmpDepthMapTex?.destroy()
+    this.thicknessTex?.destroy()
+    this.tmpThicknessTex?.destroy()
+    this.depthTestTex?.destroy()
+    this.sceneTexture?.destroy()
     this.particleBuffer?.destroy()
     this.uniformBuffer?.destroy()
-    this.filterXBuffer?.destroy()
-    this.filterYBuffer?.destroy()
-    this.compositeUniformBuffer?.destroy()
+    this.filterXBuf?.destroy()
+    this.filterYBuf?.destroy()
+    this.compositeUniformBuf?.destroy()
   }
 }

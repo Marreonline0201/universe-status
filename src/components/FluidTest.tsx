@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
-import { SSFRPipeline } from './FluidSSFR'
+import { FluidRenderer } from '../fluid-render/FluidRenderer'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
@@ -148,9 +148,7 @@ export function FluidTest() {
     sprayPosAttr: THREE.BufferAttribute
     sprayColAttr: THREE.BufferAttribute
     mcubes: MarchingCubes
-    ssfr: SSFRPipeline
-    ssfrGeo: THREE.BufferGeometry
-    ssfrPosAttr: THREE.BufferAttribute
+    fluidRenderer: FluidRenderer | null
     animId: number
     lastTime: number
     fpsAccum: number
@@ -380,23 +378,19 @@ export function FluidTest() {
       scene.add(mcubes)
 
       // §3.2 Tier 2: SSFR — Screen-Space Fluid Rendering
-      const ssfrGeo = new THREE.BufferGeometry()
-      const ssfrPosAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
-      ssfrPosAttr.setUsage(THREE.DynamicDrawUsage)
-      ssfrGeo.setAttribute('position', ssfrPosAttr)
-      ssfrGeo.setDrawRange(0, 0)
-
-      const ssfr = new SSFRPipeline(
-        container.clientWidth,
-        container.clientHeight,
-        camera,
-        {
-          particleRadius: SPACING * 0.6,
-          fluidColor: new THREE.Color(0x2299dd),
-          absorption: new THREE.Vector3(0.5, 0.1, 0.02),
-        },
-      )
-      ssfr.setParticleGeometry(ssfrGeo)
+      // Raw WebGPU fluid renderer — proper SSFR pipeline
+      // Will be initialized after first render when WebGPU device is available
+      let fluidRenderer: FluidRenderer | null = null
+      const initFluidRenderer = async () => {
+        const fr = new FluidRenderer()
+        const canvas = renderer.domElement as HTMLCanvasElement
+        if (canvas && await fr.init(canvas)) {
+          fluidRenderer = fr
+          console.log('FluidRenderer: WebGPU SSFR ready')
+        }
+      }
+      // Don't block — init in background
+      initFluidRenderer().catch(() => console.warn('FluidRenderer: init failed, using fallback'))
 
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
@@ -426,9 +420,7 @@ export function FluidTest() {
         sprayPosAttr,
         sprayColAttr,
         mcubes,
-        ssfr,
-        ssfrGeo,
-        ssfrPosAttr,
+        fluidRenderer,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -522,22 +514,17 @@ export function FluidTest() {
             im.visible = true // visible — SSFR renders via pass(scene)
           })
 
-          // Update SSFR particle positions
-          const ssfrArr = sim.ssfrPosAttr.array as Float32Array
-          for (let i = 0; i < count * 3; i++) ssfrArr[i] = positions[i]
-          sim.ssfrPosAttr.needsUpdate = true
-          sim.ssfrGeo.setDrawRange(0, count)
-
-          // Set SSFR color based on dominant material
-          const domMat = MATERIALS[dominantMat]
-          sim.ssfr.setFluidAppearance(
-            new THREE.Color(domMat.color),
-            new THREE.Vector3(
-              domMat.color === 0x3399ff ? 0.5 : 0.1, // water absorbs red
-              0.1,
-              domMat.color === 0xff3300 ? 0.5 : 0.02, // lava absorbs blue
-            ),
-          )
+          // Upload particles to WebGPU fluid renderer
+          if (sim.fluidRenderer?.isInitialized) {
+            const vels = sim.simulation.get_velocities()
+            sim.fluidRenderer.updateParticles(positions, vels, mats, count)
+            // Camera matrices from Three.js
+            const viewMat = new Float32Array(16)
+            const projMat = new Float32Array(16)
+            sim.camera.matrixWorldInverse.toArray(viewMat)
+            sim.camera.projectionMatrix.toArray(projMat)
+            sim.fluidRenderer.updateCamera(viewMat, projMat, SPACING * 1.2)
+          }
 
           if (count > 0) sim.avgTemp = avgTemp / count
 
@@ -572,10 +559,18 @@ export function FluidTest() {
           sim.sprayPoints.geometry.setDrawRange(0, sprayCount)
         }
 
-        // Render directly — SSFR bilateral blur disabled until depth-only
-        // pipeline is implemented (current blur processes ALL pixels = lag)
         sim.controls.update()
+
+        // Render: Three.js scene first, then WebGPU fluid overlay
         sim.renderer.render(sim.scene, sim.camera)
+
+        // WebGPU SSFR fluid rendering (when connected)
+        if (sim.fluidRenderer?.isInitialized) {
+          const count = sim.simulation.get_count()
+          if (count > 0) {
+            sim.fluidRenderer.render(count)
+          }
+        }
       }
 
       animate()
