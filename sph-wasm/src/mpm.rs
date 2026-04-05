@@ -29,11 +29,12 @@
 use wasm_bindgen::prelude::*;
 
 // ── Grid Parameters ──────────────────────────────────────────────────────────
-const MPM_GRID_RES: usize = 64;        // grid resolution per axis
-const MPM_DX: f32 = 1.0 / MPM_GRID_RES as f32; // cell size
-const MPM_INV_DX: f32 = MPM_GRID_RES as f32;    // 1/dx
+const MPM_GRID_RES: usize = 32;        // lower res = more particles per cell = better pressure
 const MPM_MAX_PARTICLES: usize = 200_000;
-const MPM_DT: f32 = 1.0 / 120.0;       // substep dt (30 Hz × 4 substeps)
+// Domain: grid covers [-DOMAIN_HALF, +DOMAIN_HALF]³ in world space
+const MPM_DOMAIN_HALF: f32 = 1.1;      // slightly larger than half_w=1.0 for margin
+const MPM_DX: f32 = 2.0 * MPM_DOMAIN_HALF / MPM_GRID_RES as f32; // ~0.034375
+const MPM_INV_DX: f32 = MPM_GRID_RES as f32 / (2.0 * MPM_DOMAIN_HALF); // ~29.09
 
 // ── 3×3 Matrix (column-major, for deformation gradient F and APIC C) ─────
 #[derive(Clone, Copy)]
@@ -212,7 +213,8 @@ pub struct MpmSimulation {
     grid_res: usize,
     dx: f32,
     inv_dx: f32,
-    // Mutable bounds
+    domain_half: f32, // grid covers [-domain_half, +domain_half]³
+    // Mutable bounds (box walls, can be smaller than domain)
     half_w: f32, half_h: f32, half_d: f32,
     gravity: f32,
 }
@@ -230,6 +232,7 @@ impl MpmSimulation {
             grid_res,
             dx: MPM_DX,
             inv_dx: MPM_INV_DX,
+            domain_half: MPM_DOMAIN_HALF,
             half_w: 1.0,
             half_h: 0.75,
             half_d: 0.75,
@@ -331,6 +334,7 @@ impl MpmSimulation {
         let res = self.grid_res;
         let inv_dx = self.inv_dx;
         let dx = self.dx;
+        let dh = self.domain_half;
 
         // ── Step 0: Clear grid ───────────────────────────────────────────
         for node in self.grid.iter_mut() {
@@ -338,60 +342,37 @@ impl MpmSimulation {
         }
 
         // ── Step 1: P2G (Particle to Grid) ──────────────────────────────
-        // For each particle, scatter mass and momentum to nearby grid nodes
-        // using quadratic B-spline weights (3×3×3 stencil)
+        let bulk_modulus = 50.0;
         for pi in 0..self.n {
             let p = &self.particles[pi];
-
-            // Grid-space position
-            let gx = p.px * inv_dx;
-            let gy = p.py * inv_dx;
-            let gz = p.pz * inv_dx;
-
-            // Base grid node (integer coords of bottom-left of 3×3×3 stencil)
+            let gx = (p.px + dh) * inv_dx;
+            let gy = (p.py + dh) * inv_dx;
+            let gz = (p.pz + dh) * inv_dx;
             let base_x = (gx - 0.5).floor() as i32;
             let base_y = (gy - 0.5).floor() as i32;
             let base_z = (gz - 0.5).floor() as i32;
 
-            // Compute stress from constitutive model
-            // For fluids: use scalar J (much cheaper than full F)
-            let bulk_modulus = 80.0; // stiffness — tuned for stability
-            let j_p = p.j.clamp(0.1, 10.0);
-
-            // Fused stress term: -V0 * (4/dx²) * σ * dt
-            // For fluids: σ = K*(J-1)*I, so stress_scalar = -V0 * 4/dx² * K*(J-1) * dt
+            let j_p = p.j.clamp(0.3, 3.0);
             let stress_scalar = -p.volume0 * 4.0 * inv_dx * inv_dx * bulk_modulus * (j_p - 1.0) * dt;
 
-            // Scatter to 3×3×3 grid neighborhood
             for di in 0..3i32 {
                 for dj in 0..3i32 {
                     for dk in 0..3i32 {
                         let ix = base_x + di;
                         let iy = base_y + dj;
                         let iz = base_z + dk;
-
-                        // Bounds check
                         if ix < 0 || ix >= res as i32
                         || iy < 0 || iy >= res as i32
                         || iz < 0 || iz >= res as i32 { continue; }
-
                         let idx = (ix as usize) * res * res + (iy as usize) * res + (iz as usize);
-
-                        // Distance from particle to grid node (in grid space)
                         let fx = gx - ix as f32;
                         let fy = gy - iy as f32;
                         let fz = gz - iz as f32;
-
-                        // Weight
                         let w = bspline_weight(fx) * bspline_weight(fy) * bspline_weight(fz);
                         if w < 1e-10 { continue; }
 
-                        // Distance in world space
                         let dpos = [fx * dx, fy * dx, fz * dx];
 
-                        // Fused MLS-MPM P2G (Eq. 29 from Hu et al. 2018)
-                        // affine = stress_term + m_p * C_p
-                        // (mv)_i += w * (m_p * v_p + affine * dpos)
                         let ax = (stress_scalar + p.mass * p.c.get(0,0)) * dpos[0]
                                + p.mass * p.c.get(0,1) * dpos[1]
                                + p.mass * p.c.get(0,2) * dpos[2];
@@ -414,8 +395,17 @@ impl MpmSimulation {
         }
 
         // ── Step 2: Grid velocity update ────────────────────────────────
-        // Normalize momentum → velocity, apply gravity, boundary conditions
-        let bound = 3; // boundary padding in grid cells
+        // Normalize momentum → velocity, apply gravity, enforce box walls
+        // Convert box boundaries to grid coordinates
+        let wall_pad = 1.0; // 1 grid cell padding
+        let box_lo_x = (-self.half_w + dh) * inv_dx + wall_pad;
+        let box_hi_x = ( self.half_w + dh) * inv_dx - wall_pad;
+        let box_lo_y = (-self.half_h + dh) * inv_dx + wall_pad;
+        let box_hi_y = ( self.half_h + dh) * inv_dx - wall_pad;
+        let box_lo_z = (-self.half_d + dh) * inv_dx + wall_pad;
+        let box_hi_z = ( self.half_d + dh) * inv_dx - wall_pad;
+
+        let grid_bound = 2; // also enforce at grid edges for safety
         for ix in 0..res {
             for iy in 0..res {
                 for iz in 0..res {
@@ -432,11 +422,25 @@ impl MpmSimulation {
                     // Gravity
                     node.vy -= self.gravity * dt;
 
-                    // Boundary conditions: zero velocity at walls
-                    if ix < bound || ix >= res - bound { node.vx = 0.0; }
-                    if iy < bound { node.vy = node.vy.max(0.0); } // floor: no downward
-                    if iy >= res - bound { node.vy = node.vy.min(0.0); } // ceiling
-                    if iz < bound || iz >= res - bound { node.vz = 0.0; }
+                    // Box wall boundary conditions
+                    let fx = ix as f32;
+                    let fy = iy as f32;
+                    let fz = iz as f32;
+
+                    // X walls
+                    if fx <= box_lo_x && node.vx < 0.0 { node.vx = 0.0; }
+                    if fx >= box_hi_x && node.vx > 0.0 { node.vx = 0.0; }
+                    // Y floor (no downward) and ceiling (no upward)
+                    if fy <= box_lo_y && node.vy < 0.0 { node.vy = 0.0; }
+                    if fy >= box_hi_y && node.vy > 0.0 { node.vy = 0.0; }
+                    // Z walls
+                    if fz <= box_lo_z && node.vz < 0.0 { node.vz = 0.0; }
+                    if fz >= box_hi_z && node.vz > 0.0 { node.vz = 0.0; }
+
+                    // Grid edge safety
+                    if ix < grid_bound || ix >= res - grid_bound { node.vx = 0.0; }
+                    if iy < grid_bound || iy >= res - grid_bound { node.vy = 0.0; }
+                    if iz < grid_bound || iz >= res - grid_bound { node.vz = 0.0; }
                 }
             }
         }
@@ -446,9 +450,10 @@ impl MpmSimulation {
         for pi in 0..self.n {
             let p = &mut self.particles[pi];
 
-            let gx = p.px * inv_dx;
-            let gy = p.py * inv_dx;
-            let gz = p.pz * inv_dx;
+            // Same world→grid mapping as P2G
+            let gx = (p.px + dh) * inv_dx;
+            let gy = (p.py + dh) * inv_dx;
+            let gz = (p.pz + dh) * inv_dx;
 
             let base_x = (gx - 0.5).floor() as i32;
             let base_y = (gy - 0.5).floor() as i32;
@@ -502,29 +507,50 @@ impl MpmSimulation {
             p.vz = new_vz;
             p.c = new_c;
 
+            // Light viscous damping — prevents pure gas behavior
+            let damp = 1.0 / (1.0 + 0.5 * dt);
+            p.vx *= damp;
+            p.vz *= damp;
+
             // Advect position
             p.px += dt * p.vx;
             p.py += dt * p.vy;
             p.pz += dt * p.vz;
 
-            // ── Step 4: Update deformation ────────────────────────────
-            if p.phase == 0 { // Fluid: update J only (det(F)), skip full matrix
-                // J_new = (1 + dt * tr(C)) * J_old
+            // Update deformation
+            if p.phase == 0 {
+                // Fluid: J tracks volume ratio via velocity divergence
                 let trace_c = p.c.get(0,0) + p.c.get(1,1) + p.c.get(2,2);
                 p.j *= 1.0 + dt * trace_c;
-                p.j = p.j.clamp(0.1, 10.0);
-            } else { // Solid: full deformation gradient
+                p.j = p.j.clamp(0.3, 3.0);
+            } else {
                 let dt_c = p.c.scale(dt);
                 let update = Mat3::identity().add(&dt_c);
                 p.f = update.mul(&p.f);
                 p.j = p.f.det();
             }
 
-            // Clamp to bounds
-            let pad = dx * 2.0;
-            p.px = p.px.clamp(-self.half_w + pad, self.half_w - pad);
-            p.py = p.py.clamp(-self.half_h + pad, self.half_h - pad);
-            p.pz = p.pz.clamp(-self.half_d + pad, self.half_d - pad);
+            // Clamp to bounds AND zero velocity at walls (prevents velocity explosion)
+            let pad = dx * 3.0;
+            let lo_x = -self.half_w + pad;
+            let hi_x =  self.half_w - pad;
+            let lo_y = -self.half_h + pad;
+            let hi_y =  self.half_h - pad;
+            let lo_z = -self.half_d + pad;
+            let hi_z =  self.half_d - pad;
+
+            if p.px < lo_x { p.px = lo_x; if p.vx < 0.0 { p.vx = 0.0; } }
+            if p.px > hi_x { p.px = hi_x; if p.vx > 0.0 { p.vx = 0.0; } }
+            if p.py < lo_y { p.py = lo_y; if p.vy < 0.0 { p.vy = 0.0; } }
+            if p.py > hi_y { p.py = hi_y; if p.vy > 0.0 { p.vy = 0.0; } }
+            if p.pz < lo_z { p.pz = lo_z; if p.vz < 0.0 { p.vz = 0.0; } }
+            if p.pz > hi_z { p.pz = hi_z; if p.vz > 0.0 { p.vz = 0.0; } }
+
+            // Velocity cap for stability
+            let max_v = 3.0;
+            p.vx = p.vx.clamp(-max_v, max_v);
+            p.vy = p.vy.clamp(-max_v, max_v);
+            p.vz = p.vz.clamp(-max_v, max_v);
         }
     }
 }

@@ -558,7 +558,7 @@ export function FluidTest() {
         const count = activeSim.get_count()
         if (count > 0) {
           const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-          const substeps = useMPM ? 4 : 3 // MPM: 4 substeps at 30Hz, SPH: 3 at 60Hz
+          const substeps = useMPM ? 8 : 3 // MPM: 8 substeps for stability, SPH: 3 at 60Hz
           activeSim.step(sim.gravity, simDt, substeps)
 
           // Get results from WASM
