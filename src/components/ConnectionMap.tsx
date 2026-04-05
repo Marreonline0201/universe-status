@@ -687,32 +687,21 @@ export function ConnectionMap() {
       if (st) {
         cancelAnimationFrame(st.animId)
         st.controls.dispose()
-        st.renderer.dispose()
-        st.scene.traverse((obj) => {
-          if (obj instanceof THREE.Mesh) {
-            obj.geometry.dispose()
-            if (Array.isArray(obj.material)) {
-              obj.material.forEach(m => m.dispose())
-            } else {
-              obj.material.dispose()
-            }
-          }
-          if (obj instanceof THREE.Line) {
-            obj.geometry.dispose()
-            ;(obj.material as THREE.Material).dispose()
-          }
-        })
-        // Remove labels
+        try { st.renderer.dispose() } catch { /* WebGPU cleanup may fail */ }
+        // Don't dispose individual materials — WebGPU NodeManager crashes
+        // if renderer wasn't fully initialized. Let GC handle it.
         st.labelEls.forEach(el => el.remove())
       }
-      canvas.removeEventListener('mousemove', onMouseMove)
-      canvas.removeEventListener('mousedown', onMouseDown)
-      canvas.removeEventListener('mouseup', onMouseUp)
-      canvas.removeEventListener('click', onClick)
+      try {
+        canvas.removeEventListener('mousemove', onMouseMove)
+        canvas.removeEventListener('mousedown', onMouseDown)
+        canvas.removeEventListener('mouseup', onMouseUp)
+        canvas.removeEventListener('click', onClick)
+      } catch { /* canvas may not exist if init didn't complete */ }
       ro.disconnect()
-      if (container.contains(canvas)) {
-        container.removeChild(canvas)
-      }
+      try {
+        if (container.contains(canvas)) container.removeChild(canvas)
+      } catch { /* may already be removed */ }
       stateRef.current = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
