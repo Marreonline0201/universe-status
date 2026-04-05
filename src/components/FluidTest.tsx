@@ -506,10 +506,10 @@ export function FluidTest() {
           }
 
           // Mark instanced meshes for GPU upload
-          // Hide instanced spheres — SSFR provides the smooth surface
+          const ssfrActive = sim.fluidRenderer?.isInitialized ?? false
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
-            im.visible = true // visible — SSFR renders via pass(scene)
+            im.visible = !ssfrActive // hide when SSFR provides the surface
           })
 
           // Upload particles to WebGPU fluid renderer
@@ -562,10 +562,12 @@ export function FluidTest() {
         // Render: Three.js scene first, then WebGPU fluid overlay
         sim.renderer.render(sim.scene, sim.camera)
 
-        // WebGPU SSFR fluid rendering (when connected)
+        // WebGPU SSFR fluid rendering
         if (sim.fluidRenderer?.isInitialized) {
           const count = sim.simulation.get_count()
           if (count > 0) {
+            // Capture Three.js scene for refraction in composite pass
+            sim.fluidRenderer.captureScene(sim.renderer.domElement as HTMLCanvasElement)
             sim.fluidRenderer.render(count)
           }
         }

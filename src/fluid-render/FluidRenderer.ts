@@ -276,6 +276,18 @@ export class FluidRenderer {
     this.device.queue.writeBuffer(this.uniformBuffer, 0, buf)
   }
 
+  /**
+   * Copy the Three.js canvas content to the scene texture for refraction
+   */
+  captureScene(threeCanvas: HTMLCanvasElement) {
+    if (!this.initialized) return
+    this.device.queue.copyExternalImageToTexture(
+      { source: threeCanvas },
+      { texture: this.sceneTexture },
+      { width: Math.min(threeCanvas.width, this.width), height: Math.min(threeCanvas.height, this.height) },
+    )
+  }
+
   render(numParticles: number) {
     if (!this.initialized || numParticles === 0) return
 
