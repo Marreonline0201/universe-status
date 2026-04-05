@@ -1,51 +1,38 @@
 # Universe Sim — Game Design Document
 
-**Last Updated**: 2026-04-01
+> **This is the public version.** The full specification includes additional implementation details for the development team.
+
+**Last Updated**: 2026-04-04
 
 ---
 
 ## Table of Contents
 
-### PART I — VISION
+### PART I — VISION & DESIGN
 1. [Executive Summary](#1-executive-summary)
 2. [The Vision](#2-what-this-project-is--the-vision)
 
 ### PART II — CORE ENGINE
-3. [Core Simulation Engine](#3-core-simulation-engine)
-    - 3.1 Emergent Material System
-    - 3.2 Fluid Simulation
-    - 3.3 Sound Engine
-    - 3.4 Structural Physics
-    - 3.5 Networking & Hybrid Rendering
+3. [Core Simulation Engine](#3-core-simulation-engine) — Unified Rust physics tick (8 stages)
+    - 3.1 Emergent Material System (Stage 3: Reactions)
+    - 3.2 Fluid Simulation — SPH + MPM hybrid (Stage 4: Fluid)
+    - 3.3 Sound Engine — Synthesized from physics (Stage 7: Sound Events)
+    - 3.4 Structural Physics (Stage 5: Integrity)
+    - 3.5 Networking & Hybrid Rendering (Stage 8: Broadcast)
+    - 3.6 Cross-System Connections — Complete Data Flow Map (99 connections)
+    - 3.7 System-Wide Optimization — Tick scheduling, caching, memory
+    - 3.8 Rotational Mechanics & Mechanical Joints — Wheels, gears, engines, all machines
+    - 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
+    - 3.10 Rope, Cable & Flexible Body Physics — Verlet chains, pulleys, bows, rigging
+    - 3.11 Heat Engines & Thermodynamic Cycles — Steam engines, internal combustion, refrigeration
+    - 3.12 Optics — Light Propagation, Lenses, Mirrors
+    - 3.13 Electromagnetism — Charge, Current, Magnetism, Induction
 
 ### PART III — GAME WORLD
-4. [World & Life](#4-world--life) — World Gen, Organisms, Geology, Weather & Seasons
-    - 4.1 World Generation
-    - 4.2 Organism Ecosystem & Species
-    - 4.3 Geology & Resource Distribution
-5. [Civilization](#5-civilization)
-    - 5.1 Settlements
-    - 5.2 NPC Brain
-    - 5.3 NPC Language & Knowledge Transfer
-6. [Crafting & Production](#6-crafting--production)
-    - 6.1 Material Taxonomy
-    - 6.2 Production System
-    - 6.3 Physics-Based Crafting & Workstations
-    - 6.4 Precision Crafting Mode
-7. [Player Systems](#7-player-systems)
-    - 7.1 Character Creation & Body
-    - 7.2 Survival Stats
-    - 7.3 Inventory
-    - 7.4 Terrain Interaction
-    - 7.5 Combat
-    - 7.6 Death & Respawn
-    - 7.7 Multiplayer & PvP
-    - 7.8 Player-to-Player Interaction
-    - 7.9 Swimming & Underwater
-    - 7.10 Lighting
-    - 7.11 Map & Navigation
-    - 7.12 Persistence Model
-    - 7.13 New Player Experience
+4. [World & Life](#4-world--life) — World Gen, Organisms, Animals, Farming, Geology, Weather & Seasons
+5. [Civilization](#5-civilization) — Settlements, NPC Brain, NPC Language
+6. [Crafting & Production](#6-crafting--production) — Materials, Production, Workstations, Precision Craft
+7. [Player Systems](#7-player-systems) — Character, Survival, Inventory, Terrain, Combat, Death, Multiplayer, Trade, Swimming, Lighting, Map, Persistence, Spawn
 8. [UI Panels and Hotkeys](#8-ui-panels-and-hotkeys)
 
 ### REFERENCES
@@ -53,15 +40,18 @@
 
 ---
 
-# PART I — VISION
+# PART I — VISION & DESIGN
 ---
 
 ## 1. Executive Summary
 
 Universe Simulation is a living universe running inside a web browser. It is not a game in the traditional sense — there are no quests, no skill trees, no XP, no dungeons, and no objectives handed to the player. The player enters the world as just another creature. The universe was here before them and will continue after they leave. Other organisms are born, eat, and die whether or not anyone is watching. Weather changes. Seasons shift. Civilizations form around the resources geology has made available. The player's shelter marks where they respawn. Their death is not a punishment — it is just what happens when living things run out of energy.
 
-The game is built on three foundational pillars. First, **physics-based crafting** — fire is started by the correct physical method (bow-drill friction or flint-and-iron striking), with success rates determined by actual material properties (wood moisture content, hardness on the Mohs scale, ignition temperature). No recipe lists. Second, **geological accuracy** — copper concentrates near tectonic plate boundaries as it does on Earth, not randomly. Settlements that form near copper-rich volcanic zones become copper mining towns. Third, a **shared ecosystem** — all players see the same organisms, weather, and civilizations. A birth or death of an organism is a real event that all connected players witness simultaneously.
+As of this report (version 28, 2026-03-27), the project underwent its most significant architectural reset since development began. All RPG code — dungeons, quests, XP systems, skill trees, factions, loot tables, and spell systems — was deleted from the codebase and preserved in a git tag (`rpg-preserved-20260327`) for historical reference. This was not a loss. It was a clarification: the universe is not an RPG, and the codebase now reflects that.
 
+In place of the deleted systems, three foundational pillars were built or repaired this session. First, physics-based crafting replaced recipe lists — fire is now started by the correct method (bow-drill friction or flint-and-iron striking), with success rates determined by the actual physical properties of the materials involved (wood moisture content, hardness on the Mohs scale, ignition temperature). Second, geological accuracy was added to resource distribution — copper concentrates near tectonic plate boundaries as it does on Earth, not randomly. Settlements that form near copper-rich volcanic zones become copper mining towns. Third, the organism ecosystem became truly shared — before this session, every player saw a completely different set of creatures because each browser was running its own private simulation. Now the server runs the ecosystem and broadcasts it to everyone. A birth or death of an organism is a real event that all connected players witness simultaneously.
+
+The project's production URL remains [https://universe-sim-beryl.vercel.app](https://universe-sim-beryl.vercel.app).
 
 ---
 
@@ -106,10 +96,7 @@ This approach has precedent. *Dwarf Fortress* (Tarn Adams, ongoing) demonstrated
 ---
 
 
----
 
-
-# PART II — GAME WORLD
 ---
 
 
@@ -120,7 +107,219 @@ This approach has precedent. *Dwarf Fortress* (Tarn Adams, ongoing) demonstrated
 
 ## 3. Core Simulation Engine
 
-These are the foundational physics systems that power every other system in the game. The material system determines what things are. The fluid system determines how liquids move. The atmospheric model determines weather. The sound engine determines what you hear. The structural system determines whether buildings stand. The networking layer determines who computes what. Everything else in this document is built on top of these six systems.
+These are the foundational physics systems that power every other system in the game. They are NOT independent modules — they are **stages of a single physics tick loop** that runs in a Rust native process on the server. Each stage feeds into the next: temperature changes trigger phase transitions, phase transitions spawn fluid particles, fluid particles interact via forces that depend on material properties, structural blocks break when forces exceed material strength, and every physical event emits a sound descriptor.
+
+#### Recommended Reading Order
+
+The sections below are numbered in the order they were developed, not by importance.
+For understanding the physics engine, read them in this dependency order:
+
+**Foundation (read first — everything depends on these):**
+1. §3.1 Material System — composition to properties. Every other system reads from this.
+2. Physics Tick intro (below) — the 8-stage pipeline that runs every tick.
+3. §3.2 Fluid Simulation — SPH/MPM particles, phase transitions, rendering.
+4. §3.4 Structural Physics — load paths, beams, arches, cascades.
+
+**Mechanics (read second — these enable machines and motion):**
+5. §3.8 Rotational Mechanics — joints, gears, wheels. All machines need this.
+6. §3.10 Rope/Cable Physics — pulleys, bows, rigging. Many machines need rope.
+7. §3.9 Projectile Aerodynamics — drag and spin on every moving object.
+
+**Feedback (read third — what the player perceives):**
+8. §3.3 Sound Engine — every action produces sound from physics.
+
+**Advanced Systems (read fourth — build on the foundation):**
+9. §3.11 Heat Engines — steam power, combustion. Needs fluid + rotational.
+10. §3.13 Electromagnetism — batteries, motors, generators. Needs rotational + heat.
+11. §3.12 Optics — lenses, telescopes, mirrors. Mostly independent.
+
+**Infrastructure (read last — implementation concerns):**
+12. §3.5 Networking — how physics reaches clients.
+13. §3.6 Cross-System Connections — data flow reference (99 connections).
+14. §3.7 Optimization — tick scheduling, caching, degradation.
+
+#### The Unified Physics Tick (Rust Core)
+
+Every server tick (60 Hz for crafting, 30 Hz for environment), the physics engine runs one pipeline:
+
+```
+PhysicsTick (Rust native addon, called from Node.js game server) {
+
+  // ── Stage 1: Temperature Propagation ──────────────────────────────────────
+  // All objects in the world exchange heat with neighbors and environment.
+  // Uses: MaterialPacket.thermalConductivity, specificHeatCapacity, emissivity
+  // Formula: Q = k × A × ΔT / d (Fourier's law) per contact pair
+  // Fire sources add heat. Environment (air temp from §4.6) absorbs/adds heat.
+  // Output: updated temperature for every MaterialPacket in the simulation
+
+  // ── Stage 1b: Electrical Circuit Solving (§3.13) ─────────────────────────
+  //   Solve circuit graph for current in all active circuits
+  //   Compute Joule heating P = I²R per resistive element
+  //   Feed heat into Stage 1 temperature propagation
+  //   Compute magnetic fields from current-carrying coils
+
+  // ── Stage 2: Phase Transitions ────────────────────────────────────────────
+  // Check every packet: has temperature crossed melting/boiling point?
+  // Uses: MaterialPacket.meltingPoint, boilingPoint (computed from composition)
+  // If solid → liquid: fragment packet into SPH/MPM particles (§3.2)
+  // If liquid → solid: merge particles back into solid packet (§3.2)
+  // If liquid → gas: expand particles, add buoyancy (§3.2)
+  // Output: new particles spawned or merged
+
+  // ── Stage 3: Reaction Engine ──────────────────────────────────────────────
+  // For every pair of packets/particles in contact:
+  //   Check Gibbs free energy: ΔG = ΔH - TΔS (§3.1)
+  //   If ΔG < 0 and temperature > activation energy: reaction fires
+  //   Stoichiometry determines output composition
+  //   Energy balance heats/cools the output
+  // Output: transformed packets with new compositions
+
+  // -- Reaction Pair Detection Algorithm ------------------------------
+  //
+  // "For every pair in contact" does NOT mean checking every packet against
+  // every other packet (O(n^2) -- impossible for 500,000 packets).
+  //
+  // The reaction engine reuses the same spatial hash grid as the SPH solver (§3.2).
+  // Each MaterialPacket and fluid particle hashes its position into a cell.
+  // Only pairs in the same cell or the 26 adjacent cells are checked.
+  //
+  // Contact definition:
+  //   Solid blocks: "in contact" = sharing a face (distance between centers <= 1.0 x BLOCK_SIZE)
+  //   Fluid particles: "in contact" = within SPH kernel radius h (already computed by neighbor search)
+  //   Solid-fluid: fluid particle within 0.5 x BLOCK_SIZE of a solid block surface
+  //
+  // Dirty-flag optimization:
+  //   Only check pairs where at least ONE member changed this tick:
+  //     Temperature changed (crossed a reaction threshold)
+  //     Composition changed (new material introduced)
+  //     Phase changed (solid<->liquid -- different reaction pathways available)
+  //   Pairs where BOTH members are unchanged since last check are SKIPPED.
+  //   This reduces checks by ~90% during steady state (most of the world is cold and stable).
+  //
+  // Per-tick algorithm:
+  //   1. Clear the dirty flag on all packets
+  //   2. After Stage 1 (temperature): mark packets whose temperature changed > 1C as dirty
+  //   3. After Stage 2 (phase transitions): mark packets that changed phase as dirty
+  //   4. For Stage 3 (reactions):
+  //      for each dirty packet P:
+  //        for each neighbor N in spatial hash (same cell + 26 adjacent):
+  //          if distance(P, N) <= contactThreshold:
+  //            compute dG for the pair (P.composition, N.composition, avg temperature)
+  //            if dG < 0 AND avg temperature > activationEnergy / R:
+  //              fireReaction(P, N)  // transforms compositions, releases/absorbs heat
+  //
+  // Cost estimate:
+  //   500,000 total packets, ~5% dirty per tick = 25,000 dirty
+  //   Each dirty packet checks ~6-12 neighbors = 150,000-300,000 pair checks
+  //   Each dG computation: ~0.01ms -> total: ~1.5-3ms per tick
+  //   With spatial hash: O(n x k) where k = average neighbors ~ 10
+
+  // ── Stage 4: Fluid Simulation ─────────────────────────────────────────────
+  // Active fluid particles (from Stage 2 or existing):
+  //   Scale 1 (crafting, 100-5000): SPH at 60 Hz — pressure, viscosity, gravity,
+  //     surface tension, terrain collision, mesh collision (SDF). Uses material-dependent properties.
+  //   Scale 2 (environment, 5000-200000): MLS-MPM at 30 Hz — particle-to-grid,
+  //     grid force solve, grid-to-particle. No neighbor search needed. 3× faster than SPH.
+  //   Scale 3 (regional): Grid solver at 1 Hz — Manning's equation flow
+  //   Max total particles: 400,000 (typical active: 20,000-60,000)
+  //   Sleep system: settled particles skip computation (80-95% sleeping at any time)
+  //   Particle redistribution: splitting (near camera) / merging (far) maintains even spacing
+  //   Secondary particles: spray (Weber number), foam (vorticity), bubbles (reactions) — visual only
+  // Output: updated particle positions, velocities, and secondary particle spawn events
+
+  // ── Stage 5: Structural Integrity ─────────────────────────────────────────
+  // Only runs when a structural change event occurred this tick:
+  //   Block placed, block removed, block damaged, bond broken by weather
+  // Traces load paths from affected block to ground.
+  // Checks stress vs MaterialPacket.compressiveStrength/tensileStrength/shearStrength
+  // If exceeded: block breaks → becomes rigid body debris → cascade check
+  // Output: broken blocks, debris spawned
+
+  // ── Stage 6: Rigid Body Physics ───────────────────────────────────────────
+  // All loose objects (dropped items, debris, thrown tools):
+  //   Apply gravity, detect terrain collision, apply friction
+  //   Uses: MaterialPacket.density (weight), frictionCoefficient
+  // Output: updated positions for all loose objects
+
+  // ── Stage 6b: Flexible Body Constraints (§3.10) ──────────────────────────
+  //   Verlet integration for all rope/cable particles
+  //   Constraint solving (4-8 iterations) to enforce rope lengths
+  //   Tension checking — break ropes that exceed tensile strength
+  //   Pulley force transmission through rope-axle contact points
+
+  // ── Stage 7: Emit Sound Events ────────────────────────────────────────────
+  // Every physical event from stages 1-6 that produces sound:
+  //   Impact (rigid body hit terrain/object) → modal synthesis descriptor
+  //   Phase transition (sizzle, crack) → noise synthesis descriptor
+  //   Fluid flow (splash, pour, bubble) → noise synthesis descriptor
+  //   Structure break (crack, crash) → modal synthesis descriptor
+  // Each descriptor contains: materialA, materialB, energy, position, geometry
+  // Sent to client as SOUND_EVENTs — client synthesizes audio (§3.3)
+  // Output: array of SoundEvent descriptors
+
+  // ── Stage 8: Broadcast to Clients ─────────────────────────────────────────
+  // Package results and send via WebSocket (§3.5):
+  //   Particle positions → PHYSICS_EVENT
+  //   Sound descriptors → SOUND_EVENT
+  //   Entity state changes → ENTITY_UPDATE
+  //   Structural changes → CHUNK_UPDATE
+}
+```
+
+#### Implementation: Rust Native Addon
+
+The physics engine is written in **Rust** and compiled to a native Node.js addon via **napi-rs**. This is not WebAssembly — it is native machine code running at full CPU speed with SIMD auto-vectorization.
+
+```
+Why Rust (not JavaScript, not C++, not WASM):
+  - 10-50× faster than JavaScript for tight numerical loops (no type checks, no GC)
+  - Memory-safe unlike C++ (no segfaults, no buffer overflows)
+  - SIMD auto-vectorization (compiler processes 4-8 particles per instruction)
+  - Zero-copy data sharing with Node.js via napi-rs (Float32Array shared memory)
+  - No garbage collection pauses (predictable frame timing)
+  - Compiles to native .node binary — loaded by Node.js like any npm module
+
+Data sharing (zero-copy):
+  // Node.js creates Float32Array buffers for particle data
+  // Passes buffer references to Rust via napi-rs
+  // Rust reads and writes directly into the same memory
+  // No serialization, no copying, no message passing
+  // Node.js sees updated particle positions immediately after Rust returns
+
+Performance budget (Rust):
+  SPH crafting (5000 particles, 60 Hz):       ~0.5ms per tick  → 3% of one CPU core
+  MPM environment (50k active, 30 Hz):        ~2.0ms per tick  → 6% of one CPU core
+  MPM peak eruption (200k active, 30 Hz):     ~8.0ms per tick  → 24% of one CPU core
+  Grid regional (10,000-50,000 cells, 1 Hz):   ~2ms per tick    → 0.2% of one CPU core
+  Particle redistribution (amortized):        ~0.3ms per tick  → ~1% of one CPU core
+  Structural (on-demand):                     ~0.5-2ms per event
+  Rigid body (100 objects, 60 Hz):            ~0.05ms per tick
+  TOTAL PHYSICS (sustained):                  ~10% of one CPU core
+  TOTAL PHYSICS (peak eruption):              ~34% of one CPU core
+
+Compare JavaScript (same sustained workload): ~100%+ of one CPU core (cannot keep up)
+With WebGPU GPU compute: MPM drops from ~2ms to ~0.5ms, freeing CPU entirely.
+Rust gives 3-10× headroom for scaling to more players and more particles.
+Even at peak eruption (200k active particles), a single core handles it with 66% headroom.
+```
+
+#### Fluid Methods: SPH + MPM Hybrid
+
+The fluid simulation uses two methods optimized for different scales:
+
+**SPH (Smoothed Particle Hydrodynamics)** — for crafting scale (100-5,000 particles).
+Each particle checks its neighbors and computes 5 forces. Precise, accurate, good for small interactions where every droplet matters (pouring metal into a mold).
+
+**MLS-MPM (Moving Least Squares Material Point Method)** — for environment scale (5,000-200,000 particles).
+Particles transfer data to a background grid, the grid solves forces, then transfers results back to particles. 3× faster than SPH at the same particle count because it avoids the expensive neighbor search. Used for rain, puddles, lava flows, floods — situations where overall flow behavior matters more than individual droplet precision.
+
+Both methods use material properties from the MaterialPacket (viscosity, surface tension, density) — the physics is the same, only the computational method differs.
+
+The sections below describe each stage's physics in detail.
+
+The cross-system connections between Chapter 3's physics systems and the rest of the
+game (weather, animals, farming, NPCs, player systems) are documented in §3.6
+(Cross-System Connections).
 
 ### 3.1 Emergent Material System — Nothing Is Pre-Defined
 
@@ -155,28 +354,571 @@ MaterialPacket {
   pressure: number                      // Pa (default: 101325 = 1 atm)
 
   // --- Derived (computed from composition + state, never stored manually) ---
-  meltingPoint: number                  // °C — weighted from components + alloy corrections
-  boilingPoint: number                  // °C
-  density: number                       // kg/m³
-  hardness: number                      // Mohs scale
-  thermalConductivity: number           // W/(m·K)
-  electricalConductivity: number        // S/m
-  tensileStrength: number               // MPa
-  color: [number, number, number]       // RGB derived from composition
-  crystalStructure: string              // FCC, BCC, HCP, amorphous...
+  // Every property below is CALCULATED from composition using real formulas.
+  // Nothing is looked up from a table. The property calculator runs the formula
+  // each time a property is needed (cached per temperature change).
+
+  // ── Phase transition ──────────────────────────────────────────────────────
+  meltingPoint: number                  // °C — CALPHAD weighted average + eutectic corrections
+  boilingPoint: number                  // °C — Clausius-Clapeyron relation from vapor pressure
+  latentHeatFusion: number           // J/kg — energy to melt at melting point (no temp change)
+                                      // Clausius-Clapeyron: L = T × ΔV × (dP/dT)
+                                      // Used by: §3.2 phase transitions (melting/freezing duration)
+  latentHeatVaporization: number     // J/kg — energy to boil at boiling point (no temp change)
+                                      // Used by: §3.2 phase transitions (boiling duration)
+
+  // ── Mechanical ────────────────────────────────────────────────────────────
+  density: number                       // kg/m³ — Vegard's law for alloys, rule of mixtures
+  hardness: number                      // Mohs scale — solid solution strengthening:
+                                        // Fleischer model at low concentration (c < 5 at.%): Δσ = B × c^(1/2)
+                                        // Labusch model at high concentration (c ≥ 5 at.%): Δσ = B' × c^(2/3)
+                                        // where c = atomic fraction of the solute
+                                        // B = Fleischer coefficient from element property table
+                                        // B' = B × 0.7 (Labusch coefficients are ~70% of Fleischer for same system)
+                                        // Crossover at 5 at.% smoothed by: Δσ = B × c^(0.5 + 0.167 × min(1, c/0.05))
+                                        //   At c=0: exponent = 0.5 (pure Fleischer)
+                                        //   At c=0.05: exponent = 0.667 (pure Labusch)
+                                        //   Smooth interpolation between the two regimes
+  tensileStrength: number               // Pa — maximum pull force before snap
+  compressiveStrength: number           // Pa — maximum squeeze force before crush
+  shearStrength: number                 // Pa — maximum sideways force before shear
+  youngsModulus: number                 // Pa (elasticity) — how much it flexes before breaking
+                                        // Used by: §3.3 sound (pitch: f₀ = (1/2L)√(E/ρ))
+                                        //          §3.4 structural (span limits, beam deflection)
+  frictionCoefficient: number           // dimensionless — surface friction (μ)
+                                        // Used by: §3.4 structural (stacked block stability)
+  poissonRatio: number                  // dimensionless — lateral strain / axial strain (0-0.5)
+                                        // Used by: §3.4 structural (multiaxial stress, plate bending)
+                                        // Steel: 0.27-0.30, rubber: 0.50, cork: 0.0, concrete: 0.15
+  fractureToughness: number             // MPa·√m — resistance to crack propagation
+                                        // Used by: §3.4 structural (Paris law fatigue, brittle fracture)
+                                        // Steel: 50-150, glass: 0.7, wood: 1-10, cast iron: 10-30
+  ductility: number                     // 0-1 — ability to deform plastically before fracture
+                                        // Used by: §3.4 structural (brittle vs ductile failure mode)
+                                        // Gold: 0.95, glass: 0.01, mild steel: 0.6, cast iron: 0.05
+
+  // ── Thermal ───────────────────────────────────────────────────────────────
+  thermalConductivity: number           // W/(m·K) — how fast heat moves through material
+  specificHeatCapacity: number          // J/(kg·K) — energy needed to raise 1kg by 1°C
+                                        // Used by: temperature propagation, cooling rate
+                                        // Water: 4186, iron: 449, granite: 790
+  //   Wood: C_p ≈ 1100 + 4.5 × T (J/(kg·K)) for dry wood, where T in °C
+  //     At 20°C: C_p ≈ 1190 J/(kg·K)
+  //     At 100°C: C_p ≈ 1550 J/(kg·K)
+  //     At 200°C: C_p ≈ 2000 J/(kg·K)
+  //     Moisture increases C_p significantly (wet wood → C_p approaches water's 4186)
+  thermalExpansion: number              // 1/K — how much material expands when heated
+                                        // Used by: structural stress from temperature changes
+  emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
+                                        // Used by: radiative heat loss, fire radiation
+  ignitionTemperature: number           // °C — minimum temp for combustion (organic materials only)
+                                        // Wood: ~300°C, paper: ~230°C, coal: ~450°C, metal: N/A
+  combustionEnergy: number              // J/kg — energy released when burned
+                                        // Used by: fire system, furnace temperature calculation
+                                        // Wood: ~15 MJ/kg, charcoal: ~30 MJ/kg, coal: ~25 MJ/kg
+  flammability: number                  // 0-1 — ease of ignition (modified by moisture)
+                                        // Used by: fire starting success rate
+
+  // ── Electrical ────────────────────────────────────────────────────────────
+  electricalConductivity: number        // S/m — Matthiessen's rule
+
+  // ── Fluid (liquid/gas phase only) ─────────────────────────────────────────
+  viscosity: number                     // Pa·s — resistance to flow
+                                        // Used by: §3.2 SPH (F_viscosity = μ · ∇²v)
+                                        // Water: 0.001, honey: μ depends strongly on temperature — see Non-Newtonian viscosity section (10-100 Pa·s at 20°C), lava: 100-10⁶
+                                        // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
+  surfaceTension: number                // N/m — surface cohesion
+                                        // Used by: §3.2 SPH (surface tension force, droplet formation)
+                                        // Water: 0.072, mercury: 0.49
+  //   Molten iron: σ ≈ 1.87 - 0.0003 × (T - 1538) N/m (decreases with temperature)
+  //     At melting point (1538°C): σ ≈ 1.87 N/m  
+  //     At 1600°C: σ ≈ 1.85 N/m
+  //     At 1800°C: σ ≈ 1.79 N/m
+  //     Note: real measurements vary widely (1.3-1.9 N/m) depending on 
+  //     oxygen content and impurities. Pure iron in vacuum: ~1.87 N/m (Keene 1993).
+  //     Iron exposed to air (oxidized): ~1.3-1.5 N/m.
+  //     The property calculator uses composition to determine which value applies.
+
+  // ── Non-Newtonian fluid properties ────────────────────────────────────────
+  isNonNewtonian: boolean               // true for honey, blood, ketchup, wet clay
+  zeroShearViscosity: number            // Pa·s — viscosity at rest (shear rate → 0)
+  infShearViscosity: number             // Pa·s — viscosity at very high shear rate
+  crossTimeConstant: number             // s — Cross model time constant (transition shear rate)
+  crossFlowIndex: number                // dimensionless — Cross model flow index (0-1)
+                                        // Non-Newtonian viscosity: μ(γ̇) = μ_∞ + (μ_0 - μ_∞) / (1 + (λγ̇)^n)
+
+  // ── Mechanical (deformation state) ────────────────────────────────────────
+  workHardeningState: number            // 0-1 — accumulated plastic strain from mechanical deformation
+                                        // 0 = fully annealed (soft). 1 = fully cold-worked (hard).
+                                        // Increases when: metal is hammered, bent, drawn, rolled
+                                        // Resets to 0 when: heated above recrystallization temperature (~0.4 × T_melt in K)
+                                        // Effect on strength: σ_yield = σ_0 × (1 + K × workHardeningState^n)
+                                        //   K = strain hardening coefficient (0.5-1.5 for metals)
+                                        //   n = strain hardening exponent (0.1 for steel, 0.5 for copper)
+                                        // Used by: §3.4 structural strength, §6.3 crafting (hammering improves tools)
+
+  // ── Acoustic ──────────────────────────────────────────────────────────────
+  acousticEfficiency: number            // dimensionless — fraction of impact energy converted to sound
+                                        // Used by: §3.3 sound (P_sound = η × E_impact / t_contact)
+                                        // Metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001
+  dampingLossTangent: number         // dimensionless — internal friction of the material
+                                      // Determines how quickly vibrations decay (Q factor)
+                                      // Low = rings long (metals: 0.0001-0.001)
+                                      // High = dies quickly (wood: 0.01-0.05, rubber: 0.1-0.5)
+                                      // Used by: §3.3 sound engine (Q = 1 / (2 × dampingLossTangent))
+
+  // ── Chemical ──────────────────────────────────────────────────────────────
+  standardEnthalpy: number              // J/mol — formation enthalpy (ΔH_f°)
+                                        // Used by: reaction engine (ΔG = ΔH - TΔS)
+  standardEntropy: number               // J/(mol·K) — formation entropy (S°)
+  activationEnergy: number              // J/mol — energy barrier for reactions (Ea)
+                                        // Used by: Arrhenius equation k = A·e^(-Ea/RT)
+
+  // ── Environmental interaction ─────────────────────────────────────────────
+  porosity: number                      // 0-1 — how porous (affects water absorption, strength)
+                                        // Used by: §4.6 weather (material moisture model)
+                                        //          §3.4 structural (freeze-thaw damage)
+                                        // Stone: 0.01-0.05, wood: 0.3-0.6, clay brick: 0.15-0.25
+  waterAbsorption: number               // 0-1 — max moisture the material can hold
+                                        // Used by: §4.6 weather (rain → material gets wet)
+                                        // Wood: 0.8, cloth: 0.9, stone: 0.05, metal: 0.0
+
+  // ── Optical ───────────────────────────────────────────────────────────────
+  refractiveIndex: number               // dimensionless — speed of light ratio (vacuum/material)
+                                        // Used by: §3.12 Optics (Snell's law, lens equation)
+                                        // Glass: 1.5, water: 1.33, diamond: 2.42, air: 1.0003
+  absorptionRGB: [number, number, number]  // 1/m — light absorption per color channel
+                                        // Used by: rendering (beer-lambert law for transparency)
+  scatteringRGB: [number, number, number]  // 1/m — light scattering per color channel
+                                        // Used by: rendering (subsurface scattering, turbidity)
+
+  // ── Visual ────────────────────────────────────────────────────────────────
+  color: [number, number, number]       // RGB — Drude model for metals, absorption for non-metals
+  crystalStructure: string              // FCC, BCC, HCP, amorphous — Hume-Rothery rules
+  opacity: number                       // 0-1 — transparency (glass: 0.1, metal: 1.0, water: 0.3)
+  reflectivity: number                  // 0-1 — surface reflectance (polished metal: 0.9, wood: 0.1)
+
+  // ── Biological (organic materials only) ───────────────────────────────────
+  calorieContent: number                // kcal/kg — nutritional energy (0 for non-food materials)
+  nutrientContent: { N: number, P: number, K: number }  // fertilizer value when applied to soil
+                                        // Used by: §4.4 farming (manure, bone meal, wood ash)
+
+  // ── Electromagnetic ──────────────────────────────────────────────────────
+  standardElectrodePotential: number   // V — standard reduction potential (E°)
+                                        // Used by: §3.13 battery voltage (V_cell = E_cathode - E_anode)
+                                        // Cu: +0.34V, Zn: -0.76V, Fe: -0.44V, Au: +1.50V
+  hydrophilicity: number               // 0-1 — affinity for water (surface wetting)
+                                        // Used by: §3.2 contact angle, §4.6 rain runoff behavior
+                                        // Glass: 0.9, wax: 0.05, metal: 0.7, leaves: 0.3
+  magneticPermeability: number         // relative permeability (dimensionless)
+                                        // Vacuum/air: 1, Iron: 200-5000, Nickel: 100-600
+                                        // Used by: §3.13 electromagnets, compass, motors
+  permanentMagnetization: Vec3         // residual magnetic field direction + magnitude (Tesla)
+                                        // Zero for non-magnets. Lodestone: 0.01-0.1T. Magnetized iron: 0.1-1.0T
+                                        // Used by: §3.13 compass, permanent magnet motors
+  triboelectricIndex: number           // position in triboelectric series (-1 to +1)
+                                        // Glass: +0.8, Wool: +0.4, Cotton: 0, Amber: -0.5, Rubber: -0.8
+                                        // Used by: §3.13 static electricity, charge transfer
 }
 ```
 
+**Total: 44 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+
+  // NOTE: "44 properties" counts each named property as one, regardless of components.
+  // color (RGB), absorptionRGB, scatteringRGB, permanentMagnetization (Vec3), and
+  // nutrientContent (N,P,K) each count as one property but store multiple scalars.
+  // The SoA binary format uses ~53 Float32Arrays (splitting vectors into components)
+  // plus ~5 Uint8Arrays for flags. The "44" count is the logical property count.
+
+  // ── Element Property Reference Table ───────────────────────────────────
+  //
+  // The property calculator requires per-element physical constants as inputs.
+  // These are tabulated in docs/element-properties.md for the 25 most
+  // gameplay-relevant elements (H, C, N, O, Na, Mg, Al, Si, P, S, Cl, K,
+  // Ca, Ti, Cr, Mn, Fe, Ni, Cu, Zn, Sn, Pb, Ag, Au, W).
+  //
+  // 14 tables provide: atomic properties, thermal properties, mechanical
+  // properties, electrical/acoustic properties, liquid properties, Andrade
+  // viscosity constants (A, Ea), Norton creep constants (A, n, Q), Avrami
+  // precipitation constants (k₀, Q, n), Fleischer strengthening coefficients (B),
+  // Basquin fatigue constants (σ'f, b), and fracture toughness (K_IC).
+  //
+  // All values are sourced from NIST, CRC Handbook, ASM International, and
+  // peer-reviewed literature. The game loads these tables at startup and uses
+  // them as inputs to the composition-based property calculator formulas.
+  //
+  // For elements not in the table: interpolate from the nearest elements in
+  // the same group/period of the periodic table. For compounds: use mixing
+  // rules specified per property (Vegard, Kopp-Neumann, harmonic mean, etc.).
+
 Every derived property is **calculated**, not looked up. The calculation uses real material science:
 
-| Property | How it's computed | Source |
-|----------|------------------|--------|
-| Melting point | Weighted average of component melting points + eutectic corrections from binary phase diagrams | CALPHAD method (simplified) |
-| Density | Rule of mixtures: `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law for alloys |
-| Hardness | Hall-Petch relationship for grain size + solid solution strengthening from solute atoms | Metallurgy fundamentals |
-| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` — impurities increase resistivity | Resistivity tables |
-| Color | Drude model for metals (free electron plasma frequency → reflectance spectrum), absorption spectrum for non-metals | Optical properties of solids |
-| Crystal structure | Hume-Rothery rules: atomic size ratio, electronegativity difference, valence electron count → FCC/BCC/HCP prediction | Hume-Rothery (1934) |
+| Property | How it's computed | Source | Used by |
+|----------|------------------|--------|---------|
+| Melting point | Weighted average + eutectic corrections from binary phase diagrams | CALPHAD method | Phase transitions, smelting |
+| Boiling point | Clausius-Clapeyron from vapor pressure curves | Thermodynamics | Evaporation, boiling |
+| Latent heat (fusion) | Clausius-Clapeyron: L = T × ΔV × (dP/dT), weighted by composition | Thermodynamics | §3.2 Phase transition duration (melting/freezing) |
+| Latent heat (vaporization) | Clausius-Clapeyron from boiling point + entropy of vaporization | Thermodynamics | §3.2 Phase transition duration (boiling) |
+| Density | `ρ = Σ(xᵢ · ρᵢ)` with packing corrections for crystal structure | Vegard's law | SPH, buoyancy, weight |
+| Hardness | Fleischer (c<5 at.%): Δσ=B×c^(1/2), Labusch (c≥5 at.%): Δσ=B'×c^(2/3), smoothed crossover (no grain size → no Hall-Petch) | Metallurgy | Tool quality, Mohs scale |
+| Tensile strength | Empirical relation to hardness + crystal structure correction | Materials science | §3.4 beam spans, breaking |
+| Compressive strength | ~10× tensile for stone, ~1× for metals, from crystal bonding | Materials science | §3.4 stacking, foundations |
+| Shear strength | ~0.6× tensile for metals, ~0.15× compressive for stone | Materials science | §3.4 lateral force, wind |
+| Young's modulus | Bonding energy per unit cell × packing density | Solid state physics | §3.3 sound pitch, §3.4 deflection |
+| Friction coefficient | Surface roughness from crystal structure + hardness | Tribology | §3.4 stacked blocks, sliding |
+| Thermal conductivity | Wiedemann-Franz law (metals), phonon model (non-metals) | Solid state physics | Heat transfer, insulation |
+| Specific heat capacity | Dulong-Petit law (3R per mole) + corrections for bonding | Thermochemistry | Temperature change rate |
+| Thermal expansion | Grüneisen parameter from bonding strength | Solid state physics | Structural thermal stress |
+| Emissivity | Surface roughness + composition → Kirchhoff's law | Radiative physics | Heat radiation, fire glow |
+| Ignition temperature | Bond dissociation energy of weakest organic bond | Combustion chemistry | Fire starting |
+| Combustion energy | Hess's law: sum of bond energies (products - reactants) | Thermochemistry | Fire heat, furnace temp |
+| Flammability | Ignition temp × surface area × moisture correction | Fire science | Fire success rate |
+| Electrical conductivity | Matthiessen's rule: `1/σ = 1/σ_base + Σ(cᵢ · Δρᵢ)` | Solid state physics | §3.13 circuits, Ohm's law (V=IR) |
+| Viscosity | Andrade equation (metals), Arrhenius (general): `μ = A·e^(Ea/RT)` | Fluid mechanics | §3.2 SPH flow resistance |
+| Non-Newtonian viscosity | Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)` | Rheology | §3.2 clay, mud, blood |
+| Non-Newtonian params | Cross model fit: μ₀, μ_∞, K, n from molecular structure + concentration | Rheology | §3.2 SPH viscosity |
+| Surface tension | Eötvös rule: `γ = k(Tc - T - 6)/V^(2/3)` | Surface physics | §3.2 SPH droplets, meniscus |
+| Acoustic efficiency | Empirical: crystal structure → radiation efficiency | Acoustics | §3.3 sound volume |
+| Damping loss tangent | Material-dependent: metals from electron scattering, polymers from chain relaxation | Vibration theory | §3.3 Sound Q factor |
+| Standard enthalpy | Tabulated per element, computed for compounds via Hess's law | Thermochemistry | Reaction engine ΔG |
+| Standard entropy | Tabulated per element, computed for compounds | Thermochemistry | Reaction engine ΔG |
+| Activation energy | Tabulated per reaction type, estimated from bond strengths | Reaction kinetics | Arrhenius equation |
+| Porosity | Packing efficiency from crystal structure + grain size | Materials science | Weather damage, absorption |
+| Water absorption | Porosity × surface wettability (contact angle) | Surface chemistry | Rain effect on materials |
+| Color | Drude model (metals), band gap absorption (non-metals) | Optical physics | Rendering |
+| Crystal structure | Hume-Rothery rules: size ratio, electronegativity, valence | Crystallography | Many properties depend on this |
+| Opacity | Band gap energy → photon absorption spectrum | Optical physics | Rendering transparency |
+| Reflectivity | Fresnel equations from refractive index | Optical physics | Rendering, mirror surfaces |
+| Calorie content | Combustion energy × digestibility factor (organic only) | Nutrition science | §7.2 food, §4.4 farming |
+| Nutrient content | Element composition → N/P/K extraction | Soil science | §4.4 fertilizer value |
+| Magnetic permeability | Composition: ferromagnetic elements (Fe, Ni, Co) > 50% → high μ_r | Electromagnetism | §3.13 magnets, compass |
+| Permanent magnetization | From composition + processing (requires magnetizing exposure) | Electromagnetism | §3.13 compass, motors |
+| Triboelectric index | From surface chemistry: metals positive, polymers negative | Electrostatics | §3.13 static electricity |
+
+#### Specific Heat Capacity — Dulong-Petit Is Wrong for Light Elements
+
+The current model uses Dulong-Petit: C_v = 3R = 25 J/(mol·K) for all elements.
+This is only accurate for heavy elements above their Debye temperature.
+
+Corrections needed:
+  Carbon (diamond): actual C_p = 6.1 J/(mol·K) vs. predicted 25 — 4× WRONG
+  Silicon: actual C_p = 20 vs. predicted 25 — 20% wrong
+  Water: actual C_p = 75.3 vs. predicted 25 — 3× WRONG
+  Wood (cellulose): actual C_p varies widely, not predictable from Dulong-Petit
+
+The Debye correction factor:
+  C_v = 3R × f(T/θ_D)
+  where θ_D is the Debye temperature (K) per element:
+    Carbon: 2230K, Silicon: 645K, Iron: 470K, Copper: 343K, Lead: 105K, Gold: 170K
+
+  At T >> θ_D: f → 1 (Dulong-Petit correct — this is why it works for lead/gold at room temp)
+  At T << θ_D: f → 0 (specific heat drops toward zero — carbon barely heats up)
+  At T ≈ θ_D: f ≈ 0.8 (moderate correction)
+
+For compounds (water, wood, ceramic), use Kopp-Neumann rule:
+  C_p(compound) = Σ (x_i × C_p_i)
+  where x_i is the mole fraction of each element.
+
+Gameplay effect: with Dulong-Petit only, carbon/glass/stone heat up and cool
+too slowly (overpredicted heat capacity). With the correction, they respond
+to temperature changes faster, which affects:
+  - How quickly a stone furnace reaches operating temperature
+  - How fast glass cools (and whether it shatters from thermal shock)
+  - How quickly charcoal ignites
+
+#### Non-Metal Thermal Conductivity — Computed from Composition, Not Looked Up
+
+For non-metals (stone, clay, wood, glass, ceramic), thermal conductivity is
+computed from the element property table, NOT from a material-name lookup:
+
+  Step 1: Classify the material structure from composition:
+    if (composition has > 50% metallic elements): use Wiedemann-Franz (§3.1)
+    if (composition has crystalline-forming oxides SiO₂, Al₂O₃, CaCO₃):
+      structure = 'crystalline'
+    if (composition was melted and cooled rapidly, OR contains > 30% SiO₂ without crystallizing):
+      structure = 'amorphous'
+    if (composition contains cellulose/lignin/keratin — organic polymer):
+      structure = 'fibrous'
+
+  Step 2: Compute κ from structure type:
+
+    Crystalline (stone, mineral, ceramic):
+      κ = Σ(x_i × κ_element_i) × packingFactor × (θ_D_avg / T)^0.5
+      where:
+        x_i = mass fraction of element i
+        κ_element_i = element's thermal conductivity from the element table
+        packingFactor = 0.4 for porous (sandstone), 0.7 for dense (granite), 1.0 for single crystal
+        θ_D_avg = mass-weighted average Debye temperature
+        The (θ_D/T)^0.5 term captures phonon scattering: higher T → lower κ
+      
+      This gives: granite (Si, Al, O, K, Na) → κ ≈ 2.2-2.8 W/(m·K) ✓
+                  limestone (Ca, C, O) → κ ≈ 1.3-1.7 W/(m·K) ✓
+                  quartz (pure SiO₂) → κ ≈ 7-8 W/(m·K) ✓
+
+    Amorphous (glass, mud, unfired clay):
+      κ = κ_crystalline × disorderFactor
+        disorderFactor = 0.15 for fully amorphous glass
+        disorderFactor = 0.3 for partially crystalline ceramic
+        disorderFactor = 0.5 for polycrystalline with grain boundaries
+      Amorphous materials have ~3× lower conductivity than crystalline
+      because disordered structure scatters phonons more.
+      Glass (amorphous SiO₂): κ ≈ 7 × 0.15 ≈ 1.05 W/(m·K) ✓
+
+    Fibrous (wood, cloth, rope):
+      Along fiber: κ_parallel = 0.3 + 0.1 × density/1000  (W/(m·K))
+      Across fiber: κ_perpendicular = κ_parallel × 0.4
+      Wood at 600 kg/m³: κ_parallel ≈ 0.36, κ_perpendicular ≈ 0.14 ✓
+      Dense hardwood at 900 kg/m³: κ_parallel ≈ 0.39 ✓
+
+  This replaces the previous lookup table with a composition-based calculation.
+  The results match the lookup values because the formulas were calibrated to them.
+  But now a novel material (player-invented ceramic with unusual composition)
+  gets a physically reasonable κ without needing a new table entry.
+
+#### Work Hardening — Hammered Metal Gets Harder
+
+When metals are plastically deformed (hammered, bent, drawn through a die), dislocations in the crystal lattice multiply and tangle, resisting further deformation. The Hollomon equation describes this:
+
+```
+σ = K × ε^n
+where ε is the accumulated plastic strain (tracked as workHardeningState 0→1),
+K is the strength coefficient, n is the strain hardening exponent.
+```
+
+Cold-worked copper (workHardeningState = 0.8) has ~2× the yield strength of annealed copper (0.0). This is the foundation of blacksmithing: hammer a blade to harden it.
+
+Annealing (heating above ~0.4 × T_melt in Kelvin) recrystallizes the grain structure, resetting workHardeningState to 0. This softens the metal for further shaping. The cycle: shape → harden → anneal → reshape → harden → final product.
+
+This connects to sound (§3.3): as a metal workpiece hardens, its Young's modulus and density change slightly, so the pitch of each hammer strike shifts higher with successive blows. An experienced player can hear when the metal is fully work-hardened.
+
+#### Fatigue — Repeated Use Wears Things Out
+
+Materials fail under cyclic loading BELOW their static strength.
+The Basquin relation: N_f = C × σ_a^(-b)
+  N_f = number of cycles to failure
+  σ_a = stress amplitude per cycle (Pa)
+  b = fatigue exponent (0.05-0.12 for metals, 0.15-0.25 for ceramics)
+  C = material constant
+
+Example: iron tool with tensileStrength = 400 MPa
+  Used at 50% of tensile (200 MPa stress per use):
+    N_f = 10^12 × (200×10^6)^(-0.1) ≈ 50,000 uses before failure
+  Used at 80% of tensile (320 MPa):
+    N_f ≈ 5,000 uses — wears out 10× faster
+
+Implementation: each MaterialPacket tracks fatigueAccumulation (0→1).
+  Each stress event: fatigueAccumulation += 1/N_f(σ_applied)
+  When fatigueAccumulation reaches 1.0: material fails (crack initiates).
+  Fatigue damage is NOT reversible — unlike work hardening, you cannot anneal away fatigue cracks.
+
+MaterialPacket addition:
+  fatigueAccumulation: number  // 0-1, accumulated fatigue damage. Irreversible.
+
+Gameplay: tools gradually degrade. A well-used copper pickaxe develops micro-cracks
+after ~10,000 strikes. It doesn't break suddenly — the player notices reduced effectiveness
+as cracks grow (fracture toughness decreases). Eventually it snaps mid-use.
+A steel tool lasts 5-10× longer than copper because steel has a higher fatigue limit.
+
+#### Fracture Toughness — Cracked Materials Are Weaker
+
+A material with a crack fails at LOWER stress than an intact one.
+Griffith-Irwin stress intensity factor (infinite plate, central through-crack):
+  K_I = Y × σ × √(π × a)
+  where a = crack half-length (m), σ = applied stress (Pa),
+  Y = geometry correction factor (Y=1.0 for infinite plate, Y≈1.12 for edge crack).
+  The game uses Y=1.0 as a simplification since exact crack geometry isn't tracked.
+
+Failure when K_I ≥ K_IC (critical stress intensity / fracture toughness):
+  Glass: K_IC ≈ 0.7 MPa·√m (shatters easily — a tiny scratch is catastrophic)
+  Ceramic: K_IC ≈ 3 MPa·√m
+  Cast iron: K_IC ≈ 15 MPa·√m (shatters on impact — low toughness)
+  Wrought iron: K_IC ≈ 50 MPa·√m (bends, doesn't shatter — high toughness)
+  Steel: K_IC ≈ 50-150 MPa·√m (depending on heat treatment)
+  Copper: K_IC ≈ 100 MPa·√m
+
+Effective strength of a cracked block:
+  σ_failure = K_IC / √(π × a)
+  A 1mm crack in glass: σ_failure = 0.7 / √(π×0.001) = 12.5 MPa (vs. 50 MPa intact — 75% weaker)
+  A 1mm crack in steel: σ_failure = 100 / √(π×0.001) = 1785 MPa (still very strong)
+
+This is why glass is fragile and steel is tough — it's about how much a crack
+weakens the material, not absolute strength.
+
+MaterialPacket additions:
+  fractureToughness: number     // MPa·√m — K_IC, computed from composition
+  crackLength: number           // m — accumulated from fatigue, freeze-thaw, impacts. Starts at 0.
+
+Connection to fatigue: fatigue creates micro-cracks (crackLength increases slowly).
+Connection to freeze-thaw (§3.4): water in cracks freezes → crack grows 9% per cycle.
+Connection to structural (§3.4): stress check uses effective strength, not nominal strength.
+
+#### Ductility — Bend or Shatter
+
+Ductility is the amount a material can deform before breaking:
+  Metals: 5-40% elongation before failure (ductile — bends, stretches)
+  Ceramics: <0.1% (brittle — shatters with no warning)
+  Glass: 0% (perfectly brittle)
+  Wood: 1-5% (semi-ductile along grain, brittle across grain)
+
+MaterialPacket addition:
+  ductility: number              // 0-1 — fraction of elongation before fracture
+                                  // 0 = perfectly brittle (glass), 1 = extremely ductile (gold)
+
+Brittle-Ductile Transition Temperature (BDTT):
+BCC metals (iron, chromium, tungsten) become brittle below a critical temperature:
+  Iron/steel BDTT: -20°C to +20°C (depending on carbon content + impurities)
+  Tungsten BDTT: +200 to +400°C (brittle at room temperature!)
+
+  if (temperature < BDTT):
+    ductility drops to ~0.02 (almost brittle)
+    fractureToughness drops by 50-80%
+
+Historical example: Liberty ships in WWII cracked in half in cold North Atlantic
+water because the steel's BDTT was near the ocean temperature.
+In-game: iron tools and structures become unreliable in deep winter at high latitudes.
+An iron bridge that holds fine in summer might shatter under load at -10°C.
+
+FCC metals (copper, gold, aluminum) have NO brittle transition — they stay ductile
+at all temperatures. This is an advantage of copper tools in cold climates.
+
+#### Creep — Slow Deformation Under Sustained Load at High Temperature
+
+At temperatures above ~0.4 × T_melting (in Kelvin), materials deform slowly
+under constant load, even if the stress is below yield strength.
+Norton creep law:
+  dε/dt = A × σ^n × exp(-Q_c / RT)
+  where:
+    dε/dt = strain rate (per second)
+    σ = applied stress (Pa)
+    n = stress exponent (3-8 for metals)
+    Q_c = activation energy for creep (kJ/mol)
+    R = gas constant (8.314 J/mol·K)
+    T = temperature (K)
+
+This matters at temperatures above ~0.4 × T_melt:
+  Lead (T_melt = 600K): creeps above 240K = -33°C (creeps at room temperature!)
+  Copper (T_melt = 1358K): creeps above 543K = 270°C
+  Iron (T_melt = 1811K): creeps above 724K = 451°C
+  Ice (T_melt = 273K): creeps above 109K = ALWAYS (glaciers are creeping ice)
+
+Gameplay effects:
+  Lead roofing slowly sags over game-years (lead creeps at room temp)
+  Iron/steel structures near furnaces or lava slowly deform
+  Metal tools left in a hot forge for too long permanently bend
+  Ice formations slowly flow downhill (glacier behavior)
+
+Implementation: for blocks above 0.4 × T_melt, apply creep strain each game-day.
+  Accumulated creep strain → permanent deformation → visual sag → eventual failure.
+  Not computed per tick (too slow). Computed per game-day decay cycle.
+
+#### Martensite Transformation — How Steel Gets Hard
+
+The single most important material transformation in human technological history. Carbon steel (Fe + 0.1-2.0% C) has dramatically different properties depending on cooling rate:
+
+**Fast cooling (quenching in water/oil):**
+Above 727°C, carbon dissolves in iron (austenite phase, FCC crystal structure). Fast cooling traps carbon in the lattice — atoms can't rearrange. Result: martensite (BCT crystal structure) — extremely hard (HV 600-800) but brittle.
+
+```
+Implemented as: if coolingRate > criticalCoolingRate(composition):
+  workHardeningState = 0.95  // near-maximum hardness
+  ductility = 0.02           // almost no ductility — shatters on impact
+  tensileStrength *= 2.5     // dramatic increase
+```
+
+**Slow cooling (air cool or furnace cool):**
+Carbon has time to separate into iron + iron carbide (Fe₃C) layers. Result: pearlite — softer (HV 200-300) but much tougher.
+
+```
+Implemented as: if coolingRate < criticalCoolingRate(composition):
+  workHardeningState unchanged
+  ductility = 0.2-0.4       // good ductility
+  tensileStrength unchanged
+```
+
+**Tempering:** reheating quenched martensite to 200-600°C for a period reduces brittleness while retaining most hardness. The trade-off is controlled by tempering temperature:
+- 200°C: HV 550, still brittle (springs, files)
+- 400°C: HV 400, moderate toughness (tools, blades)
+- 600°C: HV 250, very tough (structural steel)
+
+The criticalCoolingRate depends on carbon content and alloying elements:
+- Plain carbon steel (0.8% C): ~200°C/sec (must quench in water)
+- Alloy steel (+ Cr, Mo, Ni): ~10°C/sec (can air-harden)
+
+  // -- Critical Cooling Rate from Composition -------------------------
+  //
+  // The critical cooling rate determines whether steel forms martensite (hard)
+  // or pearlite (soft). It depends on alloying elements:
+  //
+  //   PRACTICAL FORMULA: Use a LOOKUP by carbon content
+  //   with modifiers for alloying elements:
+  //
+  //     baseCCR (plain carbon steel, C/s):
+  //       0.2% C: ~1000C/s (very hard to harden -- needs aggressive water quench)
+  //       0.4% C: ~500C/s
+  //       0.6% C: ~300C/s
+  //       0.8% C: ~200C/s (standard hardenable steel)
+  //       1.0% C: ~150C/s
+  //
+  //     Alloying element multiplier (each REDUCES CCR, making it easier to harden):
+  //       Per 1% Mn: CCR x 0.5 (halves required cooling rate)
+  //       Per 1% Cr: CCR x 0.3
+  //       Per 1% Mo: CCR x 0.2 (very powerful -- Mo is the best hardenability element)
+  //       Per 1% Ni: CCR x 0.6
+  //
+  //     Example: 0.4% C + 1% Cr + 0.5% Mo steel:
+  //       baseCCR = 500C/s
+  //       x 0.3 (Cr) x 0.45 (0.5% Mo -> 0.2^0.5 ~ 0.45)
+  //       finalCCR = 500 x 0.3 x 0.45 ~ 67C/s -> can air-harden (no water quench needed!)
+  //
+  //   Common quenching medium cooling rates:
+  //     Water (agitated): ~300C/s
+  //     Water (still): ~200C/s
+  //     Oil: ~50C/s
+  //     Forced air: ~20C/s
+  //     Still air: ~5C/s
+  //     Furnace cool: ~1C/s
+  //
+  //   The fluid simulation (§3.2) computes the actual cooling rate from the
+  //   heat transfer between the hot steel particle and the surrounding fluid.
+  //   If actualCoolingRate > CCR: martensite forms.
+  //   If actualCoolingRate < CCR: pearlite forms.
+
+This connects to fluid simulation (§3.2): quenching IS a fluid interaction. The fluid's temperature and heat extraction rate (depends on fluid type: water extracts ~10× faster than oil, oil ~5× faster than air) determines whether martensite forms. A player who quenches in oil instead of water gets a different result — because the physics is different.
+
+This means: the SAME steel, quenched in water vs. oil vs. air, produces three different materials with different properties. No special recipe — just fluid heat transfer rates applied to the martensite kinetics.
+
+#### Precipitation Hardening — Heat-Treating Alloys for Maximum Hardness
+
+Certain alloys become dramatically harder when held at a specific temperature
+for a specific time. This is "aging" or "precipitation hardening."
+
+The Avrami (JMAK) equation describes the transformation progress:
+  f(t) = 1 - exp(-(k×t)^n)
+  where:
+    f = fraction transformed (0→1)
+    t = time at aging temperature (seconds)
+    k = rate constant with units of 1/time (depends on temperature: k = k₀ × exp(-Q/RT))
+    n = Avrami exponent (1-4, depends on nucleation mechanism)
+  NOTE: this uses the (k×t)^n convention where k has units of 1/time.
+  The alternative convention f = 1 - exp(-K×t^n) has K in units of 1/time^n.
+  Both are valid if parameters are calibrated consistently. This document uses the first form.
+
+Example: Cu-2%Be alloy (beryllium bronze)
+  Freshly cast: HV 100 (soft)
+  Aged at 315°C for 2 hours: HV 400 (4× harder!)
+  Over-aged at 315°C for 10 hours: HV 250 (softens again — precipitates coarsen)
+
+The player discovers: holding a copper-beryllium ingot at ~300°C for a while
+makes it extremely hard. Too short = no effect. Too long = softens again.
+The optimal time emerges from the physics, not from a recipe.
+
+Other age-hardenable alloys: Al-Cu (duralumin), Cu-Be, Ni superalloys.
+NOT age-hardenable: pure metals, simple bronze (Cu-Sn), brass (Cu-Zn).
+
+Implementation: when a MaterialPacket is held at 0.3-0.6 × T_melt for extended time,
+  compute f(t) from Avrami. If the alloy composition supports precipitation
+  (specific solute pairs that form intermetallic precipitates), hardness increases
+  according to f. Over-aging (t >> optimal) reduces hardness as precipitates coarsen.
 
 #### How Materials Combine: The Reaction Engine
 
@@ -187,6 +929,60 @@ Check Gibbs free energy: `ΔG = ΔH - TΔS`
 - If `ΔG < 0`: reaction is spontaneous (it wants to happen)
 - If `ΔG > 0`: reaction needs energy input
 - If `ΔG ≈ 0`: equilibrium (both forms coexist)
+
+  // -- Equilibrium Reactions (dG ~ 0) ---------------------------------
+  //
+  // When |dG| < 1 kJ/mol (near equilibrium), the reaction is reversible:
+  // both forward and backward reactions occur simultaneously.
+  //
+  // Implementation: compute the equilibrium constant K from dG:
+  //   K = exp(-dG / (R x T))
+  //   where R = 8.314 J/(mol*K), T = temperature in Kelvin
+  //
+  // At equilibrium, the ratio of products to reactants = K:
+  //   [products] / [reactants] = K
+  //
+  // For gameplay: if K > 100 -> reaction goes to completion (forward dominant)
+  //              if K < 0.01 -> reaction essentially does not happen (backward dominant)
+  //              if 0.01 <= K <= 100 -> partial reaction:
+  //                fraction converted = K / (1 + K)
+  //                e.g., K = 1 -> 50% converted, 50% remains as reactant
+  //
+  // The result: a mixed composition packet with both reactants and products.
+  // Over time (multiple ticks), the equilibrium shifts as temperature changes.
+  // Heating may push the reaction forward (Le Chatelier principle).
+  // Cooling may push it backward.
+  //
+  // This matters for: smelting near the minimum temperature (partially reduced ore),
+  // reversible calcination (limestone <-> quicklite + CO2 at ~900C),
+  // and dissolution/crystallization cycles.
+
+  // ── Backward Reactions (Reversal) ──────────────────────────────────────
+  //
+  // When conditions change (temperature drops, pressure changes), K shifts
+  // and the equilibrium moves. The system must actively reverse reactions:
+  //
+  //   Each tick, for packets at equilibrium (|ΔG| < 1 kJ/mol):
+  //     1. Compute current K = exp(-ΔG / (R × T))
+  //     2. Compute target fraction = K / (1 + K)
+  //     3. Compare with actual current fraction of products in the packet
+  //     4. If actual > target: backward reaction — convert some products back to reactants
+  //        If actual < target: forward reaction — convert some reactants to products
+  //     5. Rate of adjustment: Δfraction = (target - actual) × reactionRate × dt
+  //        where reactionRate = k × exp(-Ea / (R × T)) (same Arrhenius as forward)
+  //
+  //   This creates a CONTINUOUS equilibrium, not a binary on/off state.
+  //   As temperature changes slowly, the composition adjusts smoothly.
+  //
+  //   Example: limestone calcination (CaCO₃ ↔ CaO + CO₂)
+  //     At 900°C: K >> 1, calcination proceeds (forward dominant)
+  //     At 850°C: K ≈ 1, equilibrium — limestone partially calcined
+  //     At 800°C: K << 1, recarbonation (backward) — CaO absorbs CO₂ back
+  //
+  //   The player who keeps the kiln above 900°C gets complete quicklite.
+  //   The player whose fire drops to 850°C gets a partially calcined mixture.
+  //   The player who lets it cool to 800°C finds the quicklite reverting.
+  //   All from the same physics — no special recipe logic.
 
 The enthalpy (ΔH) and entropy (ΔS) values come from the elements' standard formation energies — tabulated from real chemistry, stored per element.
 
@@ -258,11 +1054,12 @@ Result: weighted composition average, mass: 0.8kg
 ```
 
 This means:
-- Inventory stacking is just packet merging (compositions average out)
+- Two packets in contact as liquids merge by mass-weighted composition averaging
 - Splitting a packet divides mass but keeps the same composition
-- Impurities naturally accumulate or dilute through mixing
+- Impurities naturally accumulate or dilute through liquid mixing
 - Ore quality varies by location (different packets have different trace elements)
 - Purification is the process of separating a mixed packet into purer sub-packets
+- Inventory stacking does NOT merge composition — two ore chunks share a slot but remain separate objects (see §7.3). Merging requires melting both into liquid.
 
 #### What This Replaces
 
@@ -272,7 +1069,7 @@ The current `MaterialRegistry.ts` with 118 pre-defined materials becomes:
 3. **Property calculator** — derives all material properties from composition using material science formulas
 4. **Packet store** — every object in the world is a packet (or a collection of packets)
 
-The Tier 2 (minerals) and Tier 3 (processed materials) lists in §3.1–6.3.2 are no longer definitions — they become **expected emergent results**. They describe what SHOULD emerge when the rules are correct. If the reaction engine, given real Cu and Sn properties, doesn't produce something with bronze-like properties at the right temperature, the rules have a bug — not a missing recipe.
+The Tier 2 (minerals) and Tier 3 (processed materials) lists in §6.1–6.2 are no longer definitions — they become **expected emergent results**. They describe what SHOULD emerge when the rules are correct. If the reaction engine, given real Cu and Sn properties, doesn't produce something with bronze-like properties at the right temperature, the rules have a bug — not a missing recipe.
 
 #### Computational Cost
 
@@ -286,7 +1083,7 @@ This is feasible on current hardware because:
 
 **Estimated per-reaction cost:** < 0.1ms on a single CPU core. A player performing 10 crafting actions per minute costs essentially nothing.
 
-**Where it gets expensive:** fluid simulation (§3.4), where millions of packets move and interact continuously. That is a separate problem addressed in the next section.
+**Where it gets expensive:** fluid simulation (§3.2), where millions of packets move and interact continuously. That is a separate problem addressed in the next section.
 
 ---
 
@@ -315,6 +1112,16 @@ This is not a metaphor. This is literally what melting is, at a coarser grain si
 
 #### The Simulation Model: Smoothed Particle Hydrodynamics (SPH)
 
+// **What this means:** Instead of simulating a billion water molecules,
+// we use ~5,000 "super-droplets" that each represent a chunk of liquid.
+// Each droplet checks its neighbors and calculates five forces:
+// 1. Pressure: crowded droplets push apart (like people in an elevator)
+// 2. Viscosity: thick liquids resist flowing (honey vs water)
+// 3. Gravity: everything falls down
+// 4. Surface tension: water tries to form round drops (molecules pulling inward)
+// 5. Ground collision: liquid cannot pass through the floor
+
+
 SPH is a method for simulating fluids using particles instead of a grid. Each particle represents a small volume of liquid. The particles interact with their neighbors to produce realistic fluid behavior: flow, pressure, viscosity, surface tension, and splashing.
 
 **Why SPH and not a grid?** Grid-based methods (like the existing `fluid.worker.ts`) divide space into fixed cells. They work well for large, slow-moving bodies of water (oceans, lakes). But they cannot handle:
@@ -330,21 +1137,21 @@ SPH handles all of these because the particles move with the fluid — they go w
 
 ```
 SPHParticle {
-  // --- From the material packet system (§3.3) ---
-  composition: Map<Element, number>    // what this droplet is made of
-  mass: number                          // kg (fixed at creation)
-  temperature: number                   // °C (changes from environment + neighbors)
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 44 properties.
+  packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
+                                        // viscosity, surfaceTension, density etc. come from packet
 
-  // --- SPH physics state ---
+  // --- SPH physics state (unique to particles, not in MaterialPacket) ---
   x, y, z: number                      // position on the sphere surface (world space)
   vx, vy, vz: number                   // velocity (m/s)
-  density: number                       // kg/m³ (computed from neighbors each tick)
-  pressure: number                      // Pa (computed from density)
+  sphDensity: number                   // kg/m³ (computed from neighbors each tick — NOT the same as packet.density)
+  pressure: number                      // Pa (computed from sphDensity via Tait equation)
+  sleeping: boolean                     // true if settled (skip force calculations)
 
-  // --- Derived from composition (computed once, updated on temperature change) ---
-  viscosity: number                     // Pa·s — how thick/resistant to flow
-  surfaceTension: number                // N/m — how strongly the surface pulls inward
-  restDensity: number                   // kg/m³ — density at atmospheric pressure
+  // Derived properties used by SPH forces are read directly from packet:
+  //   packet.viscosity     → F_viscosity = μ · ∇²v
+  //   packet.surfaceTension → F_surface = σ · κ · n̂
+  //   packet.density       → restDensity (ρ₀) for Tait equation
 }
 ```
 
@@ -355,6 +1162,14 @@ SPHParticle {
 Formula: `F_pressure = -∇P / ρ`
 
 Pressure is computed from density using the Tait equation of state:
+
+// **What this means (Tait Equation of State):** This converts density into
+// pressure. If droplets are packed tight (high density) -> high pressure ->
+// they push apart. If droplets are spread out -> low pressure -> they can relax.
+// It is like a crowd in a room: more people = more pushing to get out.
+// In plain English for P = B * ((rho/rho0)^gamma - 1): pressure shoots up
+// fast when density exceeds the rest density.
+
 `P = B · ((ρ/ρ₀)^γ - 1)` where B is a stiffness constant, ρ₀ is rest density, γ ≈ 7 for water.
 
 This is the same equation used in real computational fluid dynamics. It produces the correct behavior: water is nearly incompressible (high B), so even small density increases create large pressure forces that push particles apart.
@@ -363,14 +1178,99 @@ This is the same equation used in real computational fluid dynamics. It produces
 
 Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dynamic viscosity μ)
 
-**The viscosity comes from the material's composition**, not from a hardcoded value per liquid type:
-- Water (H₂O): μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
-- Molten copper: μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
-- Molten glass (SiO₂): μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
-- Honey (sugar solution): μ ≈ 2–10 Pa·s — long sugar molecules tangle
-- Lava (basaltic): μ ≈ 10–100 Pa·s — silicate networks partially intact
+**The viscosity comes from the material's composition** via the Andrade/Arrhenius equation in the property calculator (§3.1). These are **expected computed results**, not hardcoded values — the property calculator should produce these when given the correct composition:
+- Water (H₂O): expected μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
+- Molten copper: expected μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
+- Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
+- Honey: μ varies enormously with temperature and water content
+  //     At 20°C (room temp): μ ≈ 10-100 Pa·s (thick paste — barely flows)
+  //     At 30°C: μ ≈ 5-30 Pa·s (flows slowly)
+  //     At 40°C: μ ≈ 2-10 Pa·s (pourable)
+  //     Water content matters: 14% water → μ ≈ 100 Pa·s. 20% water → μ ≈ 10 Pa·s.
+  //     Honey is non-Newtonian (shear-thinning) — stirring makes it flow easier.
+- Lava (basaltic): expected μ ≈ 100–1000 Pa·s — silicate networks partially intact
 
 Temperature reduces viscosity for all materials (Arrhenius model: `μ = A · e^(Ea/RT)`). Hotter liquid flows faster. This is why lava near the vent flows quickly but slows to a crawl as it cools.
+
+**Non-Newtonian Viscosity — Mud Is Not Water**
+
+The Andrade/Arrhenius model gives viscosity as a function of temperature only. This is correct for simple liquids (water, molten metals, oils). But many gameplay-relevant materials are non-Newtonian — their viscosity depends on shear rate (how fast you stir/deform them):
+
+*Shear-thinning (pseudoplastic) — viscosity DROPS under stress:*
+The Cross model: `μ = μ_∞ + (μ₀ - μ_∞) / (1 + (K × γ̇)^n)`
+- μ₀ = zero-shear viscosity (thick when still)
+- μ_∞ = infinite-shear viscosity (thin when stirred fast)
+- γ̇ = shear rate (velocity gradient in the fluid)
+- K = time constant, n = flow index (<1 for shear-thinning)
+
+Clay slurry: μ₀ = 100 Pa·s (stiff), μ_∞ = 0.1 Pa·s (flows when worked). This is why clay is "workable" — stiff until you knead it, then flows into shape. In the SPH solver, clay particles near the player's hands have high shear rate → low viscosity. Clay particles at rest have zero shear rate → high viscosity → holds its shape.
+
+Blood: μ₀ = 0.05 Pa·s at low shear, μ_∞ = 0.003 Pa·s at high shear. Slow blood pooling is thicker than fast-flowing arterial blood.
+
+Mud: μ₀ = 500+ Pa·s (solid-like), μ_∞ = 1 Pa·s (flows like water when agitated). Walking on mud: shear rate from footstep → mud liquefies under foot → sinks in. This is quicksand behavior: struggling increases shear rate → more liquefaction. Staying still: mud re-solidifies (thixotropy).
+
+*Shear-thickening (dilatant) — viscosity INCREASES under stress:*
+Cornstarch/water (oobleck), wet sand: flows slowly when poured, becomes rigid under sudden impact. Not critical for gameplay but interesting for armor padding.
+
+The SPH viscosity force already computes velocity differences between neighbors. The shear rate γ̇ is simply the magnitude of the velocity gradient tensor, which can be estimated from the SPH velocity Laplacian already being computed. The only change: replace constant μ with μ(γ̇) from the Cross model.
+
+MaterialPacket additions for non-Newtonian fluids:
+```
+  isNonNewtonian: boolean            // true for clay, mud, blood, pitch, etc.
+  zeroShearViscosity: number         // Pa·s — viscosity when undisturbed (μ₀)
+  infShearViscosity: number          // Pa·s — viscosity under fast shear (μ_∞)
+  crossTimeConstant: number          // s — transition shear rate (K)
+  crossFlowIndex: number             // dimensionless — typically 0.3-0.8 (n)
+```
+
+  // -- Computing Shear Rate from SPH Particles ------------------------
+  //
+  // The Cross model needs shear rate. In SPH, shear rate is the magnitude
+  // of the strain rate tensor, which is computed from the velocity gradient:
+  //
+  //   Velocity gradient tensor at particle i:
+  //     grad_v_i = sum_j (m_j / rho_j) x (v_j - v_i) outer_product grad_W(r_ij, h)
+  //     (outer_product = outer product, grad_W = gradient of the SPH kernel)
+  //
+  //   Strain rate tensor:
+  //     D = 0.5 x (grad_v + grad_v^T)
+  //
+  //   Shear rate (scalar):
+  //     gamma_dot = sqrt(2 x D:D) = sqrt(2 x sum_ij D_ij^2)
+  //     (D:D is the double contraction / Frobenius norm squared)
+  //
+  //   This is computed from the SAME neighbor loop that computes SPH forces.
+  //   The velocity differences (v_j - v_i) and kernel gradients grad_W are already
+  //   available. Computing grad_v adds ~15 FLOPs per neighbor (outer product).
+  //   Total extra cost: ~15 x 50 neighbors = 750 FLOPs per particle per tick.
+  //   For 5,000 crafting particles: 3.75 MFLOP -> negligible.
+  //
+  //   Once gamma_dot is known, the viscosity is:
+  //     mu_eff = mu_inf + (mu_0 - mu_inf) / (1 + (K x gamma_dot)^n)
+  //
+  //   This mu_eff replaces the constant mu in the viscosity force:
+  //     F_viscosity = mu_eff x sum_j m_j x (v_j - v_i) / rho_j x laplacian_W(r_ij, h)
+
+  // ── Mixing Rule for Non-Newtonian Parameters ─────────────────────────
+  //
+  // When two non-Newtonian fluids mix via SPH diffusion (§3.2 mixing),
+  // the Cross model parameters of the mixture are mass-weighted averages:
+  //
+  //   mixed.zeroShearViscosity = (m_a × a.μ₀ + m_b × b.μ₀) / (m_a + m_b)
+  //   mixed.infShearViscosity  = (m_a × a.μ_∞ + m_b × b.μ_∞) / (m_a + m_b)
+  //   mixed.crossTimeConstant  = (m_a × a.K + m_b × b.K) / (m_a + m_b)
+  //   mixed.crossFlowIndex     = (m_a × a.n + m_b × b.n) / (m_a + m_b)
+  //
+  // This is a linear blending rule — the simplest physically meaningful approach.
+  // Real polymer/colloid rheology uses more complex mixing models (log-weighted,
+  // Arrhenius-type), but for gameplay the linear blend produces correct qualitative
+  // behavior: mixing a thick clay slurry with water produces a thinner slurry.
+  //
+  // If one fluid is Newtonian (isNonNewtonian = false) and the other is non-Newtonian:
+  //   Treat the Newtonian fluid as having μ₀ = μ_∞ = its normal viscosity, K = 0, n = 1.
+  //   The mixture becomes "less non-Newtonian" as Newtonian fluid is added.
+  //   At 50/50 mix: the shear-thinning effect is halved.
+  //   At 90% Newtonian: the mixture behaves essentially Newtonian.
 
 **3. Gravity** — particles fall toward the planet's center. On the sphere surface, this means flowing "downhill" — toward lower terrain elevation.
 
@@ -430,7 +1330,7 @@ for each particle i:
 
 #### Phase Transitions: Solid ↔ Liquid ↔ Gas
 
-Phase transitions connect the fluid simulation to the material packet system (§3.3). They are the bridge between the static world of solids and the dynamic world of fluids.
+Phase transitions connect the fluid simulation to the material packet system (§3.1). They are the bridge between the static world of solids and the dynamic world of fluids.
 
 **Melting (solid → liquid):**
 ```
@@ -444,6 +1344,107 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
   3. The SPH simulation takes over — particles flow, pool, splash
 ```
 
+// ── Latent Heat ──────────────────────────────────────────────────────
+
+// **What this means (Phase Transitions with Latent Heat):** Ice does not melt
+// instantly. You have to pump in heat while the temperature STAYS at 0C until
+// all the ice is gone. Same with boiling: water sits at 100C absorbing heat
+// until it is all steam. The simulation tracks this with "phaseProgress" --
+// a number from 0 to 1 that slowly fills up as heat flows in.
+
+// Phase transitions are NOT instant. Melting absorbs energy without
+// raising temperature. Freezing releases energy without lowering it.
+//
+// When a material reaches its melting point, it does not instantly become liquid.
+// It must absorb latentHeatFusion (J/kg) while staying at exactly the melting
+// temperature. Only after all latent heat is absorbed does it finish transitioning.
+//
+// Implementation: each MaterialPacket in transition has a phaseProgress (0→1).
+//   Each tick: absorbed = heatInput × dt
+//   phaseProgress += absorbed / (mass × latentHeatFusion)
+//   Temperature stays at meltingPoint until phaseProgress reaches 1.0
+//   Then: packet transitions and temperature can rise again.
+//
+// Same for boiling (latentHeatVaporization) and freezing (releases latent heat).
+//
+// Typical values (computed from composition by property calculator):
+//   Water: latentHeatFusion = 334 kJ/kg, latentHeatVaporization = 2260 kJ/kg
+//   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
+//   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6213 kJ/kg
+//   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
+//
+// Gameplay effect: melting a 1kg iron ingot at exactly 1538°C requires
+//   247,000 J of sustained heat input before it becomes liquid.
+//   At a typical furnace heat rate of ~500 W: ~8 game-minutes of smelting.
+//   Without latent heat, melting would be instant — unrealistically fast.
+//
+// Casting effect: a mold full of molten copper releases latent heat as it
+//   solidifies. The center of the casting stays liquid longer because the
+//   released latent heat must escape through the already-solidified outer shell.
+//   This creates shrinkage cavities — real metallurgical defects that affect
+//   the quality of the cast object.
+
+  // -- Heat Input Rate During Phase Transitions -----------------------
+  //
+  // While a packet is transitioning (phaseProgress between 0 and 1),
+  // temperature stays at the transition point. Heat input continues
+  // flowing in from neighbors, but instead of raising temperature,
+  // it advances phaseProgress.
+  //
+  // Heat input rate for solid blocks (face-contacting neighbors):
+  //   Q_in = sum_neighbors k_contact x A_face x (T_neighbor - T_melt) / d
+  //   where:
+  //     k_contact = harmonic mean of both materials thermal conductivity
+  //                 k_contact = 2 x k1 x k2 / (k1 + k2)
+  //     A_face = contact area = 1 m^2 (for 1m voxel blocks, face-to-face)
+  //     T_neighbor = neighbor temperature (C)
+  //     T_melt = the packet melting point (C) -- temperature is stuck here
+  //     d = center-to-center distance = 1.0m (adjacent blocks)
+  //
+  // Heat input rate for fluid particles (SPH neighbors):
+  //   Uses the existing SPH temperature exchange:
+  //   Q_in = sum_neighbors k_ij x m_j / rho_j x (T_j - T_melt) x laplacian_W(r_ij, h)
+  //   This is already computed in the SPH algorithm (Stage 4, step 7).
+  //
+  // Phase progress update per tick:
+  //   phaseProgress += Q_in x dt / (mass x latentHeat)
+  //   where dt = 1/tickRate (1/60s for crafting, 1/30s for environment)
+  //
+  // When phaseProgress reaches 1.0:
+  //   Transition completes. Packet changes phase. Temperature can resume changing.
+  //   Any excess heat (Q_in that would have pushed phaseProgress past 1.0)
+  //   is converted to temperature increase: T += excess / (mass x specificHeat)
+  //
+  // Worked example -- melting 1 kg of iron in a furnace:
+  //   Iron: T_melt = 1538C, latentHeatFusion = 247,000 J/kg
+  //   Furnace temperature: 1600C (charcoal + double bellows)
+  //   Iron thermal conductivity: k = 80 W/(m*K)
+  //   Contact area: 2 faces exposed to hot gas = 2 m^2
+  //   k_contact (iron-air): 2 x 80 x 0.025 / (80 + 0.025) ~ 0.05 W/(m*K)
+  //     (air is the bottleneck -- very poor conductor)
+  //
+  //   Q_in = 0.05 x 2 x (1600 - 1538) / 1.0 = 6.2 W
+  //   Time to fully melt: 247,000 / 6.2 = 39,839 seconds ~ 11 hours
+  //
+  //   That is way too slow! This is why real furnaces use RADIATION, not conduction:
+  //   Q_radiation = epsilon x sigma x A x (T_furnace^4 - T_melt^4)
+  //     epsilon = emissivity (~0.8 for oxidized iron)
+  //     sigma = Stefan-Boltzmann constant = 5.67e-8 W/(m^2*K^4)
+  //     A = exposed surface area of the iron piece
+  //     A 1 kg iron cube: side = (1/7800)^(1/3) = 0.05m, A = 6 × 0.05² = 0.015 m²
+  //     Q_rad = 0.8 × 5.67e-8 × 0.015 × (1873⁴ - 1811⁴)
+  //           = 0.8 × 5.67e-8 × 0.015 × 1.55×10¹² ≈ 1,055 W
+  //
+  //   With radiation: 247,000 / 1,055 ≈ 234 seconds ≈ 4 game-minutes
+  //   This is realistic — a small iron ingot melts in a few minutes in a hot furnace.
+  //   Larger pieces (10 kg, A ≈ 0.07 m²) melt faster per kg (better surface/volume).
+  //
+  //   Implementation: Stage 1 (temperature propagation) must include BOTH:
+  //   1. Conductive heat transfer (Fourier law -- already specified)
+  //   2. Radiative heat transfer (Stefan-Boltzmann): Q = epsilon x sigma x A x (T1^4 - T2^4)
+  //      This only matters above ~500C where radiation dominates.
+  //      Below 500C: radiation is negligible, conduction/convection dominate.
+
 **Freezing (liquid → solid):**
 ```
 When a cluster of SPH particles cools below meltingPoint(composition):
@@ -455,6 +1456,46 @@ When a cluster of SPH particles cools below meltingPoint(composition):
      — shape = convex hull of particle positions (or simplified bounding shape)
   3. The solid packet is placed in the world; particles are removed
 ```
+
+**Solidification Front — Casting Freezes From Outside In**
+
+// **What this means (Stefan Solidification Front):** When liquid metal cools
+// in a mold, it freezes from the outside in. The outer shell hardens first,
+// then the freezing slowly creeps toward the center. The center freezes last
+// -- and might have a hole in it (shrinkage cavity) because the metal
+// contracted as it solidified.
+
+
+Real freezing does not happen simultaneously throughout a liquid body. It starts at the coldest surfaces (mold walls, exposed air) and progresses inward as a moving front. The Stefan problem describes this:
+
+```
+dx/dt = k × (T_melt - T_boundary) / (ρ × L × x)
+where:
+  x = thickness of solid shell (m)
+  k = thermal conductivity of the solid (W/m·K)
+  T_melt = melting point (°C)
+  T_boundary = temperature at the cold surface (°C)
+  ρ = density (kg/m³)
+  L = latent heat of fusion (J/kg) — from latentHeatFusion property
+```
+
+The solidification front moves as √(time) — fast at first, then slowing as the insulating solid shell thickens and heat must travel farther to escape.
+
+For a 10cm copper casting in a stone mold (T_boundary = 200°C):
+- After 1 second: solid shell ~3mm thick
+- After 10 seconds: ~9mm thick
+- After 60 seconds: ~23mm thick
+- Center solidifies last — after ~2 minutes
+
+Why this matters for gameplay:
+
+1. **Shrinkage cavities:** the last liquid to freeze (center) has no liquid left to fill the space as it contracts. A void forms — a real metallurgical defect. Well-designed molds have a "riser" (extra reservoir) that feeds liquid to the center as it shrinks. Players who don't add a riser get castings with internal voids — weaker, more likely to crack under stress.
+
+2. **Cooling rate determines microstructure:** surface (fast-cooled) is fine-grained and hard. Center (slow-cooled) is coarse-grained and softer. For steel, this connects to martensite (§3.1): the surface may be martensite (hard) while the center is pearlite (soft) — a single casting with two different property zones.
+
+3. **Directional solidification:** if the mold is cooled from the bottom, the solidification front moves upward, pushing dissolved gases ahead of it → fewer bubbles. This is a real casting technique (chill plates at the base).
+
+Implementation: for freezing SPH particle clusters, don't merge all at once. Instead, identify surface particles (fewest neighbors) → freeze those first. Each tick, freeze the next layer of particles adjacent to already-frozen particles. The rate follows the Stefan formula. Center particles freeze last. Frozen particles that contract more than their neighbors create void particles (tracked as defects in the resulting solid MaterialPacket).
 
 **Boiling (liquid → gas):**
 ```
@@ -474,13 +1515,78 @@ When gas-phase particles cool below boilingPoint:
   3. Droplets fall under gravity → rain
 ```
 
+  // -- Multi-Phase Boundary Crossing ----------------------------------
+  //
+  // If a packet temperature jumps across BOTH melting and boiling points
+  // in a single tick (e.g., 25C -> 2500C from an extreme heat event):
+  //
+  //   Rule: transitions happen ONE AT A TIME, in order.
+  //   The packet queues transitions and processes them sequentially:
+  //
+  //   1. Temperature rises to melting point -> STOP. Begin melting.
+  //      phaseProgress (solid->liquid) advances using remaining heat.
+  //   2. If enough heat remains after melting completes (phaseProgress reaches 1.0):
+  //      Temperature continues rising from melting point.
+  //   3. Temperature reaches boiling point -> STOP. Begin boiling.
+  //      phaseProgress (liquid->gas) advances using remaining heat.
+  //   4. If enough heat remains after boiling completes:
+  //      Temperature continues rising as gas.
+  //
+  //   In practice, latent heat absorbs so much energy that crossing two phase
+  //   boundaries in one tick almost never happens. Melting 1kg of iron absorbs
+  //   247,000 J. At typical furnace radiation rates (~1,000 W for a 1kg piece),
+  //   melting alone takes ~4 minutes. Boiling would need another 6,090,000 J.
+  //   No realistic heat source delivers enough energy to cross both in one tick.
+  //
+  //   Edge case: if it DOES happen (e.g., iron thrown into the sun), the sequential
+  //   processing ensures latent heat is correctly absorbed at each step.
+  //   Sublimation (solid->gas skipping liquid) is handled separately:
+  //   if the material has no stable liquid phase at current pressure
+  //   (checked from the phase diagram), the solid transitions directly to gas.
+
 **Sublimation and deposition** (solid ↔ gas, skipping liquid) also emerge naturally. Dry ice (solid CO₂) sublimates because its phase diagram has no liquid phase at 1 atm. The simulation checks: at current pressure, does a liquid phase exist between solid and gas? If not, the solid transitions directly to gas particles.
+
+  // -- SPH <-> MPM Scale Transition -----------------------------------
+  //
+  // When the active particle count in a fluid body crosses the 5,000 threshold,
+  // the solver switches from SPH (per-particle neighbor search) to MPM
+  // (particle-to-grid transfer). This is NOT instant -- it is a gradual handoff
+  // over a 2-second overlap window to prevent visual popping.
+  //
+  // Hysteresis band: SPH->MPM triggers at 5,000 particles. MPM->SPH triggers
+  // at 4,000 particles. The 1,000-particle gap prevents oscillation.
+  //
+  // SPH -> MPM transition (particle count rising):
+  //   1. When count reaches 5,000: initialize the MPM background grid
+  //      Grid cell size = 2 × particle spacing. Grid covers the fluid body bounding box + margin.
+  //   2. Both SPH and MPM run simultaneously during the overlap window (2 seconds).
+  //   3. Transfer rate: totalParticles / (overlapDuration × tickRate) particles per tick.
+  //      At 5,000 particles, 2-second overlap, 30 Hz: 5000 / (2 × 30) ≈ 83 particles per tick.
+  //      Selection: particles FARTHEST from the camera transfer first (least visible).
+  //      Transfer means: remove from SPH neighbor lists, add to MPM grid (P2G scatter).
+  //      The particle keeps its position, velocity, mass, composition — only the solver changes.
+  //   4. After 2 seconds (60 ticks at 30Hz): all particles are on MPM. Destroy SPH data structures.
+  //
+  // MPM -> SPH transition (particle count dropping):
+  //   1. When count drops below 4,000: initialize SPH neighbor hash
+  //   2. Transfer rate: same formula — totalParticles / (2s × 30Hz) ≈ 67 particles per tick.
+  //      Selection: nearest to camera first (most visible get SPH accuracy sooner).
+  //   3. After 2 seconds: all particles are on SPH. Destroy MPM grid.
+  //
+  // During overlap: particles on SPH feel SPH forces. Particles on MPM feel MPM forces.
+  // At the boundary between SPH and MPM regions, a thin coupling zone (width = 2 x kernel radius)
+  // ensures forces are continuous: SPH particles in the coupling zone also contribute to the
+  // MPM grid (P2G), and MPM grid velocities are sampled by SPH particles in the zone (G2P).
+  // This prevents a seam or discontinuity at the SPH/MPM boundary.
+  //
+  // Cost during overlap: both solvers run -> ~2x normal cost for 2 seconds. Acceptable because
+  // it only happens during scale transitions (rare events: large spills, eruptions, dam breaks).
 
 #### Multi-Scale Fluid System
 
 One simulation method cannot efficiently handle all scales of liquid in the game. A raindrop and an ocean are both water, but simulating an ocean with SPH particles would require billions of particles. Instead, the game uses different methods at different scales, with smooth transitions between them.
 
-**Scale 1 — Crafting (SPH particles, 100–2,000 particles)**
+**Scale 1 — Crafting (SPH particles, 100–5,000 particles)**
 
 This is the most interactive scale. The player directly manipulates liquid:
 - Melting ore in a bloomery → molten metal flows into a channel
@@ -489,9 +1595,9 @@ This is the most interactive scale. The player directly manipulates liquid:
 - Boiling water → steam rises, water level drops
 - Quenching hot steel → dramatic sizzle, steam cloud
 
-SPH runs at 60 Hz in a Web Worker. 2,000 particles × 50 neighbors × 5 forces = 500,000 operations per tick. At ~10 FLOPs each = 5 MFLOP per tick. A single CPU core does 1–5 GFLOP/s. Cost: < 1% of one core.
+SPH runs at 60 Hz. 5,000 particles × 50 neighbors × 5 forces = 1,250,000 operations per tick. At ~10 FLOPs each = 12.5 MFLOP per tick. A single CPU core does 1–5 GFLOP/s in Rust with SIMD. Cost: < 1% of one core.
 
-**Scale 2 — Local environment (SPH particles, 2,000–20,000 particles)**
+**Scale 2 — Local environment (MLS-MPM particles, 5,000–200,000 particles)**
 
 Environmental liquid near the player:
 - Rain hitting the ground and forming puddles
@@ -499,8 +1605,15 @@ Environmental liquid near the player:
 - Blood pooling from a killed animal
 - Spilled liquid from a broken container
 - A hot spring with steam
+- Lava flows from volcanic eruptions (up to 200,000 particles)
 
-SPH runs at 30 Hz in a dedicated Web Worker (separate from crafting). 20,000 particles at 30 Hz is ~30 MFLOP per tick — still cheap on a modern CPU. On a GPU compute shader (WebGPU), this could reach 200,000+ particles.
+MLS-MPM (Moving Least Squares Material Point Method) replaces SPH at this scale. MPM is 3× faster than SPH at the same particle count because it avoids the expensive neighbor search — particles transfer to a background grid, the grid solves forces, then transfers back to particles. MLS-MPM runs at 30 Hz. The particle-to-grid and grid-to-particle transfers cost ~2,700 FLOPs per particle per timestep. At 200,000 active particles: ~540 MFLOP per tick — well within a single Rust core with SIMD, or ~2ms on a mid-range GPU via WebGPU compute.
+
+Old cap was 50,000 for eruptions, 20,000 for environment. New cap is 200,000 per system, 400,000 total across all systems. This is achievable because:
+- Rust with SIMD processes 4–8 particles per instruction
+- Sleep system keeps 80–95% of particles dormant at any time
+- MLS-MPM avoids the O(n²) neighbor search that makes SPH expensive at scale
+- GPU compute path (WebGPU) unlocks 10× headroom when available
 
 **Scale 3 — Regional (grid-based, Eulerian)**
 
@@ -516,11 +1629,11 @@ GridCell {
 }
 ```
 
-Rules per tick (0.5–1 Hz — slow, large scale):
+Rules per tick (1 Hz (can drop to 0.5 Hz for distant regions beyond 200m) — slow, large scale):
 - Water flows from high cells to low cells (terrain height + water depth)
 - Flow rate depends on slope (Manning's equation: `v = (1/n) · R^(2/3) · S^(1/2)` where n is roughness, R is hydraulic radius, S is slope)
 - Evaporation removes water based on temperature and humidity
-- Rain adds water based on weather system (§6)
+- Rain adds water based on weather system (§4.6)
 - Rivers defined by RiverSystem.ts are permanent flow paths with base flow rates
 
 This extends the existing `fluid.worker.ts` and `RiverSystem.ts`. The grid is the same 3D grid already initialized in the worker — it just needs water-specific logic added.
@@ -571,7 +1684,7 @@ The ocean shader reads sea level from the simulation state.
 
 #### Mixing and Reactions in Liquid
 
-When two SPH particles of different composition are neighbors, they can mix and react — using the same reaction engine from §3.3.
+When two SPH particles of different composition are neighbors, they can mix and react — using the same reaction engine from §3.1.
 
 **Diffusion (passive mixing):**
 Each tick, neighboring particles exchange a small fraction of their composition proportional to their contact area and the diffusion coefficient. Over time, two adjacent liquids homogenize. Stirring (player action or turbulent flow) increases the mixing rate by bringing distant particles into contact.
@@ -585,7 +1698,7 @@ particle_j.composition += mixRate · (particle_i.composition - particle_j.compos
 where D is the diffusion coefficient (depends on temperature and the materials involved).
 
 **Reactions in liquid phase:**
-When two particles' mixed composition satisfies a reaction condition (§3.3 reaction engine — Gibbs free energy check), the reaction fires:
+When two particles' mixed composition satisfies a reaction condition (§3.1 reaction engine — Gibbs free energy check), the reaction fires:
 - Acid dissolves metal: HCl particles + Fe particles → FeCl₂ solution + H₂ gas bubbles
 - Salt dissolves in water: NaCl solid particles near H₂O particles → Na⁺ and Cl⁻ dissolve into water composition
 - Oil and water refuse to mix: if immiscible (ΔG of mixing > 0), particles repel at the interface instead of diffusing
@@ -593,16 +1706,268 @@ When two particles' mixed composition satisfies a reaction condition (§3.3 reac
 **Density-driven layering:**
 Denser liquid sinks, lighter liquid floats. Oil floats on water. Molten slag floats on molten iron (this is how real smelting separates metal from waste). The SPH pressure force naturally produces this layering because denser particles create higher pressure at the bottom.
 
-#### What the Player Sees
+#### Capillary Action — Liquid Climbs Upward
 
-The visual representation of fluid adapts to scale:
+In narrow channels, surface tension pulls liquid upward against gravity. Jurin's law determines the height:
 
-**SPH particles (crafting and local):**
-- Each particle renders as a small sphere (metaball rendering for smooth appearance)
-- Color derived from composition: water = blue-clear, molten copper = orange-red glow, blood = dark red, oil = dark brown
-- Temperature → emissive glow: particles above 500°C glow red, above 1000°C glow orange-white
-- Surface particles have specular highlights (Fresnel reflection, same as OceanShader.ts)
-- Metaball blobbing: nearby particles visually merge into a smooth surface (marching cubes or screen-space fluid rendering)
+```
+h = 2σ × cos(θ) / (ρ × g × r)
+where:
+  σ = surface tension (N/m) — from MaterialPacket
+  θ = contact angle (0° = perfect wetting, 90° = non-wetting, >90° = hydrophobic)
+  ρ = liquid density (kg/m³)
+  r = channel/pore radius (m)
+```
+
+Contact angle depends on the liquid-surface pair:
+- Water on clean glass: θ ≈ 0° (spreads flat — hydrophilic)
+- Water on waxed surface: θ ≈ 110° (beads up — hydrophobic)
+- Mercury on glass: θ ≈ 140° (repelled — mercury is depressed, not elevated)
+- Water on stone: θ ≈ 20-40° (partial wetting)
+- Oil on cloth: θ ≈ 0° (perfect wetting — oil wicks into everything)
+
+Gameplay effects:
+- Oil lamp wicks: oil (σ ≈ 0.03 N/m, θ ≈ 0° on cloth) rises ~15cm in cloth fibers (r ≈ 0.01mm): h = 2×0.03×1 / (800×9.81×0.00001) = 0.76m — easily sufficient
+- Rising damp in walls: water rises in stone pores (r ≈ 0.1mm): h = 2×0.073×cos(30°) / (1000×9.81×0.0001) = 0.13m — rises ~13cm into the wall. This connects to structural decay (§3.4): the damp zone weakens mortar
+- Cloth absorbing blood/water: thin fibers (r ≈ 0.01mm) wick liquid rapidly
+- Sap transport in trees: capillary + transpiration pull moves water from roots to leaves
+
+Implementation: not simulated as individual SPH particles in pores (too small). Instead, tracked as a material property: when a porous block contacts liquid, the block's waterAbsorption rate is multiplied by a capillary factor:
+```
+capillaryFactor = 2σ × cos(θ) / (ρ × g × poreDiameter)
+absorptionRate = porosity × capillaryFactor × contactArea
+```
+
+  // ── Contact Angle — Derived from Surface Energy ───────────────────────
+  //
+  // Contact angle θ determines how a liquid wets a surface (capillary action,
+  // droplet shape, absorption). It depends on the surface energy of the solid.
+  //
+  // Surface energy correlates with bond type at the exposed surface:
+  //   Metallic bonds (Fe, Cu, Al): high surface energy → water spreads → low θ
+  //   Ionic bonds (NaCl, CaCO₃, SiO₂): moderate → partial wetting
+  //   Covalent organic (C-H, wax, fat): low surface energy → water beads → high θ
+  //
+  // Computation from composition:
+  //   surfaceEnergy = Σ(x_i × elementSurfaceTension_i) × bondTypeFactor
+  //   where elementSurfaceTension_i is from the element property table (liquid surface tension)
+  //   and bondTypeFactor adjusts for solid vs. liquid surface:
+  //     metallic: bondTypeFactor = 1.5 (solid metals have higher surface energy than liquid)
+  //     ionic: bondTypeFactor = 0.5 (ionic solids have moderate surface energy)
+  //     covalent organic: bondTypeFactor = 0.05 (organic surfaces have very low energy)
+  //
+  //   Bond type classification from composition:
+  //     metalFraction = sum of mass fractions of elements with Z > 10 and metallic character
+  //     ionicFraction = fraction of oxygen/halogen-bonded species
+  //     organicFraction = fraction of C-H and C-C bonded species
+  //
+  //   cos(θ) = (surfaceEnergy - 72 mN/m) / surfaceEnergy
+  //   (72 mN/m is water's surface tension — Young's equation simplified)
+  //   θ = acos(max(-1, min(1, (surfaceEnergy - 72) / surfaceEnergy)))
+  //
+  //   Iron (surfaceTension = 1800 mN/m × 1.5 = 2700): cos(θ) = (2700-72)/2700 = 0.97 → θ = 14° ✓
+  //   Glass (surfaceTension = 300 mN/m × 0.5 = 150): cos(θ) = (150-72)/150 = 0.52 → θ = 59° 
+  //     (actual clean glass ~20-30°; this is acceptable for gameplay)
+  //   Wax (surfaceTension = 25 mN/m × 0.05 = 1.25): cos(θ) = (1.25-72)/1.25 = -56.6 → capped at -1 → θ = 180°
+  //     (actual ~110°; cap at acos(-1) = 180° then clamp to max 150° for realism)
+  //     Revised: θ = min(150°, acos(max(-1, (surfaceEnergy - 72) / max(surfaceEnergy, 72))))
+  //
+  //   For non-water liquids: replace 72 mN/m with the liquid's own surface tension:
+  //     Oil (σ = 30 mN/m): cos(θ) = (surfaceEnergy - 30) / surfaceEnergy
+  //     Oil on metal: cos(θ) = (2700-30)/2700 = 0.99 → θ = 8° (oil wets metal completely) ✓
+  //     Oil on wax: cos(θ) = (1.25-30)/1.25 → capped → θ ≈ 120° (oil doesn't wet wax well) 
+  //
+  //   This replaces the previous hydrophilicity lookup table with a formula
+  //   that derives θ from elemental surface tensions in the property table.
+
+This connects to structural decay (§3.4): rising damp carries dissolved minerals upward. When water evaporates at the wall surface, minerals crystallize and exert pressure on the pore walls (salt weathering). This is a major real-world cause of stone building deterioration.
+
+#### Sedimentation — Heavy Particles Sink, Light Particles Float
+
+Suspended solids in liquid settle at a rate determined by Stokes' law:
+
+```
+v_settle = (2/9) × (ρ_particle - ρ_fluid) × g × r² / μ
+where:
+  ρ_particle = density of the suspended solid (kg/m³)
+  ρ_fluid = density of the liquid (kg/m³)
+  r = particle radius (m) — from the suspended solid's grain size
+  μ = fluid viscosity (Pa·s)
+```
+
+Settling speeds for common situations:
+- Gold dust (ρ=19300) in water: r=0.05mm → v = 0.10 m/s — settles in seconds
+    (Stokes valid: Re = 2×0.00005×0.1×1000/0.001 = 10 — borderline, use drag correction)
+- Fine sand (ρ=2650) in water: r=0.05mm → v = 0.0009 m/s — settles in minutes
+- Silt (ρ=2650) in water: r=0.01mm → v = 0.000036 m/s — takes hours to settle
+- Clay (ρ=2650) in water: r=0.001mm → v = 0.00000036 m/s — takes DAYS (muddy water stays cloudy)
+NOTE: Stokes' law is valid only for Re < 1 (fine particles in viscous flow).
+For larger particles (coarse sand r > 0.1mm, gravel), use the drag coefficient
+approach: v_terminal = √(4×(ρ_p-ρ_f)×g×d / (3×C_d×ρ_f)) with C_d from the
+Schiller-Naumann correlation: C_d = 24/Re × (1 + 0.15×Re^0.687).
+
+Gameplay effects:
+- Gold panning: swirl water + gravel → gold settles first (highest density) → lighter sand washes away. This is discoverable because the physics is correct.
+- Water clarification: fill a vessel, let it sit → sediment drops, clear water on top. Time depends on grain size: sandy water clears in minutes, clay water takes days.
+- Alluvial deposits: where rivers slow (bends, deltas), sediment drops out. Heavy materials (gold, magnetite) deposit first at the inner bend. Light materials (clay) deposit last, farther downstream. This creates naturally rich mining locations that players can discover by understanding the relationship between river speed and material density.
+
+Implementation: for SPH particles representing suspensions (muddy water, ore slurry), apply a settling velocity to the solid component:
+```
+Each tick: particle.z -= v_settle × dt (relative to the fluid)
+When a settled particle reaches the bottom of a container or terrain:
+  it is removed from the fluid and deposited as a MaterialPacket.
+The deposited material's composition reflects whatever settled there.
+```
+
+#### What the Player Sees — Three-Tier Rendering Pipeline
+
+The visual representation of fluid is NOT hardcoded per material. In the real world, you don't see "water is blue" — you see light being absorbed, scattered, and refracted by matter. The renderer computes optical properties from the same MaterialPacket that drives viscosity and density. Three rendering methods handle different scales:
+
+**Tier 1: Marching Cubes — Crafting Scale (100–5,000 particles)**
+
+// **What this means:** Take the blobby particles and build a smooth 3D
+// surface around them, like shrink-wrapping a pile of balls. The result
+// is a solid mesh that looks like real liquid -- no individual droplets
+// visible. Used when the player is close up (crafting, pouring metal).
+
+
+When a player is melting, pouring, or mixing at a craft arrangement, they are close. Quality matters. Particle count is low enough for real mesh extraction.
+
+```
+How it works:
+  1. Overlay a 3D grid on the crafting region (32³ = ~33,000 vertices)
+     Grid cell size = half the particle spacing (~0.03m for crafting)
+
+  2. At each grid vertex, compute a scalar field:
+     φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
+     This sums the "influence" of every nearby particle using the SPH kernel.
+     Where many particles overlap, φ is high. Where there are gaps, φ is low.
+
+  3. Extract the isosurface where φ = threshold (~0.6):
+     — For each grid cell, classify its 8 corners as inside/outside
+     — Look up triangle configuration from the 256-entry marching cubes table
+     — Interpolate vertex positions along edges where φ crosses the threshold
+     — Compute normals from ∇φ (gradient of the scalar field)
+
+  4. Result: a smooth, watertight triangle mesh (typically 5,000–20,000 triangles)
+     This mesh has NO individual particle bumps — it is a continuous surface.
+     Topology changes (drops splitting, streams merging) happen automatically.
+
+  5. Shade the mesh using optical properties derived from composition (see below).
+
+Performance at crafting scale:
+  Scalar field computation: ~0.3ms (1000 particles × ~10 neighbors per vertex)
+  Marching cubes traversal: ~0.1ms
+  Mesh rendering: ~0.2ms (5k–20k triangles, trivial for GPU)
+  Total: ~0.6ms — negligible
+```
+
+Why marching cubes here and not screen-space: player is inches away — mesh quality is noticeably better. Low particle count makes mesh extraction cheap. Produces a real 3D mesh that catches light and shadows correctly. Handles transparency naturally (can ray-march through the mesh for thickness).
+
+**Tier 2: Screen-Space Fluid Rendering (SSFR) — Environment Scale (5,000–200,000 particles)**
+
+// **What this means:** The individual droplets look blobby and ugly.
+// The bilateral blur smooths them into a continuous, shiny surface.
+// It is like looking at a pointillist painting -- up close you see dots,
+// but step back (or blur your eyes) and you see a smooth image.
+// The "bilateral" part means it smooths WITHIN the liquid but does not
+// smear the liquid edge into the background.
+
+
+For rain puddles, lava flows, streams, blood pools — anything with many particles where the player is not scrutinizing individual droplets. This is the technique used by NVIDIA Flex and Unreal Engine 5.
+
+The core idea: render particles as depth sprites, then blur the depth buffer to "connect the dots" into a smooth continuous surface. The blur cost is per-pixel (screen resolution), not per-particle — so 200,000 particles render at the same cost as 5,000.
+
+```
+The pipeline (5 GPU passes):
+
+  Pass 1 — Depth Sprites (0.3–0.8ms):
+    Render each particle as a camera-facing point sprite.
+    In the fragment shader, compute the sphere's depth per pixel:
+      depth(x,y) = particle_z - R · √(1 - x² - y²)
+    Write to a depth-only render target. Overlapping particles resolve via depth test.
+    Result: a bumpy depth buffer of individual sphere shapes.
+
+  Pass 2 — Bilateral Blur (0.5–1.5ms, two sub-passes):
+    A bilateral Gaussian filter smooths the depth buffer:
+      smoothed(p) = Σ w(q) · depth(q) / Σ w(q)
+      w(q) = G_spatial(||p-q||) · G_range(|depth(p) - depth(q)|)
+
+    G_spatial: standard Gaussian blur (σ = 5–10 pixels, kernel radius 10–20 px)
+    G_range: preserves edges — if two pixels have very different depths,
+             they are at a fluid boundary. Do not blur across it.
+
+    Done as two separable 1D passes (horizontal + vertical) for efficiency.
+
+    Result: individual particle bumps vanish. The depth buffer now shows a
+    smooth, continuous fluid surface — even though the particles underneath
+    are discrete points. This is where "connecting the dots" happens.
+
+  Pass 3 — Thickness (0.2–0.5ms):
+    How thick is the fluid along each view ray? Needed for transparency/color.
+    Render particles again with ADDITIVE blending and NO depth test.
+    Each sprite contributes its thickness: t(x,y) = 2R · √(1 - x² - y²)
+    Overlapping particles' thicknesses sum up naturally.
+    Result: a screen-space thickness map.
+
+  Pass 4 — Normal Reconstruction (0.1–0.2ms):
+    Compute surface normals from the smoothed depth via finite differences:
+      ∂z/∂x = (depth(x+1,y) - depth(x-1,y)) / 2
+      ∂z/∂y = (depth(x,y+1) - depth(x,y-1)) / 2
+      normal = normalize(cross(dpdx, dpdy))
+
+  Pass 5 — Compositing (0.3–0.5ms):
+    Full-screen pass that combines everything:
+    — Fresnel reflection: F = F₀ + (1-F₀)(1 - N·V)⁵
+    — Refraction: offset background UV by normal.xy × thickness
+    — Beer's Law absorption: color = exp(-absorption × thickness)
+      Water absorbs red (stays blue), lava absorbs blue (stays orange)
+    — Specular highlights from scene lights
+    — Composite over the scene at the smoothed depth
+
+Total GPU cost: 1.5–3.5ms at 1080p — INDEPENDENT of particle count.
+```
+
+**Tier 3: Raw Points + Shaders — Visual-Only Effects**
+
+Rain, snow, ash, sparks, embers, wind particles. These are not physics fluid — they are visual atmosphere. No smooth surface needed. GPU billboard particle system (THREE.Points). No physics interaction, no SPH, no fluid behavior. Already implemented in WeatherRenderer.tsx. 10,000+ particles at near-zero GPU cost. No change needed.
+
+**Tier Selection — Per Fluid Body, Per Frame**
+
+Tiers are assigned per fluid body (connected component of particles), not per particle:
+
+```
+TierSelection (per fluid body, per frame):
+  if body.context == PRECISION_CRAFT:
+    tier = MARCHING_CUBES    // player is crafting, close up, small count
+  else if body.particleCount <= 5000 AND body.closestDistanceToCamera < 3.0m:
+    tier = MARCHING_CUBES    // small body AND player is very close
+  else:
+    tier = SCREEN_SPACE      // everything else
+
+  // Tier 3 is separate — weather particles never form fluid bodies.
+```
+
+**Tier Transition — Smooth Crossfade**
+
+When a fluid body changes tier (player walks away from a craft arrangement, approaches a puddle), a 20-frame crossfade prevents visual popping:
+
+```
+TierTransition:
+  When targetTier != currentTier:
+    blendWeight increases by 0.05 per frame (~0.33 seconds crossfade)
+    Both rendering methods run simultaneously during the blend
+    Old tier fades out (opacity = 1 - blend), new tier fades in (opacity = blend)
+
+  Hysteresis prevents flickering at boundaries:
+    MARCHING_CUBES entry:  distance < 3.0m AND count < 5,000
+    MARCHING_CUBES exit:   distance > 4.0m OR count > 6,000
+    The gap prevents rapid switching when hovering near the threshold.
+
+  Fluid bodies are recomputed every 10 frames (~6× per second at 60fps)
+  via union-find on the particle neighbor graph. Between recomputations,
+  new particles inherit the body ID of their nearest neighbor.
+```
 
 **Grid cells (regional):**
 - Water surface mesh generated from grid cells with waterVolume > 0
@@ -641,7 +2006,7 @@ When all scales work together, the full hydrological cycle emerges:
 EVAPORATION: Ocean + lakes + rivers lose water (temperature + surface area + wind)
   ↓ water vapor enters atmosphere
 CLOUD FORMATION: Vapor rises, cools below dew point, condenses
-  ↓ water droplets aggregate into clouds (weather system §6)
+  ↓ water droplets aggregate into clouds (weather system §4.6)
 PRECIPITATION: Clouds release water as rain (liquid) or snow (solid)
   ↓ SPH particles fall from sky (Scale 1-2)
 SURFACE FLOW: Rain hits terrain, flows downhill
@@ -656,7 +2021,7 @@ GROUNDWATER: Some rain absorbs into porous terrain
   ↓ feeds springs, wells, and maintains river base flow in dry season
 ```
 
-No part of this cycle is scripted. It all follows from the physics: gravity pulls water down, heat drives evaporation, cooling drives condensation, terrain shape determines where water collects and flows. The weather system (§6) provides precipitation. The fluid simulation handles everything after the raindrop forms.
+No part of this cycle is scripted. It all follows from the physics: gravity pulls water down, heat drives evaporation, cooling drives condensation, terrain shape determines where water collects and flows. The weather system (§4.6) provides precipitation. The fluid simulation handles everything after the raindrop forms.
 
 #### Lava: Liquid Rock
 
@@ -679,17 +2044,49 @@ Lava flowing over water produces instant steam (boiling) + rapid cooling of the 
 
 #### Performance Budget
 
-| Scale | Method | Particle/cell count | Tick rate | CPU cost per tick | Worker |
-|-------|--------|-------------------|-----------|-------------------|--------|
-| Crafting | SPH | 100–2,000 | 60 Hz | < 1 ms | Shared with game loop or dedicated |
-| Local env | SPH | 2,000–20,000 | 30 Hz | 2–5 ms | Dedicated Web Worker |
-| Regional | Grid | 10,000–50,000 cells | 1 Hz | 5–10 ms | Existing fluid.worker.ts |
-| Global | Math | 0 | On demand | < 0.1 ms | Main thread |
-| **Total** | | | | **< 15 ms** at peak | **3 workers max** |
+**Simulation (Rust, single dedicated core):**
 
-On a GPU (WebGPU compute shaders, when available): SPH particle count can increase 10–100× for the same cost. 200,000 local environment particles at 30 Hz is feasible on a mid-range GPU.
+| Scale | Method | Particle/cell count | Tick rate | Rust CPU cost per tick |
+|-------|--------|-------------------|-----------|----------------------|
+| Crafting | SPH | 100–5,000 | 60 Hz | ~0.5 ms |
+| Local env | MLS-MPM | 5,000–200,000 | 30 Hz | ~2.0 ms (50k active) / ~8.0 ms (200k active peak) |
+| Regional | Grid | 10,000–50,000 cells | 1 Hz | ~2.0 ms |
+| Global | Math | 0 | On demand | < 0.1 ms |
+| Redistribution | Amortized | — | Per tick | ~0.3 ms |
+| **Total sustained** | | **~400,000 max** | | **~10% of one CPU core** |
+| **Total peak (eruption)** | | **200k active** | | **~34% of one CPU core** |
 
-The server (for shared world state) only needs to run Scale 3 (grid) and Scale 4 (math). Crafting-scale and local-scale SPH run on the client only — they are visual and player-local. The server broadcasts grid cell water levels in the WORLD_SNAPSHOT, and clients generate local SPH particles for visual detail.
+**GPU compute path (WebGPU, when available):**
+
+| Scale | GPU cost per tick | Notes |
+|-------|------------------|-------|
+| Crafting SPH (5,000) | ~0.1 ms | Trivially fast on GPU |
+| Environment MPM (200,000, 4 substeps) | ~4 ms | Memory-bound, not compute-bound |
+| **Total GPU compute** | **~4.1 ms** | Leaves >12ms for rendering at 60 FPS |
+
+**Rendering (GPU):**
+
+| Component | GPU cost | Notes |
+|-----------|---------|-------|
+| Marching cubes mesh (crafting, ≤5k particles) | ~0.6 ms | 32³ grid + 5k-20k triangles |
+| Screen-space fluid (environment, any count) | ~2.5 ms at 1080p | Fixed cost regardless of particle count |
+| Weather particles (visual-only) | ~0.3 ms | Existing THREE.Points |
+| Secondary particles (spray/foam/bubbles) | ~0.1 ms | Visual-only points |
+| **Total rendering** | **~3.5 ms** | Fits comfortably in 16ms frame budget |
+
+**Memory:**
+
+| Component | Size |
+|-----------|------|
+| Particle data (400k max × 64 bytes) | ~25 MB |
+| Optical properties (400k × 40 bytes) | ~16 MB |
+| Spatial hash table | ~5 MB |
+| Marching cubes grid (32³) | ~0.5 MB |
+| Screen-space buffers (1080p: depth + thickness + normals) | ~16 MB |
+| Secondary particles (5,000 × 30 bytes) | ~0.15 MB |
+| **Total memory** | **~63 MB** |
+
+**All particle simulation runs on the server** (consistent with §3.5 server-authoritative physics). The server computes particle positions, velocities, and phase transitions. Results are streamed to clients via the particle network streaming protocol (see below). The client renders particles but never simulates them — it cannot invent fluid behavior that the server did not compute. This prevents cheating and ensures all players see the same fluid.
 
 #### Critical Optimizations
 
@@ -799,298 +2196,2075 @@ Particles far from the player don't need full-accuracy physics:
 
 This reduces the effective particle count by ~60% in typical gameplay (most fluid is not right next to the player).
 
-**6. Hybrid Rendering: Real Physics + Visual Tricks**
+**6. Particle Redistribution — Keeping Particles Evenly Spaced**
 
-The most important optimization is knowing **when NOT to simulate**. Real SPH physics only runs during active interaction moments. Everything else uses cheap visual approximations:
+SPH works best when particles are roughly uniformly spaced. During simulation, particles naturally clump in convergent flows and spread out in divergent flows. This causes density estimation errors (pressure oscillations), visual artifacts (gaps in the rendered surface), and wasted computation (too many particles in one spot). The redistribution system fixes this.
+
+**Splitting — one particle becomes two:**
+```
+Trigger conditions (any one):
+  — Particle spacing exceeds 1.5× target spacing for its zone
+  — Particle enters a high-resolution zone (closer to camera)
+  — Local vorticity exceeds threshold (turbulent region needs detail)
+
+How splitting works:
+  Parent particle (mass m, velocity v, position x):
+  → 2 child particles, each mass m/2
+  → Positions: x ± ε (offset along velocity gradient direction)
+  → Velocities: both inherit parent's velocity
+  → Smoothing radius: h_child = h_parent × 0.794 (= 2^(-1/3) in 3D)
+  → Composition, temperature: inherited exactly
+  → Mass is EXACTLY conserved: m_parent = m_child1 + m_child2
+```
+
+**Merging — two particles become one:**
+```
+Trigger conditions (both required):
+  — Two particles closer than 0.3× smoothing radius h
+  — Both particles are in a low-resolution zone (far from camera)
+
+How merging works:
+  Two particles (m₁, v₁, x₁) + (m₂, v₂, x₂):
+  → 1 merged particle:
+     mass = m₁ + m₂                           (exact conservation)
+     position = (m₁x₁ + m₂x₂) / (m₁+m₂)     (center of mass)
+     velocity = (m₁v₁ + m₂v₂) / (m₁+m₂)      (momentum conservation)
+     composition = mass-weighted average
+     temperature = mass-weighted average
+  → Kinetic energy is NOT conserved — merging dissipates the relative
+     velocity energy, acting as artificial viscosity. Acceptable because
+     merging only happens far from the camera where precision is irrelevant.
+```
+
+**Adaptive resolution zones (camera-based LOD for particles):**
+
+| Zone | Distance | Particle radius | Relative to base | Particles needed (same volume) |
+|------|----------|----------------|------------------|-------------------------------|
+| 0 (near) | 0–5 m | 0.02 m | 1× (base) | 1× |
+| 1 (mid) | 5–15 m | 0.04 m | 2× | 1/8× |
+| 2 (far) | 15–40 m | 0.08 m | 4× | 1/64× |
+| 3 (distant) | 40 m+ | 0.16 m | 8× | 1/512× |
+
+Each doubling of radius = 8× the volume per particle = 8× fewer particles needed. Zone 3 needs 512× fewer particles than Zone 0 for the same volume of fluid. A lava flow covering 100m would need 2 million uniform particles. With adaptive resolution: ~100k–200k. Same visual quality near the camera. 10–50× particle count reduction for large-scale phenomena.
+
+**Transition bands** (width ~5× particle spacing) between zones prevent sharp boundaries. Both resolutions coexist in the band. Particles gradually split (approaching camera) or merge (moving away). Forces between different-sized particles use averaged smoothing radius: `h_ij = (h_i + h_j) / 2`. This maintains Newton's third law across resolution boundaries.
+
+**Hysteresis** prevents split/merge oscillation: split when particle is > 1.5× target size for zone, merge when < 0.5× target size. The gap (0.5× to 1.5×) is the stable band — no action taken.
+
+  // -- Particle Redistribution: Concrete Specifications ----------------
+  //
+  // Each adaptive resolution zone has specific particle parameters:
+  //
+  //   | Zone | Distance | Particle radius | Kernel h  | Particles per m^3 | Solver |
+  //   |------|----------|----------------|-----------|------------------|--------|
+  //   | 0    | 0-5 m    | 0.02 m         | 0.04 m    | ~125,000         | SPH    |
+  //   | 1    | 5-15 m   | 0.04 m         | 0.08 m    | ~15,600          | MPM    |
+  //   | 2    | 15-40 m  | 0.08 m         | 0.16 m    | ~1,950           | MPM    |
+  //   | 3    | 40 m+    | 0.16 m         | 0.32 m    | ~244             | MPM    |
+  //
+  //   Particles per m^3 = 1 / (radius x 2)^3 -- this is the TARGET density.
+  //   Kernel h = 2 x particle radius -- standard SPH convention.
+  //
+  // Split algorithm (particle enters a finer zone):
+  //   Trigger: particle.radius > 1.5 x zone.targetRadius
+  //
+  //   function splitParticle(parent):
+  //     // Compute split direction: along the velocity gradient
+  //     // (where the fluid is stretching, add detail there)
+  //     gradV = computeVelocityGradient(parent, neighbors)
+  //     splitDir = normalize(largestEigenvector(gradV))
+  //     if |splitDir| < 0.001: splitDir = randomUnitVector()
+  //
+  //     // Create two children
+  //     offset = parent.radius x 0.5 x splitDir
+  //     child1.position = parent.position + offset
+  //     child2.position = parent.position - offset
+  //     child1.mass = parent.mass / 2    // EXACT conservation
+  //     child2.mass = parent.mass / 2
+  //     child1.velocity = parent.velocity  // SAME velocity (no random perturbation)
+  //     child2.velocity = parent.velocity
+  //     child1.radius = parent.radius x 0.794  // = 2^(-1/3), volume halved
+  //     child2.radius = parent.radius x 0.794
+  //     child1.composition = parent.composition  // identical
+  //     child2.composition = parent.composition
+  //     child1.temperature = parent.temperature
+  //     child2.temperature = parent.temperature
+  //     child1.cooldown = 30  // do not re-evaluate for 30 ticks
+  //     child2.cooldown = 30
+  //
+  //     remove(parent)
+  //     add(child1, child2)
+  //
+  // Merge algorithm (particle enters a coarser zone):
+  //   Trigger: particle.radius < 0.5 x zone.targetRadius
+  //            AND nearest same-zone neighbor within 0.3 x kernel h
+  //            AND neighbor.cooldown == 0
+  //
+  //   function mergeParticles(a, b):
+  //     merged.mass = a.mass + b.mass           // EXACT conservation
+  //     merged.position = (a.mass x a.position + b.mass x b.position) / merged.mass  // center of mass
+  //     merged.velocity = (a.mass x a.velocity + b.mass x b.velocity) / merged.mass  // momentum conservation
+  //     merged.radius = (merged.mass / (a.density x 4/3 x pi))^(1/3)  // from mass+density
+  //     merged.composition = massWeightedAverage(a.composition, b.composition)
+  //     merged.temperature = (a.mass x a.temperature + b.mass x b.temperature) / merged.mass
+  //     merged.cooldown = 30  // do not re-evaluate for 30 ticks
+  //
+  //     remove(a, b)
+  //     add(merged)
+  //
+  // Zone assignment for multi-player:
+  //   distance = min(distance to each connected player camera)
+  //   The nearest player determines the resolution zone.
+  //   This means: if Player A is 3m away and Player B is 50m away,
+  //   the particle uses Zone 0 (Player A proximity wins).
+  //
+  // Cooldown prevents oscillation:
+  //   After any split or merge, the resulting particles have cooldown = 30 ticks.
+  //   During cooldown, the particle is NOT evaluated for redistribution.
+  //   At 30 Hz: cooldown = 1 second. This prevents split-merge-split loops.
+
+**7. Hybrid Rendering: Real Physics + Visual Approximations**
+
+The most important optimization is knowing **when NOT to simulate**. Real SPH/MPM physics only runs during active interaction moments. Everything else uses cheap visual approximations:
 
 | Situation | Physics method | Visual method |
 |---|---|---|
-| Player melting/pouring metal | Real SPH (200-500 particles) | Screen-space fluid smoothing on SPH particles |
-| Player mixing chemicals | Real SPH + diffusion | Color blending shader on SPH particles |
-| Rain falling | None | GPU billboard particle system (thousands of quads, no physics) |
+| Player melting/pouring metal | Real SPH (500-5,000 particles) | Tier 1: Marching cubes mesh |
+| Player mixing chemicals | Real SPH + diffusion | Tier 1: Marching cubes with composition-driven color |
+| Rain falling | None | Tier 3: GPU billboard particle system (no physics) |
 | Rain puddles forming | Heightfield (add volume to grid cell) | Puddle decal texture + animated ripple shader |
 | River | Grid flow (volume + direction) | River mesh + scaled-down Gerstner waves from OceanShader |
-| Waterfall | None | Particle trail effect + splash particles + foam texture at base |
+| Waterfall | None (visual) + MPM at base (splash) | Tier 3 particle trail + Tier 2 SSFR at splash zone |
 | Lake | Grid cell (single water volume number) | Flat mesh at water height + wave shader + edge foam |
 | Ocean | None | Pure Gerstner wave shader (already built in OceanShader.ts) |
-| Lava (active flow front) | Real SPH (2,000-5,000 particles) | Emissive shader + heat distortion + cooled parts become terrain texture |
+| Lava (active flow front) | Real MPM (5,000-200,000 particles) | Tier 2: SSFR with emissive glow + heat distortion |
 | Lava (cooled) | None | Terrain with volcanic rock texture |
 | Blood | None | Decal projected onto terrain surface |
 | Water carried in pot | Just a number (mass + composition) | Sloshing animation shader on the pot model |
 
-The SPH system activates only when needed (phase transition triggers it) and deactivates when particles settle (sleep system) or cool into solids (merge back into material packets). During a typical gameplay session, SPH is actively running for maybe 10% of the time — during smelting, pouring, or weather events. The other 90% costs zero.
+The SPH/MPM system activates only when needed (phase transition triggers it) and deactivates when particles settle (sleep system) or cool into solids (merge back into material packets). During a typical gameplay session, SPH/MPM is actively running for maybe 10% of the time — during smelting, pouring, or weather events. The other 90% costs zero.
 
-**Screen-space fluid rendering** (for the moments when SPH is active):
-1. Render each SPH particle as a point sprite into a depth-only buffer
-2. Bilateral Gaussian blur on the depth buffer — this smooths overlapping spheres into a continuous surface
-3. Reconstruct normals from the smoothed depth
-4. Apply water/metal/lava shading (Fresnel, refraction, emissive glow) as a full-screen pass
-5. Composite over the scene
+#### Optical Property Pipeline — Composition to Light
 
-This technique is used by Unreal Engine 5, Unity HDRP, and most modern games with fluid effects. The blur cost is per-pixel (fixed cost regardless of particle count), making it extremely efficient. 5,000 particles render at the same cost as 500.
+In the real world, the appearance of any liquid is fully determined by its atomic composition and temperature. There is no color lookup table. Light enters the medium, gets absorbed at wavelength-dependent rates, scatters off suspended particles, and reflects at interfaces where refractive index changes. The renderer computes all optical properties from the same MaterialPacket that drives viscosity and density.
+
+**Step 1: Composition → Absorption Spectrum (Beer-Lambert Law)**
+
+`I(λ) = I₀ · exp(-α(λ) · d)` — light intensity decreases exponentially with distance through the medium.
+
+Each element/compound contributes to the absorption coefficient α(λ). This is real physics:
+- Pure water: absorbs red (α_red ≈ 0.45/m), passes blue (α_blue ≈ 0.02/m) → this is WHY water looks blue-green in thick layers
+- Dissolved iron (Fe³⁺): absorbs blue/green (α_blue ≈ 50/m) → this is WHY rusty water looks orange-brown
+- Dissolved copper sulfate (CuSO₄): absorbs red (α_red ≈ 80/m) → this is WHY copper sulfate solution looks blue
+- Carbon suspension (soot, charcoal): absorbs everything uniformly → this is WHY ink and crude oil look black
+
+The renderer stores absorption as RGB (not full spectrum — 3 channels is enough for visual accuracy, same approximation used in film VFX):
+
+```
+absorptionRGB(composition) = Σ (concentration_i × species_i.absorptionRGB)
+```
+
+Computed once when composition changes, not every frame. The property calculator (§3.1) already computes viscosity this way. Absorption coefficients are just another column in the element property table.
+
+**Step 2: Composition → Refractive Index**
+
+How much light bends at the fluid surface. Determines how distorted objects look through the liquid and how much reflection you see at glancing angles (Fresnel).
+
+Using the Arago-Biot mixing rule: `n_mix = Σ (volumeFraction_i × n_i)`
+
+- Water: n = 1.333
+- Molten glass (SiO₂): n = 1.458
+- Ethanol: n = 1.361
+- Molten iron: n = 2.87 (highly reflective — metallic)
+- Oil: n = 1.47
+
+High n → more reflection, more refraction distortion, more "glassy." Metallic liquids (n > 2): mostly reflective, almost no transparency.
+
+**Step 3: Composition → Scattering**
+
+Suspended particles scatter light, making liquid cloudy. Dissolved species do NOT scatter (transparent solution). Suspended solids scatter proportionally to their concentration. A liquid with suspended charcoal is opaque. A dissolved salt solution is clear. The composition already tracks dissolved vs. suspended (§3.1).
+
+**Step 4: Temperature → Blackbody Emission**
+
+Hot materials glow. This is blackbody radiation, not a special effect. Wien's displacement law: `peak_wavelength = 2898 / T(K)`. Below ~500°C: no visible emission. At 500°C: faint red glow. At 1000°C: bright orange. At 1500°C: yellow-white. The Planck distribution gives exact RGB emission at any temperature — the same equation used by every PBR renderer.
+
+**Per-particle optical attributes (40 bytes, cached):**
+- absorptionRGB: vec3 (12 bytes)
+- refractiveIndex: float (4 bytes)
+- scatteringRGB: vec3 (12 bytes)
+- emissionRGB: vec3 (12 bytes) — blackbody glow from temperature
+
+Recomputed ONLY when composition or temperature changes. For a static puddle: computed once, cached forever. For actively mixing liquids: recomputed each sim tick.
+
+**Multi-Material Screen-Space Rendering**
+
+When two immiscible fluids occupy the same screen region (oil on water, slag on molten metal), the bilateral blur must not smear them together. The solution follows from how light actually behaves in layered fluids — it passes through each layer independently, being absorbed and refracted at each interface.
+
+```
+Step 1: Classify particles into layers by density and miscibility.
+  Particles whose composition similarity is > 0.9 (dot product of
+  normalized composition vectors) are the same layer — they are
+  miscible and will mix over time. Particles with similarity < 0.9
+  are separate layers (immiscible — ΔG of mixing > 0, already
+  computed by the reaction engine).
+
+Step 2: Run the full SSFR pipeline independently per immiscible layer.
+  Each layer gets its own depth buffer, thickness map, normal map.
+  The bilateral blur operates WITHIN each layer — no cross-material smearing.
+
+Step 3: Composite layers back-to-front (densest first).
+  Light enters the top layer → absorbed by Beer's Law using top layer's α.
+  Light exits top layer, enters bottom layer → refracted at the interface
+  (Snell's law: n₁·sin(θ₁) = n₂·sin(θ₂)).
+  Light absorbed by bottom layer → reflected off bottom surface or terrain.
+  Light travels back up through both layers.
+
+Cost: one extra SSFR pass per immiscible layer.
+  1 layer (most common): ~2.5ms
+  2 layers (oil+water, metal+slag): ~4.5ms
+  3+ layers (exotic): ~6.5ms — almost never happens naturally.
+```
+
+Miscible fluids (water + dissolved salt, water + alcohol) are ONE layer. Their optical properties are the mass-weighted average of the components. This happens automatically because SPH diffusion mixes their compositions over time. As they mix, per-particle optical properties gradually converge. You literally watch the color change as mixing happens — no special rendering, just composition changing → absorption changing → color changing.
+
+#### Secondary Particles — Foam, Spray, Bubbles
+
+These are not effects. In the real world, spray happens when kinetic energy overcomes surface tension. Foam happens when gas gets trapped in liquid films. Bubbles happen when gas is produced inside a liquid. The simulation already computes everything needed to predict when these occur. Secondary particles are visual-only (Tier 3 raw points). They are spawned BY the primary SPH/MPM simulation based on physical conditions, then rendered cheaply as GPU billboards. They do not participate in SPH forces.
+
+**Spray: Liquid fragmenting into droplets**
+
+When a fluid surface moves fast enough, surface tension cannot hold the surface together. The Weber number determines this:
+
+`We = ρ · v² · L / σ` (density × velocity² × length scale / surface tension)
+
+- We > 12: surface starts to deform (waves, fingers)
+- We > 40: surface fragments into droplets (spray)
+- We > 100: explosive atomization (waterfall crashing)
+
+The SPH simulation already computes velocity and surface tension per particle. Surface particles (particles with fewer than ~70% of average neighbors — they are at the fluid boundary) are candidates for spray emission.
+
+```
+SprayEmission (per surface particle, per sim tick):
+  We = particle.density × |particle.velocity|² × particle.radius / particle.surfaceTension
+
+  if We > 40:
+    numDroplets = clamp(floor((We - 40) / 20), 1, 10)
+    for each droplet:
+      position = particle.position + random offset within kernel radius
+      velocity = particle.velocity + random perturbation (±30%)
+      lifetime = 0.5 to 2.0 seconds
+      size = particle.radius × 0.1 to 0.3
+      color = particle's optical absorptionRGB
+      movement = ballistic (full gravity, no fluid forces)
+      // On hitting fluid surface: absorbed. On hitting terrain: tiny splat.
+```
+
+**Foam: Gas trapped in liquid films**
+
+Foam forms when turbulent flow entrains air. The trapped air forms thin liquid films. Surfactants (compounds that lower surface tension: fats, proteins, soap) stabilize the films.
+
+Without surfactants: foam collapses in <1 second (pure water barely foams). This is correct.
+With surfactants: foam persists for minutes to hours (soap, beer, egg whites).
+
+The simulation already computes vorticity (curl of velocity field): `ω_i = Σⱼ (mⱼ/ρⱼ) × (vⱼ - vᵢ) × ∇W(rᵢⱼ, h)`
+
+```
+FoamGeneration (per surface particle with high vorticity):
+  if |vorticity| > FOAM_THRESHOLD:
+    // Surfactant detection: low surface tension = surfactants present
+    hasSurfactant = (particle.surfaceTension < 0.5 × WATER_SURFACE_TENSION)
+
+    foamLifetime = hasSurfactant ? 5.0–30.0 seconds : 0.2–1.0 seconds
+    // Pure water: foam dies instantly. Soapy water: foam lives long. Beer: minutes.
+
+    spawn foam particle:
+      position = particle.position + surface normal × small offset
+      velocity = particle.velocity × 0.3 (foam moves slower than fluid)
+      lifetime = foamLifetime
+      size = particle.radius × 2–5 (foam bubbles are larger)
+      color = white with slight tint from fluid absorption
+      // Foam is white because thin films scatter all wavelengths (Mie scattering)
+      movement = constrained to fluid surface, pushed by flow beneath
+      // As they age: shrink and fade (film drainage → bubbles pop)
+```
+
+**Bubbles: Gas produced inside liquid**
+
+Bubbles form when: (1) a chemical reaction produces gas (CO₂ from acid + carbonate, H₂ from acid + metal), (2) liquid is heated past boiling (steam bubbles), (3) air is trapped when an object enters liquid. Cases 1 and 2 are already handled by the reaction engine and phase transition system.
+
+```
+BubbleGeneration (triggered by reaction engine or phase transition):
+  when reaction produces gas inside a liquid body:
+    bubbleRadius = max(0.001, 2 × particle.surfaceTension / (gasP - liquidP))
+    // Laplace pressure: small bubbles need more pressure to exist
+    numBubbles = clamp(gasMass / (4/3 × π × bubbleRadius³ × gasDensity), 1, 100)
+
+    for each bubble:
+      position = reaction site
+      velocity = buoyancy-driven upward:
+        // Stokes' law: v_rise = (2/9) × (ρ_liquid - ρ_gas) × g × r² / μ_liquid
+        // Small bubbles rise slowly. Large bubbles rise fast.
+        // High viscosity (honey): very slow. Low viscosity (water): fast.
+        // This uses the fluid's viscosity — already computed.
+      lifetime = time to reach surface + 0.5s
+      size = bubbleRadius
+      // On reaching surface: pop → optionally spawn micro-spray particle
+```
+
+**Boiling** emerges from bubble count: a few bubbles per second = simmering, many per second = rolling boil. No animation — the rate tracks the heat input rate. **Fermentation** produces slow steady CO₂ bubbles over hours — the player sees this and knows fermentation is happening.
+
+**Secondary particle budget:**
+- Typical active counts: waterfall 500–2,000 spray, boiling pot 50–200 bubbles, smelting 100–500 foam
+- Max concurrent: ~5,000 secondary particles
+- GPU cost: <0.1ms (same as weather particles)
+- Memory: ~150 KB (negligible)
+- These particles are LOCAL to each client. The server does not track them. Each client independently generates secondaries from the primary particle state it receives. Since spawn conditions are deterministic (based on velocity, vorticity, reactions), all clients produce visually similar effects. Slight differences do not matter.
+
+#### Crafted Object Collision
+
+The terrain heightfield handles ground collision. But when a player pours molten copper into a clay mold, the mold is a mesh collider, not a heightfield. Particle-mesh collision is needed for crafted objects, containers, and structures.
+
+```
+MeshCollision:
+  Crafted objects with concave interiors (pots, molds, channels, troughs)
+  are decomposed into a signed distance field (SDF) at creation time.
+  The SDF stores the distance to the nearest surface at each point in a
+  3D grid encompassing the object. Inside the object: negative distance.
+  Outside: positive distance.
+
+  Per particle, per tick:
+    sdf_value = sample(object.sdf, particle.position)
+    if sdf_value < 0:
+      // Particle is inside the solid — push it out
+      gradient = sdf_gradient(object.sdf, particle.position)
+      particle.position += gradient × (-sdf_value)  // push to surface
+      // Zero out velocity into the surface, apply friction to tangential
+      v_normal = dot(particle.velocity, gradient) × gradient
+      v_tangent = particle.velocity - v_normal
+      particle.velocity = v_tangent × (1 - friction)
+
+  SDF resolution: ~0.01m (1cm) for crafting objects. A typical pot:
+  10cm × 10cm × 15cm → 10 × 10 × 15 grid = 1,500 cells × 4 bytes = 6 KB per object.
+  100 crafted objects near the player = 600 KB. Negligible.
+
+  SDFs are recomputed when the object's shape changes (player modifies it).
+  For rigid objects (finished pot, stone mold): computed once at creation.
+```
+
+#### Fluid-Structure Coupling — Water Pushes on Walls
+
+The fluid simulation and structural physics are not independent. Fluid exerts force on any solid surface it contacts. Without this coupling, dams have no load on them, bridge piers feel no river current, and underground structures don't experience buoyancy.
+
+**Hydrostatic pressure on walls and dams:**
+Every solid block in contact with fluid receives a horizontal force:
+  F = ρ_fluid × g × h × A
+  where h = depth of the fluid above the block's center, A = contact area
+
+A dam holding back 5m of water: F = 1000 × 9.81 × 5 × 1 = 49,050 N per m² of wall.
+This force is applied as a lateral load to the structural system (§3.4).
+The dam's structural integrity check must resist this — if the dam is too thin
+or unbuttressed, it fails and the water is released as a flood (see below).
+
+**Hydrodynamic force on submerged structures:**
+Moving fluid pushes on submerged objects:
+  F = 0.5 × ρ × v² × Cd × A
+  where v = fluid velocity, Cd = drag coefficient (~1.2 for flat surfaces)
+
+A bridge pier in a river flowing at 2 m/s: F = 0.5 × 1000 × 4 × 1.2 × 1 = 2400 N/m².
+Not enough to destroy a stone pier, but enough to erode a wooden one over time.
+
+**Buoyancy on submerged foundations:**
+Structures below the water table experience uplift:
+  F_buoyancy = ρ_water × g × V_submerged
+A basement 3m × 3m × 2m deep below water table:
+  F_up = 1000 × 9.81 × 18 = 176,580 N (18 tonnes pushing up)
+If the building above isn't heavy enough, the basement floats up.
+
+**Dam break → flood wave:**
+When a structural failure releases contained water, the shallow water equations
+describe the resulting flood:
+  ∂A/∂t + ∂Q/∂x = 0  (continuity)
+  ∂Q/∂t + ∂(Q²/A)/∂x + gA × ∂h/∂x = gA(S₀ - Sf)  (momentum)
+
+For the game's grid-based regional water (Scale 3), a simplified kinematic wave
+model is sufficient: when a dam block is removed, the grid cell behind it
+instantly has its waterVolume redistributed to downhill cells, with flow velocity
+determined by the height difference. MPM particles are spawned at the breach
+point for the dramatic visual of water rushing through.
+
+Implementation: the structural system notifies the fluid system when a block
+that was retaining water is removed. The fluid system then:
+  1. Queries waterVolume in grid cells adjacent to the removed block
+  2. Spawns MPM particles at the breach with velocity from √(2gh)
+  3. Reduces waterVolume in the upstream cells
+  4. The MPM particles flow downhill, joining the environment-scale simulation
+
+#### Hydraulic Jump — Fast Water Hits Slow Water
+
+When supercritical flow (fast, shallow) transitions to subcritical flow (slow, deep), a hydraulic jump forms — a turbulent standing wave with dramatic energy dissipation.
+
+The Froude number determines the flow regime:
+
+```
+Fr = v / √(g × d)
+where v = flow velocity (m/s), d = flow depth (m)
+
+Fr < 1: subcritical (slow, deep, tranquil) — normal river flow
+Fr = 1: critical (at a weir crest, at the brink of a waterfall)
+Fr > 1: supercritical (fast, shallow, shooting) — below a spillway
+```
+
+When supercritical flow enters a subcritical region, the jump occurs. The conjugate depth ratio gives the downstream depth:
+
+```
+d₂/d₁ = 0.5 × (-1 + √(1 + 8 × Fr₁²))
+```
+
+Example: water flowing at 4 m/s, 0.1m deep (Fr = 4/√(9.81×0.1) = 4.04):
+- d₂ = 0.1 × 0.5 × (-1 + √(1 + 8×16.3)) = 0.1 × 5.2 = 0.52m
+- Water depth jumps from 10cm to 52cm in a turbulent roller.
+
+Energy dissipated in the jump:
+
+```
+ΔE = (d₂ - d₁)³ / (4 × d₁ × d₂)
+```
+
+This energy goes into turbulence, spray, and SOUND.
+
+Where hydraulic jumps appear in gameplay:
+- Base of waterfalls: fast falling water hits the pool → jump + spray + foam
+- Below spillways: player-built dam with overflow → fast water hits downstream pool
+- In steep channels: sudden slope change from steep to flat
+
+This connects to:
+- Sound (§3.3): the jump is LOUD — continuous broadband noise from turbulence. Sound power is proportional to energy dissipation rate. The noise synthesis uses ΔE as input.
+- Secondary particles (§3.2): the turbulent roller generates spray (Weber number is high at the jump) and foam (vorticity is maximum in the roller).
+- Structural (§3.4): the turbulent flow at a jump scours foundations. Real dams have "stilling basins" specifically designed to contain the jump.
+
+Implementation in the grid-based regional water (Scale 3): when adjacent grid cells have Fr > 1 → Fr < 1 transition, mark as a jump. Spawn MPM particles at the jump location for the visual turbulence. Generate a continuous noise sound event at the jump position.
+
+#### Particle Network Streaming
+
+The world is consistent. Every player sees the same lava flow, the same river, the same puddle. But streaming 400,000 particle positions to every client every frame is impossible. The solution mirrors human perception: you can only see what is in front of you, and distant things have less detail.
+
+**The bandwidth problem:**
+
+Naive: 400,000 particles × 12 bytes (xyz float32) × 30 Hz = 144 MB/s per client. Absurd.
+
+**Solution 1: Only send what is awake.** The sleep system means 80–95% of particles are dormant. Sleeping particles were already sent when they were active — the client remembers their position. Active particles only: 400,000 × 5% = 20,000 × 12 bytes × 30 Hz = 7.2 MB/s. Better, but still too much.
+
+**Solution 2: Spatial relevance — only send what you can see.** Each client has a view frustum and a maximum interest radius. Particles outside this region are irrelevant.
+
+| Zone | Distance | Update frequency | Detail level |
+|------|----------|-----------------|-------------|
+| Full detail | 0–10 m | Every tick (30 Hz) | Every active particle, delta-compressed |
+| Reduced | 10–30 m | Every 3rd tick (10 Hz) | Every active particle, delta-compressed |
+| Sparse | 30–50 m | Every 5th tick (6 Hz) | Every 4th particle, half-precision |
+| Summary | 50 m+ | Every 10th tick (3 Hz) | Fluid body bounding box + avg velocity only |
+
+Typical active particles within 50m of a player: 1,000–5,000 (most of the world's 400k are far away).
+
+**Solution 3: Delta compression.** Particles move smoothly. The client predicts each particle's next position: `pos += velocity × dt`. The server only sends the CORRECTION (delta from prediction). Most deltas are tiny (<0.01m) and fit in 3 bytes (int8 × 3 scaled to ±0.1m range) instead of 12 bytes (float32 × 3). In practice 90%+ of particles fit in 3-byte deltas. Average cost: ~3.3 bytes per particle vs. 12 = 3.6× compression.
+
+**Combined bandwidth:**
+
+```
+Typical frame (exploring near a river):
+  Full detail:  500 particles × 3.3 bytes              = 1,650 bytes
+  Reduced:      1000 particles × 3.3 bytes (at 10 Hz)  = 1,100 bytes/tick
+  Sparse:       200 particles × 6 bytes (at 6 Hz)      = 240 bytes/tick
+  Summary:      5 bodies × 30 bytes                     = 150 bytes
+  Events:       ~100 bytes (occasional spawn/kill)
+  TOTAL per tick: ~3,240 bytes × 30 Hz = ~97 KB/s
+
+Peak frame (standing in a volcanic eruption):
+  Full detail:  3000 × 3.3 = 9,900
+  Reduced:      5000 × 3.3 = 5,500/tick
+  Sparse:       2000 × 6   = 2,400/tick
+  Events:       ~500 (many spawns)
+  TOTAL: ~18,300 bytes × 30 Hz = ~549 KB/s
+```
+
+Both well within broadband capacity. Even mobile connections (1 MB/s) handle the typical case.
+
+**Client-side gap filling:** When the network skips particles (spatial or temporal downsampling), the client fills gaps. Temporal gaps: interpolate position from last two known positions. Spatial gaps: spawn visual-only "ghost" particles to maintain fluid body shape. These ghost particles have no simulation authority — they are pure visual interpolation. They are removed when the server sends real data for that region.
+
+**Consistency:** Two players standing next to each other see the same fluid. Both receive the same authoritative particle positions from the server. The only difference: client-generated secondary particles (spray, foam, bubbles) may differ slightly because they include randomness. This is acceptable — in real life, two people standing next to the same waterfall would describe the spray slightly differently too. The 50ms round-trip latency is masked by the visual smoothness of screen-space rendering (the bilateral blur hides small jitters in position updates).
 
 #### Implementation Phases
 
 **Phase 1 — Crafting-scale SPH (connect to material packets)**
-- Implement SPH solver in a Web Worker (pressure, viscosity, gravity, terrain collision)
+- Implement SPH solver in Rust via napi-rs (pressure, viscosity, gravity, terrain collision)
 - Hook into material packet phase transitions: solid → liquid spawns particles, cooling merges them back
-- Visual: simple sphere rendering per particle with composition-based color
+- Visual: Tier 1 marching cubes mesh with composition-driven optical properties
 - Test: melt copper ore in bloomery → molten copper flows into a channel → cools into solid
 
-**Phase 2 — Local environment SPH**
-- Dedicated worker for environmental particles (rain, puddles, small streams)
-- Add surface tension for realistic droplet behavior
-- Metaball rendering for smooth liquid surfaces
-- Connect to weather system: rain events spawn falling particles
+**Phase 2 — Local environment MPM + screen-space rendering**
+- Implement MLS-MPM solver in Rust for environment-scale particles
+- Tier 2 screen-space fluid rendering pipeline (5 GPU passes)
+- Tier transition system (crossfade + hysteresis between Tier 1 and 2)
+- Connect to weather system: rain events spawn falling particles that form puddles
+- Particle redistribution system (splitting, merging, adaptive zones)
 
-**Phase 3 — Grid-based regional water**
+**Phase 3 — Grid-based regional water + scale transitions**
 - Extend fluid.worker.ts with water volume tracking, Manning's equation flow
-- SPH ↔ grid transitions (particle absorption / emission)
+- SPH/MPM ↔ grid transitions (particle absorption / emission)
 - Lakes form in terrain concavities, overflow creates rivers
 - Server syncs grid state in WORLD_SNAPSHOT
 
-**Phase 4 — Full water cycle**
+**Phase 4 — Full water cycle + secondary particles**
 - Evaporation from water surfaces → feeds weather system humidity
 - Groundwater absorption and springs
 - Seasonal variation (freeze/thaw cycle)
 - Connect ocean shader to grid system at coastlines
+- Spray (Weber number), foam (vorticity + surfactant), bubbles (reactions + boiling)
 
-**Phase 5 — Lava and exotic fluids**
-- Volcanic events spawn high-temperature SPH particles
+**Phase 5 — Lava, exotic fluids, and network streaming**
+- Volcanic events spawn high-temperature MPM particles (up to 200,000)
 - Lava cooling → terrain modification (new rock forms)
-- Molten metal in industrial processes (blast furnace, casting)
-- Acid, oil, alcohol — all derived from composition, no special cases
+- Multi-material rendering (immiscible fluid layers)
+- Particle network streaming protocol with delta compression and spatial LOD
+- Crafted object collision via signed distance fields
 
+**Phase 6 — GPU compute path (WebGPU)**
+- Port SPH crafting solver to WebGPU compute shaders
+- Port MPM environment solver to WebGPU compute (target: 200k+ particles at 30 Hz)
+- Parallel spatial hash construction on GPU
+- Fallback: Rust CPU path remains the default, GPU path is an enhancement
 
-### 3.3 Sound Engine — Physics-Driven Audio
+---
+
+### 3.3 Sound Engine — Synthesized from Physics, Zero Samples
 
 #### The Principle
 
-Every sound in the real world is produced by a physical event: two objects collide and their surfaces vibrate, a fluid turbulates as it flows past an obstacle, air rushes through a narrow opening. The frequency, timbre, and volume of the resulting sound are determined by the physical properties of the objects and the medium.
+Every sound in the real world is just air vibrating. When you hit a metal bar, the bar vibrates at specific frequencies determined by its material (Young's modulus, density) and shape (length, thickness). Those vibrations push air molecules, creating pressure waves that reach your ear. The ear decomposes those waves into frequencies (via the cochlea) and the brain interprets them as "the sound of metal being hit."
 
-The game follows the same principle. There is no `sounds/` folder with `campfire_loop.wav` or `footstep_dirt_03.mp3` mapped to game events. Instead, the **audio engine computes what you should hear** from the physics of what is happening.
+This means: **if you know the material properties and the geometry, you can compute the exact frequencies the object will produce.** No recordings needed. No samples. The sound is derived from the same MaterialPacket properties that determine melting point, color, and structural strength.
+
+This technique is called **Modal Synthesis** — a proven method used in academic research, film sound design, and game audio. The game produces ALL sound from physics. Zero audio files ship with the game.
+
+#### How Sound Actually Works (The Physics)
+
+```
+// In plain English: when you hit something, it vibrates at specific pitches.
+// A short, stiff, light object vibrates fast (high pitch — like a small bell).
+// A long, heavy, flexible object vibrates slow (low pitch — like a large bell).
+// This formula calculates the exact pitch from the object's size and material.
+
+The Physics of Vibration {
+  // When an object is struck, it vibrates. The vibration is NOT random —
+  // it is a precise set of frequencies called MODES (eigenmodes).
+  //
+  // A vibrating bar has mode frequencies:
+  //   f_n = (β_n² / 2πL²) × √(EI / ρA)
+  //   where:
+  //     f_n = frequency of mode n (Hz)
+  //     β_n = mode constant (β₁=4.73, β₂=7.85, β₃=11.0, β₄=14.1, ...)
+  //     L = length of bar (m)
+  //     E = Young's modulus (Pa) — from MaterialPacket
+  //     I = second moment of area (m⁴) — from object geometry
+  //     ρ = density (kg/m³) — from MaterialPacket
+  //     A = cross-section area (m²) — from object geometry
+  //
+  // A vibrating plate (2D) has modes:
+  //   f_mn = (π/2) × √(E·h² / (12·ρ·(1-ν²))) × (m²/a² + n²/b²)
+  //   where h = thickness, a,b = plate dimensions, ν = Poisson's ratio, m,n = mode indices
+  //
+  // A vibrating string has modes:
+  //   f_n = (n/2L) × √(T / μ)
+  //   where T = tension, μ = mass per unit length
+  //
+  // KEY INSIGHT: every one of these formulas takes its inputs from the MaterialPacket
+  // (E, ρ) and the object's geometry (L, A, I). Given those, the sound is DETERMINED.
+  // There is no guessing, no randomness — it's physics.
+  //
+  // This is why a small iron nail pings at ~4000 Hz and a large iron anvil rings at
+  // ~300 Hz. Same material (same E, same ρ), different geometry (different L) →
+  // different sound. The formula computes both correctly.
+}
+```
+
+#### Three Synthesis Methods
+
+```
+SoundEngine {
+  // The engine has three synthesis methods, each for a different type of sound.
+  // All three produce audio from MATH ONLY — no recordings, no samples, no files.
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 1: Modal Synthesis — Struck/Vibrating Objects
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Used for: impacts, breaking, footsteps, tool strikes, structural collapse,
+  //           anything where a solid object vibrates after being excited.
+  //
+  // How it works:
+  //   1. Compute the object's resonant modes from material + geometry
+  //   2. Each mode = one sine wave oscillator at a specific frequency
+  //   3. Set each mode's initial amplitude from the excitation (where/how hard it was hit)
+  //   4. Apply exponential decay to each mode (rate from material damping)
+  //   5. Sum all modes → output waveform → speaker
+
+  // In plain English: Q is how long a sound rings after you hit something.
+  // High Q = rings for a long time (metal bell: Q=3000, rings for seconds).
+  // Low Q = dies quickly (wooden block: Q=15, thud with no ring).
+  // A wine glass has high Q (you can hear it sing). A cardboard box has low Q (dull thump).
+
+  ModalSynth {
+    computeModes(material: MaterialPacket, geometry: ObjectGeometry): Mode[] {
+      modes = []
+      for n = 1 to 30:
+        // Frequency from eigenmode formula (depends on shape type):
+        if geometry.type == 'bar':
+          f = (BETA[n]² / (2 * PI * L²)) * sqrt(E * I / (rho * A))
+        else if geometry.type == 'plate':
+          f = (PI / 2) * sqrt(E * h² / (12 * rho * (1 - nu²))) * (m²/a² + n²/b²)
+        else if geometry.type == 'sphere':
+          f = (BETA_SPHERE[n] / (2 * PI * R)) * sqrt(E / (rho * (1 - nu²)))
+
+        // Decay: internal damping determines how long each mode rings
+        // Q factor ≈ youngsModulus / (internalFriction × density)
+        // Metals: Q ~ 1000-5000 (ring for seconds)
+        // Wood: Q ~ 10-50 (thud, gone in 0.05s)
+        // Stone: Q ~ 50-200 (medium)
+        decay = Q / (PI * f)
+
+        // Amplitude: depends on where object was hit relative to mode shape
+        amplitude = excitationEnergy * modeShapeAtContactPoint(n, contactPoint)
+
+        modes.push({ frequency: f, amplitude, decayRate: 1/decay })
+      return modes
+    }
+
+    // WebAudio implementation:
+    //   Each mode = one OscillatorNode (sine wave) + one GainNode (decay envelope)
+    //   osc.frequency.value = mode.frequency
+    //   gain.gain.exponentialRampToValueAtTime(0.001, now + 1/mode.decayRate)
+    //   20 modes × 2 nodes = 40 WebAudio nodes per sound event — trivial for WebAudio
+  }
+
+  // What modal synthesis produces:
+  //   Iron anvil (L=0.5m, E=200GPa, ρ=7800): f₁=312Hz, decay 3.2s → deep resonant clang
+  //   Ceramic cup (R=0.04m, E=70GPa, ρ=2400): f₁=2800Hz, decay 0.3s → sharp high clink
+  //   Oak log (L=1.0m, E=12GPa, ρ=600): f₁=68Hz, decay 0.05s → short dull thud
+  //   Glass pane (0.5×0.5m, h=3mm, E=70GPa): f₁=850Hz, decay 0.5s → bright ring, shatters into many high-freq fragments
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 2: Noise Synthesis — Continuous/Turbulent Sounds
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Used for: wind, rain, fire, water flow, grinding, scraping, sand pouring.
+  // These are NOT periodic vibrations — they are NOISE shaped by physics.
+
+  NoiseSynth {
+    // Wind:
+    //   Aeolian tone: f = St × v / d (Strouhal number ~0.2, v = wind speed, d = obstacle diameter)
+    //   Implementation: band-pass filtered brown noise centered at the Aeolian frequency
+    //   Each thin object (branch, fence post, wire) produces its own tone
+    //   Forest in wind: dozens of Aeolian tones from branches → broadband rush
+
+    // Rain:
+    //   Each drop impact = micro-impulse. Many impacts = noise.
+    //   Drop pitch: Minnaert bubble frequency f = 3.26 / r (r = drop radius in meters)
+    //     Light rain (r=1mm): f ≈ 3260 Hz. Heavy rain (r=3mm): f ≈ 1087 Hz.
+    //   Surface material adds its own modal response (rain on metal roof = noise + metal modes)
+
+    // Fire:
+    //   Low-frequency: brown noise at 60-200 Hz (turbulent combustion)
+    //   Crackle: random short broadband bursts at 1-4 kHz (moisture pockets exploding)
+    //     Rate proportional to wood moisture content
+    //   Hiss: high-frequency white noise at 4-8 kHz (steam, if moisture > 0.3)
+
+    // Water flow:
+    //   Turbulence spectrum follows Kolmogorov cascade (power law — more energy at low frequencies)
+    //   Small stream: high-pitched babble (2-4 kHz). Large river: low rumble (100-400 Hz)
+    //   Frequency inversely proportional to channel width
+    //   Rapids: add white noise bursts (air entrainment)
+
+    // Grinding/scraping:
+    //   Stick-slip friction: contact alternates between sticking and slipping
+    //   Each slip = modal excitation of both surfaces
+    //   Fast scraping: impulses merge into tonal sound. Slow: individual pops.
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // METHOD 3: Source-Filter Synthesis — Voice and Animal Calls
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Voice is a vibrating membrane (vocal cords) producing a base frequency,
+  // filtered through a resonant cavity (throat/mouth/nasal passage).
+
+  VoiceSynth {
+    // Source: vocal cord vibration → pulse/sawtooth oscillator at fundamental f₀
+    //   Human male: f₀ = 85-180 Hz
+    //   Human female: f₀ = 165-255 Hz
+    //   Wolf howl: f₀ = 150-780 Hz (sweeps through range)
+    //   Bird song: f₀ = 1000-8000 Hz (syrinx produces very high frequencies)
+    //   Dog bark: f₀ = 500 Hz, short burst (50ms), harsh spectrum
+    //   Cow moo: f₀ = 60-200 Hz
+    //   Bee buzz: f₀ = wingbeat frequency (200 Hz) — mechanical, not vocal
+
+    // Filter: vocal tract creates FORMANTS — resonant peaks that define the sound
+    //   "ah" (open mouth): F1=800Hz, F2=1200Hz
+    //   "ee" (narrow mouth): F1=300Hz, F2=2300Hz
+    //   "oo" (rounded lips): F1=300Hz, F2=800Hz
+    //   Implementation: chain of 3-5 BiquadFilterNodes in WebAudio, each at a formant freq
+
+    // NPC speech (§5.3):
+    //   1. Language generator produces phoneme sequence
+    //   2. Each phoneme maps to formant configuration
+    //   3. Source oscillator at NPC's pitch (body size → pitch: larger = lower)
+    //   4. Formant filters morph between phoneme configurations
+    //   5. Result: sounds like speech in an unknown language — no audio files needed
+
+    // Animal calls:
+    //   Same source-filter but species-specific:
+    //   Wolf howl: f₀ sweeps 150→400→250 Hz over 5-10s, smooth formants
+    //   Bird chirp: rapid f₀ sweep 2000-6000 Hz in 20-50ms
+    //   Frog: f₀=100-300Hz, throat sac acts as Helmholtz resonator (amplifies)
+    //   Insect: oscillator at wingbeat frequency (no filter — pure mechanical tone)
+  }
+}
+```
 
 #### The Audio Pipeline
 
 ```
-PhysicsEvent → SoundDescriptor → SampleSelector → AudioProcessor → WebAudio → Speakers
+SOUND_EVENT (from server) → SoundComputer → Synthesizer → Environment → Spatial → Speaker
 
-Step 1: PhysicsEvent
-  Any physics interaction generates an event:
-  { type: 'impact'|'scrape'|'flow'|'break'|'combustion'|'pressure_release',
-    materialA: MaterialPacket,        // first material involved
-    materialB: MaterialPacket | null, // second material (null for single-material events like cracking)
-    energy: number,                   // joules of the interaction
-    contactPoint: Vec3,               // world position where it happened
-    contactNormal: Vec3,              // surface normal at contact
-    relativeVelocity: Vec3 }          // approach speed and direction
+Step 1: SOUND_EVENT arrives from server with:
+  { type, materialA, materialB, energy, contactPoint, geometryA, relativeVelocity }
 
-Step 2: SoundDescriptor
-  Computed from the physics event + material properties:
-  {
-    // ── Timbre Selection ────────────────────────────────────────────────────
-    // Based on material classification + hardness
-    timbreClass: computeTimbreClass(materialA, materialB)
-    // Classes: 'metallic', 'lithic' (stone/ceramic), 'organic' (wood/bone/leather),
-    //          'granular' (sand/gravel/soil), 'liquid', 'gas' (wind/steam/explosion)
+Step 2: SoundComputer selects synthesis method:
+  impact/break  → Modal Synthesis (Method 1)
+  scrape        → Modal + Noise hybrid
+  flow/combustion → Noise Synthesis (Method 2)
+  voice/animal  → Source-Filter (Method 3)
 
-    // ── Pitch ───────────────────────────────────────────────────────────────
-    // Fundamental frequency from object size and material stiffness
-    // f₀ = (1/2L) × √(E/ρ)  where:
-    //   L = characteristic length of the vibrating object (m)
-    //   E = Young's modulus (Pa) — derived from material hardness and crystal structure
-    //   ρ = density (kg/m³) — from MaterialPacket
-    fundamentalFreq: computeF0(materialA)     // Hz
-    // A small stone chip: L=0.03m, E=70GPa, ρ=2700 → f₀ ≈ 2700 Hz (high ping)
-    // A large iron anvil: L=0.5m, E=200GPa, ρ=7800 → f₀ ≈ 320 Hz (deep ring)
-    // A wooden log: L=1.0m, E=12GPa, ρ=600 → f₀ ≈ 70 Hz (low thud)
+Step 3: Synthesizer creates WebAudio nodes and produces waveform
 
-    // ── Volume ──────────────────────────────────────────────────────────────
-    // Sound power from impact energy
-    // P_sound = η × E_impact / t_contact  where:
-    //   η = acoustic efficiency (metal: 0.01, stone: 0.005, wood: 0.002, sand: 0.0001)
-    //   E_impact = ½mv² (kinetic energy of impact)
-    //   t_contact = contact duration (harder materials = shorter = louder)
-    soundPower: computePower(energy, materialA, materialB)   // watts
+Step 4: Environment filter (client-side):
+  Underwater: low-pass 800 Hz + speed of sound 1500 m/s
+  Cave: reverb proportional to estimated cave volume
+  Forest: multi-tap delay (tree reflections) + high-freq absorption
+  Open field: dry (no reverb)
 
-    // ── Decay ───────────────────────────────────────────────────────────────
-    // How quickly the sound dies out
-    // Metal: long decay (ringing), τ = 2-5 seconds
-    // Stone: medium decay, τ = 0.1-0.5 seconds
-    // Wood: short decay, τ = 0.05-0.2 seconds
-    // Soft materials: nearly instant, τ < 0.05 seconds
-    decayTime: computeDecay(materialA)   // seconds (time to -60dB)
-  }
+Step 5: Spatial positioning (WebAudio PannerNode):
+  HRTF panning (directional hearing)
+  Inverse square distance attenuation (I = P / 4πr²)
+  Propagation delay: distance / 343 m/s (thunder after lightning)
 
-Step 3: SampleSelector
-  The engine has a library of ~50 base audio samples organized by timbre class:
-
-  metallic_impact[]: 5 samples (light tap to heavy strike)
-  metallic_scrape[]: 3 samples (slow to fast)
-  metallic_ring[]:   3 samples (small to large resonator)
-  lithic_impact[]:   5 samples
-  lithic_crack[]:    3 samples
-  lithic_grind[]:    3 samples
-  organic_impact[]:  5 samples (wood knock to bone crack)
-  organic_creak[]:   3 samples
-  granular_step[]:   5 samples (packed to loose)
-  granular_pour[]:   3 samples
-  liquid_splash[]:   5 samples (drip to pour)
-  liquid_flow[]:     3 samples (trickle to rush)
-  liquid_bubble[]:   3 samples
-  gas_rush[]:        3 samples (breeze to blast)
-  gas_hiss[]:        3 samples
-  combustion[]:      5 samples (spark to roar)
-
-  Selection: timbreClass + energy level → pick the closest base sample
-  Total: ~55 samples. Compared to typical games that ship 500-2000 samples,
-  this is 10× smaller because the variation comes from processing, not recording.
-
-Step 4: AudioProcessor
-  The selected sample is transformed in real-time by the WebAudio API:
-
-  // Pitch shift to match computed fundamental frequency
-  playbackRate = fundamentalFreq / sampleBaseFreq
-
-  // Volume from sound power + distance attenuation
-  // Inverse square law: I = P / (4π r²) where r = distance from source to listener
-  gain = soundPower / (4 * Math.PI * distance² + 1)   // +1 prevents division by zero at contact
-  // Clamp to [0, 1] for output
-
-  // Decay envelope: exponential falloff
-  // gain(t) = gain₀ × e^(-t/τ) where τ = decayTime
-
-  // Environment filtering:
-  if (underwater) {
-    // Low-pass filter at 800 Hz (water absorbs high frequencies)
-    // Speed of sound: 1500 m/s (vs 343 m/s in air) — affects spatial delay
-    lowpassCutoff = 800
-    speedOfSound = 1500
-  } else if (inCave) {
-    // Convolution reverb with cave impulse response
-    // Reverb time: proportional to cave volume (estimated from nearest walls raycast)
-    reverbTime = estimateCaveVolume(listenerPosition) * 0.001  // seconds
-    reverbWetMix = 0.6
-  } else if (inForest) {
-    // Scattered reflections: short multi-tap delay (tree trunks)
-    // High-frequency absorption from foliage
-    lowpassCutoff = 4000
-    scatterDelay = [20, 35, 55, 80]  // ms, from nearby tree reflections
-    scatterGain = [0.3, 0.2, 0.15, 0.1]
-  } else {
-    // Open field: dry sound, no reverb
-    reverbWetMix = 0.0
-  }
+Step 6: Output → speaker
 ```
 
-#### Continuous Sounds (Not Impacts)
+#### Doppler Effect — Moving Sounds Shift Pitch
 
-Some sounds are ongoing processes, not single events:
+// In plain English: an ambulance siren sounds higher-pitched when coming toward you
+// and lower-pitched when driving away. Same for arrows, thrown rocks, galloping horses.
+// The faster the object moves, the bigger the pitch shift.
 
-```
-ContinuousSoundSources {
-  // ── Fire ──────────────────────────────────────────────────────────────────
-  // Fire sound = turbulent gas flow + crackling (moisture in wood popping)
-  // Volume: proportional to fire intensity (fuel burn rate × oxygen supply)
-  // Pitch: base rumble at 80-200 Hz (turbulence), crackle overlays at 1-4 kHz
-  // The crackle rate depends on wood moisture content:
-  //   dryWood (moisture < 0.1): rare crackles, clean burn sound
-  //   wetWood (moisture > 0.4): frequent loud pops, hissing steam overlay
-  fire: {
-    baseFreq: 80 + fuelBurnRate * 120,       // Hz
-    crackleRate: woodMoisture * 10,           // pops per second
-    hissOverlay: woodMoisture > 0.3,          // steam hiss from wet wood
-    volume: fuelBurnRate * 0.5                // normalized
-  }
-
-  // ── Flowing Water ─────────────────────────────────────────────────────────
-  // Sound of water = turbulence at obstacles
-  // Volume: proportional to flow speed × cross-section area
-  // Pitch: small stream = high (2-4 kHz babble), large river = low (100-400 Hz rumble)
-  // River sound uses the queryNearestRiver() data from RiverSystem.ts:
-  water: {
-    baseFreq: 4000 / (riverWidth + 1),        // narrower = higher pitch
-    turbulenceNoise: brownNoise,               // base waveform
-    volume: flowSpeed * crossSection * 0.01,
-    splashOverlay: flowSpeed > 2.0             // rapids add white noise bursts
-  }
-
-  // ── Wind ──────────────────────────────────────────────────────────────────
-  // Wind sound = air flowing past the listener's ears and nearby objects
-  // Pitch: proportional to wind speed (Aeolian tone: f = 0.2 × v / d, where d = object diameter)
-  // Volume: proportional to v² (kinetic energy of air)
-  // Variation: gusts modulate volume sinusoidally (period 3-8 seconds)
-  wind: {
-    baseFreq: 0.2 * windSpeed / 0.02,         // ear diameter ~2cm → Aeolian frequency
-    volume: windSpeed * windSpeed * 0.001,
-    gustModulation: sin(time * gustFreq) * 0.3 + 0.7,   // 70-100% volume oscillation
-    objectWhistle: nearbyThinObjects.map(obj =>  // fence posts, branches whistle
-      ({ freq: 0.2 * windSpeed / obj.diameter, volume: windSpeed * 0.01 }))
-  }
-
-  // ── Footsteps ─────────────────────────────────────────────────────────────
-  // Generated per step from the walk cycle animation (foot contact event)
-  footstep: {
-    // Terrain material at foot contact point determines timbre class:
-    terrainMaterial: getTerrainMaterialAt(footPosition)
-    // stone/rock → lithic_impact, hard tap
-    // sand → granular_step, soft crunch (pitch varies with grain size)
-    // mud → liquid + granular mix, squelch (moisture content determines wet/dry balance)
-    // grass → organic + granular, soft swish
-    // wood (floor/dock) → organic_impact, hollow knock (pitch from plank thickness)
-    // snow → granular, high-pitched crunch (compacting ice crystals)
-    // metal (grating) → metallic_impact, sharp ring
-
-    // Volume from player mass × step force
-    // Running = 2× walking volume
-    // Sneaking = 0.3× walking volume (also slower step frequency)
-    volume: playerMass * stepForce * terrainLoudness[terrainType]
-  }
-}
-```
-
-#### Spatial Audio (3D Positioning)
+When a sound source moves toward a listener, the frequency shifts upward. When moving away, it shifts downward:
 
 ```
-SpatialAudio {
-  // All sounds are positioned in 3D using WebAudio's PannerNode
-  panningModel: 'HRTF'                      // Head-Related Transfer Function
-                                              // Simulates how sound arrives at each ear differently
-                                              // based on direction — enables "I hear it to my left"
+f_observed = f_source × (v_sound + v_listener) / (v_sound + v_source)
+where:
+  v_sound = 343 m/s (speed of sound in air at 20°C)
+  v_listener = listener velocity TOWARD the source (+ = approaching source)
+  v_source = source velocity AWAY from the listener (+ = receding from listener)
 
-  // Distance attenuation: inverse square law with rolloff
-  distanceModel: 'inverse'
-  refDistance: 1.0                            // full volume at 1 meter
-  maxDistance: 200.0                          // silent beyond 200 meters
-  rolloffFactor: 1.0                         // standard inverse-square (realistic)
-
-  // Sound travels at finite speed (optional, for immersion):
-  // delay = distance / speedOfSound
-  // At 100m: delay = 100/343 = 0.29 seconds
-  // Player sees lightning, then hears thunder 0.3s later per 100m distance
-  // This is subtle but adds enormous realism for distant events (explosions, mining, thunder)
-  propagationDelay: distance / (underwater ? 1500 : 343)   // seconds
-}
+Sign convention:
+  Source approaching listener: v_source is NEGATIVE (moving opposite to "away")
+  Source receding from listener: v_source is POSITIVE
+  Listener approaching source: v_listener is POSITIVE → numerator increases → higher pitch ✓
+  Listener receding from source: v_listener is NEGATIVE → numerator decreases → lower pitch ✓
 ```
+
+Gameplay-noticeable examples:
+- Arrow flying past player at 50 m/s: Approaching: f_obs = f × 343 / (343 + (-50)) = f × 1.17 → 17% higher pitch. Receding: f_obs = f × 343 / (343 + 50) = f × 0.87 → 13% lower pitch. The "zip" of an arrow past your ear is this pitch transition.
+- Horse galloping past at 15 m/s: Approaching: +4.6% pitch. Receding: -4.2% pitch. Subtle but audible — hoofbeats sound slightly higher as horse approaches.
+- Thrown rock at 20 m/s: Approaching: +6.2%. Receding: -5.5%.
+
+Implementation: the SOUND_EVENT message already includes source position. Add source velocity (Vec3) to the descriptor. The client computes the relative velocity along the source-listener axis each frame and adjusts the playback rate of the WebAudio source accordingly.
+
+WebAudio's PannerNode supports Doppler natively — set the source's positionX/Y/Z and velocityX/Y/Z, and the listener's position/velocity. The browser handles the pitch shifting automatically. Cost: zero.
+
+This connects to networking (§3.5): source velocity must be included in SOUND_EVENT messages. For most events (impacts, breaks), velocity is zero (the sound source is stationary). For projectiles, thrown objects, and moving entities, velocity comes from the physics simulation.
+
+#### Frequency-Dependent Atmospheric Absorption — Distant Sounds Lose Their Sharpness
+
+// In plain English: distant sounds lose their sharpness. Nearby thunder CRACKS.
+// Distant thunder RUMBLES. The sharp high-frequency part gets absorbed by air
+// over long distances, leaving only the low rumble.
+
+Sound doesn't just get quieter with distance — it changes character. High frequencies are absorbed more by air than low frequencies.
+
+Absorption coefficients (simplified from ISO 9613-1, at 20°C, 50% humidity):
+```
+250 Hz:  0.001 dB/m   (bass travels far)
+1000 Hz: 0.005 dB/m   (mid-range moderate)
+4000 Hz: 0.02 dB/m    (treble fades fast)
+8000 Hz: 0.08 dB/m    (highest frequencies gone quickly)
+```
+
+At 100m distance:
+- 250 Hz: -0.1 dB (barely affected)
+- 4000 Hz: -2.0 dB (noticeably reduced)
+- 8000 Hz: -8.0 dB (nearly gone)
+
+At 500m distance:
+- 250 Hz: -0.5 dB (still audible)
+- 4000 Hz: -10 dB (very quiet)
+- 8000 Hz: -40 dB (effectively silent)
+
+This is why:
+- Distant thunder is a low rumble (high frequencies absorbed over km)
+- Nearby thunder is a sharp crack (full spectrum arrives intact)
+- A distant waterfall is a low roar; close up it hisses
+- Distant footsteps are soft thumps; close up you hear the crunch
+
+Implementation: apply a low-pass filter to each sound, with cutoff frequency inversely related to distance:
+```
+cutoffFrequency = 20000 / (1 + distance × 0.02)
+At 0m: 20kHz (full spectrum). At 50m: 10kHz. At 200m: 4kHz. At 1km: 1kHz.
+```
+
+WebAudio BiquadFilterNode (type = "lowpass") does this in one node. Set the frequency parameter dynamically based on distance. Cost: negligible.
+
+Humidity affects absorption — dry air absorbs high frequencies faster. The weather system's humidity value modulates the absorption coefficient:
+```
+absorption × (1.5 - humidity)  // at humidity=0: 1.5×. At humidity=1: 0.5×
+Dry desert: sounds die quickly at distance. Humid jungle: sounds carry farther.
+```
+
+#### What This System Can Produce
+
+| Sound | Method | Key Parameters |
+|-------|--------|---------------|
+| Hammer on anvil | Modal | E=200GPa, ρ=7800, L=0.5m → f₁=312Hz, Q=3000 |
+| Footstep on stone | Modal | Stone surface modes excited by foot impact |
+| Footstep on sand | Noise | Many micro-granular impacts → filtered white noise |
+| Campfire | Noise | Brown noise 60-200Hz + random crackle impulses |
+| Rain on roof | Noise+Modal | Minnaert drop frequency + roof modal response |
+| Wind through trees | Noise | Aeolian tones from branches (f=0.2v/d) |
+| River flowing | Noise | Kolmogorov turbulence spectrum |
+| Glass breaking | Modal | High-frequency modes + many fragment modes |
+| NPC speaking | Voice | Pulse oscillator + formant filters |
+| Wolf howling | Voice | f₀ sweep + throat formants |
+| Bird singing | Voice | Rapid f₀ sweep via syrinx model |
+| Bee buzzing | Oscillator | Single tone at wingbeat frequency |
+| Pouring liquid | Noise | Minnaert bubble oscillations |
+| Silence in cave | Environment | Long reverb tail, no active sources |
+
+**Zero audio files ship with the game.** Every sound is computed from MaterialPacket properties + object geometry + physics formulas. A new material automatically produces correct sounds.
+
+#### Helmholtz Resonance — Enclosed Spaces Have a Voice
+
+// In plain English: blow across the top of a bottle — it makes a tone.
+// The air inside the bottle bounces back and forth through the opening.
+// Bigger bottle = lower tone. Smaller opening = lower tone.
+// A furnace chimney does this in wind — it hums.
+
+A cavity with a narrow opening acts as a resonator, amplifying a specific frequency:
+  f = (v_sound / 2π) × √(A / (V × L_neck))
+  where:
+    v_sound = 343 m/s (speed of sound in air)
+    A = neck opening area (m²)
+    V = cavity volume (m³)
+    L_neck = effective neck length (m) ≈ physical length + 0.6 × √(A/π)
+
+Examples in gameplay:
+  Bottle (V=0.001m³, A=0.0003m², L=0.05m):
+    f = 343/(2π) × √(0.0003 / (0.001 × 0.08)) = 106 Hz — low hum when wind blows across
+
+  Furnace chimney (V=0.5m³, A=0.04m², L=0.3m):
+    f = 343/(2π) × √(0.04 / (0.5 × 0.42)) = 30 Hz — deep rumble felt more than heard
+    Hot gas RAISES the resonant frequency (speed of sound increases with √T,
+    and lower gas density means less inertia in the neck — both effects push f upward).
+    At 1000°C furnace gas: v_sound ≈ 700 m/s, so f roughly doubles to ~60 Hz.
+
+  Small room (V=27m³, door opening A=2m², L=0.3m):
+    f = 343/(2π) × √(2 / (27 × 0.6)) = 18 Hz — infrasonic, creates unease
+    This is why small enclosed rooms with one door feel oppressive — Helmholtz infrasound.
+
+  Ocarina/whistle (V=0.00005m³, A=0.00002m², L=0.005m):
+    f = 343/(2π) × √(0.00002 / (0.00005 × 0.008)) = 2070 Hz — a clear musical note
+
+Implementation: when wind blows across an opening of an enclosed space
+(detected from structural connectivity — a sealed volume with one or few openings),
+compute f_helmholtz and generate a continuous tone at that frequency.
+Volume proportional to wind speed². This creates the characteristic "howling"
+of wind over chimneys and the "breathing" of large enclosed spaces.
+
+The player hears their furnace hum when the wind picks up. A cave with a narrow
+entrance moans in a storm. A well-designed chimney with the right proportions
+produces a satisfying low resonance. All from physics, not sound files.
 
 #### Performance Budget
 
-The audio system must stay within strict CPU limits:
-
 | Component | Budget | How |
 |-----------|--------|-----|
-| SoundDescriptor computation | <0.1ms per event | Simple arithmetic on material properties — no iteration, no lookup tables |
-| Sample selection | <0.05ms per event | Direct array index from timbre class + energy bucket |
-| WebAudio processing | ~2-3ms total | Handled by browser's audio thread (not main thread). Typically 8-16 concurrent voices max. |
-| Environment estimation | ~0.5ms per frame | Raycast cache for cave/forest/open classification. Recompute only when player moves >5m. |
-| Total audio CPU | <1ms main thread | Most work happens on the browser's audio thread. Main thread only computes SoundDescriptors and sends them to WebAudio. |
+| Mode computation | <0.1ms per event | ~30 eigenfrequency calculations |
+| WebAudio node creation | <0.05ms per event | OscillatorNode + GainNode per mode |
+| Noise generation | ~0.01ms per frame | One noise buffer, filtered per source |
+| Voice synthesis | ~0.02ms per frame | Oscillator + 3-5 filters per voice |
+| Environment filter | ~0.5ms per frame | Raycast cache, recompute when player moves >5m |
+| WebAudio processing | ~2-3ms total | Browser audio thread (not main thread) |
+| **Total main thread** | **<1ms** | Main thread computes parameters only |
 
-**Voice limiting:** Maximum 16 simultaneous sounds. When a new sound would exceed the limit, the quietest (lowest gain after distance attenuation) sound is dropped. Continuous sounds (fire, river, wind) have reserved slots (max 4) and compete separately from transient sounds (impacts, footsteps).
+**Voice limiting:** Maximum simultaneous sources: configurable (default 32, range 8-64). Modal synthesis uses lightweight sine oscillators (cheaper than sample playback). Quietest sounds dropped first. Continuous sounds (fire, wind, water) get 6 reserved slots. The degradation controller (§3.7) reduces this under load.
+
+#### Structure-Borne Sound — Impacts Travel Through Solids
+
+// In plain English: put your ear on a railroad track — you hear the train
+// coming LONG before the sound through air reaches you. Sound travels
+// through metal 17x faster than through air. You can hear someone mining
+// through a stone wall before you hear it through the air around the wall.
+
+Sound travels through solid materials much faster than through air:
+
+```
+v_sound = √(E / ρ)  (longitudinal wave in a rod)
+
+Air:    343 m/s      (slow, highly attenuated)
+Water:  1,480 m/s    (4.3× faster than air)
+Wood:   3,800 m/s along grain (11× faster)
+Stone:  5,500 m/s    (16× faster)
+Steel:  5,960 m/s    (17× faster)
+```
+
+When an impact occurs on a solid surface (pickaxe hits stone wall, footstep on wooden floor), the vibration propagates through the solid at v_sound(material), much faster than the airborne sound.
+
+Gameplay effects:
+- Ear to the ground: footsteps at 200m through stone ground arrive in 200/5500 = 0.036s. Through air: 200/343 = 0.58s. You hear the ground vibration 0.55 seconds BEFORE the airborne sound. This is how real trackers detect distant movement.
+- Impact on the other side of a wall: a pickaxe hitting the far side of a 1m stone wall arrives through stone in 0.0002s. Through air (around the wall): depends on path, but always slower. You hear the thud through the wall first.
+- Mining sounds: impacts in a mine tunnel propagate through the rock to adjacent tunnels. Other players/NPCs can hear mining activity through solid rock, attenuated by distance but arriving much sooner than airborne.
+
+Implementation: when a sound event occurs on a solid surface:
+1. Generate the normal airborne sound event (existing system)
+2. Also propagate through the structural connectivity graph:
+   - Find all blocks connected to the impact block (BFS, same as load path §3.4)
+   - For each block, compute: delay = distance / v_sound(block.material)
+   - Attenuate: each block boundary attenuates by ~3 dB (impedance mismatch)
+   - If a block is adjacent to air (exposed face): re-radiate as airborne sound at that position, with the accumulated delay and attenuation
+3. The listener hears: structure-borne version (early, muffled) + airborne version (late, clear)
+
+This uses the SAME connectivity graph as the structural load path algorithm (§3.4). Sound propagation and structural load propagation share the BFS infrastructure.
+
+Cost: one BFS per impact event through the structural graph (same as load path). Typically <0.1ms for a 200-block structure.
+
+#### Boundary Condition Detection — Support Changes the Pitch
+
+The β_n values used in modal synthesis (4.73, 7.85, 11.0, 14.1) are for a free-free bar (both ends free to vibrate). But most objects in the game are supported differently, which dramatically changes the frequencies:
+
+| Boundary condition | β₁    | β₂    | β₃    | Example |
+|-------------------|-------|-------|-------|---------|
+| Free-free         | 4.730 | 7.853 | 10.996 | Dropped object, thrown tool |
+| Clamped-free      | 1.875 | 4.694 | 7.855  | Torch bracket, shelf, flag pole |
+| Simply supported  | π     | 2π    | 3π     | Beam resting on two walls |
+| Clamped-clamped   | 4.730 | 7.853 | 10.996 | Beam mortared into both walls |
+| Clamped-simply    | 3.927 | 7.069 | 10.210 | Beam mortared one end, resting other |
+
+The fundamental frequency of a clamped-free bar is (1.875/4.730)² = 0.157× the free-free frequency — more than 6× LOWER pitch. A torch bracket vibrates at a completely different pitch than the same metal bar dropped on the ground.
+
+Detection algorithm: when a sound event occurs on a block, query its structural connections (§3.4 connectivity graph):
+- No connections: free-free (dropped/thrown object)
+- One face connected to another block: clamped-free (wall-mounted)
+- Two opposite faces connected: clamped-clamped or simply-supported. If connections are mortared/fastened: clamped-clamped. If connections are just stacked (friction): simply-supported.
+- Mixed: use the most constrained boundary
+
+This reuses the structural connection data already tracked by §3.4. No new computation needed — just a lookup based on existing bond types.
 
 
 ### 3.4 Structural Physics — How Buildings Stand or Fall
 
-Every structure is made of MaterialPackets (§3.1). Whether it stands or falls is determined by the same material properties that determine melting point and hardness: compressive strength, tensile strength, and shear strength. Gravity loads propagate downward through connections. Where stress exceeds material strength, blocks break and cascade collapse occurs. Arches convert tension to compression, allowing stone to span gaps. Foundations must match terrain bearing capacity. Weather decays materials over time — rain dissolves mud mortar, freeze-thaw cracks stone, fire destroys wood. See the full internal specification for force propagation algorithms, span limit formulas, and performance budgets.
+##### The Principle
+
+Every structure in the game is made of MaterialPackets (§3.1). A wall is not a "wall object" — it is a collection of MaterialPackets (stone blocks, mud bricks, wooden beams) placed in the world and optionally bonded together. Whether that wall stands or falls is determined by the **same material properties** that determine melting point, hardness, and conductivity: compressive strength, tensile strength, shear strength, density. There is no separate "structural integrity" system — there is physics applied to materials.
+
+##### Every Block Is a MaterialPacket
+
+```
+StructuralBlock {
+  // A placed building block IS a MaterialPacket. It has:
+  packet: MaterialPacket             // composition, mass, density, temperature, phase
+  // ALL structural properties come directly from the packet:
+  //   packet.compressiveStrength, packet.tensileStrength, packet.shearStrength,
+  //   packet.youngsModulus, packet.frictionCoefficient, packet.density
+  // No structural properties are stored on the block — they are read from the
+  // MaterialPacket's property calculator (§3.1). Same system as melting point.
+
+  // Real material values (computed by property calculator from composition):
+  //   Granite (SiO₂ + Al₂O₃ + feldspar):
+  //     compressive: ~200 MPa, tensile: ~15 MPa, shear: ~25 MPa
+  //   Limestone (CaCO₃):
+  //     compressive: ~60 MPa, tensile: ~5 MPa, shear: ~10 MPa
+  //   Mud brick (clay + straw + water, dried):
+  //     compressive: ~2 MPa, tensile: ~0.2 MPa, shear: ~0.5 MPa
+  //   Oak wood (cellulose + lignin):
+  //     compressive: ~50 MPa (along grain), tensile: ~100 MPa (along grain!)
+  //     Wood is STRONGER in tension than compression — opposite of stone
+  //     This is why wood beams span gaps but stone beams don't
+  //   Copper:
+  //     compressive: ~250 MPa, tensile: ~210 MPa, shear: ~150 MPa
+  //   Iron:
+  //     compressive: ~350 MPa, tensile: ~400 MPa, shear: ~170 MPa
+  //   Steel (iron + carbon alloy):
+  //     compressive: ~400 MPa, tensile: ~500 MPa, shear: ~200 MPa
+
+  // An impure copper block (Cu₀.₈₅Fe₀.₁₀S₀.₀₅) has DIFFERENT structural properties
+  // than pure copper — because the property calculator accounts for impurities.
+  // A player who smelts cleaner copper gets stronger building material.
+  // This is emergent — not coded as a "building material quality" stat.
+
+  // ── Connection state ──────────────────────────────────────────────────
+  connections: Connection[]          // bonds to adjacent blocks
+  grounded: boolean                  // can trace a connection path to terrain?
+
+  Connection {
+    targetBlock: StructuralBlock
+    bondType: 'stacked' | 'mortared' | 'joinery' | 'fastened'
+    bondStrength: number             // Pa — force to break this connection
+    // stacked (no bond, gravity only): bondStrength = friction force = weight × μ
+    //   μ (friction coefficient): stone-on-stone = 0.6, wood-on-wood = 0.4, mud = 0.3
+    //   Stacked blocks can slide off each other under lateral force (wind, impact)
+    // mortared (mud/lime/concrete between blocks):
+    //   mud mortar: bondStrength = 0.1 MPa (weak, dissolves in rain)
+    //   lime mortar: bondStrength = 2.0 MPa (strong, waterproof)
+    //   concrete: bondStrength = 5.0 MPa (very strong)
+    //   The mortar IS a MaterialPacket too — its bondStrength comes from its composition
+    // joinery (wooden notches, pegs, lashing):
+    //   peg joint: bondStrength = 1.5 MPa
+    //   mortise-and-tenon: bondStrength = 3.0 MPa (strongest wood joint)
+    //   rope lashing: bondStrength = 0.5 MPa (stretches, weakens when wet)
+    // fastened (metal nails, bolts):
+    //   iron nail: bondStrength = 4.0 MPa
+    //   iron bolt: bondStrength = 8.0 MPa
+  }
+}
+```
+
+  // -- Block-Packet Relationship --------------------------------------
+  //
+  // A structural block IS a single MaterialPacket. One block = one composition.
+  // A block cannot be made of mixed materials (e.g., half stone, half wood).
+  //
+  // If a player places two different materials adjacent to each other
+  // (stone block next to wood beam), they are TWO separate blocks with
+  // TWO separate MaterialPackets, connected by a bond (Connection).
+  //
+  // The structural properties (strength, density, Young modulus) come from
+  // the block single MaterialPacket via the property calculator (S3.1).
+  // Additional per-block state (NOT from the property calculator):
+  //
+  //   StructuralBlock {
+  //     packet: MaterialPacket          // composition + all 44 derived properties
+  //     position: Vec3                  // grid position (integer coordinates)
+  //     connections: Connection[]       // bonds to adjacent blocks (up to 6 faces)
+  //     load: number                    // accumulated gravity load from above (N)
+  //     supported: boolean              // can trace path to ground (from BFS)
+  //     // -- Per-block accumulated damage state: --
+  //     fatigueAccumulation: number     // 0->1 from cyclic loading (Basquin). Irreversible.
+  //     crackLength: number             // m, from fatigue + freeze-thaw. Grows over time.
+  //     creepStrain: number             // accumulated from Norton creep law. Permanent.
+  //     // -- These are block-specific, NOT from composition. Two identical-composition
+  //     //   blocks can have different damage levels based on their loading history.
+  //   }
+  //
+  // When a block becomes debris (cascade collapse, player action):
+  //   The MaterialPacket is preserved. The debris rigid body carries the same
+  //   packet with the same composition. If a player picks up the rubble and
+  //   rebuilds with it, the NEW block has fresh damage state (fatigue = 0,
+  //   crackLength = 0, creepStrain = 0) because it was re-placed.
+  //   The MATERIAL is the same, but the structural history resets.
+
+##### Force Propagation — How Load Travels to Ground
+
+```
+ForceSystem {
+  // Every block has weight. Weight is a downward force.
+  // That force must travel through connected blocks to the ground.
+  // If any block in the path receives more force than it can handle → it breaks.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE LOAD PATH ALGORITHM (4 phases, runs on structural change events)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // In plain English: gravity pulls every block downward. The weight of the roof
+  // pushes down on the walls. The walls push down on the foundation. The foundation
+  // pushes down on the ground. If any link in this chain is too weak — it breaks,
+  // and everything above falls. The algorithm traces this chain from top to bottom.
+
+  // ── Phase 1: Connectivity — which blocks can reach ground? ─────────────
+  //
+  // BFS flood fill starting from all ground-touching blocks.
+  // A block is "supported" if it can trace a path through face-connected
+  // neighbors (6 directions: ±x, ±y, ±z) to any block on terrain.
+  //
+  // function findSupportedBlocks(grid):
+  //   supported = Set()
+  //   queue = Queue()
+  //
+  //   // Seed: blocks sitting on terrain
+  //   for each block in grid.blocks:
+  //     if terrain.isSolid(block.x, block.y - 1, block.z):
+  //       supported.add(block)
+  //       queue.enqueue(block)
+  //
+  //   // BFS through face-connected neighbors
+  //   while queue not empty:
+  //     current = queue.dequeue()
+  //     for each neighbor in current.connections (6 faces):
+  //       if neighbor != null AND neighbor not in supported:
+  //         supported.add(neighbor)
+  //         queue.enqueue(neighbor)
+  //
+  //   return supported
+  //
+  // Blocks NOT in the supported set are floating → become rigid body debris.
+  // Cost: O(N) where N = number of blocks. For a 200-block house: <0.1ms.
+
+  // ── Phase 2: Load computation — top-down gravity accumulation ──────────
+  //
+  // Process all supported blocks from highest Y to lowest Y.
+  // Each block accumulates its own weight plus load from above,
+  // then distributes that total to blocks below it.
+  //
+  // function computeLoads(grid):
+  //   sortedBlocks = grid.blocks.sortBy(b => -b.y)  // top-down
+  //
+  //   for each block in sortedBlocks:
+  //     block.load = block.weight  // reset to self-weight
+  //
+  //   for each block in sortedBlocks:
+  //     receivers = getLoadReceivers(block, grid)  // blocks below
+  //     for each (receiver, fraction) in receivers:
+  //       receiver.load += block.load × fraction
+  //
+  // Load distribution uses a 1:4 spreading ratio:
+  //   Block directly below (y-1, same x,z): weight factor 4
+  //   Blocks at (y-1, ±1 in x or z): weight factor 1 each
+  //   Normalize by total weight factors.
+  //
+  // Example: block at (5,10,5) weighs 500N, has blocks below at
+  //   (5,9,5) and (6,9,5):
+  //   Direct below gets: 500 × 4/5 = 400N
+  //   Side below gets:   500 × 1/5 = 100N
+  //
+  // This creates a realistic load-spreading pyramid — heavy loads at the top
+  // spread out as they travel down through the structure, just like real masonry.
+
+  // -- Load Redistribution When Support Is Missing --------------------
+  //
+  // If a block has NO block directly below it (air beneath):
+  //
+  //   Case 1: Block has lateral neighbors that ARE supported -> beam behavior.
+  //     The block acts as a beam spanning between its lateral supports.
+  //     Load transfers laterally (not downward) to the nearest supported neighbors.
+  //     The beam bending analysis (S3.4) determines if the span is within limits.
+  //     If span exceeds max: block fails in tension -> becomes debris.
+  //
+  //   Case 2: Block has no lateral support either -> floating.
+  //     The BFS connectivity check catches this: block cannot reach ground.
+  //     Block becomes debris immediately (converted to rigid body, falls).
+  //
+  //   Case 3: Block is part of an arch -> arch behavior.
+  //     Load transfers through compression along the arch curve to the springers.
+  //     The arch analysis determines if thrust is within abutment capacity.
+  //
+  //   The load distribution algorithm checks in order:
+  //     1. Direct below (y-1, same x,z)? -> normal 1:4 spreading.
+  //     2. No direct below -> check if part of detected beam or arch -> lateral transfer.
+  //     3. Not beam or arch -> check BFS connectivity -> floating if no path to ground.
+  //
+  //   Load is NEVER lost. If it cannot go down or sideways, the block fails.
+  //   Conservation: total load at terrain level = total weight of all supported blocks.
+
+  //
+  // Full tower example:
+  //   [Roof beam: 30kg]      → 300N
+  //       ↓
+  //   [Wall block: 50kg]     → 500N own + 300N from above = 800N
+  //       ↓
+  //   [Wall block: 50kg]     → 500N own + 800N from above = 1300N
+  //       ↓
+  //   [Foundation: 80kg]     → 800N own + 1300N from above = 2100N
+  //       ↓
+  //   [Terrain]              → absorbs 2100N
+
+  // ── Phase 3: Stress checks — does any block exceed capacity? ───────────
+  //
+  // Three failure modes checked per block:
+  //
+  //   COMPRESSIVE (crushing):
+  //     σ_c = block.load / contactArea
+  //     For a 1m voxel: contactArea = 1 m²
+  //     if σ_c > block.compressiveStrength → CRUSH FAILURE
+  //     Block shatters. Everything above loses support.
+  //
+  //   TENSILE (beam snapping):
+  //     Only checked for blocks detected as spanning a gap.
+  //     Beam detection runs BEFORE stress checks (it's a pre-pass that identifies
+  //     which blocks are beams — see Beam Detection and Bending Analysis section below).
+  //     σ_t = M / S where:
+  //       M = bending moment = w × L² / 8 (uniform load, simply supported)
+  //       S = section modulus = b × h² / 6 (rectangular cross-section)
+  //       w = total distributed load / beam span (N/m)
+  //     Simplified: σ_t = 3 × w × L² / (4 × b × h²)
+  //     if σ_t > block.tensileStrength → SNAP FAILURE at midspan
+  //
+  //   SHEAR (sliding):
+  //     σ_s = lateralForce / contactArea
+  //     lateralForce comes from wind (Connection 16) or player impact (§7.5)
+  //     if σ_s > block.shearStrength → SHEAR FAILURE
+  //     Block slides sideways. Relevant for walls under wind or siege.
+  //
+  //   BOND FAILURE:
+  //     For bonded blocks, also check if the connection can handle the load:
+  //     if block.load > connection.bondStrength × contactArea → BOND BREAKS
+  //     Stacked (unbonded) blocks can slide under lateral force:
+  //       frictionResistance = block.load × frictionCoefficient
+  //       if lateralForce > frictionResistance → block slides off
+  //
+  //   BUCKLING (slender column failure):
+  //     In plain English: a tall thin column doesn't get crushed from the top —
+  //     it bows sideways like a drinking straw when you push on both ends.
+  //     The taller and thinner it is, the easier it buckles. This is why skyscrapers
+  //     are wider at the base and Gothic cathedrals need flying buttresses.
+  //
+  //     Tall, thin columns fail by sideways bowing, NOT by crushing.
+  //     Euler's critical load: P_cr = π² × E × I / (K × L)²
+  //     where:
+  //       E = Young's modulus (Pa)
+  //       I = second moment of area (m⁴) — for a 1m square: I = 1/12 = 0.083
+  //       K = effective length factor: 1.0 for pinned-pinned, 0.5 for fixed-fixed,
+  //           2.0 for cantilever (flag pole), 0.7 for fixed-pinned
+  //       L = column height (m)
+  //
+  //     Slenderness ratio: λ = K×L / r where r = √(I/A) is radius of gyration
+  //       λ < 30: stocky — crushing governs (use compressive strength check)
+  //       λ > 100: slender — buckling governs (use Euler)
+  //       30-100: intermediate — use Rankine-Gordon: 1/P_fail = 1/P_crush + 1/P_euler
+  //
+  //     Example: 1m × 1m stone column, 10m tall (pinned-pinned):
+  //       I = 0.083 m⁴, r = 0.289 m, λ = 10/0.289 = 34.6 → intermediate
+  //       P_euler = π² × 40×10⁹ × 0.083 / 100 = 328,000 kN
+  //       P_crush = 200×10⁶ × 1 = 200,000 kN
+  //       Governs: crushing (P_crush < P_euler)
+  //
+  //     Same column at 20m tall:
+  //       λ = 20/0.289 = 69.2 → intermediate
+  //       P_euler = 328,000 / 4 = 82,000 kN ← now buckling governs
+  //       Column fails at 82,000 kN (41% of crushing capacity)
+  //
+  //     This is why real buildings use wide bases and why Gothic cathedrals
+  //     need flying buttresses — tall stone columns buckle before they crush.
+  //
+  //     Implementation: for each column (vertical run of blocks with no lateral support),
+  //     compute λ. If λ > 30, also check Euler. Take the lower of P_crush and P_euler.
+
+  //   COMBINED STRESS (interaction check):
+  //     Real materials can fail under combined loading even if each individual
+  //     stress is below its respective limit. A block at 80% compressive AND
+  //     80% tensile capacity is more likely to fail than one at 80% of just one.
+  //
+  //     Interaction formula (simplified Mohr-Coulomb for voxel blocks):
+  //       utilization = (σ_c / compressiveStrength)² + (σ_t / tensileStrength)² + (σ_s / shearStrength)²
+  //       if utilization > 1.0 → COMBINED FAILURE
+  //
+  //     This is a quadratic interaction — each stress component contributes
+  //     proportionally to the square of its ratio to capacity.
+  //     At 70% of each: utilization = 0.49 + 0.49 + 0.49 = 1.47 → fails.
+  //     At 50% of each: utilization = 0.25 + 0.25 + 0.25 = 0.75 → safe.
+  //
+  //     This catches arch corner blocks (compression + tension), wall corners
+  //     under wind (compression + shear), and loaded beams (tension + shear).
+  //     Individual checks still run first — they catch the obvious cases.
+  //     The interaction check catches the subtle combined cases.
+
+  // ── Phase 4: Cascade collapse ──────────────────────────────────────────
+  //
+  // In plain English: when one block breaks, the blocks above it lose support and fall.
+  // The falling blocks hit the floor below with much MORE force than their own weight
+  // (because they're falling, not just sitting). So the floor breaks too. And THAT
+  // falls onto the next floor. This domino effect is how real buildings collapse.
+  //
+  // When a block fails, process the collapse in batched waves:
+  //
+  // function cascadeCollapse(failedBlock, grid):
+  //   currentFailures = Set(failedBlock)
+  //   wave = 0
+  //
+  //   while currentFailures not empty AND wave < 100:
+  //     wave++
+  //
+  //     // Remove all failed blocks at once
+  //     for each block in currentFailures:
+  //       grid.blocks.remove(block.position)
+  //
+  //     // Find blocks that lost their path to ground
+  //     floating = findFloatingAfterRemoval(currentFailures, grid)
+  //
+  //     // Recompute loads on remaining structure
+  //     computeLoads(grid)
+  //
+  //     // Find new stress failures
+  //     nextFailures = Set(floating)
+  //     for each block in grid.blocks:
+  //       stress = block.load / BLOCK_AREA
+  //       if stress > block.compressiveStrength:
+  //         nextFailures.add(block)
+  //
+  //     currentFailures = nextFailures
+  //
+  //   // Convert all removed blocks to rigid body debris
+  //   // Group adjacent debris into compound rigid bodies (one per cluster)
+  //   // Apply downward velocity + random tumble
+  //   // Cap at 50-100 active debris bodies for performance
+  //
+  // The findFloatingAfterRemoval function uses targeted BFS:
+  //   Only check blocks that were neighbors of removed blocks.
+  //   For each, BFS toward ground. If no path found → floating.
+  //   Blocks already confirmed supported are cached (skip re-check).
+  //   Cost: O(K) where K = neighbors of removed blocks, NOT the full structure.
+  //
+  // Cascade example (removing a load-bearing wall):
+  //   Wave 0: wall block removed (player action or combat)
+  //   Wave 1: blocks directly above lose support → fall
+  //   Wave 2: roof blocks above those lose support → fall
+  //   Wave 3: neighboring wall overloaded by redistributed load → crush failure
+  //   Wave 4: more roof falls → cascade stabilizes when remaining structure is strong enough
+  //
+  // A 1000-block castle losing a load-bearing wall:
+  //   ~500 blocks recalculated → ~5ms → 3-6 waves → spectacular collapse
+  //   Client receives CHUNK_UPDATE with removed blocks + PHYSICS_EVENT with debris bodies
+
+  // ── Dynamic impact in cascade collapse ─────────────────────────────────
+  //
+  // When a block or floor falls and hits the structure below, the impact force
+  // is MUCH greater than the static weight. This is what causes "pancake collapse"
+  // in real building failures.
+  //
+  //   F_impact = m × g × (1 + √(1 + 2h/δ_static))
+  //   where:
+  //     m = mass of falling object (kg)
+  //     h = fall height (m) — distance the block fell before impact
+  //     δ_static = static deflection of the receiving structure under load m×g
+  //       For a rigid floor: δ_static ≈ 0.001m → F_impact ≈ m×g × (1 + √(1 + 2000h))
+  //
+  //   A 1000 kg block falling just 1m onto a rigid floor:
+  //     F_impact = 1000 × 9.81 × (1 + √(1 + 2000)) = 9810 × 45.7 = 448,000 N
+  //     That's 45× the static weight!
+  //
+  //   Even a 0.1m fall (one block falling onto the next):
+  //     F_impact = 9810 × (1 + √(1 + 200)) = 9810 × 15.2 = 149,000 N
+  //     About 15× the static weight.
+  //
+  //   This means: in a cascade collapse, each falling floor hits the floor below
+  //   with enough force to punch through it, which then falls onto the next floor,
+  //   accumulating mass and velocity. This is the "progressive collapse" mechanism
+  //   that destroyed the World Trade Center towers.
+  //
+  //   Implementation: in the cascade algorithm, when debris from wave N hits the
+  //   remaining structure, apply F_impact (not just static weight) to the impacted blocks.
+  //   If F_impact / contactArea > block.compressiveStrength → block also fails.
+
+  // -- Cascade Collapse: Blocks Become Debris, Never Disappear -------
+  //
+  // IMPORTANT: Broken blocks are NOT removed from the world. They are converted
+  // from structural blocks into rigid body debris objects. The material stays.
+  // A collapsed stone wall becomes a pile of stone rubble on the ground.
+  //
+  // The cascade runs as BATCHED WAVES within a single tick:
+  //
+  //   function cascadeCollapse(failedBlock, grid):
+  //     currentFailures = [failedBlock]
+  //     allDebris = []
+  //     wave = 0
+  //
+  //     while currentFailures.length > 0 AND wave < 100:
+  //       wave++
+  //
+  //       // STEP A: Convert failed blocks to debris (NOT delete)
+  //       for each block in currentFailures:
+  //         debris = convertToDebris(block)
+  //         // debris inherits: position, mass, composition, temperature
+  //         // debris gets: initial velocity = (0, -0.1, 0) (slight downward nudge)
+  //         // debris is now a rigid body -- will be processed in Stage 6
+  //         allDebris.push(debris)
+  //         grid.removeStructuralBlock(block.position)
+  //         // The block is gone from the STRUCTURE but exists as a PHYSICS OBJECT
+  //
+  //       // STEP B: Find blocks that lost their path to ground
+  //       floating = findFloatingBlocks(grid)
+  //       // Floating blocks also become debris (they fall)
+  //       for each block in floating:
+  //         debris = convertToDebris(block)
+  //         debris.velocity = (0, 0, 0)  // starts at rest, gravity accelerates it
+  //         allDebris.push(debris)
+  //         grid.removeStructuralBlock(block.position)
+  //
+  //       // STEP C: Recompute loads on remaining structure
+  //       recomputeLoads(grid)  // top-down load accumulation
+  //
+  //       // STEP D: Check for NEW failures from redistributed STATIC load
+  //       nextFailures = []
+  //       for each block in grid.allStructuralBlocks():
+  //         staticStress = block.load / BLOCK_AREA
+  //         if staticStress > block.compressiveStrength:
+  //           nextFailures.push(block)
+  //
+  //       // STEP E: Apply dynamic impact from falling debris
+  //       // NOTE: Impact forces are checked SEPARATELY from static load.
+  //       // Static load (Step D) catches overloaded blocks from redistributed weight.
+  //       // Dynamic impact (Step E) catches blocks hit by falling debris.
+  //       // A block can survive static load but fail from impact (or vice versa).
+  //       // Debris from previous waves that hit the structure this tick:
+  //       for each d in allDebris:
+  //         if d.isResting:  // landed on a structural block
+  //           impactedBlock = grid.getBlock(d.restingPosition)
+  //           if impactedBlock:
+  //             fallHeight = d.originalPosition.y - d.restingPosition.y
+  //             v_impact = sqrt(2 x g x fallHeight)
+  //             F_impact = d.mass x g x (1 + sqrt(1 + 2 x fallHeight / 0.001))
+  //             impactStress = F_impact / BLOCK_AREA
+  //             if impactStress > impactedBlock.compressiveStrength:
+  //               nextFailures.push(impactedBlock)
+  //
+  //       currentFailures = nextFailures
+  //
+  //     // After cascade completes:
+  //     // - allDebris contains all rigid body objects (stone rubble, broken beams, etc.)
+  //     // - These are passed to Stage 6 (Rigid Body Physics) for gravity + collision
+  //     // - They tumble, bounce, and settle on the ground
+  //     // - Once settled (velocity < 0.01 m/s for 30 ticks): converted to static rubble
+  //     // - Static rubble is a MaterialPacket sitting on the terrain -- can be picked up,
+  //     //   used as building material, smelted, or just left as ruins
+  //     // - NOTHING DISAPPEARS. The mass is conserved.
+  //
+  //   // Debris grouping for performance:
+  //   // Adjacent debris blocks are merged into compound rigid bodies (one body per cluster).
+  //   // A 20-block wall section becomes ~3-5 compound bodies, not 20 individual ones.
+  //   // Cap at 100 active debris bodies per event. Oldest/farthest debris is converted
+  //   // to static rubble early if the cap is exceeded.
+
+  //   Debris-debris collision:
+  //     Debris rigid bodies DO collide with each other, not only with terrain.
+  //     When debris from a collapsing upper floor hits debris from a lower floor,
+  //     both are subject to rigid body collision resolution (Stage 6).
+  //     This creates realistic pile-up behavior: rubble accumulates, not phases through.
+  //
+  //     However, debris-debris collision is expensive (O(n²) for n debris bodies).
+  //     Mitigation:
+  //       1. Compound rigid bodies (adjacent debris grouped into one body): reduces n by ~5×
+  //       2. Spatial broadphase (AABB overlap test): eliminates most pairs
+  //       3. Performance cap: max 100 active debris bodies. When exceeded, oldest
+  //          debris converts to static rubble (terrain modification). Static rubble
+  //          is a MaterialPacket sitting on the ground — future debris collides with
+  //          it as terrain, not as a rigid body.
+  //
+  //     The result: a collapsing building produces a heap of rubble, not a flat
+  //     layer of blocks. The heap has structure — larger blocks settle first,
+  //     smaller debris fills gaps. This is physically correct and visually dramatic.
+
+  //   The debris mass accumulates as floors collect falling material.
+  //
+  //   This connects to sound (§3.3): dynamic impacts produce louder sound events.
+  //   Impact energy = 0.5 × m × v² where v = √(2gh) from the fall.
+  //   A 1m fall: v = 4.4 m/s, energy = 0.5 × 1000 × 19.6 = 9800 J.
+  //   Compare: a pickaxe strike is ~10 J. A collapsing floor is 1000× louder.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // BEAM DETECTION AND BENDING ANALYSIS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // In plain English: a plank spanning a gap bends in the middle. The longer the span,
+  // the more it bends. If it bends too much, the bottom of the plank stretches and
+  // snaps (tension failure). Stone is terrible at this — it can't stretch at all.
+  // Wood is great — it bends a lot before breaking. This is why stone buildings
+  // have lots of pillars and wood buildings have wide open rooms.
+
+  // A beam is a horizontal run of blocks with air below and supports at the ends.
+  // The system scans along X and Z axes to find these automatically.
+  //
+  // Detection algorithm:
+  //   Walk along each horizontal row. When a block has a solid block below it,
+  //   it's a potential support. When blocks have air below, they're spanning.
+  //   When air-below blocks are bracketed by supported blocks → beam found.
+  //
+  // Bending stress formula:
+  //   σ = 3 × w × L² / (4 × b × h²)
+  //   where:
+  //     w = (beam self-weight + load from above) / span    (N/m)
+  //     L = span length in meters (number of air-below blocks × BLOCK_SIZE)
+  //     b = beam width = BLOCK_SIZE = 1m
+  //     h = beam height = BLOCK_SIZE = 1m (or count of stacked beam blocks)
+  //
+  // The beam fails in TENSION on the bottom face (not compression).
+  // This is why material tensileStrength determines beam capacity.
+  //
+  // Maximum span for self-weight only (no additional load):
+  //   L_max = √(4 × tensileStrength × h / (3 × density × g))
+  //
+  //   | Material          | Density  | Tensile   | Max self-weight span | With 5× load |
+  //   |-------------------|----------|-----------|---------------------|--------------|
+  //   | Oak wood          | 600      | 40 MPa   | ~95 m (extraordinary)| ~42 m        |
+  //   | Granite           | 2700     | 10 MPa   | ~22 m               | ~10 m        |
+  //   | Limestone         | 2400     | 3 MPa    | ~13 m               | ~6 m         |
+  //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
+  //   | Iron              | 7800     | 200 MPa  | ~53 m               | ~24 m        |
+  //   | Steel             | 7800     | 500 MPa  | ~84 m               | ~38 m        |
+  //
+  // These match real-world experience:
+  //   Stone buildings need close-spaced columns (Parthenon: columns 2.5m apart)
+  //   Wood buildings span wide rooms easily (timber framing spans 5-6m with load)
+  //   Gothic cathedrals needed flying buttresses (stone can't span the nave)
+  //   Iron/steel revolutionized architecture (long spans without columns)
+  //
+  // Numerical example:
+  //   6 limestone blocks spanning a 4-block gap, 3 floors of load above:
+  //   Beam self-weight: 4 × 23,544N = 94,176N
+  //   Load from above: 300,000N
+  //   Total: 394,176N, w = 98,544 N/m
+  //   M = 98,544 × 16 / 8 = 197,088 N·m
+  //   S = 1 × 1² / 6 = 0.167 m³
+  //   σ = 197,088 / 0.167 = 1.18 MPa < 3 MPa (limestone tensile) → beam holds
+  //
+  //   Same beam at 8-block span:
+  //   M = 98,544 × 64 / 8 = 789,352 N·m
+  //   σ = 789,352 / 0.167 = 4.73 MPa > 3 MPa → beam snaps at midspan
+
+  // ── Deflection — beams sag before they break ──────────────────────────
+  //
+  // A beam can be strong enough not to break but deflect so much it's unusable.
+  // Maximum deflection for a simply-supported beam under uniform load:
+  //   δ_max = 5 × w × L⁴ / (384 × E × I)
+  //   where:
+  //     w = distributed load (N/m)
+  //     L = span (m)
+  //     E = Young's modulus (Pa)
+  //     I = second moment of area (m⁴) — for 1m×1m block: I = 1/12
+  //
+  //   Serviceability limits (from real structural engineering):
+  //     δ < L/360: acceptable for floors (no cracking of finishes)
+  //     δ < L/240: acceptable for roofs
+  //     δ < L/180: visible sag — occupants notice
+  //     δ < L/100: severe sag — doors won't close, water pools on roof
+  //
+  //   Example: oak beam, 6m span, supporting a floor (w = 5000 N/m):
+  //     δ = 5 × 5000 × 6⁴ / (384 × 12×10⁹ × 0.083) = 5 × 5000 × 1296 / (383×10⁹ × 0.083)
+  //     δ = 32,400,000 / 31,789,000,000 = 0.001 m = 1mm → L/6000 — negligible
+  //
+  //   Same beam, 12m span:
+  //     δ = 5 × 5000 × 12⁴ / (384 × 12×10⁹ × 0.083)
+  //     δ = 5 × 5000 × 20736 / 31,789,000,000 = 0.016 m = 16mm → L/750 — fine
+  //
+  //   Stone beam (E = 40 GPa instead of 12 GPa, but ρ = 2700 instead of 600):
+  //     Same 6m span: w includes much heavier self-weight → δ is larger
+  //     Stone beams sag much more than wood beams at the same span.
+  //
+  // Progressive ponding failure:
+  //   A flat roof that deflects collects rainwater in the sag. Water adds load.
+  //   More load → more deflection → more water → more load → collapse.
+  //   δ_ponding = δ_0 / (1 - q_water × L⁴ / (π⁴ × E × I))
+  //   When the denominator approaches 0: runaway failure.
+  //   Prevention: cambered roofs (built with upward curve) or drainage.
+  //
+  // Gameplay effect: visible beam sag gives players visual feedback that a
+  //   structure is near its limit. A beam that sags L/100 (6cm over a 6m span)
+  //   is visually noticeable and warns the player before catastrophic failure.
+  //   This is more informative than sudden collapse with no warning.
+  //
+  // Implementation: for each detected beam, compute δ_max. If δ > L/180,
+  //   render the beam with a downward curve (vertex displacement proportional to
+  //   δ × sin(π×x/L) along the beam). This is purely visual — the structural
+  //   check still uses the stress formula for failure.
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ARCH DETECTION AND THRUST ANALYSIS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // In plain English: an arch is a clever trick — it turns the stretching problem
+  // into a squeezing problem. Instead of the bottom stretching (which stone can't do),
+  // each block pushes SIDEWAYS against its neighbors (compression, which stone is great at).
+  // But that sideways push goes all the way to the base — you need thick walls or
+  // buttresses to stop the arch from pushing its supports apart.
+
+  // An arch converts tensile stress (spanning) into compressive stress
+  // (pushing down the sides). Stone is great in compression → arches let
+  // stone span much farther than lintels:
+  //   Stone lintel: max ~2-3m
+  //   Stone arch: max ~30m+ (Roman arches spanned this)
+
+  // Arch detection algorithm:
+  //   1. Find all blocks with air below (spanning blocks)
+  //   2. Cluster them into connected components
+  //   3. For each cluster: find the rise (max Y - min Y) and span (horizontal extent)
+  //   4. If rise ≥ 2 blocks AND both ends connect to grounded blocks → arch found
+  //   5. Find springers (where the arch meets its supports) and crown (highest point)
+
+  // Arch thrust formula (parabolic arch under uniform load):
+  //   T = w × L² / (8 × h)
+  //   where:
+  //     T = horizontal thrust at each springer (N)
+  //     w = total load / span (N/m) — arch weight + anything on top
+  //     L = span (m)
+  //     h = rise (m) — height from springer to crown
+  //
+  //   Vertical reaction at each springer: V = totalLoad / 2
+  //   Resultant force: R = √(T² + V²)
+
+  // Abutment checks (the arch pushes its supports outward):
+  //
+  //   SLIDING check:
+  //     frictionResistance = abutmentWeight × μ (stone-on-stone: μ = 0.65)
+  //     if T > frictionResistance → arch pushes supports apart → collapse
+  //
+  //   OVERTURNING check:
+  //     overturningMoment = T × springerHeight
+  //     resistingMoment = abutmentWeight × (abutmentWidth / 2)
+  //     if overturningMoment > resistingMoment → abutment tips over → collapse
+
+  // Numerical example:
+  //   Arch: 20 stone blocks, span = 10m, rise = 4m
+  //   Arch weight: 20 × 23,544N = 470,880N
+  //   Load on top: 100,000N
+  //   Total: 570,880N, w = 57,088 N/m
+  //   T = 57,088 × 100 / 32 = 178,400N (18 tonnes of horizontal push)
+  //
+  //   Abutment: 3 blocks wide, 6 blocks tall = 18 stone blocks
+  //   Abutment weight: 423,792N
+  //   Friction resistance: 423,792 × 0.65 = 275,465N > 178,400N → no sliding ✓
+  //   Springer height: 2m above ground
+  //   Overturning moment: 178,400 × 2 = 356,800 N·m
+  //   Resisting moment: 423,792 × 1.5 = 635,688 N·m → no overturning ✓
+  //
+  // If the player removes the buttress → overturning check fails → arch collapses.
+  // If the player builds a thin buttress (1 block wide instead of 3) → sliding fails.
+  // These failures emerge from physics — no special "arch collapse" code needed.
+
+  // The same analysis applies to:
+  //   Barrel vault: arch extended into a tunnel (thrust per unit length of tunnel)
+  //   Dome: arch rotated into a hemisphere (hoop stress replaces thrust: T = w×R/(2×h))
+  //   Groin vault: two barrel vaults crossing at 90° (thrust at the 4 corner piers)
+  //   Flying buttress: external arch carrying thrust away from a tall wall to a pier
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // FRAME STABILITY — TRIANGULATION IS REQUIRED
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // A fundamental principle:
+  // a rectangular frame with pinned joints is a MECHANISM — it collapses sideways.
+  // Only triangulated frames (or frames with rigid joints) are stable.
+  //
+  // Kinematic criterion (2D):
+  //   m = b + r - 2j
+  //   where b = bars (blocks acting as beams), r = support reactions, j = joints
+  //   m < 0: mechanism (collapses)
+  //   m = 0: statically determinate (stable, no redundancy)
+  //   m > 0: indeterminate (stable with redundant members)
+  //
+  // A simple rectangle (4 bars, 4 pinned joints, 3 reactions at base):
+  //   m = 4 + 3 - 2×4 = -1 → MECHANISM. It racks (leans sideways) and collapses.
+  //
+  // Adding one diagonal brace:
+  //   m = 5 + 3 - 2×4 = 0 → STABLE. The triangle resists racking.
+  //
+  // This is why:
+  //   Roof trusses use triangles, not rectangles
+  //   Timber-frame buildings have diagonal bracing
+  //   Steel frames use X-bracing or moment connections
+  //   A-frame shelters are inherently stable (they ARE triangles)
+  //
+  // In the game: a player who builds a rectangular doorway with stacked blocks
+  //   (no mortar) should see it rack under lateral load (wind, impact).
+  //   Adding a diagonal timber brace should stabilize it.
+  //   Mortared joints resist rotation (act as rigid, not pinned) — so mortared
+  //   rectangles ARE stable (moment frame behavior).
+  //
+  // Implementation: when checking lateral stability of a structure:
+  //   1. Build a 2D frame model of the structure (project onto the plane
+  //      perpendicular to the lateral load)
+  //   2. Classify joints: stacked (pinned) vs. mortared/fastened (rigid)
+  //   3. Count bars, joints, reactions
+  //   4. If m < 0 AND all joints are pinned → structure is a mechanism →
+  //      fails under any lateral load
+  //   5. If m < 0 BUT some joints are rigid → check if rigid joints provide
+  //      enough moment resistance
+  //
+  // This connects to material properties (§3.1): the joint type (pinned vs. rigid)
+  //   depends on the bond type in the structural connection. Stacked = pinned.
+  //   Mortared with strong mortar = rigid. Rope lashing = semi-rigid (can stretch).
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // WIND AND LATERAL LOADS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Wind applies lateral (sideways) force to walls:
+  //   windForce = 0.5 × airDensity × windSpeed² × wallArea × dragCoefficient
+  //   airDensity ≈ 1.225 kg/m³, dragCoefficient ≈ 1.2 for flat walls
+  //   At 15 m/s wind (strong): ~135N per m² of wall area
+  //   At 30 m/s wind (storm):  ~540N per m² (can topple unbonded walls)
+  //
+  // Tall narrow walls are vulnerable (high moment arm):
+  //   A 3m tall, 0.3m thick unbonded stone wall falls over at ~20 m/s wind
+  //   A 3m tall, 0.6m thick bonded wall survives up to ~40 m/s
+  //   Cross-bracing (diagonal timber inside walls) resists lateral loads
+  //   Buttresses (thick supports on the outside) resist lateral loads
+  //
+  // Wind overturning check for a wall:
+  //   overturningMoment = windForce × wallArea × (wallHeight / 2)
+  //   resistingMoment = wallWeight × (wallThickness / 2)
+  //   if overturning > resisting → wall topples
+  //
+  // Player impact (§7.5 combat):
+  //   Hitting a wall with a tool applies force at the impact point
+  //   If force > bond strength at that block → block breaks free
+  //   If that block was load-bearing → cascade above it
+  //   Siege warfare: ram a wall until blocks break → roof collapses on defenders
+
+  // ── Lateral earth pressure (retaining walls, basements, mine tunnels) ──
+  //
+  // In plain English: dirt pushes sideways on walls that hold it back.
+  // Dig a basement and the soil around it pushes inward on the walls.
+  // The deeper you go, the harder it pushes. Add water (rain) and it
+  // pushes even harder. That's why retaining walls need to be thick.
+  //
+  // Soil pushes horizontally against walls that hold it back.
+  // Rankine active earth pressure:
+  //   σ_h = K_a × γ_soil × z
+  //   where:
+  //     K_a = (1 - sin(φ)) / (1 + sin(φ)) — active pressure coefficient
+  //     γ_soil = soil unit weight (~18,000 N/m³)
+  //     z = depth below ground surface (m)
+  //     φ = soil internal friction angle (sand: 30-35°, clay: 0-25°)
+  //
+  //   | Soil type    | φ (°) | K_a  | σ_h at 3m depth (Pa) |
+  //   |-------------|-------|------|---------------------|
+  //   | Loose sand   | 28    | 0.36 | 19,440              |
+  //   | Dense sand   | 40    | 0.22 | 11,880              |
+  //   | Soft clay    | 0     | 1.00 | 54,000 (worst case) |
+  //   | Stiff clay   | 25    | 0.41 | 22,140              |
+  //
+  //   At 3m depth in loose sand: ~19 kPa = ~2 tonnes/m² pushing sideways.
+  //   A single-block-thick stone wall (compressive only, no bending capacity)
+  //   would be pushed over by this force unless buttressed.
+  //
+  //   When groundwater is present: add hydrostatic water pressure
+  //     σ_total = K_a × γ_soil × z + ρ_water × g × z_water
+  //     Saturated soil pushes MUCH harder — this is why mines flood AND collapse.
+  //
+  //   Implementation: for blocks that have terrain/soil on one side and air on the other,
+  //   apply lateral earth pressure as a horizontal force to the structural system.
+  //   Check: can the wall resist this as a shear force? Does it overturn?
+  //
+  //   This connects to fluid sim (§3.2): the water table height from the regional
+  //   grid system determines z_water in the formula. Rising water table after rain
+  //   increases lateral pressure on basement walls.
+}
+```
+
+##### Foundation — What the Building Sits On
+
+```
+FoundationSystem {
+  // The ground beneath a building must support the building's total weight.
+  // Different terrain has different bearing capacity.
+
+  // ── Terrain bearing capacity (simplified Terzaghi) ─────────────────────
+  //
+  // In plain English: how much weight the ground can hold before the building sinks.
+  // Rock = holds anything. Clay = squishy, heavy buildings sink. Mud = almost nothing.
+  // If your building is too heavy for the soil, it slowly sinks and tilts —
+  // that's what happened to the Leaning Tower of Pisa.
+  //
+  // q_ult = c × Nc + γ × D × Nq + 0.5 × γ × B × Nγ
+  // where:
+  //   c = soil cohesion (Pa)
+  //   γ = soil unit weight (~18,000 N/m³)
+  //   D = foundation depth below surface (m)
+  //   B = foundation width (m)
+  //   Nc, Nq, Nγ = bearing capacity factors (depend on internal friction angle φ)
+  //
+  // Game uses a pre-computed lookup table:
+  //
+  //   | Soil Type         | φ (°) | c (Pa)  | Typical q_ult (Pa) |
+  //   |-------------------|-------|---------|-------------------|
+  //   | Peat/swamp        | 0     | 10,000  | ~50,000           |
+  //   | Wet clay/mud      | 0     | 25,000  | ~130,000          |
+  //   | Loose sand        | 28    | 0       | ~300,000          |
+  //   | Compact clay      | 0     | 50,000  | ~260,000          |
+  //   | Dense gravel      | 40    | 0       | ~1,500,000        |
+  //   | Bedrock           | 45    | 100,000 | 10,000,000+       |
+  //
+  // Building pressure: q = totalWeight / baseFootprintArea
+  // If q > q_ult → building sinks.
+
+  // ── Sinking rate formula ───────────────────────────────────────────────
+  //
+  // When q > q_ult, the building sinks at a rate proportional to overpressure:
+  //
+  //   overpressure = (q - q_ult) / q_ult     // 0 = at limit, 1 = double capacity
+  //   sinkRate = 0.01 × overpressure × (1 + soil.compressibility) meters/second
+  //
+  //   soil.compressibility: peat = 2.0, clay = 1.0, sand = 0.3, gravel = 0.1, rock = 0.01
+  //
+  // Example: 3000 stone blocks (70,632,000N) on 100m² of soft clay (q_ult = 130,000 Pa):
+  //   q = 706,320 Pa, overpressure = 4.43
+  //   sinkRate = 0.01 × 4.43 × 2.0 = 0.089 m/s → building visibly sinks into the mud
+
+  // ── Differential settlement (uneven sinking) ──────────────────────────
+  //
+  // Each block-sized foundation cell computes its own local pressure
+  // from the column of blocks above it. Heavier side sinks more.
+  //
+  // Angular distortion = (maxSink - minSink) / distanceBetweenThem
+  //
+  //   > 1/500 (0.002): cosmetic cracking — visual cracks appear on walls
+  //   > 1/300 (0.0033): structural cracking — bonds start breaking
+  //   > 1/150 (0.0067): severe damage — blocks separate, potential collapse
+  //
+  // This is why the Leaning Tower of Pisa tilts (soft clay on one side).
+  // In-game: a player who builds a heavy tower on one side of a clay foundation
+  // will see it slowly tilt. The structural system detects the angular distortion,
+  // cracks the affected blocks, and eventually triggers cascade collapse.
+
+  // ── Foundation solutions ──────────────────────────────────────────────
+  //
+  // Spread foundation: widen the base of walls → distributes weight over more area
+  //   q = weight / area → bigger area = less pressure
+  //   A 1m wide wall on soft soil: too much pressure → sinks
+  //   Same wall on a 2m wide stone base: half the pressure → stable
+  //
+  // Deep foundation: dig down to bedrock, fill with stone
+  //   Bypasses weak surface soil entirely. D in Terzaghi's formula increases q_ult.
+  //   Foundation 2m deep in clay: q_ult increases by γ × D × Nq = 18,000 × 2 × 1 = 36,000 Pa
+  //
+  // Pilings: drive wooden posts into soft ground until they hit a hard layer
+  //   Venice is built entirely on wooden pilings driven into lagoon mud
+  //   In-game: player drives sharpened logs into mud → builds on top of the log tops
+  //   The pile's bearing capacity = hard layer's q_ult (not the surface soil)
+  //
+  // Gravel pad: replace soft surface soil with compacted gravel
+  //   Better drainage + higher bearing capacity than clay or mud
+  //   q_ult jumps from 130,000 (clay) to 1,500,000 (dense gravel)
+}
+```
+
+##### Structural Decay — Buildings Age
+
+```
+StructuralDecay {
+  // Buildings are not permanent. Materials degrade over time from weather.
+  // This connects directly to the weather system (§4.6) and material properties.
+
+  // ── Rain damage ───────────────────────────────────────────────────────
+  //
+  // Water weakens certain materials:
+  //   Mud brick: bondStrength decreases by 5% per game-day of rain exposure
+  //     Sustained rain for 20 game-days: mud mortar dissolves → blocks fall apart
+  //     Prevention: roof overhang (keeps rain off walls), lime plaster coating
+  //   Wood: moisture absorption → swelling → warping → joint loosening
+  //     bondStrength decreases by 0.5% per game-day of wet exposure
+  //     Prevention: roof overhang, tar/pitch coating (waterproofing)
+  //   Stone: virtually unaffected by rain (geological timescales)
+  //   Lime mortar: waterproof — no rain damage
+  //   Metal fasteners: rust (iron + water + oxygen → iron oxide)
+  //     bondStrength decreases by 1% per game-day wet
+  //     Prevention: oil coating, bronze fasteners (no rust)
+
+  // ── Galvanic corrosion — dissimilar metals destroy each other ─────────
+  //
+  // When two different metals are in physical contact in the presence of an
+  // electrolyte (rain water, salt water, even humid air), the more reactive
+  // metal corrodes faster. The galvanic series (most reactive/anodic to least):
+  //
+  //   Zinc → Iron → Tin → Lead → Copper → Silver → Gold → Platinum
+  //
+  // Corrosion rate is proportional to the potential difference between the two metals:
+  //   corrosionMultiplier = 1.0 + 3.0 × |E_cathode - E_anode| / 1.5V
+  //   (where E values are standard electrode potentials from the element table)
+  //
+  // Standard electrode potentials (vs. standard hydrogen electrode):
+  //   Zinc: -0.76V   Iron: -0.44V   Tin: -0.14V   Lead: -0.13V
+  //   Copper: +0.34V  Silver: +0.80V  Gold: +1.50V  Platinum: +1.20V
+  //
+  // Examples:
+  //   Iron nail in copper fitting: |0.34 - (-0.44)| = 0.78V → multiplier = 2.56×
+  //     The iron corrodes 2.56× faster than iron alone. The copper is PROTECTED.
+  //
+  //   Zinc coating on iron (galvanization): |-0.76 - (-0.44)| = 0.32V
+  //     The ZINC corrodes preferentially, protecting the iron underneath.
+  //     This is why galvanized steel lasts decades in rain — the zinc sacrifices itself.
+  //
+  //   Copper pipe connected to iron pipe (common plumbing mistake):
+  //     Iron section rapidly corrodes at the junction. Copper section stays pristine.
+  //
+  // Gameplay: a player who fastens copper fittings to an iron frame discovers
+  // the iron rots out in a fraction of the time. A player who coats iron with zinc
+  // (by dipping in molten zinc — galvanizing) discovers it lasts much longer.
+  // Both discoveries emerge from the element table's electrode potentials —
+  // no special "corrosion recipe" needed.
+  //
+  // Implementation: for metal connections between dissimilar metals, apply
+  // corrosionMultiplier to the existing rain damage rate for the more reactive metal.
+  // The less reactive metal's corrosion rate is reduced proportionally.
+  // This connects to structural physics (§3.4): corroded fasteners have reduced
+  // bondStrength. The decay system applies corrosionMultiplier to the existing
+  // rain damage rate for metal connections between dissimilar metals.
+
+  // ── Freeze-thaw damage ────────────────────────────────────────────────
+  //
+  // Water in cracks freezes → expands 9% → widens cracks → thaws → refreezes
+  // Over many cycles: stone blocks crack and crumble
+  //   damagePerCycle = 0.1% of compressiveStrength
+  //   In climates with daily freeze-thaw (spring/autumn): significant over a game-year
+  //   Prevention: dense stone with few pores (granite > limestone > sandstone)
+
+  // ── Maintenance and Repair ──────────────────────────────────────────
+  //
+  // Players (and NPCs) must maintain structures:
+  //   Replace crumbling mortar (repoint walls)
+  //   Replace rotting wood beams
+  //   Repair roof leaks (a leaking roof accelerates all interior decay ×3)
+  //   Paint/coat exposed wood and metal
+  //
+  // Repair actions and their effects:
+  //   Repoint mud mortar:    bondStrength restored to 0.08 MPa (80% of fresh 0.1 MPa)
+  //   Repoint lime mortar:   bondStrength restored to 1.8 MPa (90% of fresh 2.0 MPa)
+  //   Replace thatch roof:   durability = 1.0 (fully restored — thatch is replaceable)
+  //   Replace wood beam:     new beam, durability = 1.0 (requires matching wood MaterialPacket)
+  //   Oil/tar coating:       resets rain damage timer, adds 0.95 waterproofing for 30 game-days
+  //   Lime plaster coating:  blocks rain from reaching mud walls, lasts 60 game-days
+  //
+  // Repair CANNOT exceed original values. Damaged stone cannot be "repaired" —
+  // only replaced. A cracked granite block must be removed and a new one placed.
+  //
+  // Building lifespan without maintenance:
+  //   Stone + lime mortar: effectively forever (centuries in real life)
+  //   Stone + mud mortar: ~20-30 game-years (mortar dissolves, blocks shift)
+  //   Wood frame: ~50-100 game-years (rot, insect damage, joint loosening)
+  //   Mud brick: ~5-10 game-years (rain dissolves the blocks themselves)
+  //   Thatch roof: ~3-5 game-years (biodegrades, leaks)
+  //
+  // NPC settlements maintain their buildings through the SLM:
+  //   "The storage hut roof is leaking. I'll repair it with new thatch."
+  //   When no NPCs remain → no maintenance → structures decay → ruins
+  //   This is why §5.1 mentions dead settlements leaving ruins
+
+  // ── Fire damage ───────────────────────────────────────────────────────
+  //
+  // Fire weakens and destroys building materials:
+  //   Wood: burns completely if sustained fire (ignition from §3.1 fire properties)
+  //     A wooden wall catches fire → burns for 10-30 game-minutes → collapses
+  //     Fire spreads to adjacent wooden structures (fire contagion)
+  //   Stone: survives fire but thermal shock can crack it
+  //     Stone heated to 500°C+ then rapidly cooled (rain, water) → spalls and cracks
+  //     compressiveStrength reduced by 30-50% after fire exposure
+  //   Mud brick: moderate fire resistance (clay is pre-fired, somewhat heat-resistant)
+  //   Metal: doesn't burn but softens at high temperature
+  //     Iron above 500°C: structural capacity drops significantly
+  //     A building fire doesn't melt iron but weakens it enough to buckle
+  //
+  // Historical example: The Great Fire of London (1666) destroyed 13,000 houses
+  //   because they were all timber-framed. The rebuilding used stone and brick.
+  //   In-game: a player who builds everything from wood risks total loss from one fire.
+
+  // ── Thermal stress ─────────────────────────────────────────────────────
+  //
+  // When a block is heated unevenly (one face hot, opposite face cold),
+  // differential thermal expansion creates internal stress:
+  //
+  //   σ_thermal = E × α × ΔT
+  //   where:
+  //     E = Young's modulus (Pa)
+  //     α = thermal expansion coefficient (1/°C)
+  //     ΔT = temperature difference across the block (°C)
+  //
+  //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
+  //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
+  //     This happens when: fire on one side of a stone wall, sun on south face
+  //
+  //   Thermal shock resistance parameter (R', second parameter — includes conductivity):
+  //     R' = σ_t × k × (1 - ν) / (E × α)
+  //     where ν = Poisson's ratio (~0.2-0.3 for most materials)
+  //     Glass: R' ≈ 30 → shatters when quenched from >80°C temperature difference
+  //     Copper: R' ≈ 9,000 → survives quenching from 500°C+ (safe for quench hardening)
+  //     Ceramic: R' ≈ 150 → survives moderate thermal shock but not extreme
+  //
+  //   Gameplay effect: dropping a hot ceramic pot into cold water SHATTERS it.
+  //   Quenching hot copper in water is SAFE. This emerges from the R parameter
+  //   without any special "pottery breaks in water" rule.
+  //
+  //   Daily thermal cycling (sun-facing walls heat during day, cool at night)
+  //   causes cumulative fatigue damage. Over many game-years, south-facing stone
+  //   walls develop surface cracks. This accelerates freeze-thaw damage because
+  //   cracks let water in deeper.
+}
+```
+
+##### Performance — How Structural Checks Run
+
+```
+StructuralPerformance {
+  // Structural integrity is NOT checked every frame for every block.
+  // It is checked only when something changes.
+
+  // ── When to recalculate ───────────────────────────────────────────────
+  //
+  // Trigger events:
+  //   1. Block placed → check the new block + all blocks it connects to
+  //   2. Block removed (destroyed, dug out) → check all blocks that depended on it
+  //   3. Bond broken (mortar dissolved by rain, nail rusted) → check affected blocks
+  //   4. Impact event (combat, falling object) → check struck block + neighbors
+  //   5. Wind change (storm begins) → check exposed walls
+  //   6. Periodic decay check (once per game-day) → check all weather-exposed blocks
+  //
+  // NOT checked: every frame, every tick, or for blocks with no changes
+
+  // ── Propagation algorithm (references Force Propagation above) ───────
+  //
+  // When a trigger occurs, run the 4-phase load path algorithm:
+  //   Phase 1: BFS connectivity check from ground — O(N) where N = blocks
+  //   Phase 2: Top-down load accumulation with 1:4 spreading
+  //   Phase 3: Stress checks (compressive, tensile/beam, shear)
+  //   Phase 4: Cascade collapse in batched waves until stable
+  //
+  // For block removal specifically, use targeted BFS:
+  //   Only check neighbors of the removed block, not the whole structure.
+  //   BFS from each neighbor toward ground — if no path → floating.
+  //   Blocks already confirmed supported are cached (skip re-check).
+  //   Cost: O(K) where K = affected neighborhood, NOT the full structure.
+  //
+  // Optimization: precompute articulation points (Tarjan's algorithm).
+  //   An articulation point is a block whose removal disconnects the graph.
+  //   If a removed block was NOT an articulation point → no floating blocks.
+  //   Skip the expensive connectivity re-check entirely.
+  //   Precompute once at structure creation, update incrementally on changes.
+
+  // ── Cost ──────────────────────────────────────────────────────────────
+  //
+  // Phase 1 (connectivity BFS):     O(N), ~0.02ms per 100 blocks
+  // Phase 2 (load accumulation):    O(N), ~0.03ms per 100 blocks
+  // Phase 3 (stress checks):        O(N + B) where B = detected beams, ~0.05ms per 100 blocks
+  // Phase 4 (cascade per wave):     O(K) per wave, K = neighborhood of failed blocks
+  // Arch detection:                  O(N) once, then cached until structure changes
+  // Beam detection:                  O(N) per axis scan, cached
+  //
+  // Typical structure: 50-200 blocks
+  // Full recalculation: ~0.1-0.3ms (all 4 phases)
+  // Events per game-day (quiet): ~0 (nothing changes)
+  // Events per game-day (construction): ~5-20 (player placing blocks)
+  // Events per game-day (siege): ~50-100 (blocks being destroyed, cascading)
+  //
+  // Maximum cascade: a 1000-block castle losing a load-bearing wall →
+  //   ~500 blocks recalculated → ~5ms → 3-6 waves → plus debris rigid bodies
+  //   Server handles this in one tick. Client sees a spectacular collapse.
+  //   Debris rigid bodies capped at 50-100 for physics performance.
+}
+```
+
 
 ### 3.5 Networking & Hybrid Rendering
 
@@ -1102,11 +4276,11 @@ This is a real-world online simulation. The server is the world. The client is a
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                         SERVER (Node.js)                             │
+│                         SERVER (Railway Node.js)                             │
 │                                                                              │
 │  AUTHORITATIVE (server computes, broadcasts results):                        │
 │  ├── All physics simulations                                                 │
-│  │   ├── SPH fluid particles (melting, pouring, lava, water flow)           │
+│  │   ├── SPH/MPM fluid particles (up to 400k; melting, pouring, lava, flow) │
 │  │   ├── Material packet reactions (Gibbs free energy, stoichiometry)        │
 │  │   ├── Temperature propagation (heat transfer between objects)             │
 │  │   ├── Rigid body physics (dropped items, thrown objects, digging debris)  │
@@ -1118,15 +4292,20 @@ This is a real-world online simulation. The server is the world. The client is a
 │  │   ├── NPC state machines (goal loops, positions, carried items)           │
 │  │   ├── Organism simulation (births, deaths, movement, feeding)            │
 │  │   └── Dropped item positions and despawn timers                           │
-│  ├── Weather and atmosphere (§6)                                           │
+│  ├── Weather and atmosphere (§4.6)                                           │
 │  ├── Settlement economy (trade, population, resource stockpiles)             │
 │  ├── Crafting validation (interaction engine runs server-side)               │
 │  └── Death, loot drops, respawn timing                                       │
 │                                                                              │
 │  BROADCAST TO CLIENTS:                                                       │
 │  ├── WORLD_SNAPSHOT (6 Hz): player positions, NPC positions, organism       │
-│  │   positions, weather state, settlement state                              │
-│  ├── PHYSICS_EVENT (as needed): SPH particle spawns/updates, material        │
+│  │   positions, settlement state                                             │
+│  ├── ENVIRONMENT_STATE (1 Hz): weather (wind speed/dir, rain rate,          │
+│  │   temperature, humidity, cloud cover), fire positions + intensities,      │
+│  │   river flow vectors, sun position, season. Drives client GPU shaders.   │
+│  ├── PARTICLE_UPDATE (30 Hz): delta-compressed positions, spatial LOD,       │
+│  │   spawn/kill events (~97 KB/s typical, ~549 KB/s peak eruption)          │
+│  ├── PHYSICS_EVENT (as needed): material                                     │
 │  │   reactions, temperature changes, terrain modifications                   │
 │  ├── SOUND_EVENT (as needed): physics event descriptors for audio            │
 │  │   { type, materialA, materialB, energy, position, contactNormal }        │
@@ -1141,12 +4320,13 @@ This is a real-world online simulation. The server is the world. The client is a
 │  ├── Visual rendering                                                        │
 │  │   ├── Terrain mesh from server-sent CHUNK_DATA (no local generation)      │
 │  │   ├── Player/NPC body meshes at server-provided positions                 │
-│  │   ├── SPH particle rendering (metaballs) from server particle positions   │
+│  │   ├── Fluid rendering: Tier 1 marching cubes / Tier 2 screen-space SSFR  │
+│  │   ├── Secondary particles (spray, foam, bubbles — client-generated)       │
 │  │   ├── Weather visuals (rain particles, snow, fog, clouds, lightning)      │
 │  │   ├── Lighting (sun position from season/time, torches, campfires)        │
 │  │   ├── Ocean shader (Gerstner waves — visual only, no physics)            │
-│  │   └── UI panels (inventory, workstation, map)                             │
-│  ├── Sound generation (§8.6)                                               │
+│  │   └── UI panels (inventory, craft, map)                                   │
+│  ├── Sound generation (§3.3)                                               │
 │  │   ├── Receives SOUND_EVENT from server                                    │
 │  │   ├── Computes audio parameters locally (pitch, volume, timbre)           │
 │  │   ├── Spatial audio positioning from server-provided source position      │
@@ -1168,7 +4348,7 @@ This is a real-world online simulation. The server is the world. The client is a
 
 - **Anti-cheat:** If the client computed reactions, a modified client could claim "I smelted gold from dirt." The server runs the reaction engine — the client only sees the result.
 - **Consistency:** Two players watching the same smelting see the same outcome because the server computed it once.
-- **Sound from physics:** Sound events are a byproduct of server physics. When an impact happens server-side, the server emits a `SOUND_EVENT` with the physics descriptor. The client's audio engine (§8.6) converts that into actual audio. The client hears what the server says happened — not what the client thinks happened.
+- **Sound from physics:** Sound events are a byproduct of server physics. When an impact happens server-side, the server emits a `SOUND_EVENT` with the physics descriptor. The client's audio engine (§3.3) converts that into actual audio. The client hears what the server says happened — not what the client thinks happened.
 
 #### Latency Mitigation
 
@@ -1214,7 +4394,7 @@ Per player, terrain modification:
   CHUNK_UPDATE:             ~10 KB per modified chunk  (rare — only when digging/building)
 
 Per player, video stream mode (when active):
-  H.264 hardware encoder (720p):      ~750 KB/s (~6 Mbit/s)    (replaces all other visual data)
+  H.264 NVENC (720p):      ~750 KB/s (~6 Mbit/s)    (replaces all other visual data)
   JPEG fallback:            ~2-3 MB/s                 (if MSE not supported)
   Sound data still sent separately as SOUND_EVENTs
 ```
@@ -1243,37 +4423,52 @@ Neither extreme is ideal. The hybrid approach uses each where it's strongest.
 │             waves, wind blowing through trees — the full living world      │
 │                                                                             │
 │  Server sends: WORLD_SNAPSHOT + CHUNK_DATA + ENTITY_UPDATE                 │
-│                + ENVIRONMENT_STATE (wind, rain, fire positions, flow       │
-│                  vectors, temperature field)                                │
+│                + ENVIRONMENT_STATE (wind speed/dir, rain rate, fire        │
+│                  positions, river flow vectors, temperature field)          │
 │  Client does:  Full 3D rendering with GPU shaders that make the world     │
 │                look REAL:                                                   │
 │                                                                             │
-│    TERRAIN:     Meshes with PBR materials, normal maps                     │
-│    OCEAN:       Gerstner wave shader — realistic waves responding to wind  │
-│                 Foam, Fresnel reflections, depth transparency, shore wash  │
-│    RIVERS:      Flow shader driven by server flow vectors, foam at rocks   │
-│    RAIN:        GPU particle system — 10,000+ raindrops, splash on contact│
-│    SNOW:        Particle system, accumulation shader on terrain            │
-│    FIRE:        Billboard particles, emissive glow, point light, smoke    │
-│    WIND:        Vertex displacement on grass and trees from server wind    │
-│    FOG:         Exponential distance fog from server weather               │
-│    CLOUDS:      Scrolling noise layers, density from server                │
-│    CHARACTERS:  Animated skeletal meshes at server positions               │
-│    LIGHTING:    Sun, dynamic shadows, point lights from fires/torches     │
-│    DAY/NIGHT:   Atmospheric scattering sky shader, stars at night         │
+│    TERRAIN:     Meshes from CHUNK_DATA with PBR materials, normal maps     │
+│    OCEAN:       Gerstner wave shader (already built) — realistic waves     │
+│                 that respond to wind speed/direction from server. Foam,     │
+│                 Fresnel reflections, depth transparency, shoreline wash.    │
+│    RIVERS:      Flow shader driven by server-provided flow vectors.        │
+│                 Scrolling normal maps, foam at rocks, speed variation.      │
+│    RAIN:        GPU particle system — 10,000+ raindrops as point sprites.  │
+│                 Splash particles on terrain contact. Puddle accumulation    │
+│                 shader on low terrain (heightmap depressions fill up).      │
+│    SNOW:        GPU particle system — slow falling, wind-affected.         │
+│                 Accumulation shader: terrain albedo lerps to white.         │
+│    FIRE:        Billboard particle system with noise-driven distortion.    │
+│                 Emissive glow, light emission (point light at fire pos).    │
+│                 Smoke: alpha-blended particles rising, wind-affected.       │
+│                 Ember sparks: tiny emissive particles with short life.      │
+│    WIND:        Vertex shader displacement on vegetation (grass, trees).   │
+│                 Amplitude and frequency from server wind speed.             │
+│    FOG:         Exponential distance fog with density from server weather.  │
+│    CLOUDS:      Scrolling noise layers at altitude, density from server.   │
+│    LIGHTNING:   Bright flash + branching line geometry (rare, storm only).  │
+│    CHARACTERS:  Animated skeletal meshes at server-provided positions.      │
+│    OBJECTS:     Static meshes with PBR materials.                           │
+│    LIGHTING:    Sun from orbital position, dynamic shadows, ambient.       │
+│                 Point lights from fires/torches with flicker.               │
+│    DAY/NIGHT:   Sky shader with atmospheric scattering. Stars at night.    │
 │                                                                             │
-│  The world looks FULLY REAL in Mode 1. A player on a beach sees waves     │
-│  crashing, foam washing up, rain falling, wind bending grass, firelight   │
-│  flickering. This is the normal, full-quality game experience.             │
+│  The world looks FULLY REAL in Mode 1. A player standing on a beach sees  │
+│  waves crashing, foam washing up, rain falling, wind bending grass,        │
+│  firelight flickering in the distance, clouds moving overhead. This is     │
+│  NOT a degraded view. This is the normal, full-quality game experience.    │
 │                                                                             │
-│  What the client CANNOT do in Mode 1 (only interactive physics):           │
-│    - SPH fluid the player is actively pouring or mixing                    │
+│  What the client CANNOT do in Mode 1:                                      │
+│  Only things that require INTERACTIVE physics simulation results:           │
+│    - SPH fluid that the player is actively pouring or mixing               │
 │    - Molten metal flowing into a mold (shape depends on simulation)        │
 │    - Material deforming under hammer blows (precision craft)               │
 │    - Clay being shaped on a wheel (player-driven deformation)              │
+│  These need the server to compute what happens and show the result.        │
 │                                                                             │
 │  Bandwidth: ~15 KB/s steady + ~90 KB burst for new chunks                  │
-│  Client needs: GPU (any modern integrated GPU handles these shaders)       │
+│  Client needs: GPU (any modern integrated GPU handles all these shaders)   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
@@ -1282,28 +4477,33 @@ Neither extreme is ideal. The hybrid approach uses each where it's strongest.
 │  MODE 2: Video Stream (only for interactive physics, ~10% of play time)    │
 │                                                                             │
 │  Used ONLY when the player is directly interacting with physics:            │
-│    - Precision crafting: shaping clay, knapping flint, forging metal       │
+│    - Precision crafting (§6.4): shaping clay, knapping flint, forging   │
 │    - Pouring liquid from one container to another                           │
 │    - Smelting: watching ore melt and metal separate from slag               │
 │    - Active lava flow deforming terrain in front of the player              │
+│    - Any moment where the visual result depends on real-time simulation    │
 │                                                                             │
-│  NOT used for: ocean waves, campfire, rain, walking through forest —       │
-│                all of these look great in Mode 1 with GPU shaders.          │
+│  NOT used for: watching ocean waves, standing near a campfire, rain,       │
+│                walking through a forest, watching NPCs work — all of       │
+│                these look great in Mode 1 with GPU shaders.                 │
 │                                                                             │
-│  Server does: renders the scene on its GPU                                 │
-│               encodes H.264 via hardware encoder                            │
+│  Server does: renders the scene on its GPU using server-side 3D renderer   │
+│               encodes H.264 via hardware encoder (or JPEG fallback)        │
 │               streams frames over WebSocket                                 │
-│  Client does: decodes video and displays it                                │
+│  Client does: decodes video via MSE and displays in <video> element        │
 │               still captures and forwards player input                      │
-│               still plays sound from SOUND_EVENTs                           │
+│               still plays sound from SOUND_EVENTs (not from video audio)   │
 │                                                                             │
 │  Bandwidth: ~750 KB/s (H.264) or ~2-3 MB/s (JPEG fallback)               │
 │  Server needs: GPU with hardware encoder                                   │
 │  Client needs: just a browser (no GPU required)                            │
 │                                                                             │
 │  Why video is needed here: the player is CREATING the visual result.       │
-│  When you pour copper into a mold, the shape depends on SPH simulation.    │
-│  A shader can't fake that — it must be computed and shown.                  │
+│  When you pour copper into a mold, the shape of the liquid depends on      │
+│  SPH simulation. A shader can't fake that — it must be computed.           │
+│  When you hammer metal on an anvil, each blow deforms the mesh in a        │
+│  way that depends on force, angle, temperature. Only the server knows      │
+│  the result. So the server renders it and streams the image.               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1316,8 +4516,8 @@ The switch between modes is triggered by **the player's actions**, not by scene 
 Mode Switch Triggers {
   // ── State → Video (player enters a physics-heavy context) ─────────────────
 
-  trigger_1: "Player presses F at a workstation"
-    // Camera zooms into the workstation (§8.14 precision craft mode)
+  trigger_1: "Player initiates precision interaction with materials/arrangements"
+    // Camera zooms into the craft arrangement (§6.4 precision craft mode)
     // During the zoom animation (0.5s), the server:
     //   1. Starts rendering this player's view on the GPU
     //   2. Begins encoding H.264 frames
@@ -1341,7 +4541,7 @@ Mode Switch Triggers {
 
   // ── Video → State (physics event ends) ────────────────────────────────────
 
-  trigger_4: "Player exits workstation (ESC or walks away)"
+  trigger_4: "Player exits precision craft mode (ESC or walks away)"
     // Camera zooms out
     // During zoom out (0.5s), server:
     //   1. Sends final state update (what changed: new items, terrain mods)
@@ -1360,190 +4560,3142 @@ Mode Switch Triggers {
 }
 ```
 
-##### Implementation — How It Actually Works
+##### Implementation Overview
 
-The hybrid system works as follows:
+The server renders video on-demand using a headless GPU renderer + hardware H.264 encoder. Video rendering only activates for players currently in precision craft mode or near active physics — the server does NOT render for all players all the time. A player in state mode costs zero GPU resources.
 
-```
-Server Side (Node.js + server-side renderer + hardware encoder):
+Key design points:
+- The 3D scene is always maintained in background, even during video mode, so switching back is instant
+- State data (world snapshots, entity updates) continues flowing during video mode
+- Input is always captured and sent to server regardless of mode
+- The transition uses a camera zoom + crossfade that hides any visual discontinuity
 
-  // The server already has:
-  //   - server-side renderer creating a WebGL context
-  //   - Three.js rendering scenes
-  //   - video encoder hardware_h264 encoding frames at ~3-8ms per frame
-  //   - WebSocket transport for binary frame data
-  //   - Per-player camera management
-
-  // What's new for hybrid mode:
-  //   - The server does NOT render video for all players all the time
-  //   - Video rendering is ON-DEMAND, per player, only during physics moments
-  //   - Each player has a videoMode: boolean flag
-
-  class PlayerSession {
-    videoMode: boolean = false           // starts in state mode
-    camera: THREE.PerspectiveCamera      // player's view (always maintained)
-    ffmpegProcess: ChildProcess | null   // spawned only when videoMode = true
-
-    enterVideoMode() {
-      this.videoMode = true
-      // Spawn video encoder hardware encoder encoder for this player
-      this.ffmpegProcess = spawn('ffmpeg', [
-        '-f', 'rawvideo', '-pix_fmt', 'rgba',
-        '-s', '1280x720', '-r', '30',       // 720p at 30fps
-        '-i', 'pipe:0',                       // raw frames from stdin
-        '-c:v', 'hardware_h264',                 // NVIDIA hardware encoder
-        '-preset', 'p4',                      // balanced quality/speed
-        '-tune', 'ull',                       // ultra-low-latency
-        '-b:v', '4M',                         // 4 Mbit/s bitrate
-        '-f', 'mp4',
-        '-movflags', 'frag_keyframe+empty_moov',
-        'pipe:1'                              // fragmented MP4 to stdout
-      ])
-      // video encoder stdout → WebSocket binary frames to client
-      this.ffmpegProcess.stdout.on('data', chunk => {
-        this.ws.send(chunk)                   // binary frame to browser
-      })
-      // Send mode switch message
-      this.ws.send(JSON.stringify({ t: 'mode', mode: 'video' }))
-    }
-
-    exitVideoMode() {
-      this.videoMode = false
-      if (this.ffmpegProcess) {
-        this.ffmpegProcess.stdin.end()        // graceful shutdown
-        this.ffmpegProcess = null
-      }
-      this.ws.send(JSON.stringify({ t: 'mode', mode: 'state' }))
-    }
-  }
-
-  // Render loop (runs at 30 Hz for video-mode players only):
-  function renderVideoFrames() {
-    for (const session of activeSessions) {
-      if (!session.videoMode) continue        // skip state-mode players — no rendering needed
-
-      // Position camera at player's view
-      renderer.render(scene, session.camera)
-
-      // Read pixels from GPU
-      const pixels = new Uint8Array(1280 * 720 * 4)
-      gl.readPixels(0, 0, 1280, 720, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-
-      // Feed to this player's video encoder process
-      session.ffmpegProcess.stdin.write(Buffer.from(pixels))
-    }
-  }
-
-  // Server cost: rendering ONLY happens for players in video mode
-  // If 50 players are online but only 3 are at workstations, only 3 get rendered
-  // dedicated GPU can handle ~8-10 simultaneous 720p renders at 30fps
-```
-
-```
-Client Side (Browser):
-
-  class GameClient {
-    mode: 'state' | 'video' = 'state'
-    threeCanvas: HTMLCanvasElement           // 3D rendering (always exists)
-    videoElement: HTMLVideoElement           // MSE video playback
-    mediaSource: MediaSource                 // for H.264 decoding
-    sourceBuffer: SourceBuffer | null
-
-    // 3D scene is ALWAYS maintained, even during video mode
-    // This means switching back to state mode is instant — no loading
-    threeScene: THREE.Scene
-    threeRenderer: THREE.WebGLRenderer
-
-    onMessage(data) {
-      if (typeof data === 'string') {
-        const msg = JSON.parse(data)
-
-        if (msg.t === 'mode') {
-          this.switchMode(msg.mode)
-          return
-        }
-
-        // State data — always processed, even during video mode
-        if (msg.t === 'snapshot') this.updateSceneFromSnapshot(msg)
-        if (msg.t === 'chunk')    this.loadChunkData(msg)
-        if (msg.t === 'sound')    this.playSound(msg)
-        if (msg.t === 'entity')   this.updateEntity(msg)
-      } else {
-        // Binary data = video frame (only arrives during video mode)
-        if (this.sourceBuffer && !this.sourceBuffer.updating) {
-          this.sourceBuffer.appendBuffer(data)
-        }
-      }
-    }
-
-    switchMode(newMode: 'state' | 'video') {
-      if (newMode === this.mode) return
-
-      if (newMode === 'video') {
-        // Crossfade: 3D canvas fades out, video fades in
-        this.threeCanvas.style.transition = 'opacity 0.4s'
-        this.threeCanvas.style.opacity = '0'
-        this.videoElement.style.transition = 'opacity 0.4s'
-        this.videoElement.style.opacity = '1'
-        this.videoElement.style.display = 'block'
-        // Start MSE pipeline
-        this.initMSE()
-      } else {
-        // Crossfade: video fades out, 3D canvas fades in
-        this.videoElement.style.opacity = '0'
-        this.threeCanvas.style.opacity = '1'
-        // 3D scene is already up-to-date (state data kept flowing during video mode)
-        setTimeout(() => {
-          this.videoElement.style.display = 'none'
-          this.cleanupMSE()
-        }, 400)
-      }
-
-      this.mode = newMode
-    }
-
-    // Input is ALWAYS captured and sent to server, regardless of mode
-    // In state mode: server uses input to update player position
-    // In video mode: server uses input for precision craft (mouse on work surface)
-  }
-```
-
-##### Why This Works
+##### FAQ
 
 | Concern | Answer |
 |---------|--------|
 | "How does the client show SPH particles?" | It doesn't. When physics is active, the server renders it and streams video. The client sees pixel-perfect fluid. |
-| "Doesn't video streaming need an expensive GPU server?" | Only for the ~10% of time when players are at workstations or near active physics. The dedicated GPU you already have handles ~8-10 concurrent video streams. |
-| "What about latency in video mode?" | hardware encoder encoding: ~3-8ms. Network: ~20-50ms. MSE decode: ~5ms. Total: ~30-60ms. For precision crafting (slow, deliberate actions), this is imperceptible. |
-| "What if 50 players all use workstations at once?" | The server queues rendering. At 30fps each, 10 players max at 720p on a single GPU. Beyond that: lower resolution, lower framerate, or add a second GPU. In practice, most players are walking around (state mode = zero GPU cost). |
+| "What about latency in video mode?" | Hardware encoding: ~3-8ms. Network: ~20-50ms. Decode: ~5ms. Total: ~30-60ms. For precision crafting (slow, deliberate actions), this is imperceptible. |
 | "What does the transition look like?" | Player presses F at bloomery → camera zooms in → 0.4s blur/fade → video appears. The zoom motion and blur hide the switch. Looks intentional, not glitchy. |
-| "Can the 3D scene get out of sync during video mode?" | No — state data (WORLD_SNAPSHOT, CHUNK_UPDATE, ENTITY_UPDATE) continues flowing during video mode. The 3D scene updates silently in the background. When switching back, it's already current. |
-| "What if the player has no GPU at all?" | They can stay in video mode permanently — the server renders everything. This is the full cloud gaming fallback. Bandwidth cost: ~750 KB/s constant. Playable on a Chromebook. |
+| "Can the 3D scene get out of sync during video mode?" | No — state data continues flowing during video mode. The 3D scene updates silently in the background. When switching back, it's already current. |
+| "What if the player has no GPU at all?" | They can stay in video mode permanently — the server renders everything. This is the full cloud gaming fallback. Playable on a Chromebook. |
 
-##### Server Hardware Requirements
+### 3.6 Cross-System Connections — Complete Data Flow Map
 
-```
-For state mode only (no video):
-  Node.js server (no GPU needed)
-  Handles 50+ players at ~650 KB/s total
+Every system in the game sends data to other systems. There are 99 connections total (45 critical + 54 moderate). The full specification includes exact data structures, trigger conditions, conversion formulas, and edge cases for every connection. Below is the complete list by name and priority.
 
-For hybrid mode (state + video):
-  GPU server with NVIDIA card + hardware encoder
-  Requires dedicated GPU server
-  Capacity per GPU:
-    720p @ 30fps: ~8-10 concurrent video streams
-    480p @ 30fps: ~15-20 concurrent video streams
-    720p @ 15fps: ~15-20 concurrent video streams (lower framerate for less intense moments)
-
-  Scaling:
-    50 players, 5 at workstations → 5 video streams → 1 GPU handles it easily
-    50 players, 15 at workstations → need 2 GPUs or lower resolution
-    100 players → additional dedicated GPU server
-```
-
-
+If a connection between two systems isn't listed here, it doesn't exist.
 
 ---
+
+#### Critical Connections (45)
+
+| # | Connection | Direction |
+|---|-----------|-----------|
+| 1 | Sound Event Generation | Physics Tick → Sound Engine |
+| 2 | Weather Shelter Detection | Structural Physics → Player Stats |
+| 3 | Organism/Animal Death → MaterialPacket Conversion | Organism System → Material System |
+| 5 | NPC Crafting API | NPC Brain → Crafting System |
+| 6 | NPC Building Placement | NPC Brain → Structural Physics |
+| 7 | Fire Spread Between Structures | Temperature System → Structural Physics |
+| 10 | Precision Craft → Functional Properties | Crafting → Material Properties |
+| 11 | Sharpness — Object Geometry Property | Material System → Combat |
+| 12 | Combat → Tool and Armor Durability | Combat → Material State |
+| 13 | Combat → Bleed Rate | Combat → Player Stats |
+| 14 | Barter Exchange Rate | Material Properties → Trade |
+| 15 | Player-NPC Trade Interface | Player → Settlement Economy |
+| 33 | Martensite → Fluid Quenching | Phase Transitions → Material Crystal Structure |
+| 41 | Rotational Physics ← Fluid Forces | Fluid Sim → Rotational Mechanics |
+| 42 | Rotational Physics → Structural Loads | Rotational Mechanics → Structural Physics |
+| 43 | Combustion → Piston → Rotation | Reaction Engine → Rotational Mechanics |
+| 45 | Drag on Rigid Bodies | Aerodynamics → Rigid Body Physics |
+| 46 | Drag to Combat Damage | Aerodynamics → Combat System |
+| 48 | Rope Tension → Structural Loads | Rope Physics → Structural Physics |
+| 49 | Rope + Pulley → Mechanical Advantage | Rope Physics → Rotational Mechanics |
+| 50 | Bow Energy → Projectile Velocity | Rope Physics → Projectile System |
+| 52 | Gas Pressure → Piston Force | Fluid Sim → Heat Engine |
+| 53 | Piston → Crankshaft Rotation | Heat Engine → Rotational Mechanics |
+| 55 | Lens Geometry → Magnification | Optics → Rendering |
+| 56 | Concave Mirror → Solar Concentration | Optics → Temperature System |
+| 58 | Battery Voltage from Electrode Potentials | Material Properties → Electromagnetism |
+| 59 | Current → Resistive Heating | Electromagnetism → Temperature System |
+| 60 | Generator ← Rotational Mechanics | Rotational Mechanics → Electromagnetism |
+| 61 | Motor → Rotational Mechanics | Electromagnetism → Rotational Mechanics |
+| 62 | Electrolysis → Reaction Engine | Electromagnetism → Reaction Engine |
+| 73 | Atmospheric Temperature → Heat Transfer Ambient | Atmosphere → Temperature Propagation |
+| 74 | Ore Block Mining → MaterialPacket Creation | Terrain → Material System |
+| 75 | Terrain Rock → MaterialPacket Composition | Geology → Material System |
+| 76 | Crop Nutrient Uptake via Reaction Engine | Farming → Reaction Engine |
+| 85 | Settlement Trade Valuation ← Clarke Numbers | Material Properties → Economy |
+| 86 | NPC-Built Arrangements → CraftEnvironment Sampling | NPC Brain → Crafting |
+| 90 | Production Processes → Reaction Engine | Production → Reaction Engine |
+| 91 | Craft Environment Sampling → Temperature Propagation | Crafting → Temperature |
+| 92 | Craft Environment → Containment and Atmosphere | Crafting → Reaction Engine |
+| 94 | Skeleton Bone Strength → Structural Fracture Mechanics | Body Sim → Structural Physics |
+| 95 | Body Temperature Regulation → Stage 1 Heat Exchange | Body Sim → Temperature |
+| 98 | Fall Damage → Terminal Velocity + Bone Strength | Physics → Body Sim |
+
+#### Moderate Connections (54)
+
+| # | Connection |
+|---|-----------|
+| 4 | Animal Manure Production |
+| 8 | Rain → Physical Water (Grid Volume) |
+| 9 | Evaporation → Weather Humidity |
+| 16 | Wind → Structural Force |
+| 17 | Weather → NPC Brain String |
+| 18 | Lightning Effects Chain |
+| 19 | Snow Depth → Movement Speed |
+| 20 | Pest System for Farming |
+| 21 | Soil Erosion Conversion |
+| 22 | Clothing Warmth Combination |
+| 23 | Swimming Buoyancy Formula |
+| 24 | Sleep Waking Threshold |
+| 25 | Video Mode SPH Count Check |
+| 26 | ENVIRONMENT_STATE Message Schema |
+| 27 | Volcanic Eruption Triggers |
+| 28 | Biome → Initial Organism Spawning |
+| 29 | Cooking Temperature → Calorie Multiplier |
+| 30 | NPC Fitness Changes |
+| 31 | NPC Structural Decay Detection |
+| 32 | Work Hardening → Tool Quality |
+| 34 | Galvanic Corrosion → Structural Bond Decay |
+| 35 | Capillary Action → Structural Rising Damp |
+| 36 | Fatigue → Tool Degradation |
+| 37 | Ductility → Seasonal Structural Risk |
+| 38 | Creep → High-Temperature Structural Deformation |
+| 39 | Helmholtz Resonance → Wind Sound |
+| 40 | Precipitation Hardening → Material Quality over Time |
+| 44 | Rotational Physics → Sound |
+| 47 | Fletching/Spin to Stability |
+| 51 | Wind on Ropes |
+| 54 | Heat Engine Efficiency → Fuel Consumption |
+| 57 | refractiveIndex → Gameplay Optics |
+| 63 | Aerodynamic Drag Torque on Rotating Assemblies |
+| 64 | Rope Physics → Sound Events |
+| 65 | Heat Engine Thermoacoustic Events → Sound |
+| 66 | Electromagnetism → Sound Events |
+| 67 | Electrolysis → Gas-Phase Fluid Particles |
+| 68 | Fluid Medium Query for Drag |
+| 69 | Irrigation Channel Flow → Soil Moisture |
+| 70 | Geological Deposit Mining → MaterialPacket Creation |
+| 71 | Lightning Discharge → Electromagnetism System |
+| 72 | Composting → Reaction Engine (Organic Decomposition) |
+| 77 | Aquatic Organism ↔ Fluid Interaction |
+| 78 | Live Animal Product Harvest → MaterialPacket |
+| 79 | Weather Precipitation → Material Moisture |
+| 80 | Water Body Temperature → Freezing |
+| 81 | NPC Learning Curve ← Process Complexity |
+| 82 | NPC Physics Observation → Discovery Memory |
+| 83 | NPC Building → Load Path Validation |
+| 84 | NPC Speech Intent → Voice Synthesis Pipeline |
+| 87 | Settlement Temperature Thresholds ← Melting Points |
+| 88 | NPC Craft Failure → Outcome Feedback Loop |
+| 89 | Structural Collapse → NPC Threat Memory |
+| 93 | Anvil Surface Hardness → Material Properties |
+| 96 | Terrain Dig Rate → Material Hardness |
+| 97 | Combat Kinetic Energy → Material Mass and Density |
+| 99 | Swimming Movement → Fluid Simulation + Drag |
+
+> The full specification document contains the complete data structures, trigger conditions, conversion formulas, algorithms, and edge cases for each of these 99 connections.
+
+
+
+### 3.7 System-Wide Optimization — Making It All Run in Real-Time
+
+The physics systems described in §3.1–3.5 are correct but expensive. Running them naively would consume multiple CPU cores and gigabytes of RAM. This section specifies the optimization strategies that make the simulation fit within real-time budgets on a single server machine.
+
+#### Tick Scheduling — What Runs When
+
+Not all physics stages need to run at the same frequency. The unified physics tick (§3.0) is actually a multi-rate pipeline:
+
+```
+TickScheduler {
+  // ── High frequency (60 Hz) ────────────────────────────────────────────
+  // Only for systems where the player notices per-frame changes:
+  //   Stage 4a: SPH crafting (100-5,000 particles near a craft interaction)
+  //   Stage 6: Rigid body physics (dropped items, debris in flight)
+  //   Stage 7: Sound events (impacts need immediate audio response)
+  //   Stage 8: Broadcast (client needs smooth position updates)
+  //
+  // Budget per tick at 60 Hz: 16.67ms total, physics gets ~8ms max
+
+  // ── Medium frequency (30 Hz) ──────────────────────────────────────────
+  // Systems that change smoothly and tolerate half-rate updates:
+  //   Stage 1: Temperature propagation (heat changes are gradual)
+  //   Stage 4b: MPM environment particles (player sees bulk flow, not individual frames)
+  //   Stage 5: Structural integrity (only on change events, not every tick)
+  //
+  // Budget per tick at 30 Hz: 33.3ms, physics gets ~16ms max
+
+  // ── Low frequency (1-10 Hz) ───────────────────────────────────────────
+  // Slow-changing systems where updates are imperceptible per-frame:
+  //   Stage 2: Phase transitions (melting/freezing takes seconds to minutes)
+  //   Stage 3: Reaction engine (chemical reactions are not instantaneous)
+  //   Stage 4c: Grid-based regional water flow (Manning's equation, slow rivers)
+  //   Structural decay (rain damage, freeze-thaw — per game-day)
+  //
+  // Budget: 100-1000ms per tick, runs in background
+
+  // ── On-demand (event-driven) ──────────────────────────────────────────
+  // Systems that only run when triggered:
+  //   Structural integrity recalculation (block placed/removed/damaged)
+  //   Arch detection (structure modified)
+  //   Beam detection (structure modified)
+  //   Phase transition check (temperature crosses threshold)
+  //   Reaction check (new material contact detected)
+  //
+  // Cost: per-event, amortized across frames
+
+  // ── Dependency graph (what must finish before what starts) ─────────────
+  //
+  //   Temperature (Stage 1) must finish before Phase Transitions (Stage 2)
+  //     because phase checks need updated temperatures.
+  //   Phase Transitions must finish before Reaction Engine (Stage 3)
+  //     because newly liquid materials may react differently.
+  //   Reactions must finish before Fluid Sim (Stage 4)
+  //     because reactions may spawn gas (bubbles) or change viscosity.
+  //   Fluid Sim must finish before Structural (Stage 5)
+  //     because fluid loads affect structures (hydrostatic pressure).
+  //   Structural must finish before Rigid Body (Stage 6)
+  //     because collapsed blocks become debris.
+  //   All above must finish before Sound (Stage 7)
+  //     because sound events are generated from all previous stages.
+  //   Sound finishes before Broadcast (Stage 8).
+  //
+  //   HOWEVER: stages at different frequencies can OVERLAP.
+  //   While a 30 Hz MPM tick is computing, the 60 Hz SPH tick can run
+  //   independently (different particle pools, no shared state).
+  //   Temperature propagation (30 Hz) can overlap with rigid body (60 Hz)
+  //   because they operate on different data.
+  //
+  //   Parallelizable pairs (no data dependency):
+  //     SPH crafting || Rigid body physics (different objects)
+  //     Temperature || Sound synthesis (read-only access to positions)
+  //     Grid water || MPM particles (different scales, different data)
+  //
+  //   CROSS-SYSTEM CASCADE NOTE:
+  //   A structural collapse (Stage 5) that releases contained water spawns
+  //   MPM particles (fluid system). Those particles apply hydrostatic pressure
+  //   to downstream structures — but that structural check happens in the NEXT
+  //   tick's Stage 5, not the current one. This means structural-fluid-structural
+  //   cascades span 2+ ticks. This is correct behavior: the water needs one tick
+  //   to flow before it can push on the next structure. Each tick advances the
+  //   cascade by one step, creating a realistic propagation delay.
+  //
+  //   Sequential pairs (must wait):
+  //     Temperature → Phase transitions → Reactions → Fluid
+  //
+  // ── Additional systems (§3.8-§3.13) ────────────────────────────────────
+  //
+  //   Rotational mechanics (§3.8): runs within Stage 6 at 60 Hz
+  //     Joint constraint solving: 4-8 iterations per tick
+  //     Cost: ~0.06 ms for 6 joints, up to 1 ms for 100 joints
+  //
+  //   Projectile aerodynamics (§3.9): runs within Stage 6 at 60 Hz
+  //     One drag force per active rigid body
+  //     Cost: negligible (~0.0002 ms for 100 objects)
+  //
+  //   Rope/cable physics (§3.10): runs as Stage 6b at 60 Hz
+  //     Verlet integration + constraint solving, 4-8 iterations
+  //     Cost: ~0.2 ms for 100 ropes
+  //
+  //   Heat engines (§3.11): emergent from existing stages
+  //     Ideal gas law in Stage 4 (fluid), combustion in Stage 3 (reactions)
+  //     Piston force in Stage 6 (rigid body joints)
+  //     No separate stage needed
+  //
+  //   Optics (§3.12): mostly client-side (lens/telescope rendering)
+  //     Solar concentration: computed in Stage 1 (heat injection at focal point)
+  //     Cost: < 0.1 ms per frame (client), negligible server-side
+  //
+  //   Electromagnetism (§3.13): runs as Stage 1b at 30 Hz
+  //     Circuit graph solving (event-driven rebuild, per-tick current solve)
+  //     Magnetic field computation (cached, updated when magnets/current change)
+  //     Joule heating feeds into Stage 1 temperature propagation
+  //     Cost: 0.2-1.0 ms per tick when electrical systems exist near players
+  //     Fluid → Structural → Rigid body → Sound → Broadcast
+}
+```
+
+#### Property Calculator Caching
+
+Computing 44 material properties from elemental composition is expensive (~50-100 floating point operations per property). Most MaterialPackets don't change composition between ticks.
+
+```
+PropertyCache {
+  // ── Cache strategy ────────────────────────────────────────────────────
+  //
+  // Each MaterialPacket stores a compositionHash (CRC32 of its composition map).
+  // When the property calculator is called:
+  //   if compositionHash == lastComputedHash AND temperature == lastComputedTemp:
+  //     return cached properties (0 cost)
+  //   else:
+  //     recompute all 44 properties (~0.005ms per packet)
+  //     store in cache, update hash
+  //
+  // In practice: 95%+ of packets have stable composition.
+  // Only packets actively being smelted, mixed, or reacting need recomputation.
+  //
+  // For a world with 100,000 MaterialPackets:
+  //   Without cache: 100,000 × 0.005ms = 500ms per tick — IMPOSSIBLE
+  //   With cache (5% dirty): 5,000 × 0.005ms = 25ms per tick — still heavy
+  //   With cache + tick spreading: 1,000 recomputed per tick × 0.005ms = 5ms — acceptable
+
+  // ── Temperature-dependent properties ──────────────────────────────────
+  //
+  // Some properties change with temperature (viscosity, specific heat, ductility).
+  // But temperature changes gradually — a packet that was 500°C last tick is
+  // probably 499-501°C this tick. Use linear interpolation between cached values
+  // at two reference temperatures instead of full recomputation:
+  //
+  //   cache stores: properties at T_low and T_high (bracketing the current temp)
+  //   interpolate: prop(T) = prop(T_low) + (T - T_low) × (prop(T_high) - prop(T_low)) / (T_high - T_low)
+  //   Only recompute when T moves outside the [T_low, T_high] bracket.
+  //   Bracket width: 50°C (recompute every ~50° of temperature change)
+
+  // -- Property Recomputation Triggers --------------------------------
+  //
+  // A MaterialPacket properties are recomputed when ANY of these change:
+  //
+  //   | Trigger                         | Threshold          | Properties affected |
+  //   |--------------------------------|-------------------|-------------------|
+  //   | Temperature change              | > 5C since last   | Viscosity, ductility, specific heat, thermal conductivity |
+  //   | Composition change              | Any change at all  | ALL 44 properties |
+  //   | workHardeningState change        | > 0.01 since last | Tensile/compressive strength, hardness |
+  //   | fatigueAccumulation change       | > 0.01 since last | Effective strength (reduced by damage) |
+  //   | crackLength change               | Any change        | Effective strength (fracture toughness) |
+  //   | Phase change                     | Always             | ALL properties (different phase = different behavior) |
+  //
+  //   Temperature threshold of 5C balances accuracy vs. cost:
+  //     At 1C: too many recomputations (most are negligible changes)
+  //     At 50C: viscosity could change 2x without recomputing (too coarse)
+  //     At 5C: viscosity changes ~5-10% per step (acceptable for gameplay)
+  //
+  //   Implementation: each packet stores lastRecomputedTemp and lastRecomputedCompositionHash.
+  //   Property access checks: abs(currentTemp - lastRecomputedTemp) > 5.0
+  //   If true: recompute and update cache. If false: return cached value.
+  //
+  //   Near phase boundaries (within 10°C of melting/boiling point):
+  //   the 5°C threshold is sufficient because phase transitions themselves
+  //   ALWAYS trigger full recomputation (see "Phase change | Always" above).
+  //   Temperature hovering 2-3°C below the melting point produces viscosity
+  //   values that are at most ~5% stale — imperceptible in gameplay.
+
+  // ── Spatial indexing for reaction checks ──────────────────────────────
+  //
+  // The reaction engine must check pairs of packets in contact.
+  // Naive: check every packet against every other → O(n²). Impossible.
+  //
+  // Solution: same spatial hash grid used by SPH (§3.2).
+  //   Each packet hashes its position. Only check packets in the same or
+  //   adjacent cells. Average neighbors: ~6-12 (face contacts in a grid world).
+  //
+  //   100,000 packets × 10 neighbor checks × 0.001ms per check = 1ms total.
+  //   Plus Gibbs energy computation for actual contact pairs: ~0.01ms per pair.
+  //
+  //   Further optimization: only check pairs where at least one packet's
+  //   temperature changed this tick (cold-cold pairs won't suddenly react).
+  //   This reduces checks by ~90% during steady state.
+}
+```
+
+#### Sound Engine Optimization
+
+The sound engine can generate hundreds of simultaneous events during action scenes (structural collapse, rainstorm, combat). WebAudio has a practical limit of ~100-200 active nodes before CPU saturation on mid-range hardware.
+
+```
+SoundOptimization {
+  // ── Polyphony management ──────────────────────────────────────────────
+  //
+  //   maxSimultaneousSources: configurable (default 32, range 8-64)
+  //   Each source uses ~20 WebAudio nodes
+  //   Total nodes at default: 32 × 20 = 640
+  //   Low-end hardware setting: 16 sources (320 nodes)
+  //   High-end: 64 sources (1280 nodes)
+  //   The degradation controller (§3.7) reduces this under load.
+  //
+  // When a new sound event arrives and all slots are full:
+  //   Priority ranking:
+  //     1. Distance to listener (closer = higher priority)
+  //     2. Energy (louder = higher priority)
+  //     3. Novelty (new sound types > repeated sounds)
+  //     4. Duration (short transients > long continuous sounds)
+  //
+  //   Steal the lowest-priority slot for the new sound.
+  //   Fade out the stolen sound over 10ms to avoid clicks.
+  //
+  // Continuous sounds (rain, wind, fire, water flow):
+  //   Limited to 8 simultaneous continuous sources.
+  //   These persist across frames — don't steal/replace every tick.
+  //   Update parameters (volume, pitch) in place.
+
+  // ── Distance culling ──────────────────────────────────────────────────
+  //
+  // Don't synthesize sounds the player can't hear:
+  //   audibleRange = sqrt(energy / minAudiblePower) × materialEfficiency
+  //   where minAudiblePower ≈ 10^-12 W/m² (threshold of hearing)
+  //
+  //   Typical ranges:
+  //     Footstep on stone: ~30m
+  //     Pickaxe impact: ~80m
+  //     Structural collapse: ~500m
+  //     Thunder: ~10,000m
+  //
+  //   If source distance > audibleRange: discard event entirely.
+  //   If source distance > 0.5 × audibleRange: reduce mode count from 20 to 5
+  //     (distant sounds don't need 20 overtones — the listener hears only
+  //     the fundamental + maybe 2 harmonics after atmospheric absorption).
+  //
+  // Cost savings: in a typical scene, ~80% of sound events are beyond
+  //   audible range and never processed. Of the remaining 20%, half use
+  //   reduced mode counts. Effective CPU load: ~20% of naive approach.
+
+  // ── Mode reduction for distant sounds ─────────────────────────────────
+  //
+  //   Within 10m: full 20 modes (all overtones, accurate timbre)
+  //   10-50m: 8 modes (fundamental + low harmonics)
+  //   50-200m: 3 modes (fundamental + 2nd harmonic only)
+  //   200m+: 1 mode (fundamental only, heavily low-passed)
+  //
+  //   This matches atmospheric absorption — high modes are inaudible at
+  //   distance anyway (§3.3 frequency-dependent absorption).
+}
+```
+
+#### Structural Physics Optimization
+
+```
+StructuralOptimization {
+  // ── Dirty-flag propagation ────────────────────────────────────────────
+  //
+  // Full BFS recomputation on every block change is wasteful for large structures.
+  // Use incremental dirty-flag propagation:
+  //
+  //   When a block changes (placed, removed, damaged):
+  //     1. Mark that block as dirty
+  //     2. Mark all blocks directly above it as dirty (load path affected)
+  //     3. DO NOT mark blocks below (their load only increases, doesn't invalidate)
+  //     4. Mark connected blocks in the same horizontal plane (lateral load redistribution)
+  //
+  //   Only recompute loads for dirty blocks, not the entire structure.
+  //   For a 1000-block castle with one block removed:
+  //     Full recompute: ~1000 blocks × 0.005ms = 5ms
+  //     Dirty propagation: ~50 blocks × 0.005ms = 0.25ms (20× faster)
+
+  // ── Structure sleeping ────────────────────────────────────────────────
+  //
+  // A structure that hasn't been modified for 10+ ticks is "sleeping."
+  // Skip ALL structural checks for sleeping structures.
+  // Wake triggers:
+  //   Block placed/removed near the structure
+  //   Impact event (combat, falling object)
+  //   Wind change (storm begins/ends)
+  //   Decay event (per game-day check)
+  //
+  // In a world with 500 structures, typically only 1-5 are awake at any time
+  // (the ones near active players or under construction).
+
+  // ── Articulation point cache ──────────────────────────────────────────
+  //
+  // Precompute articulation points (Tarjan's algorithm, O(V+E)) once when
+  // a structure is built or significantly modified. Cache the result.
+  //
+  // When a block is removed:
+  //   if removedBlock IS an articulation point:
+  //     full connectivity re-check needed (part of structure may float)
+  //   if removedBlock is NOT an articulation point:
+  //     structure remains connected — skip connectivity check entirely
+  //     only recompute loads on dirty blocks above
+  //
+  // ~70% of interior blocks in a typical structure are NOT articulation points.
+  // This skips the most expensive check (BFS connectivity) for 70% of removals.
+}
+```
+
+#### Memory Layout
+
+MaterialPackets are stored in a Structure of Arrays (SoA) binary format for cache-friendly access. All values of one property are stored together in a single Float32Array, enabling SIMD processing of 4-8 packets per instruction. This trades some memory for 50x faster property access compared to named-field lookups.
+
+> The full specification includes the complete SoA byte layout with all 53 arrays and access patterns.
+
+#### Memory Budget
+
+```
+MemoryBudget {
+  // ── Per-system memory allocation ──────────────────────────────────────
+  //
+  // Target: < 2 GB total for all physics systems (low-end server)
+  //
+  // MaterialPackets:
+  //   Size per packet: ~352 bytes in SoA format (see MaterialPacket Binary Format above). 53 arrays × 4 bytes = 212 bytes + 25 elements × 4 bytes = 100 bytes + 7 state values × 4 bytes = 28 bytes + 3 cache values × 4 bytes = 12 bytes.
+  //   Max active packets: 500,000 (world chunks loaded for all players)
+  //   Total: 500,000 × 352 = 176 MB
+  //
+  // Fluid particles:
+  //   Size per particle: 64 bytes (position, velocity, density, pressure, flags)
+  //   + 40 bytes optical properties
+  //   Max particles: 400,000
+  //   Total: 400,000 × 104 = 42 MB
+  //
+  // Spatial hash grid (shared by SPH + reaction engine):
+  //   Table size: ~1M entries × 8 bytes = 8 MB
+  //   Particle index buffer: 400,000 × 4 bytes = 1.6 MB
+  //   Total: ~10 MB
+  //
+  // Structural blocks:
+  //   Size per block: ~100 bytes (position, connections, material ref, state)
+  //   Max blocks (loaded chunks): 200,000
+  //   Total: 200,000 × 100 = 20 MB
+  //
+  // Grid-based regional water:
+  //   Size per cell: 32 bytes (volume, flow xy, temp, composition hash)
+  //   Max cells: 50,000
+  //   Total: 50,000 × 32 = 1.6 MB
+  //
+  // Sound event buffer:
+  //   Size per event: ~100 bytes
+  //   Max buffered: 256 events
+  //   Total: 25 KB (negligible)
+  //
+  // Screen-space render buffers (client GPU, not server RAM):
+  //   Depth + thickness + normals at 1080p: ~16 MB VRAM
+  //   Marching cubes grid (32³): ~0.5 MB VRAM
+  //
+  // ── TOTAL SERVER RAM ──────────────────────────────────────────────────
+  //
+  //   MaterialPackets:     176 MB
+  //   Fluid particles:      42 MB
+  //   Spatial hash:          10 MB
+  //   Structural blocks:     20 MB
+  //   Regional water:         2 MB
+  //   Property cache:         5 MB
+  //   Network buffers:        5 MB
+  //   Rust overhead:         16 MB
+  //   Joint/assembly data (§3.8):     ~2 MB (1000 joints × 200 bytes/joint)
+  //   Rope particles (§3.10):         ~1 MB (10,000 particles × 100 bytes)
+  //   Circuit graph (§3.13):          ~0.5 MB (100 nodes × 5 KB/node)
+  //   Optics cache (§3.12):           ~0.1 MB (lens parameters per object)
+  //   ─────────────────────────────
+  //   TOTAL:               ~280 MB
+  //
+  //   This is ~14% of the 2 GB target. Even with Node.js overhead (~300 MB),
+  //   game state (~200 MB), and NPC AI (~200 MB), total stays under 1 GB.
+  //   The 2 GB budget has headroom for growth.
+}
+```
+
+
+### 3.8 Rotational Mechanics & Mechanical Joints — How Machines Work
+
+#### The Principle
+
+Every machine in human history converts one type of motion into another. A waterwheel converts flowing water into rotating shaft power. A crankshaft converts reciprocating piston motion into rotation. A pulley converts pulling force into lifting force at a different ratio. A gear train converts fast rotation into slow-but-powerful rotation.
+
+The game's physics engine (§3.0-3.4) handles linear forces: gravity, pressure, compression, tension. But it has no concept of ROTATION. Without rotation, players cannot build wheels, axles, windmills, waterwheels, looms, catapults, or any engine. This section adds rotational physics.
+
+Nothing here is pre-defined. A "wheel" is not a game object — it is a roughly circular arrangement of blocks attached to an axle joint. A "gear" is a wheel with teeth. The physics determines whether the arrangement rotates, how fast, and with how much force.
+
+#### Rigid Body Assemblies — Groups of Blocks That Move Together
+
+A machine is a collection of structural blocks connected by joints. Some joints are rigid (the blocks move as one unit). Some joints allow rotation (hinges, axles). Some allow sliding (pistons, rails).
+
+```
+RigidAssembly {
+  // A rigid assembly is a group of structural blocks that are bonded together
+  // AND are not connected to the ground (they can move freely).
+  //
+  // Detection: when a group of blocks has no path to ground (BFS fails in §3.4)
+  // BUT the blocks are bonded to each other, they become a rigid assembly
+  // instead of individual debris.
+  //
+  // A rigid assembly has:
+  //   blocks: StructuralBlock[]         // all blocks in the assembly
+  //   mass: number                      // sum of block masses (kg)
+  //   centerOfMass: Vec3                // mass-weighted average position
+  //   momentOfInertia: Mat3             // 3×3 inertia tensor (kg·m²)
+  //
+  // In plain English: moment of inertia is how hard it is to spin something.
+  // A figure skater with arms out spins slowly (high moment of inertia).
+  // Pull arms in = spins fast (low moment of inertia). Same idea for wheels,
+  // flywheels, and gears. Heavy things far from the center = hard to spin.
+  //
+  // Moment of inertia tensor for a collection of point masses:
+  //   I_xx = Σ m_i × (y_i² + z_i²)
+  //   I_yy = Σ m_i × (x_i² + z_i²)
+  //   I_zz = Σ m_i × (x_i² + y_i²)
+  //   I_xy = -Σ m_i × x_i × y_i    (off-diagonal, same for xz, yz)
+  //   where (x_i, y_i, z_i) are positions relative to center of mass
+  //
+  // A cart with 4 wheels: 4 rigid assemblies (the wheels) connected to
+  // 1 rigid assembly (the frame) via 4 axle joints.
+  
+  // Linear motion (already in Stage 6):
+  //   F = m × a
+  //   v += (F / m) × dt
+  //   position += v × dt
+  
+  // Rotational motion (NEW):
+  //   τ = I × α   (torque = moment of inertia × angular acceleration)
+  //   ω += (τ / I) × dt   (angular velocity update)
+  //   orientation += ω × dt   (quaternion integration)
+  //
+  // Both linear and rotational are computed in Stage 6 (Rigid Body Physics).
+
+  Cd: number                          // drag coefficient, computed from aspect ratio (§3.9)
+  crossSectionalArea: number          // m², computed from bounding dimensions perpendicular to velocity
+  // Both computed once when assembly is created or changes shape.
+}
+```
+
+#### Joint Types — How Assemblies Connect
+
+```
+JointSystem {
+  // Joints connect two rigid assemblies (or one assembly to the ground).
+  // Each joint type constrains motion differently.
+
+  Joint {
+    assemblyA: RigidAssembly | 'ground'   // first connected body
+    assemblyB: RigidAssembly              // second connected body
+    anchorA: Vec3                          // connection point on A (local coordinates)
+    anchorB: Vec3                          // connection point on B (local coordinates)
+    type: JointType
+    friction: number                       // resistance to motion at the joint (0 = frictionless)
+    maxForce: number                       // force to break the joint (from MaterialPacket strength)
+  }
+
+  // ── HINGE JOINT (rotation around one axis) ────────────────────────────
+  //
+  // Allows rotation around a single axis. Used for:
+  //   Doors, gates, lids, levers, catapult arms, trebuchet beams
+  //
+  // Constraint: assemblies share one anchor point. One rotation axis is free.
+  //   All other motion (translation, other rotations) is locked.
+  //
+  //   HingeJoint extends Joint {
+  //     axis: Vec3                        // rotation axis (unit vector)
+  //     angle: number                     // current angle (radians)
+  //     angularVelocity: number           // rotation speed (rad/s)
+  //     minAngle: number                  // rotation limit (e.g., door: 0 to π)
+  //     maxAngle: number
+  //   }
+  //
+  //   Torque on a hinge: τ = r × F
+  //     where r = distance from hinge axis to the force application point
+  //     A lever with r = 2m and F = 100N produces τ = 200 N·m
+  //     Angular acceleration: α = τ / I_axis (moment of inertia about hinge axis)
+
+  // ── AXLE JOINT (continuous rotation) ───────────────────────────────────
+  //
+  // Allows unlimited rotation around one axis. Used for:
+  //   Wheels on a cart, waterwheel on a shaft, windmill blades, potter's wheel,
+  //   lathe spindle, drill bit, grindstone
+  //
+  // Difference from hinge: no angle limits (can spin freely).
+  // Friction determines how easily it rotates.
+  //
+  //   AxleJoint extends Joint {
+  //     axis: Vec3                        // rotation axis
+  //     angularVelocity: number           // current spin rate (rad/s)
+  //     friction: number                  // bearing friction (N·m per rad/s)
+  //       Dry wood-on-wood bearing: friction ≈ 5.0 (high — hard to turn)
+  //       Greased wood bearing: friction ≈ 0.5 (much better)
+  //       Bronze bearing: friction ≈ 0.1 (smooth — real historical bearing material)
+  //       Iron bearing: friction ≈ 0.3 (decent but rusts without oil)
+  //     // Bearing friction comes from the MaterialPacket of the bearing surfaces:
+  //     //   friction = frictionCoefficient(materialA, materialB) × normalForce × radius
+  //   }
+  //
+  //   Wheels: a circular assembly (or carved round block) on an axle joint.
+  //   The wheel's moment of inertia: I = 0.5 × m × r² (solid cylinder)
+  //   A 10kg wheel with radius 0.3m: I = 0.5 × 10 × 0.09 = 0.45 kg·m²
+  //
+  //   A waterwheel driven by flowing water:
+  //     Water pushes on the paddles with force F_water = 0.5 × ρ × v² × A
+  //     At distance r from the axle: torque τ = F_water × r
+  //     The wheel accelerates: α = τ / I
+  //     Friction at the bearing opposes rotation: τ_friction = friction × ω
+  //     Terminal angular velocity: ω_max = τ_drive / friction
+  //     Power output: P = τ × ω = (F_water × r) × ω (watts)
+
+  // ── SLIDER JOINT (linear motion along one axis) ────────────────────────
+  //
+  // Allows translation along one axis. Used for:
+  //   Pistons in cylinders, sliding doors, drawbridges, elevator platforms,
+  //   crossbow bolts (before release)
+  //
+  //   SliderJoint extends Joint {
+  //     axis: Vec3                        // sliding direction
+  //     position: number                  // current position along axis (m)
+  //     velocity: number                  // current sliding speed (m/s)
+  //     minPosition: number               // travel limit
+  //     maxPosition: number
+  //     friction: number                  // sliding friction
+  //   }
+  //
+  //   A piston in a cylinder:
+  //     Gas pressure pushes the piston: F = P × A_piston
+  //     The piston slides along the cylinder axis
+  //     Connected to a crankshaft via a connecting rod (hinge + axle)
+  //     Linear piston motion → rotational crankshaft motion
+
+  // ── BALL JOINT (rotation in all directions) ────────────────────────────
+  //
+  // Allows rotation around all three axes. Used for:
+  //   Shoulder joints (catapult sling), universal joints, steering linkages
+  //
+  //   BallJoint extends Joint {
+  //     orientation: Quaternion           // current orientation
+  //     angularVelocity: Vec3             // rotation rate (rad/s per axis)
+  //     coneAngle: number                 // maximum deflection from neutral (radians)
+  //   }
+
+  // ── FIXED JOINT (no motion — rigid connection) ─────────────────────────
+  //
+  // Already exists as mortared/fastened bonds in §3.4.
+  // Converts two assemblies into one.
+}
+```
+
+#### Power Transmission — Gears, Belts, and Chains
+
+```
+PowerTransmission {
+  // Machines often need to change the speed or torque of rotation.
+  // A waterwheel rotates slowly with high torque.
+  // A grindstone needs to rotate fast with lower torque.
+  // Gears, belts, and chains convert between them.
+
+  // ── GEAR MESH ──────────────────────────────────────────────────────────
+  //
+  // In plain English: a big gear driving a small gear makes the small one spin FASTER
+  // but with LESS force. A small gear driving a big gear is the opposite —
+  // slower but more powerful. Like bicycle gears: low gear = slow but easy to pedal
+  // uphill, high gear = fast but hard to pedal.
+  //
+  // Two wheels with interlocking teeth. Gear ratio = teeth_A / teeth_B.
+  //   ω_B = ω_A × (teeth_A / teeth_B)     // speed scales inversely with teeth count
+  //   τ_B = τ_A × (teeth_B / teeth_A)     // torque scales directly
+  //   Power is conserved: P = τ × ω is the same on both sides (minus friction losses)
+  //
+  // Teeth count is determined by the wheel's circumference and tooth spacing:
+  //   teeth = floor(circumference / toothPitch)
+  //   toothPitch depends on the material (finer teeth possible with harder material)
+  //     Wood teeth: toothPitch ≈ 0.05m (20 teeth per meter of circumference)
+  //     Iron teeth: toothPitch ≈ 0.02m (50 teeth per meter)
+  //
+  // Example: waterwheel (r=1m, 125 teeth) drives grindstone (r=0.2m, 25 teeth)
+  //   Gear ratio: 125/25 = 5:1
+  //   Waterwheel at 2 rad/s → grindstone at 10 rad/s (5× faster)
+  //   Waterwheel torque 500 N·m → grindstone torque 100 N·m (5× less)
+  //   Power both sides: 1000 W (conserved, minus friction)
+  //
+  // Detection: two axle joints whose wheels are close enough that their
+  //   circumferences overlap. The system checks: does wheel A's outer edge
+  //   intersect wheel B's outer edge? If yes → gear mesh detected.
+  //   The gear ratio comes from the circumferences (proportional to teeth count).
+  //
+  // Tooth strength: each gear tooth is a small structural block.
+  //   If transmitted torque exceeds tooth shear strength → tooth breaks off.
+  //   Wooden gears strip under high torque. Iron gears handle more.
+
+  // ── BELT/ROPE DRIVE ────────────────────────────────────────────────────
+  //
+  // A belt or rope wrapped around two wheels transmits rotation.
+  // Same speed ratio as gears (based on wheel radii), but:
+  //   Can slip under high torque (limited by friction × normal force)
+  //   Can transmit over distance (pulleys don't need to touch)
+  //   Can cross (figure-8 wrap reverses rotation direction)
+  //
+  //   Belt slip condition: transmitted torque > μ × T_belt × r
+  //     where T_belt = belt tension (from the rope/belt MaterialPacket's tensile strength)
+  //     μ = friction between belt and wheel surface
+  //     If torque exceeds this → belt slips, no power transmitted
+  //
+  // Detection: a rope or belt entity connecting two axle joints.
+  //   The system checks: is a continuous rope/belt path between the two wheels?
+  //   Speed ratio = r_A / r_B (inverse of gear ratio — bigger wheel goes slower)
+
+  // ── CHAIN DRIVE ────────────────────────────────────────────────────────
+  //
+  // Like a belt but with rigid links. No slip (positive engagement).
+  // Requires sprockets (wheels with matching tooth spacing).
+  // Historical: first practical chain drives appeared ~1500s (da Vinci sketches).
+  // In-game: a player who makes interlocking metal links and wraps them
+  // around toothed wheels gets a chain drive.
+}
+```
+
+#### Constraint Solver Implementation
+
+```
+ConstraintSolver {
+  // Constraint solver implementation:
+  //   Use the Rapier physics crate (rapier3d via wasm-bindgen or napi-rs).
+  //   Rapier implements sequential impulse constraint solving with:
+  //     - Warm starting (reuse previous frame's impulses for faster convergence)
+  //     - Temporal coherence (joints that haven't changed skip re-solving)
+  //     - 4-8 velocity iterations + 1-2 position iterations per tick
+  //   This is the same algorithm used by Box2D, Bullet, and PhysX.
+  //
+  //   If building from scratch instead of using Rapier:
+  //     Position-Based Dynamics (PBD, Müller et al. 2007):
+  //       for each iteration:
+  //         for each joint constraint:
+  //           compute position correction to satisfy constraint
+  //           apply correction to both bodies (weighted by inverse mass)
+  //       Velocity = (newPosition - oldPosition) / dt
+  //     4 iterations: soft joints (rope-like). 8 iterations: rigid joints.
+}
+```
+
+#### Friction-Driven Motion — Wheels on Terrain
+
+```
+WheelMotion {
+  // A wheel on the ground converts rotation into translation.
+  // The contact point between wheel and terrain has zero velocity
+  // (rolling without slipping) — all the wheel's rotational velocity
+  // goes into forward motion of the axle.
+  //
+  // Rolling condition (no slip):
+  //   v_forward = ω × r_wheel
+  //   where ω = angular velocity (rad/s), r = wheel radius (m)
+  //
+  // Driving force (from engine torque through gears to wheel):
+  //   F_drive = τ_wheel / r_wheel
+  //   Maximum before wheel spin: F_drive ≤ μ_terrain × W_on_wheel
+  //     where μ_terrain = friction coefficient of the terrain surface
+  //     W_on_wheel = weight supported by this wheel (N)
+  //
+  //   Terrain friction coefficients:
+  //     Dry stone road: μ ≈ 0.7 (good traction)
+  //     Packed dirt: μ ≈ 0.5
+  //     Grass: μ ≈ 0.4
+  //     Wet mud: μ ≈ 0.2 (wheels spin, vehicle gets stuck)
+  //     Sand: μ ≈ 0.3 (sinks in — rolling resistance increases)
+  //     Ice: μ ≈ 0.05 (almost no traction)
+  //
+  // In plain English: wheels on a road lose energy because the road (or wheel)
+  // squishes slightly at the contact point. Hard wheel on hard road = very little loss
+  // (this is why paved roads changed everything). Wheel on soft mud = lots of loss
+  // (cart gets stuck). This is separate from friction — even a perfectly slippery
+  // wheel still has rolling resistance from deformation.
+  //
+  // Rolling resistance (energy lost to terrain deformation):
+  //   F_rolling = C_rr × W_on_wheel
+  //   C_rr depends on terrain and wheel:
+  //     Hard wheel on hard road: C_rr ≈ 0.002 (very low — this is why paved roads matter)
+  //     Hard wheel on packed dirt: C_rr ≈ 0.02
+  //     Hard wheel on soft ground: C_rr ≈ 0.1 (vehicle bogs down)
+  //     Pneumatic tire equivalent (if invented): C_rr ≈ 0.01 on any surface
+  //
+  // Vehicle speed:
+  //   At steady state: F_drive = F_rolling + F_air_drag
+  //   F_air_drag = 0.5 × ρ_air × v² × C_d × A_frontal
+  //   For a cart at 5 m/s: air drag is negligible. Rolling resistance dominates.
+  //   For faster vehicles: air drag becomes significant above ~10 m/s.
+  //
+  // Vehicle acceleration:
+  //   a = (F_drive - F_rolling - F_drag) / m_total
+  //
+  // Steering:
+  //   Front axle pivots on a vertical hinge joint (kingpin).
+  //   Ackermann geometry: inner wheel turns more than outer wheel on curves.
+  //   The game doesn't need to know "Ackermann" — the player builds a front axle
+  //   that pivots, and the physics handles the rest. If the geometry is wrong
+  //   (both wheels turn the same angle), the inner wheel scrubs (friction, wear).
+  //   The player learns to adjust through experimentation.
+}
+```
+
+#### Energy Sources — What Powers Machines
+
+```
+EnergySources {
+  // Machines need energy input. The game has several sources, all emergent:
+
+  // ── HUMAN/ANIMAL MUSCLE ────────────────────────────────────────────────
+  //   Player pushes/pulls: F = limited by stamina system (§7.2)
+  //   Draft animal: F ≈ 500-800N sustained for a horse, 200-400N for a human
+  //   Power: P = F × v ≈ 500 × 1 = 500W for a horse at walking speed
+  //   Connected to machines via rope/harness attached to a rotating beam (capstan)
+  //   or via a treadmill/treadwheel
+
+  // ── FLOWING WATER (waterwheel) ─────────────────────────────────────────
+  //   Water from the fluid simulation (§3.2) pushes on paddles
+  //   Force: F = 0.5 × ρ_water × v² × A_paddle × C_d
+  //   Overshot wheel (water pours from above): uses gravity, more efficient
+  //     F = ρ × g × h × Q  (h = head height, Q = flow rate m³/s)
+  //   Undershot wheel (current pushes paddles): uses kinetic energy, less efficient
+  //   A river flowing at 2 m/s with a 2m wide wheel:
+  //     F = 0.5 × 1000 × 4 × 2 × 1.2 = 4,800N
+  //     At r = 1m: τ = 4,800 N·m
+  //     Power: P ≈ 4,800 × 1 (wheel tip speed) ≈ 4,800W ≈ 6.4 HP
+  //   This is enough to power a grain mill, sawmill, or bellows
+
+  // ── WIND (windmill) ────────────────────────────────────────────────────
+  //   Wind from the weather system (§4.6) pushes on blades
+  //   Force per blade: F = 0.5 × ρ_air × v_wind² × A_blade × C_L
+  //     C_L = lift coefficient (~1.0 for a flat plate at optimal angle)
+  //   A windmill with 4 blades, each 3m long × 0.5m wide, in 8 m/s wind:
+  //     F_total ≈ 0.5 × 1.225 × 64 × 6 × 1.0 ≈ 235N
+  //     At r_effective = 2m: τ ≈ 470 N·m
+  //     Power: P ≈ 470 × 2 ≈ 940W ≈ 1.3 HP
+  //   Windmills are weaker than waterwheels but work anywhere with wind
+
+  // ── FALLING WEIGHT (clockwork, trebuchet) ──────────────────────────────
+  //   A heavy weight on a rope, wrapped around an axle
+  //   As the weight falls, it unwinds the rope and spins the axle
+  //   Energy: E = m × g × h (height of fall)
+  //   Power: P = E / t (spread over the time it takes to fall)
+  //   A 100kg weight falling 5m: E = 4,905 J
+  //   Over 60 seconds (clockwork): P = 82W (enough for a small mechanism)
+  //   Over 0.5 seconds (trebuchet release): P = 9,810W (massive burst)
+
+  // ── SPRING (stored elastic energy) ─────────────────────────────────────
+  //   A bent beam or twisted rope stores elastic energy
+  //   E = 0.5 × k × x²  (Hooke's law: k = spring constant, x = displacement)
+  //   A bent wooden bow (k ≈ 200 N/m, x ≈ 0.5m): E = 25 J → arrow at ~50 m/s
+  //   A torsion spring (twisted sinew rope): used in ballista, catapult
+  //   Spring constant computed from MaterialPacket's Young's modulus + geometry
+
+  // ── COMBUSTION (steam engine, internal combustion) ──────────────────────
+  //   Fuel + oxygen → hot gas → gas expansion → pushes piston
+  //   Already handled by §3.1 (reaction engine) + §3.2 (gas SPH particles)
+  //   The piston slider joint converts gas pressure into linear force
+  //   The crankshaft hinge+axle converts linear force into rotation
+  //   A simple steam engine:
+  //     Boil water in a sealed vessel (§3.2 phase transition)
+  //     Steam pressure pushes a piston (slider joint)
+  //     Piston drives a crankshaft (hinge joint)
+  //     Crankshaft drives a wheel (axle joint)
+  //     Power: P = steam pressure × piston area × stroke length × RPM
+  //   A player who independently invents this gets a working steam engine.
+  //   No blueprint needed — just the right arrangement of materials and joints.
+
+  // ── ELECTRICITY (late game, if player discovers it) ────────────────────
+  //   A rotating magnet near a coil induces electric current (Faraday's law)
+  //   Current through a wire creates a magnetic field (Ampere's law)
+  //   A motor is a generator run backwards
+  //   Implementation: if the material system tracks magnetic properties
+  //   (ferromagnetic materials: Fe, Ni, Co), and the game adds electromagnetic
+  //   coupling, then generators and motors emerge naturally.
+  //   Fully specified in §3.13 Electromagnetism.
+}
+```
+
+#### Performance Budget for Rotational Physics
+
+```
+RotationalPerformance {
+  // Joint constraint solving uses iterative position-based dynamics (PBD)
+  // or sequential impulse methods (same as rigid body engines like Rapier/PhysX).
+  //
+  // Cost per joint per tick:
+  //   Hinge: ~0.01ms (1 rotation constraint + 3 translation constraints)
+  //   Axle: ~0.01ms (same as hinge but no angle limits)
+  //   Slider: ~0.01ms (1 translation free, 2 locked + 3 rotation locked)
+  //   Ball: ~0.008ms (3 translation constraints only)
+  //   Gear mesh: ~0.005ms (angular velocity coupling)
+  //
+  // Typical machine: 5-20 joints (a cart has 4 axles + 2 steering hinges = 6)
+  // Cost: 6 × 0.01 = 0.06ms per tick at 60 Hz → negligible
+  //
+  // A complex machine (water-powered mill with gears):
+  //   Waterwheel axle (1) + 3 gear meshes + grindstone axle (1) + belt drive (1) = ~6 joints
+  //   Cost: 0.06ms → negligible
+  //
+  // Maximum practical complexity:
+  //   A player who builds a 100-joint Rube Goldberg machine:
+  //   100 × 0.01 = 1ms per tick at 60 Hz → still within budget
+  //
+  // Constraint solver iterations: 4-8 per tick (standard for game physics)
+  //   More iterations = more stable joints (less jitter)
+  //   Fewer iterations = cheaper but joints may drift
+  //   4 iterations is sufficient for most machines
+  //   8 iterations for precision mechanisms (clocks, engines)
+}
+```
+
+#### Edge Cases for Rotational Mechanics
+
+```
+RotationalEdgeCases {
+  // Edge cases:
+  //   Angular velocity exceeds material limit: centrifugal force tears the wheel apart.
+  //     Failure when: ρ × ω² × r² > tensileStrength (hoop stress in a spinning disk).
+  //     A wooden wheel (σ_t = 40 MPa, ρ = 600) fails at ω > √(40e6/600)/r.
+  //     At r=0.5m: ω > 258 rad/s (2465 RPM). Relevant for high-speed engines.
+  //   Gear tooth breakage: transmitted torque exceeds tooth shear strength.
+  //     If τ > tooth_width × tooth_height × shearStrength: tooth shears off.
+  //     Wooden teeth break before iron teeth at the same torque.
+  //   Zero-mass assembly: physically impossible. Minimum mass = one block.
+  //   Bearing seizure: if bearing friction × ω generates enough heat to melt the bearing,
+  //     the joint locks (angularVelocity → 0). This is a real failure mode.
+}
+```
+
+#### What This Unlocks (Emergent Machines)
+
+```
+EmergentMachines {
+  // None of these are pre-coded. They ALL emerge from:
+  //   materials (§3.1) + joints (§3.8) + fluid (§3.2) + structural (§3.4)
+
+  // Stone Age:
+  //   Lever: a beam on a hinge (rock as fulcrum)
+  //   Wheelbarrow: wheel + axle + frame
+  //   Potter's wheel: heavy disk on axle, spun by hand/foot
+  //   Fire drill: stick in a hole, spun by hands (hinge friction → heat)
+
+  // Bronze Age:
+  //   Cart: frame + 4 wheels + axles (pulled by player or animal)
+  //   Capstan: vertical axle turned by pushing a horizontal beam
+  //   Treadmill: large wheel turned by walking inside it (human-powered crane)
+  //   Bow drill: bow string wraps around a stick, sawing motion rotates the stick
+
+  // Iron Age:
+  //   Waterwheel: paddles on an axle in a river
+  //   Grain mill: waterwheel → gear → grindstone
+  //   Bellows (mechanical): waterwheel → cam → reciprocating bellows → constant airflow
+  //   Catapult: hinge + spring (twisted rope) + lever arm
+  //   Trebuchet: counterweight + lever arm + hinge + sling
+
+  // Medieval:
+  //   Windmill: blades on horizontal axle → gears → vertical shaft → machinery
+  //   Sawmill: waterwheel → crank → reciprocating saw blade
+  //   Clock: falling weight → gear train → escapement (the hardest mechanism to invent)
+  //   Loom: foot pedals (hinges) → heddle frames → shuttle
+
+  // Industrial (if player reaches this tech level):
+  //   Steam engine: boiler + piston + crankshaft + flywheel
+  //   Vehicle: engine + gearbox + differential + wheels
+  //   Lathe: motor + spindle + tool rest (precision metalworking)
+  //   Printing press: screw mechanism + ink roller + platen
+
+  // The game does NOT know any of these names. It knows:
+  //   Blocks + joints + forces + energy sources → motion emerges.
+  //   A player who arranges the right blocks with the right joints
+  //   gets a working machine — even if no human has ever built that
+  //   particular arrangement before.
+}
+```
+
+
+### 3.9 Projectile Aerodynamics — Air Resistance, Drag, Spin
+
+#### The Principle
+
+Every object moving through air experiences drag — a force opposing its motion. Currently, Stage 6 (Rigid Body Physics) applies gravity and terrain collision but NO air resistance. This means:
+- An arrow shot at 60 m/s maintains full speed until it hits something (wrong — real arrows lose ~50% speed over 100m)
+- A thrown rock follows a perfect parabola (wrong — drag flattens the trajectory)
+- A feather and a stone fall at the same speed (wrong — terminal velocity depends on drag)
+- Fletching on arrows is useless (wrong — fletching creates spin stabilization via Magnus effect)
+
+Adding drag to Stage 6 fixes ALL of these with one force term.
+
+#### Drag Force
+
+// In plain English: air pushes back on anything moving through it.
+// Move your hand slowly out a car window — barely feel it. Move it fast — strong push.
+// Drag grows with speed SQUARED — twice as fast = four times the push.
+// Streamlined shapes (arrows) feel much less drag than flat shapes (shields).
+
+Every rigid body in flight experiences aerodynamic drag:
+
+```
+  F_drag = 0.5 × ρ_air × v² × Cd × A
+
+  where:
+    ρ_air = 1.225 kg/m³ (air density at sea level, 15°C)
+           Varies with altitude: ρ(h) = 1.225 × exp(-h/8500)
+           At 1000m elevation: ρ ≈ 1.112 kg/m³
+           At 3000m: ρ ≈ 0.909 kg/m³
+    v = speed of the object relative to the air (m/s)
+        v_relative = v_object - v_wind (wind affects effective speed)
+    Cd = drag coefficient (dimensionless) — depends on shape
+    A = cross-sectional area perpendicular to motion (m²)
+
+  The drag force acts OPPOSITE to the velocity direction:
+    F_drag_vector = -0.5 × ρ_air × |v|² × Cd × A × normalize(v)
+```
+
+#### Drag Coefficient by Shape
+
+Cd depends on the object's shape and orientation. For the game, compute Cd from
+the object's aspect ratio and surface roughness:
+
+| Shape                  | Cd    | Example in game                      |
+|------------------------|-------|--------------------------------------|
+| Sphere                 | 0.47  | Thrown rock, cannonball               |
+| Long cylinder (axial)  | 0.82  | Log thrown end-first                  |
+| Long cylinder (broadside) | 1.2 | Log tumbling sideways                |
+| Flat plate (perpendicular) | 1.28 | Shield held up, door blown by wind |
+| Streamlined (teardrop) | 0.04  | Well-shaped arrow, fish               |
+| Arrow with fletching   | 0.05  | Arrow in flight (stabilized)          |
+| Arrow without fletching | 0.20 | Un-fletched arrow (tumbles)           |
+| Human body (standing)  | 1.0   | Player falling, NPC in wind           |
+| Human body (diving)    | 0.3   | Player falling headfirst              |
+
+For arbitrary crafted objects, approximate Cd from dimensions:
+
+```
+  aspectRatio = length / max(width, height)
+  if aspectRatio > 3 and aligned with velocity: Cd ≈ 0.05 + 0.1/aspectRatio (streamlined)
+  if aspectRatio < 0.5: Cd ≈ 1.2 (flat plate)
+  else: Cd ≈ 0.47 (sphere-like default)
+  Add roughness penalty: Cd += 0.1 × surfaceRoughness (rough surfaces drag more)
+  //   surfaceRoughness = (1 - hardness/10) × 0.3 + porosity × 0.7
+  //   Derived from MaterialPacket's hardness and porosity (§3.1).
+  //   Smooth hard dense materials (polished metal): roughness ≈ 0.03
+  //   Rough porous materials (sandstone): roughness ≈ 0.7
+```
+
+#### Terminal Velocity
+
+// In plain English: when something falls long enough, air resistance equals gravity
+// and it stops accelerating. A skydiver maxes out at about 200 km/h.
+// A feather reaches its terminal velocity in less than a second and drifts down slowly.
+// Heavy, compact objects have high terminal velocity. Light, spread-out objects have low.
+
+When drag equals gravity, the object stops accelerating:
+
+```
+  F_drag = F_gravity
+  0.5 × ρ × v_t² × Cd × A = m × g
+  v_t = √(2 × m × g / (ρ × Cd × A))
+```
+
+Examples:
+
+```
+  Stone (1 kg, r=0.05m, Cd=0.47): v_t = √(2×1×9.81 / (1.225×0.47×0.00785)) = √(19.62/0.00452) = √4340 ≈ 66 m/s
+  Arrow (0.05 kg, effective A=0.001m² including fletching drag, Cd=0.05): v_t = √(2×0.05×9.81 / (1.225×0.05×0.001)) = √(0.981/0.00006125) = √16016 ≈ 127 m/s
+  Feather (0.001 kg, A=0.003m², Cd=1.0): v_t = √(2×0.001×9.81 / (1.225×1.0×0.003)) = 2.3 m/s
+  Human (70 kg):
+    Belly-to-earth (A=0.5m², Cd=0.8): v_t = √(2×70×9.81 / (1.225×0.8×0.5)) = √(1373.4/0.49) ≈ 53 m/s (~190 km/h)
+    Feet-first (A=0.2m², Cd=0.3): v_t = √(2×70×9.81 / (1.225×0.3×0.2)) = 137 m/s (~490 km/h)
+    The drag area (Cd×A) depends on body posture — the physics determines
+    terminal velocity from the player's actual pose, not a hardcoded number.
+```
+
+A feather reaches terminal velocity in ~0.2 seconds (falls slowly).
+A stone barely slows down over a 5m fall (terminal velocity >> fall speed).
+This is physically correct — heavy dense objects are less affected by drag.
+
+#### Spin and Magnus Effect
+
+// In plain English: a spinning ball curves in flight. Backspin makes it rise.
+// Topspin makes it dive. Sidespin makes it curve left or right.
+// This is why pitchers throw curveballs and why fletching on arrows matters —
+// the spin keeps the arrow pointed forward instead of tumbling.
+
+A spinning projectile curves in flight due to the Magnus effect:
+
+```
+  F_magnus = S × (ω × v)
+  where:
+    S = Magnus coefficient ≈ 0.5 × ρ × A (for a sphere)
+    ω = angular velocity vector (rad/s)
+    × = cross product — force is perpendicular to both spin axis and velocity
+```
+
+Spin stabilization:
+
+A bullet or arrow spinning around its long axis resists tumbling (gyroscopic stability).
+
+```
+  Gyroscopic stability parameter: Sg = (I_axial × ω²) / (ρ × v × A × d × CM_alpha)
+  If Sg > 1: stable (arrow flies straight)
+  If Sg < 1: tumbles (arrow cartwheels — no damage, reduced range)
+```
+
+How spin is created in gameplay:
+
+- **Fletching**: angled feathers on arrow create spin when air flows over them.
+  `ω ≈ v × sin(fletch_angle) / r_arrow`.
+  Typical: v=60 m/s, fletch_angle=3 degrees, r=0.005m gives ω ≈ 628 rad/s (~100 rev/s).
+- **Rifling**: spiral grooves in a tube spin the projectile.
+  Only matters for gunpowder-era (Chapter 8 tech tree).
+- **Throwing with spin**: player imparts angular velocity by wrist action.
+  Adds skill element — spin-thrown spears fly straighter.
+
+The Magnus effect curves spinning projectiles:
+- A top-spinning ball curves downward (like a soccer kick)
+- A back-spinning ball curves upward (like a golf drive)
+- For arrows: the fletching-induced spin is around the long axis,
+  so Magnus effect creates a slow helical drift, not a dramatic curve.
+  This drift is small (~1-2cm per 100m) and mostly irrelevant for gameplay.
+  But gyroscopic stability IS critical — it determines straight flight vs. tumbling.
+
+#### Worked Example: Arrow in Flight
+
+```
+  Arrow: mass 0.05 kg, length 0.7m, diameter 0.01m
+  Fletching: 3 feathers at 3° angle → spin ω ≈ 628 rad/s
+  Initial velocity: 60 m/s (longbow)
+  Cd = 0.05 (streamlined + spin-stabilized)
+  A = π × 0.005² = 0.0000785 m²
+
+  Drag force at launch: F = 0.5 × 1.225 × 3600 × 0.05 × 0.0000785 = 0.0087 N
+  Deceleration: a = F/m = 0.0087/0.05 = 0.17 m/s² (very small)
+
+  But drag grows with v²: at 60 m/s it's 0.17 m/s², but it accumulates.
+  Numerical integration (Euler, dt=0.01s) over 100m range:
+    t=0.0s: v=60.0 m/s, x=0m
+    t=0.5s: v=55.8 m/s, x=29m (lost 7%)
+    t=1.0s: v=51.4 m/s, x=56m (lost 14%)
+    t=1.7s: v=45.2 m/s, x=100m (lost 25% — arrives at 45 m/s)
+
+  Without drag: arrives at 100m in 1.67s at 60 m/s (full speed)
+  With drag: arrives at 100m in ~2.0s at 45 m/s (25% slower, takes longer)
+
+  Impact energy: 0.5 × 0.05 × 45² = 50.6 J (with drag) vs. 90 J (without)
+  This 44% energy reduction matters enormously for combat damage.
+
+  Un-fletched arrow (Cd=0.20, tumbling):
+    Much more drag. Loses ~60% speed over 100m. Arrives at ~24 m/s.
+    Impact energy: 14.4 J (84% less than fletched arrow)
+    Fletching is worth 3.5× more damage at range — a REAL gameplay difference.
+```
+
+#### Implementation
+
+Stage 6 (Rigid Body Physics) gains one additional force per object:
+
+```rust
+for each rigidBody in activeObjects {
+    // Existing: gravity
+    F_gravity = rigidBody.mass * g * downDirection;
+
+    // NEW: aerodynamic drag
+    v_relative = rigidBody.velocity - windVelocity;  // wind from weather §4.6
+    speed = length(v_relative);
+    if speed > 0.1 {  // skip drag for nearly-stationary objects (optimization)
+        F_drag = -0.5 * rho_air * speed * speed * rigidBody.Cd * rigidBody.A * normalize(v_relative);
+    } else {
+        F_drag = Vec3(0.0, 0.0, 0.0);
+    }
+
+    // NEW: Magnus effect (only for spinning objects)
+    if length(rigidBody.angularVelocity) > 1.0 {  // spinning faster than 1 rad/s
+        S = 0.5 * rho_air * rigidBody.A;
+        F_magnus = S * cross(rigidBody.angularVelocity, v_relative);
+    } else {
+        F_magnus = Vec3(0.0, 0.0, 0.0);
+    }
+
+    // Integrate
+    totalForce = F_gravity + F_drag + F_magnus;
+    rigidBody.velocity += (totalForce / rigidBody.mass) * dt;
+    rigidBody.position += rigidBody.velocity * dt;
+
+    // Spin decay from aerodynamic torque (drag slows the spin too)
+    spinDragTorque = -0.01 * rho_air * speed * rigidBody.angularVelocity;
+    rigidBody.angularVelocity += spinDragTorque * dt;
+}
+```
+
+**Cost**: ~5 FLOPs per object (one cross product, one dot product, one normalize).
+For 100 active rigid bodies: 500 FLOPs — negligible.
+This adds ZERO measurable cost to the physics tick.
+
+#### Edge Cases
+
+- **Object at rest on ground**: speed < 0.1 threshold skips drag entirely. No wasted computation on grounded objects.
+- **Extreme speed (> 343 m/s, Mach 1)**: Cd increases sharply at transonic speeds (wave drag). For gameplay this only matters if gunpowder-era weapons are reached. If needed: `Cd_effective = Cd * (1 + 2 * max(0, speed/343 - 0.8)²)` adds transonic penalty.
+- **Zero-mass objects**: Division by mass in deceleration would produce infinity. Guard: if mass < 0.001 kg, clamp to 0.001 kg.
+- **Wind stronger than object velocity**: v_relative can point backward, meaning drag pushes the object forward (wind carrying it). This is correct behavior — a feather in a gale SHOULD blow away.
+- **Underwater projectiles**: If the object is submerged, replace rho_air (1.225) with rho_water (1000). Drag becomes ~800x greater. Arrows stop almost instantly underwater. Spearfishing requires very short range.
+- **Altitude variation**: At very high altitudes (mountains, 3000m+), reduced air density means arrows fly farther. Mountain archers have a real range advantage — emergent tactical gameplay.
+- **Tumbling transition**: When Sg drops below 1 mid-flight (spin decays too much), Cd jumps from 0.05 to 0.20 discontinuously. Smooth this: `Cd = lerp(Cd_stable, Cd_tumble, clamp(1 - Sg, 0, 1))` to avoid physics jitter.
+
+#### Performance Budget
+
+| Operation | Cost per object per tick | Notes |
+|-----------|------------------------|-------|
+| v_relative subtraction | 3 FLOPs | vec3 subtract |
+| speed (length) | 5 FLOPs | sqrt(dot product) |
+| Threshold check | 1 FLOP | branch |
+| F_drag computation | 8 FLOPs | multiply + normalize |
+| F_magnus (if spinning) | 12 FLOPs | cross product + scale |
+| Spin decay | 4 FLOPs | scale + add |
+| **Total** | **~20 FLOPs** | Worst case with Magnus |
+
+At 100 active rigid bodies and 60 ticks/second: 120,000 FLOPs/s.
+A modern CPU does ~50 billion FLOPs/s. This is 0.00024% of one core.
+Projectile aerodynamics is effectively free.
+
+#### Connections
+
+> **Connection 45:** Drag on Rigid Bodies *(see §3.6 for full spec)*
+
+
+> **Connection 46:** Drag to Combat Damage *(see §3.6 for full spec)*
+
+
+> **Connection 47:** Fletching/Spin to Stability *(see §3.6 for full spec)*
+
+
+
+### 3.10 Rope, Cable & Flexible Body Physics
+
+#### The Principle
+
+Ropes, chains, cables, and vines are flexible bodies that transmit TENSION along their length. They cannot push (no compression strength) — they can only pull. This simple constraint enables an enormous range of machines and structures: pulleys, cranes, bows, suspension bridges, wells, rigging, block-and-tackle, catapults, drawbridges, elevators.
+
+The game currently has no flexible body simulation. Rope exists as a crafting ingredient but has no physics. A rope connecting two posts hangs as a straight line (wrong — it should sag in a catenary curve). A rope over a branch doesn't create a pulley. A bowstring doesn't store energy.
+
+#### Verlet Chain Simulation
+
+// In plain English: simulate a rope as a chain of beads connected by stiff springs.
+// Each bead remembers where it was last frame. Gravity pulls it down. The springs
+// pull neighboring beads toward each other to keep the rope from stretching.
+// Do this 4-8 times per frame and the rope looks and behaves realistically —
+// it sags, swings, wraps around things, and snaps if pulled too hard.
+
+A rope is modeled as a chain of particles connected by distance constraints. This is Position-Based Dynamics (PBD), the standard technique for real-time rope/cloth simulation (Jakobsen 2001).
+
+```
+RopeSimulation {
+  // A rope is N particles connected by (N-1) distance constraints.
+  // Each particle has: position, previousPosition, mass, fixed (boolean).
+  
+  RopeParticle {
+    position: Vec3
+    previousPosition: Vec3        // for Verlet integration
+    mass: number                  // kg — from rope material density × segment volume
+    fixed: boolean                // true if attached to a structure/block (anchor point)
+    // Velocity is implicit: v = (position - previousPosition) / dt
+  }
+  
+  RopeConstraint {
+    particleA: index
+    particleB: index
+    restLength: number            // m — natural length of this segment
+    // From MaterialPacket: tensileStrength determines breaking threshold
+  }
+  
+  // Per tick:
+  //   1. Apply forces (gravity, wind, player pull)
+  //   2. Verlet integration (position update from previous positions)
+  //   3. Constraint solving (enforce distance constraints — iterate multiple times)
+  //   4. Check for breaking (tension > breaking threshold)
+  
+  function simulate(rope, dt):
+    // Step 1: Apply external forces
+    for each particle in rope.particles:
+      if particle.fixed: continue
+      force = particle.mass × gravity
+      force += windForce × ropeWindDragArea  // rope catches wind
+      
+      // Verlet integration (no explicit velocity — implicit from position history)
+      newPos = 2 × particle.position - particle.previousPosition + (force / particle.mass) × dt²
+      particle.previousPosition = particle.position
+      particle.position = newPos
+    
+    // Step 2: Constraint solving (iterate 4-8 times for stability)
+    for iteration in range(constraintIterations):  // 4-8 iterations
+      for each constraint in rope.constraints:
+        pA = rope.particles[constraint.particleA]
+        pB = rope.particles[constraint.particleB]
+        
+        delta = pB.position - pA.position
+        currentLength = |delta|
+        diff = (currentLength - constraint.restLength) / currentLength
+        
+        // Move particles toward each other (or apart) to satisfy constraint
+        if not pA.fixed and not pB.fixed:
+          pA.position += delta × 0.5 × diff
+          pB.position -= delta × 0.5 × diff
+        elif pA.fixed:
+          pB.position -= delta × diff
+        elif pB.fixed:
+          pA.position += delta × diff
+    
+    // Step 3: Check tension and breaking
+    for each constraint in rope.constraints:
+      pA = rope.particles[constraint.particleA]
+      pB = rope.particles[constraint.particleB]
+      currentLength = |pB.position - pA.position|
+      stretch = (currentLength - constraint.restLength) / constraint.restLength
+      tension = stretch × rope.youngsModulus × rope.crossSectionArea  // Hooke's law
+      
+      if tension > rope.tensileStrength × rope.crossSectionArea:
+        // ROPE BREAKS at this segment
+        splitRope(rope, constraint)
+        // Generate sound event: snap (modal synthesis from rope material)
+}
+```
+
+#### Rope Properties from MaterialPacket
+
+Rope material properties come from the fibers it's made of:
+
+| Rope material    | Tensile strength | Young's modulus | Density  | Breaking force (10mm rope) |
+|-----------------|-----------------|----------------|----------|---------------------------|
+| Plant fiber (hemp, flax) | 30-60 MPa | 10-30 GPa | 1400 kg/m³ | 2,400-4,700 N |
+| Animal sinew     | 50-100 MPa      | 1-2 GPa        | 1100 kg/m³ | 3,900-7,850 N |
+| Rawhide strip    | 20-40 MPa       | 2-5 GPa        | 1200 kg/m³ | 1,570-3,140 N |
+| Cotton           | 20-40 MPa       | 5-13 GPa       | 1500 kg/m³ | 1,570-3,140 N |
+| Silk             | 500-600 MPa     | 5-12 GPa       | 1300 kg/m³ | 39,000-47,000 N |
+| Wire (iron)      | 400 MPa         | 200 GPa        | 7800 kg/m³ | 31,400 N |
+| Wire (steel)     | 800-1500 MPa    | 200 GPa        | 7800 kg/m³ | 62,800-117,800 N |
+
+These values are read from the MaterialPacket of the rope material (tensileStrength, youngsModulus from §3.1).
+
+Cross-section area for a round rope: A = pi * (d/2)^2
+10mm diameter: A = 78.5 mm^2 = 0.0000785 m^2
+Breaking force = tensileStrength * A
+
+#### Catenary Curve — How Ropes Hang
+
+// In plain English: a rope hanging between two posts makes a specific shape —
+// NOT a circle, NOT a parabola, but a "catenary" (from the Latin word for chain).
+// You don't need to calculate this shape — the rope simulation produces it
+// automatically from gravity + constraints. Math emerges from physics.
+
+A rope hanging under its own weight forms a catenary curve (not a parabola):
+  y(x) = a * cosh(x/a)
+  where a = T_horizontal / (w * g)
+    T_horizontal = horizontal tension at the lowest point
+    w = mass per unit length of rope (kg/m)
+
+The Verlet simulation produces this shape AUTOMATICALLY — no need to compute
+the catenary formula explicitly. Gravity pulls each particle down, constraints
+keep segment lengths constant, and the chain settles into a catenary.
+
+A taut rope (high tension) hangs nearly straight.
+A loose rope (low tension) sags deeply.
+The player sees this visually and understands intuitively.
+
+#### Pulleys — Changing Force Direction
+
+// In plain English: a rope over a wheel lets you change the direction of pulling —
+// pull down to lift up. Add more wheels and you multiply your strength:
+// two pulleys = lift twice as much. Four pulleys = four times as much.
+// The catch: you have to pull the rope four times farther. Free lunch doesn't exist.
+
+A pulley is an axle joint (S3.8) that a rope wraps around.
+
+Detection: when a rope segment passes over a cylindrical surface
+(within contact distance of an axle-mounted wheel), the rope
+"wraps" around the wheel. The constraint solver treats the contact
+point as a fixed anchor that moves with the wheel's surface.
+
+Ideal pulley (frictionless):
+  Tension is the same on both sides of the pulley.
+  The rope changes direction but force magnitude is preserved.
+
+Real pulley (with bearing friction):
+  T_output = T_input * (1 - mu_bearing)
+  Typical bearing friction loss: 3-10% per pulley
+
+Mechanical advantage from multiple pulleys:
+  A block-and-tackle with N rope segments supporting the load:
+  MA = N (ideal) -> player pulls with F, load lifts with N * F
+  With friction: MA = N * (1 - mu)^N
+  
+  2-pulley block: MA = 2 -> 100N pull lifts 200N (minus ~6% friction loss)
+  4-pulley block: MA = 4 -> 100N pull lifts 400N (minus ~12% friction loss)
+  
+  Trade-off: more pulleys = more mechanical advantage BUT more friction loss
+  AND the player must pull N times more rope length to lift the load 1m.
+  This is real physics: you never get something for nothing.
+
+#### Bow and Sling — Storing Energy in Bent Materials
+
+A bow stores energy by bending a flexible limb (elastic potential energy)
+and releases it through a taut string (rope under tension).
+
+Energy stored in a bent bow:
+  E = 0.5 * k * x^2
+  where k = spring constant of the bow limb, x = draw distance
+  
+  // NOTE: A bow is NOT a simple cantilever beam. The cantilever formula
+  // k = 3EI/L^3 overestimates stiffness by ~10-20x for a tapered bow limb.
+  //
+  // Practical approach: k_bow = drawForce_max / drawLength
+  //   Shortbow (90 N draw, 0.5m): k = 180 N/m, E_stored = 22.5 J
+  //   Longbow (180 N draw, 0.7m): k = 257 N/m, E_stored = 63 J
+  //   Composite bow (250 N draw, 0.8m): k = 312 N/m, E_stored = 100 J
+  //
+  // However, a real bow's draw-force curve is nonlinear (force increases
+  // faster than linear near full draw). A better stored-energy estimate:
+  //   E_stored = integral(F(x) dx) from 0 to drawLength
+  //   For a longbow: E_stored ~ 0.7 * F_max * drawLength = 0.7 * 180 * 0.7 = 88.2 J
+  //
+  // Arrow speed (at ~75% energy transfer — rest goes to limb vibration):
+  //   v = sqrt(2 * 88.2 * 0.75 / 0.05) = sqrt(2646) = 51.4 m/s
+  //   With a lighter arrow (0.03 kg): v = sqrt(2 * 88.2 * 0.75 / 0.03) = 66.4 m/s
+  //   Real longbow speeds: 55-70 m/s for a 50g arrow. Our model is close.
+  
+  k depends on material and draw weight (empirical, not beam theory):
+  k = drawForce_max / drawLength
+  
+  A yew longbow (F_max=180 N, drawLength=0.7m):
+    k = 180 / 0.7 = 257 N/m
+    E_stored = 0.7 * F_max * drawLength = 0.7 * 180 * 0.7 = 88.2 J (nonlinear correction)
+  
+  Arrow mass 0.05 kg, 75% energy transfer efficiency:
+    v = sqrt(2 * 88.2 * 0.75 / 0.05) = sqrt(2646) = 51.4 m/s
+  
+  This is slightly below real longbow speeds (55-70 m/s) because our linear
+  spring approximation still underestimates the energy stored near full draw.
+  Good enough for gameplay — within 10-20% of reality.
+
+The bowstring is a rope under tension. The Verlet simulation handles:
+  Drawing the bow: player pulls the string, bending the limb (stores energy)
+  Release: string snaps forward, limb straightens, arrow accelerates
+  String vibration after release: the string oscillates (produces the "twang" sound)
+  String breaking: if draw force > string tensileStrength * area -> string snaps
+
+#### Suspension Bridges, Rigging, and Complex Rope Networks
+
+Multiple ropes connected at shared anchor points form networks:
+  Suspension bridge: main cables + vertical hangers + deck
+  Ship rigging: mast stays + shrouds + halyards (all ropes under tension)
+  Crane: boom + hoist rope + guy wires
+  
+The Verlet solver handles networks naturally — each rope is a chain,
+and shared anchor points (where ropes meet) are shared particles.
+The constraint solver iterates over ALL ropes in the network simultaneously.
+
+More constraint iterations = stiffer ropes (less stretching).
+  4 iterations: stretchy rope (feels like bungee)
+  8 iterations: taut rope (feels like wire)
+  16 iterations: rigid rod (behaves like a structural beam)
+
+#### Performance Budget
+
+Per rope: N particles * 3 coordinates * Verlet integration = ~10 FLOPs per particle
+Constraint solving: N constraints * iterations * ~20 FLOPs = ~160 FLOPs per constraint per frame
+
+A 10-segment rope (11 particles, 10 constraints) at 8 iterations:
+  Verlet: 11 * 10 = 110 FLOPs
+  Constraints: 10 * 8 * 20 = 1,600 FLOPs
+  Total: ~1,710 FLOPs -> negligible (~0.002 ms)
+
+100 ropes in the world (crane, bridge, ship rigging, pulleys):
+  100 * 1,710 = 171,000 FLOPs -> ~0.2 ms -> negligible
+
+Rendering: rope rendered as a cubic spline through the particle positions.
+  3 particles minimum for a visible curve. 10 particles for smooth drape.
+  GPU cost: one spline mesh per rope -> negligible.
+
+#### Connections
+
+> **Connection 48:** Rope Tension -> Structural Loads *(see §3.6 for full spec)*
+
+
+> **Connection 49:** Rope + Pulley -> Mechanical Advantage *(see §3.6 for full spec)*
+
+
+> **Connection 50:** Bow Energy -> Projectile Velocity *(see §3.6 for full spec)*
+
+
+> **Connection 51:** Wind on Ropes *(see §3.6 for full spec)*
+
+
+
+### 3.11 Heat Engines & Thermodynamic Cycles
+
+#### The Principle
+
+A heat engine converts thermal energy into mechanical work. The game already has heat (temperature in the core sim tick), phase transitions (boiling produces steam in S3.2), and rotational mechanics (crankshafts, axles, slider joints in S3.8). What is missing is the thermodynamic link: how expanding gas pushes a piston and does work. This section provides that link.
+
+Heat engines are the bridge from the medieval era to the industrial era. Once organisms or players discover that expanding steam can push a piston, and that piston can turn a crankshaft, they unlock steam-powered mills, pumps, locomotives, and eventually internal combustion engines. No new computational systems are required — the section connects existing systems (gas pressure, piston joints, phase transitions, combustion) through thermodynamic laws.
+
+---
+
+#### The Ideal Gas Law — Equation of State for Gas-Phase Particles
+
+// **What this means (PV = nRT):** Gas in a sealed container gets pushier
+// when you heat it. The hotter the gas, the harder it pushes on the walls.
+// If you let it expand (like pushing a piston), it does work -- that is an engine.
+// If you compress it (push the piston in), it heats up -- that is why bike pumps get warm.
+//
+// In plain English for P_gas = rho * (R/M) * T: pressure equals density
+// times temperature, scaled by what kind of gas it is.
+
+
+For liquid-phase SPH particles, the Tait equation governs pressure:
+
+```
+P_liquid = B * ((rho / rho_0)^gamma - 1)       [Tait equation, used for liquids]
+```
+
+For gas-phase SPH particles (produced when liquid boils past its boiling point, see S3.2), the Tait equation is physically wrong. Gases obey the ideal gas law:
+
+```
+PV = nRT
+```
+
+Where:
+- P = pressure (Pa)
+- V = volume (m^3)
+- n = amount of substance (mol)
+- R = universal gas constant = 8.314 J/(mol*K)
+- T = temperature (K)
+
+For SPH implementation, each gas particle represents a small parcel of gas. The particle's local density rho gives us the specific volume v = 1/rho. Rearranging:
+
+```
+P_gas = rho * (R / M) * T
+```
+
+Where M is the molar mass of the gas (kg/mol). For water vapor (steam): M = 0.018 kg/mol. For air: M = 0.029 kg/mol.
+
+**Implementation detail:** When a liquid SPH particle transitions to gas phase (S3.2 boiling), its equation of state switches from Tait to ideal gas. The particle's pressure contribution in the SPH pressure solver becomes:
+
+```rust
+fn pressure_for_particle(p: &Particle) -> f64 {
+    match p.phase {
+        Phase::Liquid => {
+            // Tait equation (existing)
+            let B = p.material.tait_B;
+            let gamma = p.material.tait_gamma;
+            let rho0 = p.material.reference_density;
+            B * ((p.density / rho0).powf(gamma) - 1.0)
+        }
+        Phase::Gas => {
+            // Ideal gas law (new)
+            let R = 8.314;
+            let M = p.material.molar_mass;  // kg/mol
+            p.density * (R / M) * p.temperature
+        }
+    }
+}
+```
+
+**Worked example — steam pressure in a sealed boiler:**
+- Water at 150C (423 K) boils to steam
+- Steam density in sealed container: ~2.5 kg/m^3 (constrained by container volume)
+- P = 2.5 * (8.314 / 0.018) * 423
+- P = 2.5 * 461.9 * 423
+- P = 488,600 Pa = 4.82 atm
+- This matches the known steam table value for saturated steam at 150C (~4.76 atm)
+
+The ideal gas law also handles mixtures. Air trapped in a cylinder with fuel vapor: use the average molar mass weighted by mole fraction.
+
+---
+
+#### Work from Expansion — How Gas Pushes a Piston
+
+When gas expands against a movable boundary (a piston), it performs mechanical work:
+
+```
+W = integral from V1 to V2 of P dV
+```
+
+In the discrete simulation, this becomes a force on the piston face at every tick:
+
+```
+F_piston = P_gas_average * A_piston
+```
+
+Where:
+- P_gas_average = average pressure of all gas-phase SPH particles in the cylinder (Pa)
+- A_piston = cross-sectional area of the piston face (m^2)
+
+This force is applied to the slider joint (S3.8) that represents the piston. The slider joint already handles linear constrained motion — it simply receives F_piston as an external force.
+
+**Energy conservation (First Law of Thermodynamics):**
+
+```
+dU = Q - W
+```
+
+Where:
+- dU = change in internal energy of the gas (J)
+- Q = heat added to the gas (J) — from combustion, boiler, etc.
+- W = work done BY the gas on the piston (J)
+
+When gas does work (W > 0), its internal energy decreases. Since internal energy is proportional to temperature (U = n * Cv * T for an ideal gas), the gas cools:
+
+```
+delta_T = -W / (n * Cv)
+```
+
+Where Cv = specific heat at constant volume (J/(mol*K)). For air: Cv ~ 20.8 J/(mol*K).
+
+  //   Cv for water vapor (temperature dependent):
+  //     At 100°C (373K): Cv ≈ 25.3 J/(mol·K) (= 3.04 × R, just above ideal diatomic 2.5R)
+  //     At 200°C (473K): Cv ≈ 26.5 J/(mol·K) (vibrational modes activating)
+  //     At 500°C (773K): Cv ≈ 28.5 J/(mol·K) (more vibrational contribution)
+  //     Approximation: Cv(T) ≈ 25.0 + 0.005 × (T - 373) J/(mol·K) for T in Kelvin
+  //     The property calculator computes this from the Debye/Einstein model.
+
+**Implementation:** Each tick, after computing the piston force and displacement:
+
+```rust
+fn update_gas_after_expansion(
+    gas_particles: &mut [Particle],
+    piston_displacement: f64,  // meters, positive = expansion
+    piston_area: f64,          // m^2
+) {
+    let avg_pressure = gas_particles.iter()
+        .map(|p| pressure_for_particle(p))
+        .sum::<f64>() / gas_particles.len() as f64;
+
+    let work_done = avg_pressure * piston_area * piston_displacement; // Joules
+
+    if work_done > 0.0 {
+        // Gas did work on piston -> gas cools
+        let total_mass: f64 = gas_particles.iter().map(|p| p.mass).sum();
+        let n_moles = total_mass / gas_particles[0].material.molar_mass;
+        let cv = gas_particles[0].material.cv; // J/(mol*K)
+        let delta_t = -work_done / (n_moles * cv);
+
+        for p in gas_particles.iter_mut() {
+            p.temperature += delta_t;
+            // Update density: container volume changed
+            // New volume = old_volume + piston_area * piston_displacement
+        }
+    }
+}
+```
+
+**Worked example — single expansion stroke:**
+- Cylinder contains steam at 4.82 atm (488,600 Pa), 423 K
+- Piston area: 0.01 m^2 (10 cm x 10 cm square)
+- Stroke length: 0.1 m
+- Force on piston: 488,600 * 0.01 = 4,886 N (about 1,100 lbf)
+- Work per stroke: 4,886 * 0.1 = 488.6 J
+- Temperature drop: 488.6 / ((mass/0.018) * 25.3) — for 0.005 kg steam:
+  n = 0.005 / 0.018 = 0.278 mol
+  delta_T = -488.6 / (0.278 * 25.3) = -69.5 K
+- Steam cools from 423 K to 354 K (81C) during expansion
+- At 354 K the steam pressure has dropped significantly — time to exhaust and refill
+
+---
+
+#### Carnot Efficiency — The Universal Speed Limit of Heat Engines
+
+// **What this means:** No engine can convert ALL heat into useful work.
+// Some heat always escapes as waste. The Carnot limit tells you the BEST
+// possible efficiency, and it depends on two temperatures:
+//   - How hot your fire is (higher = more efficient)
+//   - How cold your exhaust is (lower = more efficient)
+// A steam engine running between boiling water (100C) and room temp (20C)
+// can NEVER exceed ~21% efficiency. The rest is wasted heat.
+//
+// In plain English for eta_max = 1 - T_cold / T_hot: efficiency equals
+// the temperature gap divided by the hot temperature. Bigger gap = better.
+
+
+No heat engine, no matter how perfectly built, can convert all heat into work. The maximum possible efficiency is set by the temperatures of the heat source and heat sink:
+
+```
+eta_max = 1 - T_cold / T_hot       [Carnot efficiency]
+```
+
+Where T_cold and T_hot are absolute temperatures in Kelvin.
+
+This is not a game balance parameter — it is a consequence of the second law of thermodynamics. It emerges naturally from the simulation when gas expansion and compression are modeled correctly. But it also serves as a validation check: if any engine in the simulation exceeds its Carnot efficiency, there is a bug.
+
+**Efficiency examples at different technology levels:**
+
+| Engine Type | T_hot (K) | T_cold (K) | Carnot Limit | Realistic Efficiency |
+|---|---|---|---|---|
+| Primitive steam (wood fire) | 373 (100C) | 300 (27C) | 19.6% | 3-5% |
+| Improved steam (pressure boiler) | 453 (180C) | 300 (27C) | 33.8% | 8-15% |
+| High-pressure steam (industrial) | 573 (300C) | 300 (27C) | 47.6% | 15-25% |
+| Internal combustion (gasoline) | 2500 | 600 | 76.0% | 25-35% |
+| Gas turbine | 1500 | 600 | 60.0% | 30-40% |
+
+The gap between Carnot limit and realistic efficiency comes from friction, heat leaks, incomplete combustion, and imperfect sealing. In-game, these losses come naturally from the physics:
+- Friction in the slider/hinge joints (S3.8 joint friction model)
+- Heat conduction through cylinder walls (S3.0 heat transfer)
+- Incomplete combustion (S3.1 reaction rates)
+- Gas leaking past a poorly-fitted piston (crafting precision, S6.4)
+
+**Implementation — efficiency tracking:**
+
+```rust
+struct HeatEngine {
+    // Accumulated per cycle
+    heat_input_joules: f64,    // total Q added (from fuel combustion or boiler)
+    work_output_joules: f64,   // total W extracted (piston force * displacement)
+    heat_rejected_joules: f64, // total Q lost to exhaust / cooling
+
+    // Computed
+    fn efficiency(&self) -> f64 {
+        if self.heat_input_joules > 0.0 {
+            self.work_output_joules / self.heat_input_joules
+        } else {
+            0.0
+        }
+    }
+
+    fn carnot_limit(&self, t_hot: f64, t_cold: f64) -> f64 {
+        1.0 - t_cold / t_hot
+    }
+}
+```
+
+---
+
+#### The Steam Engine Cycle — Connecting Existing Systems
+
+A steam engine is not a new system. It is a specific configuration of systems that already exist in the simulation. This subsection documents how they connect.
+
+**The cycle has four stages:**
+
+```
+Stage 1: HEATING (boiler)
+    Water particles (liquid SPH) in a sealed container
+    Heat source underneath (fire, S3.1) transfers heat (S3.0 conduction)
+    Water temperature rises until boiling point (100C at 1 atm, higher under pressure)
+    Phase transition: liquid -> gas (S3.2 latent heat absorbed)
+    Steam accumulates, pressure rises (ideal gas law)
+
+Stage 2: EXPANSION (power stroke)
+    Valve opens: steam flows into cylinder (SPH particle migration between containers)
+    Steam pressure pushes piston outward (F = P * A on slider joint, S3.8)
+    Piston drives crankshaft via connecting rod (slider -> hinge coupling, S3.8)
+    Crankshaft rotates: mechanical work output
+    Steam cools as it expands (first law: dU = Q - W)
+
+Stage 3: EXHAUST
+    Valve switches: cylinder connects to exhaust port
+    Piston returns (driven by flywheel momentum on crankshaft, S3.8)
+    Spent steam expelled from cylinder
+    If condenser present: steam -> water (phase transition, S3.2, latent heat released)
+    Condensed water can be pumped back to boiler (closed cycle)
+    Without condenser: steam vented to atmosphere (open cycle, wastes water)
+
+Stage 4: INTAKE
+    Valve switches again: cylinder connects to boiler
+    Fresh high-pressure steam enters cylinder
+    Cycle repeats from Stage 2
+```
+
+**Valve timing** is handled by the crankshaft rotation angle. At specific angles, inlet and exhaust ports align with the cylinder. This is a geometric check, not a new system:
+
+```rust
+fn update_valve_state(crank_angle: f64) -> ValveState {
+    // Simple slide valve: inlet opens at 0 degrees, closes at 60% of stroke
+    // Exhaust opens at 80% of stroke, closes at 5% of next stroke
+    let normalized = crank_angle % (2.0 * PI);
+    if normalized < 0.6 * PI {
+        ValveState::Inlet
+    } else if normalized < 0.8 * PI {
+        ValveState::Closed  // expansion continues without new steam
+    } else if normalized < 1.95 * PI {
+        ValveState::Exhaust
+    } else {
+        ValveState::Closed  // compression of residual steam
+    }
+}
+```
+
+**Worked example — complete steam engine:**
+- Boiler temperature: 150C (423 K)
+- Exhaust/condenser temperature: 100C (373 K) — steam condenses at 100C at 1 atm
+- Carnot efficiency: 1 - 373/423 = 11.8% (theoretical maximum)
+- Real efficiency with friction, heat loss, leaks: ~5-8% (say 7%)
+- Steam pressure at 150C: ~4.76 atm = 482,000 Pa
+- Piston area: 0.01 m^2 (10 cm x 10 cm)
+- Force on piston: 482,000 * 0.01 = 4,820 N
+- Stroke: 0.1 m
+- Work per stroke: 482 J
+- At 2 strokes per second (single-acting, 120 RPM crankshaft): Power = 964 W ~ 1.3 HP
+- Heat input required: 964 / 0.07 = 13,770 W
+- Charcoal energy density: ~30 MJ/kg
+- Charcoal consumption: 13,770 / 30,000,000 = 0.000459 kg/s = 1.65 kg/hour
+- Water consumption (open cycle): steam mass flow ~ 0.005 kg/stroke * 2 = 0.01 kg/s = 36 kg/hour
+- Water consumption (closed cycle with condenser): only makeup for leaks, ~1-2 kg/hour
+
+**What the player/organism must build:**
+1. Boiler: sealed metal container that can hold pressure (requires smelted metal, S6.3)
+2. Cylinder: metal tube with smooth bore (precision craft, S6.4)
+3. Piston: metal disc that fits tightly in cylinder (precision craft, S6.4)
+4. Connecting rod + crankshaft: hinge and slider joints (S3.8)
+5. Valves: moving parts that direct steam flow (simple mechanical linkage)
+6. Condenser (optional): cooling coils or surface to convert exhaust steam back to water
+7. Fuel supply: wood, charcoal, coal — anything that burns (S3.1)
+8. Water supply: access to fresh water
+
+Each component is a physical object built from the crafting system. A boiler made from thin copper will burst at lower pressure than one made from forged iron. A piston with poor fit leaks steam and loses efficiency. The simulation does not assign an "efficiency stat" — the efficiency emerges from the physical properties of the components.
+
+---
+
+#### Internal Combustion — Fuel Burns Inside the Cylinder
+
+// **What this means (Otto Cycle):** Suck in air + fuel, squeeze it tight
+// (compression makes it hot), ignite it (explosion pushes the piston),
+// push out the exhaust. Repeat. The more you squeeze before igniting
+// (higher compression ratio), the more efficient the engine. But squeeze
+// too much and the fuel ignites on its own before you want it to
+// (engine knock -- bad).
+//
+// In plain English for eta_otto = 1 - 1/r^(gamma-1): the harder you
+// squeeze the air-fuel mix before igniting, the more energy you extract.
+
+
+A steam engine has an external combustion chamber (the boiler) and a separate working cylinder. An internal combustion engine eliminates the boiler: fuel burns directly inside the cylinder.
+
+**The Otto Cycle (four-stroke):**
+
+```
+Stroke 1: INTAKE
+    Piston moves down, drawing in air + fuel vapor mixture
+    Fuel: alcohol (fermented, bio-process), plant oil, or petroleum (geological, S4.1)
+    Air-fuel ratio matters: too lean = weak combustion, too rich = incomplete burn
+
+Stroke 2: COMPRESSION
+    Piston moves up, compressing the mixture
+    Compression is adiabatic (no heat exchange with walls, approximately):
+        T2 = T1 * (V1/V2)^(gamma-1)
+        P2 = P1 * (V1/V2)^gamma
+    Where gamma = Cp/Cv = 1.4 for air
+    Compression ratio r = V1/V2 (typically 6:1 to 10:1)
+    At r=8: T2 = 300 * 8^0.4 = 300 * 2.297 = 689 K (416C)
+    At r=8: P2 = 1 * 8^1.4 = 18.4 atm
+
+Stroke 3: POWER (combustion + expansion)
+    Ignition: spark from electrical discharge, or compression ignition (diesel)
+    Fuel combustion (S3.1 reaction engine): rapid temperature/pressure spike
+    Peak temperature: 2000-2500 K
+    Peak pressure: 40-60 atm
+    Gas expands, pushing piston down: work output
+    Expansion is approximately adiabatic
+
+Stroke 4: EXHAUST
+    Piston moves up, expelling combustion gases
+    Exhaust gas temperature: 600-900 K
+    Cycle repeats
+```
+
+**Otto cycle efficiency:**
+
+```
+eta_otto = 1 - 1 / r^(gamma-1)
+```
+
+Where r = compression ratio, gamma = ratio of specific heats (1.4 for air).
+
+| Compression Ratio | Theoretical Efficiency | Realistic Efficiency |
+|---|---|---|
+| 4:1 | 42.6% | 15-18% |
+| 6:1 | 51.2% | 20-24% |
+| 8:1 | 56.5% | 25-30% |
+| 10:1 | 60.2% | 28-33% |
+| 12:1 | 63.0% | 30-35% |
+
+Higher compression ratios give better efficiency but require stronger cylinders and risk pre-ignition (knock). Pre-ignition occurs when the compressed mixture's temperature exceeds the fuel's auto-ignition temperature before the intended spark timing. Higher-octane fuels resist knock.
+
+**Adiabatic compression/expansion pseudocode:**
+
+```rust
+fn adiabatic_compression(
+    gas_particles: &mut [Particle],
+    volume_ratio: f64,  // V_old / V_new, > 1 for compression
+    gamma: f64,         // Cp/Cv for the gas mixture
+) {
+    let temp_ratio = volume_ratio.powf(gamma - 1.0);
+    let pressure_ratio = volume_ratio.powf(gamma);
+
+    for p in gas_particles.iter_mut() {
+        p.temperature *= temp_ratio;
+        p.density *= volume_ratio;  // density increases as volume decreases
+        // Pressure updates automatically via ideal gas law on next tick
+    }
+}
+```
+
+**Combustion inside the cylinder** uses the existing reaction engine (S3.1). The fuel particle and oxygen particles are in close proximity; when temperature exceeds the fuel's ignition point (Arrhenius kinetics), the exothermic reaction fires. The released energy heats all particles in the cylinder. This is already how fire works in S3.1 — it just happens to be inside a confined space now.
+
+**What the player/organism must build (beyond steam engine requirements):**
+1. Precision cylinder with higher compression tolerance (thicker walls, better metal)
+2. Tight-fitting piston rings to seal compression (high-precision craft, S6.4)
+3. Fuel delivery: carburetor (mixing fuel vapor with air) or direct injection
+4. Ignition: spark plug (requires basic electrical knowledge, late-game) or compression ignition
+5. Exhaust system: pipe to vent combustion gases away from the operator
+6. Fuel source: distilled alcohol, refined plant oils, or petroleum
+
+---
+
+#### Refrigeration — Running the Heat Engine Backwards
+
+// **What this means:** A refrigerator is an engine running backwards.
+// Instead of heat -> work, it is work -> moving heat from cold to hot.
+// Compress gas (it heats up) -> dump that heat outside -> let gas expand
+// (it cools down) -> the cold gas absorbs heat from inside the fridge.
+// The simplest version: hang a wet cloth on a pot. Water evaporates,
+// absorbing heat from the pot, cooling it down. Free refrigeration.
+//
+// In plain English for COP = Q_cold / W_input: for every 1 joule of work
+// you put in, you move 2-4 joules of heat out of the cold space.
+
+
+A heat engine converts heat into work. A refrigerator uses work to move heat from cold to hot — the reverse process. This enables food preservation, climate control, and eventually chemical processes requiring low temperatures.
+
+**Coefficient of Performance (COP):**
+
+```
+COP_cooling = Q_cold / W_input = T_cold / (T_hot - T_cold)     [ideal Carnot COP]
+```
+
+A refrigerator cooling a space to 5C (278 K) rejecting heat to 35C (308 K) ambient:
+COP_ideal = 278 / (308 - 278) = 9.27
+COP_real ~ 2-4 (losses from friction, imperfect heat exchange)
+
+This means for every 1 J of mechanical work input, 2-4 J of heat are moved from cold to hot.
+
+**Three levels of refrigeration technology:**
+
+**Level 1: Evaporative cooling (no machinery required)**
+Water absorbs latent heat when it evaporates (2,260 kJ/kg at 100C; ~2,450 kJ/kg at 20C). A wet cloth draped over a clay pot in dry air cools the pot's contents. This already works in the simulation — S3.2 handles evaporation and latent heat absorption. The surface of the wet cloth loses liquid particles to gas phase, each particle carrying away latent heat energy, cooling the remaining liquid and the pot.
+
+Temperature drop depends on humidity: dry air = large drop, humid air = small drop. At 30C and 20% relative humidity, wet-bulb temperature ~ 16C — the pot contents can cool to ~18-20C.
+
+**Level 2: Compression refrigeration (requires a heat engine to drive the compressor)**
+
+```
+The cycle:
+1. COMPRESSION: Compressor (piston driven by engine) compresses refrigerant gas
+   - Gas heats up (adiabatic compression)
+   - e.g., ammonia gas compressed from 1 atm to 10 atm: T rises from 250K to ~620K
+
+2. CONDENSATION: Hot compressed gas passes through condenser coils exposed to ambient air
+   - Gas cools to ambient temperature (~300K) and condenses to liquid
+   - Latent heat released to environment
+   - Requires: metal tubing (coils), air flow or water cooling
+
+3. EXPANSION: Liquid passes through a restriction (expansion valve / throttle)
+   - Pressure drops suddenly
+   - Liquid partially evaporates, temperature drops sharply
+   - e.g., ammonia at 300K throttled from 10 atm to 1 atm: T drops to ~240K (-33C)
+
+4. EVAPORATION: Cold refrigerant flows through evaporator coils inside cold space
+   - Absorbs heat from cold space contents
+   - Refrigerant fully evaporates back to gas
+   - Returns to compressor: cycle repeats
+```
+
+**Refrigerant choice matters.** Ammonia (NH3) is the simplest — it can be produced from nitrogen fixation (lightning + rain, or biological processes) and has excellent thermodynamic properties for refrigeration. Boiling point at 1 atm: -33C. In-game, ammonia would be a late-game chemical discovery.
+
+**Level 3: Absorption refrigeration (heat-driven, no compressor)**
+Uses heat instead of mechanical work to drive the cycle. A solution of ammonia in water is heated; ammonia boils off (lower boiling point), is condensed, expanded, and evaporated as in compression refrigeration. The "compressor" is replaced by a generator (heater) and absorber. This is historically significant — early refrigerators ran on kerosene or gas flames, not electricity.
+
+---
+
+#### Turbines — Continuous Rotation from Gas Flow
+
+A piston engine converts gas pressure into reciprocating (back-and-forth) motion, then uses a crankshaft to convert that into rotation. A turbine skips the reciprocation: gas flows directly through blades mounted on a rotating wheel, producing continuous rotation.
+
+**Torque from gas flow:**
+
+```
+tau = m_dot * delta_v * r
+```
+
+Where:
+- tau = torque on turbine shaft (N*m)
+- m_dot = mass flow rate of gas through turbine (kg/s)
+- delta_v = change in gas velocity across the blades (m/s)
+- r = radius from shaft to blade center (m)
+
+**Power:**
+
+```
+P = tau * omega = m_dot * delta_v * r * omega
+```
+
+Or equivalently, from energy conservation:
+
+```
+P = 0.5 * m_dot * (v_in^2 - v_out^2)    [kinetic energy extracted]
+```
+
+**Worked example — simple steam turbine:**
+- Steam at 5 atm, 200C enters at 400 m/s
+- Steam exits at 100 m/s
+- Mass flow rate: 0.1 kg/s
+- Power = 0.5 * 0.1 * (400^2 - 100^2) = 0.5 * 0.1 * (160000 - 10000) = 7,500 W = 10 HP
+- Much more power-dense than a piston engine, but requires precision blades
+
+**Why turbines are late-game:** The blades must withstand high temperature, high velocity gas without deforming. This requires:
+- Precision metal casting (S6.4) with tight tolerances
+- High-temperature alloys (nickel-based if available)
+- Dynamic balancing of the rotor (unbalanced rotor at high RPM = catastrophic failure)
+- Bearings capable of high RPM (S3.8 bearing friction model)
+
+In the simulation, a turbine is a hinge joint (axle) with blade surfaces attached. Gas SPH particles impacting the blade surfaces transfer momentum to the rotor. The force calculation is the same as projectile impact (momentum transfer) but continuous.
+
+---
+
+#### Performance Budget
+
+Heat engine simulation uses existing systems with minimal additional computation:
+
+| Component | System Used | New Cost |
+|---|---|---|
+| Gas pressure | Ideal gas law replaces Tait for gas-phase particles | ~0 (same computation, different formula) |
+| Piston force | F = P * A applied to slider joint (S3.8) | ~0.01 ms per joint per tick |
+| Phase transitions | Boiling/condensation already in S3.2 | 0 (existing) |
+| Combustion | Reaction engine S3.1 (Arrhenius kinetics) | 0 (existing) |
+| Valve timing | Geometric angle check on crankshaft | < 0.001 ms per engine |
+| Adiabatic compression | Temperature/density update on gas particles | < 0.01 ms per cylinder |
+| Efficiency tracking | Running sum of Q and W per engine | < 0.001 ms per engine |
+
+**Total new cost per engine:** ~0.02 ms per tick. With 10 engines in the simulation: 0.2 ms — negligible against the 16.67 ms tick budget.
+
+The key insight is that heat engines are an *emergent configuration* of existing simulation primitives, not a new simulation system. The gas particles, piston joints, phase transitions, and combustion reactions all already exist. This section documents how they combine — the code changes are a different equation of state for gas particles and a force coupling from gas pressure to slider joints.
+
+---
+
+#### New Cross-System Connections
+
+> **Connection 52:** Gas Pressure -> Piston Force *(see §3.6 for full spec)*
+
+
+> **Connection 53:** Piston -> Crankshaft Rotation *(see §3.6 for full spec)*
+
+
+> **Connection 54:** Heat Engine Efficiency -> Fuel Consumption *(see §3.6 for full spec)*
+
+
+
+### 3.12 Optics — Light Propagation, Lenses, Mirrors
+
+#### The Principle
+
+Light is electromagnetic radiation that travels in straight lines, bends when passing between materials (refraction), and bounces off surfaces (reflection). The game already computes `refractiveIndex` per material (from S3.1 (computed by the property calculator, used by S3.2 for rendering and §3.12 for gameplay optics)) and `reflectivity`. But these are used ONLY for rendering — the player cannot exploit optics as a physical system. A player who grinds glass into a curved shape should get a lens. Two lenses in a tube should make a telescope.
+
+This section adds GAMEPLAY optics — not rendering improvements, but the ability for players to build optical instruments that actually work. The rendering pipeline already does the hard part (computing refractive indices, reflectivity, transparency). Gameplay optics piggybacks on that data to give it mechanical consequences.
+
+#### Snell's Law — Refraction at Material Boundaries
+
+// In plain English: light bends when it enters a different material.
+// A straw in a glass of water looks bent at the surface — that's refraction.
+// The AMOUNT of bending depends on how different the two materials are
+// (air vs. glass bends a lot, air vs. water bends less).
+
+When light crosses from one material into another with a different refractive index, it bends. The angle of bending is governed by Snell's Law:
+
+```
+n1 * sin(theta1) = n2 * sin(theta2)
+
+where:
+  n1 = refractive index of the first material
+  n2 = refractive index of the second material
+  theta1 = angle of incidence (measured from the surface normal)
+  theta2 = angle of refraction (measured from the surface normal)
+```
+
+The `refractiveIndex` field already exists on every `MaterialPacket` from §3.1 (computed by the property calculator, used by §3.2 for rendering and §3.12 for gameplay optics). Typical values:
+
+```
+Refractive Indices (from MaterialPacket):
+  Air:      1.000
+  Water:    1.333
+  Glass:    1.500 - 1.900  (depends on composition — soda-lime glass ~1.52, flint glass ~1.62)
+  Quartz:   1.544
+  Diamond:  2.417
+  Ice:      1.309
+```
+
+When the player looks THROUGH a transparent material (`opacity < 0.5` in MaterialPacket), the game applies Snell's law to shift the view:
+
+- **Flat glass pane**: minimal bending. The view shifts slightly (like looking through a window — objects behind it appear offset but not magnified). The offset depends on the glass thickness and the viewing angle.
+- **Curved glass surface (lens)**: significant bending that varies across the surface. The result is magnification or demagnification depending on the curvature direction.
+
+**Total Internal Reflection**: When light tries to exit a dense material at a steep angle, Snell's law gives `sin(theta2) > 1`, which is impossible. The light bounces back entirely — total internal reflection. Critical angle: `theta_c = arcsin(n2/n1)`. For glass-to-air: `theta_c = arcsin(1.0/1.52) = 41.1 degrees`. This is how fiber optics and gemstone sparkle work. A player who discovers this can trap light inside a glass rod.
+
+#### Lenses — Curved Glass Focuses Light
+
+// In plain English: a curved piece of glass bends light so that it focuses
+// to a point. The distance to that focus point is the "focal length."
+// A more curved lens = shorter focal length = stronger magnification.
+// This is how magnifying glasses, eyeglasses, telescopes, and cameras work.
+
+A lens is a piece of transparent material with at least one curved surface. The curvature causes different parts of the incoming light to refract by different amounts, converging or diverging the rays.
+
+**Thin Lens Equation** (determines focal length from geometry):
+
+```
+1/f = (n - 1) * (1/R1 - 1/R2)
+
+where:
+  f  = focal length (m) — distance from lens center to the focal point
+  n  = refractive index of the lens material (from MaterialPacket.refractiveIndex)
+  R1 = radius of curvature of the front surface (m, positive if center of curvature is behind the lens)
+  R2 = radius of curvature of the back surface (m, positive if center of curvature is behind the lens)
+```
+
+**Lens types**:
+- **Convex** (thicker in the middle): converges light. R1 > 0, R2 < 0. Positive focal length. Magnifies nearby objects when held close. Focuses distant objects to a point (the focal point) behind the lens.
+- **Concave** (thinner in the middle): diverges light. R1 < 0, R2 > 0. Negative focal length. Makes things look smaller. Corrects for nearsightedness.
+- **Plano-convex** (one flat side, one curved): R2 = infinity, so 1/R2 = 0. Simpler to grind — a player's first lens.
+
+**Image Formation** (where the focused image appears):
+
+```
+1/f = 1/do + 1/di
+
+where:
+  do = object distance (m) — how far the object is from the lens
+  di = image distance (m) — where the image forms behind the lens
+
+Magnification: M = -di / do
+  M > 1: image is enlarged
+  M < 1: image is reduced
+  M < 0: image is inverted (real image)
+  M > 0: image is upright (virtual image)
+```
+
+**Gameplay crafting flow**:
+
+```
+Step 1: Player crafts a glass disk
+  - Requires: sand + furnace at 1700C (S3.1 glass formation)
+  - Uses: Precision Craft workstation (S6.4)
+  - Result: flat glass disk with refractiveIndex from composition
+
+Step 2: Player grinds the surface to a curve
+  - Grinding removes material -> changes R1, R2
+  - Coarse grinding (stone tool): rough curvature, imprecise f, image has aberrations
+  - Fine grinding (metal tool + abrasive): precise curvature, clean f, sharp image
+  - The game tracks the surface profile: array of radii across the lens face
+
+Step 3: Game computes optical properties
+  - f from the thin lens equation
+  - Aperture from the lens diameter
+  - Aberration from surface irregularity (deviation from perfect sphere)
+
+Step 4: Player holds lens and looks through it
+  - Objects at distance do appear magnified by M
+  - Image quality depends on grinding precision
+  - Chromatic aberration (color fringing) from dispersion (see below)
+```
+
+**Example**: A player grinds a soda-lime glass disk (n = 1.52) with R1 = +0.3m (convex front) and R2 = flat (infinity):
+```
+1/f = (1.52 - 1) * (1/0.3 - 0) = 0.52 * 3.33 = 1.733
+f = 0.577 m (about 58 cm focal length)
+```
+Holding this lens at arm's length (~0.6m from the eye) and looking at a flower 2m away:
+```
+1/0.577 = 1/2.0 + 1/di
+1/di = 1.733 - 0.5 = 1.233
+di = 0.811 m
+M = -0.811/2.0 = -0.406 (inverted, ~0.4x — demagnified at this distance)
+```
+But holding it 10cm from the eye and looking at an insect 15cm from the lens:
+```
+1/0.577 = 1/0.15 + 1/di
+1/di = 1.733 - 6.667 = -4.934
+di = -0.203 m (negative = virtual image, same side as object)
+M = -(-0.203)/0.15 = +1.35 (upright, 1.35x magnified — a magnifying glass)
+```
+
+#### Telescope — Two Lenses in a Tube
+
+A single lens can magnify, but the magnification is limited by focal length and working distance. Combining two lenses in a tube creates a telescope that magnifies distant objects far beyond what one lens can achieve.
+
+**Galilean Telescope** (what a player would likely build first):
+- Objective lens: convex, long focal length (f_obj)
+- Eyepiece lens: concave, short focal length (f_eye)
+- Tube length: f_obj - |f_eye|
+- Magnification: M = f_obj / |f_eye|
+- Image is upright (convenient for terrestrial viewing)
+
+**Keplerian Telescope** (better optical quality):
+- Objective lens: convex, long focal length (f_obj)
+- Eyepiece lens: convex, short focal length (f_eye)
+- Tube length: f_obj + f_eye
+- Magnification: M = f_obj / f_eye
+- Image is inverted (fine for astronomical viewing, can add erecting lens for terrestrial)
+
+**Example**: Player grinds two lenses from soda-lime glass:
+```
+Objective: f_obj = 1.0 m (gentle curvature, large diameter for light gathering)
+Eyepiece:  f_eye = 0.1 m (tight curvature, small)
+
+Galilean:  M = 1.0/0.1 = 10x magnification, tube length = 0.9 m
+Keplerian: M = 1.0/0.1 = 10x magnification, tube length = 1.1 m
+```
+
+With 10x magnification, the player can:
+- See distant terrain features not visible to the naked eye
+- Observe animal behavior from safe distances
+- Spot approaching players or NPC groups from far away
+- View celestial bodies (moon craters, planet phases, star clusters)
+- Scout resource deposits on distant hillsides
+
+**Implementation** (the game does NOT need to ray-trace for telescopes):
+```
+TelescopeDetection:
+  1. Detect that the player is looking through two aligned lenses
+     - Check: two transparent MaterialPackets with curved surfaces
+       aligned along the player's view vector within a tube/frame
+  2. Compute magnification from the lens pair
+     - Read f_obj and f_eye from the lens objects
+     - M = f_obj / f_eye
+  3. Render a zoomed circular viewport
+     - Center of screen: circular region with M x zoom
+     - Edge of circle: slight chromatic aberration (RGB offset)
+     - Outside circle: normal view (looking around the tube)
+  4. Field of view reduction
+     - True FOV = Apparent FOV / M
+     - 10x telescope with 50-degree apparent FOV -> 5-degree true FOV
+     - Higher magnification = narrower field = harder to aim
+```
+
+#### Mirrors — Curved Reflective Surfaces
+
+Flat mirrors reflect light without focusing. Curved mirrors focus or spread light — they are lenses that work by reflection instead of refraction.
+
+**Concave Mirror** (inside of a sphere — like a satellite dish):
+
+```
+Focal length: f = R/2   (R = radius of curvature of the mirror surface)
+Image equation: 1/f = 1/do + 1/di   (same as lenses)
+Magnification: M = -di/do             (same as lenses)
+```
+
+A polished metal dish (copper, bronze, silver) with a concave curve acts as a focusing mirror. Unlike lenses, mirrors have no chromatic aberration (reflection doesn't depend on wavelength). They are also easier to make large — a lens must be transparent and uniform throughout; a mirror only needs a good front surface.
+
+**Solar Concentration — Free Energy from Sunlight**:
+
+// In plain English: a curved shiny surface (like a satellite dish but reflective)
+// focuses sunlight to a tiny spot. That spot gets EXTREMELY hot — hot enough to
+// melt metal. A 2-meter mirror can concentrate nearly 3,000 watts into a point.
+// This is free energy from the sun — no fuel needed.
+
+At the focal point of a concave mirror, solar energy concentrates from the entire mirror area into a small spot:
+
+```
+Power at focus = solar_irradiance * mirror_area * reflectivity
+
+Solar irradiance at ground level: ~1000 W/m^2
+Concentration ratio: mirror_area / focal_spot_area
+
+Examples:
+  0.5 m diameter copper dish (reflectivity 0.7):
+    Area = pi * 0.25^2 = 0.196 m^2
+    Power = 1000 * 0.196 * 0.7 = 137 W at focus
+    Enough to: boil a small cup of water, ignite dry tinder, char wood
+
+  1.0 m diameter polished bronze dish (reflectivity 0.8):
+    Area = pi * 0.5^2 = 0.785 m^2
+    Power = 1000 * 0.785 * 0.8 = 628 W at focus
+    Enough to: melt tin (232C), soften lead (327C), heat a small crucible
+
+  2.0 m diameter polished silver dish (reflectivity 0.95):
+    Area = pi * 1.0^2 = 3.14 m^2
+    Power = 1000 * 3.14 * 0.95 = 2983 W at focus
+    Enough to: melt copper (1085C), smelt small ore samples, generate steam
+```
+
+This is the Archimedes defense — concentrated sunlight as a weapon or tool. A player who discovers concave mirrors gets free high-temperature heat from the sun without burning fuel. The tradeoff: only works during daytime, only works in clear weather, requires line-of-sight to the sun, and the focal point is fixed relative to the sun's position (must track manually or build a heliostat).
+
+**Implementation**: When a concave reflective surface exists (reflectivity > 0.5, curvature detected), compute the focal point position in world space. Any `MaterialPacket` at or near the focal point receives concentrated solar heat as an input to temperature propagation (S3.0 Stage 1). The heat input equals `solar_irradiance * mirror_area * reflectivity`, distributed over the focal spot area.
+
+**Convex Mirror** (outside of a sphere — like a car side mirror):
+- Diverges reflected light — gives a wide-angle view
+- Always produces a smaller, upright virtual image
+- Useful as a wide-angle surveillance mirror at intersections or fortress corners
+- f is negative, image is always virtual
+
+#### Dispersion — Prisms Split White Light into a Spectrum
+
+Different wavelengths of light refract by different amounts. The refractive index is not a single number — it varies with wavelength. Short wavelengths (violet, blue) refract more than long wavelengths (red). This is dispersion.
+
+**Cauchy's Equation** (approximation for the wavelength dependence of refractive index):
+
+```
+n(lambda) = A + B/lambda^2 + C/lambda^4
+
+where:
+  lambda = wavelength of light (in micrometers)
+  A, B, C = material-specific constants
+
+For soda-lime glass (approximate):
+  A = 1.5046,  B = 0.00420,  C = 0
+  n(red,   0.656 um) = 1.5046 + 0.00420/0.430 = 1.514
+  n(blue,  0.486 um) = 1.5046 + 0.00420/0.236 = 1.522
+  Difference: 0.008 — small, but enough to split white light visibly
+```
+
+**Prism**: A triangular piece of glass. White light enters one face, each wavelength refracts at a slightly different angle, and the light exits the other face as a spread-out spectrum: red, orange, yellow, green, blue, violet.
+
+**Gameplay consequences of dispersion**:
+
+1. **Chromatic aberration in lenses**: A simple lens focuses red and blue light to slightly different points. The image has colored fringes at high-contrast edges. This is why early telescopes had blurry, rainbow-edged images. A player who discovers this problem can solve it by building an **achromatic doublet** — two lenses of different glass types (crown + flint) that cancel each other's dispersion. This is a genuine optical engineering achievement.
+
+2. **Spectroscopy**: A player who grinds a triangular glass prism and holds it in sunlight sees the rainbow spectrum. This is scientifically significant because the spectrum contains dark absorption lines (Fraunhausen lines) that reveal what elements are present in the light source. A furnace flame containing copper glows green; sodium glows yellow; strontium glows red. The player has invented spectral analysis — the same tool that let 19th-century scientists determine the composition of stars.
+
+3. **Rainbows**: When sunlight refracts through rain droplets, dispersion creates a rainbow. The game can detect when the player is facing away from the sun during rain and render a rainbow arc at 42 degrees from the anti-solar point. This is not a skybox texture — it is computed from the actual sun position and rain state.
+
+#### Implementation Summary — Gameplay Optics vs. Rendering Optics
+
+The game does NOT need full ray tracing for optics. It needs five cheap checks:
+
+```
+OpticsSystem {
+  // Runs once per frame, only when the player is looking through an optical element.
+  // Cost: negligible — one lens equation evaluation + one shader parameter change.
+
+  1. Lens Detection
+     - Is there a transparent MaterialPacket (opacity < 0.5) with curved surfaces
+       between the player camera and the world?
+     - If yes: compute f from thin lens equation using object geometry and refractiveIndex
+     - Compute M from the image equation given the object distance
+     - Pass M to the renderer as a zoom factor for a circular viewport region
+
+  2. Telescope Detection
+     - Are there TWO aligned lenses in a tube/frame along the view vector?
+     - If yes: compute M = f_obj / f_eye
+     - Render: zoomed circular viewport + vignette + chromatic aberration at edges
+
+  3. Concave Mirror Focus Detection
+     - Is there a concave reflective surface (reflectivity > 0.5) in the scene?
+     - If yes: compute focal point position = mirror_center + normal * (R/2)
+     - Is the sun visible (daytime, clear sky, line-of-sight)?
+     - If yes: apply concentrated heat to any MaterialPacket at the focal point
+       Heat input = solar_irradiance * mirror_area * reflectivity
+       -> feeds into Temperature Propagation (S3.0 Stage 1)
+
+  4. Prism/Dispersion Detection
+     - Is there a triangular transparent object in the player's view with sunlight hitting it?
+     - If yes: render a spectrum (rainbow band) on the surface behind the prism
+     - The spectrum colors correspond to wavelength-dependent n from Cauchy's equation
+
+  5. Total Internal Reflection
+     - Is a light source inside a high-n material hitting a surface at angle > theta_c?
+     - If yes: light bounces back (used for trapped-light effects in gems/glass rods)
+}
+
+Performance cost:
+  - Steps 1-2: one evaluation of the lens equation per frame (trivial)
+  - Step 3: one dot product + one heat injection per concave mirror (trivial)
+  - Step 4: one spectrum render pass (simple gradient shader) when prism detected
+  - Step 5: one angle check per internal light-surface interaction
+  Total: < 0.1 ms per frame on any hardware
+```
+
+#### Connections (3 new — Connections 55-57)
+
+> **Connection 55:** Lens Geometry -> Magnification *(see §3.6 for full spec)*
+
+
+> **Connection 56:** Concave Mirror -> Solar Concentration *(see §3.6 for full spec)*
+
+
+> **Connection 57:** refractiveIndex -> Gameplay Optics *(see §3.6 for full spec)*
+
+
+
+// ── Connection to Electromagnetism (§3.13) ────────────────────────────
+//
+// Light IS electromagnetic radiation. When a wire carries enough current
+// to heat to >500°C (Joule heating from §3.13), it glows — this is
+// incandescent light, computed from Wien's law (§3.12 Planck emission).
+// The rendering system already handles blackbody emission from temperature.
+//
+// An incandescent lamp is just: §3.13 (current → heat) + §3.12 (heat → light).
+// No special "lamp" code needed — the physics produces visible light
+// from a hot wire filament automatically.
+
+---
+
+### 3.13 Electromagnetism — Charge, Current, Magnetism, Induction
+
+#### The Principle
+
+Electromagnetism is the physics of electric charge and magnetic fields. Every atom has charged particles (protons +, electrons −). When charges move, they create current. Current creates magnetic fields. Changing magnetic fields create electric fields. This loop — charge → current → magnetism → induction → current — is the foundation of all electrical technology.
+
+The game already stores `electricalConductivity` on every MaterialPacket (§3.1) and `standardElectrodePotential` for galvanic corrosion (§3.4). These properties exist but have NO consumers beyond corrosion. This section makes them useful.
+
+Nothing is pre-defined. A "battery" is not a game object — it is two different metals in an electrolyte solution. A "motor" is not a game object — it is a coil of conductive wire near a magnet on an axle. The physics determines if current flows and if rotation occurs.
+
+---
+
+#### Static Electricity
+
+// **What this means (Coulomb's Law):** Like charges repel, opposite charges attract.
+// Rub a balloon on your hair and the balloon sticks to the wall.
+// The force gets weaker with distance (4x farther = 16x weaker).
+// In plain English for F = k_e * q1 * q2 / r^2: the force between two
+// charged things depends on how much charge each has and drops off sharply
+// as they get farther apart.
+
+
+When two materials with different triboelectric properties are rubbed together, electrons transfer from one to the other, creating a charge imbalance.
+
+```
+Triboelectric series (tendency to lose electrons, most positive first):
+  Glass → Human hair → Nylon → Wool → Silk → Cotton → Steel → Wood →
+  Amber → Rubber → Polyethylene → Teflon (most negative)
+
+Charge transfer: Q = k_tribo × contact_area × pressure × cycles
+  k_tribo depends on the pair of materials (from triboelectric table)
+  Typical: rubbing wool on amber produces ~10 nC (nanocoulombs)
+
+Coulomb's law — force between charges:
+  F = k_e × q1 × q2 / r²
+  k_e = 8.99 × 10⁹ N·m²/C²
+  Two objects with 1 μC each at 0.1m: F = 8.99e9 × 1e-6 × 1e-6 / 0.01 = 0.9 N
+
+Discharge (spark):
+  When electric field E = V/d exceeds ~3 MV/m (breakdown voltage of air):
+  spark jumps between the charged objects
+  Energy: E = 0.5 × C × V² where C is the capacitance between the objects
+  This connects to temperature (spark heats the air → sound) and to
+  fire starting (spark near tinder → ignition if energy > ignition threshold)
+
+Lightning:
+  A natural discharge between cloud and ground (or cloud-cloud).
+  Already in the weather system (Connection 18) as a special event.
+  With electromagnetism: lightning becomes a consequence of charge separation
+  in clouds (ice particles colliding → charge transfer) rather than a random event.
+  Implementation: track charge buildup in cloud cells. When voltage exceeds
+  breakdown threshold: discharge path traces through lowest-resistance route to ground.
+  Lightning rods (tall conductive structures) attract the discharge preferentially
+  because they reduce the breakdown distance.
+```
+
+**Worked Example — Static Spark Ignites Tinder:**
+
+A player rubs a wool cloth against an amber rod 50 times. Each cycle transfers ~0.2 nC. Total charge: Q = 50 × 0.2 nC = 10 nC. The amber rod is held 2 mm from dry cedar-bark tinder. Voltage: V = Q / C, where capacitance C ≈ ε₀ × A / d ≈ 8.85e-12 × 0.001 / 0.002 = 4.4 pF. V = 10e-9 / 4.4e-12 ≈ 2,270 V. Electric field: E = 2270 / 0.002 = 1.14 MV/m. This is below the 3 MV/m breakdown threshold — no spark. The player rubs 100 more times: Q = 30 nC, V ≈ 6,800 V, E = 3.4 MV/m — spark! Energy: E = 0.5 × 4.4e-12 × 6800² = 0.10 μJ. Cedar bark ignition energy is ~0.2 mJ. The spark is 2000× too weak. Static electricity cannot start a fire directly (historically accurate — this is why flint-and-steel was used instead: it shaves off hot iron particles, not just sparks). The system correctly prevents this because it runs the real physics.
+
+**Edge Cases:**
+- Humidity > 60%: charge leaks to air faster than it accumulates → no useful static buildup. `Q_effective = Q × (1 - humidity/100)²`.
+- Conductive materials (metals): cannot hold static charge — electrons redistribute instantly. `triboelectricIndex` is only meaningful for insulators.
+- Grounding: touching a large conductive body (the ground, a metal pole) discharges instantly. Implementation: if a charged object forms a conductive path to a body with ≥ 100× its mass, charge → 0 in one tick.
+
+---
+
+#### Electric Current and Circuits
+
+// **What this means (Ohm's Law: V = IR):** Electricity flows through wires
+// like water through pipes. Voltage (V) is the pressure pushing it.
+// Current (I) is how much flows. Resistance (R) is how narrow the pipe is.
+// High voltage + low resistance = lots of current (dangerous).
+// Copper has low resistance (good wire). Wood has huge resistance (insulator).
+//
+// **Kirchhoff's Laws in plain English:**
+// Rule 1: electricity does not appear or disappear at a junction.
+//   Whatever current flows IN must flow OUT. Like water at a pipe T-junction.
+// Rule 2: the total voltage around any loop adds up to zero.
+//   Like hiking in a circle -- total altitude change is zero.
+
+
+```
+CurrentFlow {
+  // Current flows through connected conductive materials from high voltage to low voltage.
+
+  // Ohm's Law: V = I × R
+  //   V = voltage difference (volts)
+  //   I = current (amperes)
+  //   R = resistance (ohms)
+  //   R = ρ × L / A (from material resistivity, wire length, cross-section area)
+  //     ρ (resistivity) = 1 / electricalConductivity (already on MaterialPacket)
+
+  // Kirchhoff's Laws (for circuit networks):
+  //   KCL: sum of currents at any node = 0 (charge conservation)
+  //   KVL: sum of voltages around any loop = 0 (energy conservation)
+
+  // Implementation: Circuit Graph
+  //   When conductive materials form a continuous path, they create a circuit.
+  //   Detection:
+  //     1. Find all conductive blocks/wires (electricalConductivity > threshold)
+  //     2. Build a graph: nodes = connection points, edges = conductive paths
+  //     3. Find loops (cycles in the graph) — current only flows in closed loops
+  //     4. Solve for current in each branch using Kirchhoff's laws
+  //        (linear system: Ax = b, where A is the conductance matrix)
+  //
+  //   For simple circuits (single loop): I = V_total / R_total
+  //   For complex circuits: solve sparse linear system (standard Gaussian elimination)
+  //   Typical circuit complexity: 5-20 nodes → microseconds to solve
+
+  // Power dissipation (Joule heating):
+  //   P = I² × R (watts)
+  //   This heat is fed into temperature propagation (Stage 1):
+  //   Each resistive element gains: dT = P × dt / (mass × specificHeat)
+  //
+  //   This IS how resistance heating works:
+  //     A nichrome wire carrying current heats up → glows → can melt things
+  //     An iron wire carrying too much current heats to melting point → fuses (circuit breaker)
+  //     The game doesn't need to know "fuse" — it just tracks temperature of the wire.
+  //     When temperature > melting point → wire melts → circuit breaks → current stops.
+
+  // Wire representation:
+  //   A wire is a thin conductive rod (iron, copper, silver, gold).
+  //   Crafted by drawing metal through progressively smaller holes (wire drawing, §6.2).
+  //   R = ρ × L / A
+  //     Copper wire (ρ = 1.68e-8 Ω·m), 1m long, 1mm² cross-section:
+  //     R = 1.68e-8 × 1 / 1e-6 = 0.0168 Ω (very low — good conductor)
+  //     Iron wire (ρ = 9.7e-8): R = 0.097 Ω (6× more than copper)
+  //     Nichrome (ρ = 1.1e-6): R = 1.1 Ω (resistance heating element)
+}
+```
+
+**Worked Example — Simple Circuit:**
+
+A player builds a voltaic pile (see Batteries below): 5 zinc-copper cells in series, each producing 1.10V. Total EMF = 5.50V. They connect it with 2m of iron wire (ρ = 9.7e-8 Ω·m, cross-section 1 mm²). Wire resistance: R_wire = 9.7e-8 × 2 / 1e-6 = 0.194 Ω. Battery internal resistance: R_int = 0.5 Ω per cell × 5 = 2.5 Ω. Total resistance: R = 2.5 + 0.194 = 2.694 Ω. Current: I = 5.50 / 2.694 = 2.04 A. Power dissipated in the wire: P_wire = 2.04² × 0.194 = 0.81 W. Power dissipated internally: P_int = 2.04² × 2.5 = 10.4 W (most energy wasted as heat inside the battery). Wire temperature rise per second: dT = 0.81 / (0.016 kg × 449 J/kg·K) = 0.11 °C/s (barely noticeable). The wire stays cool. But if the player uses nichrome wire (R = 2.2 Ω for 2m), P_wire = 1.17² × 2.2 = 3.0 W, and the much thinner element heats to several hundred degrees — it glows red. This is a heating element, discovered through physics, not recipes.
+
+**Pseudocode — Circuit Graph Solver:**
+
+```
+fn solve_circuit(world: &World) -> Vec<CircuitSolution> {
+    // Step 1: identify all conductive clusters (connected components)
+    let clusters = find_conductive_clusters(world);  // BFS/DFS on adjacency
+
+    let mut solutions = Vec::new();
+    for cluster in clusters {
+        // Step 2: build circuit graph
+        let mut graph = CircuitGraph::new();
+        for segment in &cluster.segments {
+            let r = segment.resistivity * segment.length / segment.cross_section;
+            graph.add_edge(segment.node_a, segment.node_b, r);
+        }
+        for source in &cluster.voltage_sources {
+            graph.add_voltage_source(source.node_a, source.node_b, source.emf, source.r_internal);
+        }
+
+        // Step 3: check for at least one closed loop
+        if !graph.has_cycle() {
+            continue;  // open circuit — no current flows
+        }
+
+        // Step 4: build conductance matrix (Modified Nodal Analysis)
+        //   G × V_nodes = I_sources
+        //   Standard technique: one row per node (KCL), one row per voltage source (KVL)
+        let (g_matrix, i_vector) = graph.build_mna_system();
+
+        // Step 5: solve
+        let node_voltages = sparse_lu_solve(&g_matrix, &i_vector);
+
+        // Step 6: compute branch currents from voltage differences
+        for edge in &graph.edges {
+            let v_diff = node_voltages[edge.node_a] - node_voltages[edge.node_b];
+            let current = v_diff / edge.resistance;
+            let power = current * current * edge.resistance;
+            solutions.push(CircuitSolution {
+                edge: edge.id,
+                current,
+                power,  // → fed to temperature propagation as heat source
+            });
+        }
+    }
+    solutions
+}
+```
+
+**Edge Cases:**
+- Short circuit: if a wire connects battery terminals with near-zero resistance, I → V / R_internal. Enormous current flows. Battery heats rapidly (P = I² × R_internal). If battery temperature exceeds electrolyte boiling point → electrolyte evaporates → battery fails. If wire temperature exceeds melting point → wire melts → circuit breaks. Both are natural consequences — no special "short circuit" handler needed.
+- Superconductors: not in the game (require temperatures below -140°C which are not achievable with the current tech tree). If added later: R = 0 exactly, requiring special handling in the solver (ideal wire constraint).
+- Wet paths: water on the ground between two electrodes creates a conductive path. R = ρ_water × distance / cross_section_area. Salt water (ρ ≈ 0.2 Ω·m) is a decent conductor; pure water (ρ ≈ 2×10⁵ Ω·m) is an insulator. A player who drops a live wire in a puddle creates a circuit through the water — anything standing in the puddle takes current. Current through a biological entity causes damage proportional to I² × t (Joule heating of tissue).
+
+---
+
+#### Batteries (Electrochemical Cells)
+
+// **What this means:** Two different metals in salt water make electricity.
+// The more reactive metal (zinc) gives up electrons -- they flow through
+// a wire to the less reactive metal (copper) -- and current flows.
+// The voltage depends on HOW different the metals are in reactivity.
+// Zinc + copper = 1.1 volts. Stack 10 of these = 11 volts.
+// The zinc slowly dissolves -- when it is gone, the battery is dead.
+
+
+```
+Battery {
+  // A battery converts chemical energy into electrical energy.
+  // It is NOT a game object — it is two different metals in an electrolyte.
+
+  // The voltage comes from the difference in standard electrode potentials:
+  //   V_cell = E_cathode - E_anode
+  //   (electrode potentials from the element property table)
+
+  // Voltaic pile (first battery): zinc + copper + brine-soaked cardboard
+  //   Theoretical voltage (from electrode potentials): 1.10 V
+  //   Actual voltage with brine electrolyte: ~0.76 V per cell
+  //   (Lower because hydrogen evolution at the cathode wastes some voltage)
+  //   With copper sulfate solution (Daniell cell, improved design): 1.10 V per cell
+  //   
+  //   The game computes actual cell voltage from:
+  //     V_cell = (E_cathode - E_anode) × electrolyteEfficiency
+  //     electrolyteEfficiency: brine ~0.69, dilute acid ~0.85, CuSO4 solution ~1.0
+  //     This depends on the electrolyte's composition (§3.1 MaterialPacket).
+  //
+  //   Stack N cells in series: V_total = N × V_cell
+  //   10 cells with brine: 7.6V. 10 cells with CuSO4: 11V.
+
+  // Lead-acid battery: lead + lead dioxide + sulfuric acid
+  //   V = 2.05 V per cell (higher than zinc-copper)
+  //   6 cells: 12.3V (standard car battery — powerful)
+
+  // Internal resistance limits current:
+  //   I_max = V_cell / R_internal
+  //   R_internal depends on: electrode area, electrolyte conductivity, electrode spacing
+  //   Larger electrodes = lower R_internal = more current available
+
+  // Capacity (how long the battery lasts):
+  //   Q = n × F (coulombs) where n = moles of reactant, F = 96,485 C/mol (Faraday constant)
+  //   For a zinc electrode of mass m: n = m / M_Zn = m / 65.4
+  //   Q = (m / 65.4) × 2 × 96,485 (2 electrons per Zn atom)
+  //   100g of zinc: Q = (0.1/0.0654) × 2 × 96,485 = 295,000 C
+  //   At 1A current: lasts 295,000 seconds ≈ 82 hours
+  //   At 10A current: lasts 8.2 hours
+
+  // The reaction engine (§3.1) handles the chemistry:
+  //   Zn → Zn²⁺ + 2e⁻ (anode dissolves — zinc electrode gets thinner over time)
+  //   Cu²⁺ + 2e⁻ → Cu (cathode gains mass — copper electrode gets thicker)
+  //   When the zinc is consumed: battery dies. Player must replace the zinc.
+
+  // Recharging (for lead-acid type):
+  //   Reverse the reaction by forcing current backward through the cell.
+  //   Requires an external voltage source > V_cell (e.g., from a generator).
+  //   Not all batteries are rechargeable — zinc-copper is not (zinc dissolves permanently).
+}
+```
+
+**Worked Example — Voltaic Pile Construction:**
+
+A player has: 10 zinc ingots (each 50g, smelted from sphalerite ore §4.1), 10 copper plates (each 100g), and a bucket of salt water (NaCl dissolved in water). They stack alternating zinc-copper pairs with salt-water-soaked cloth separators. Each cell: V = 0.76V (brine electrolyte — see electrolyteEfficiency above), R_internal ≈ 0.5 Ω (depends on cloth thickness and salt concentration — thinner cloth, more salt = lower resistance). 10 cells in series: V_total = 7.6V, R_internal_total = 5.0 Ω. Maximum current (short circuit): I_max = 7.6 / 5.0 = 1.52 A. Connected to a 10 Ω external load: I = 7.6 / 15.0 = 0.507 A, P_load = 0.507² × 10 = 2.57 W. Battery lifetime: Q = (0.5 / 0.0654) × 2 × 96,485 = 1,475,000 C per cell. At 0.507A: 1,475,000 / 0.507 = 2,909,000 s ≈ 808 hours ≈ 33.7 game-days. The zinc electrodes visibly thin over this period (mass decreases tracked by the reaction engine). When a zinc plate reaches zero mass, that cell dies, total voltage drops by 0.76V, and the remaining cells must supply the load at reduced voltage.
+
+**Edge Cases:**
+- Wrong metal pairing: two pieces of the same metal in electrolyte → V_cell = 0. No current flows. Not an error — just physics.
+- No electrolyte: two metals touching directly → galvanic corrosion (§3.4) but no useful current (electrons transfer at the junction but there is no ionic path to complete the circuit).
+- Electrolyte concentration: higher salt concentration → lower R_internal → more current. Saturated salt water (~26% NaCl) gives R ≈ 0.04 Ω·m. Pure water gives R ≈ 2×10⁵ Ω·m — effectively no current.
+- Temperature dependence: battery voltage decreases slightly with temperature (Nernst equation). At freezing, R_internal increases significantly as ion mobility drops. A battery left outside in winter performs worse.
+
+---
+
+#### Magnetism
+
+// **What this means (Solenoid / Electromagnet):** Wrap wire in a coil,
+// run current through it, and you get a magnet. More coil turns = stronger magnet.
+// More current = stronger magnet. Put an iron core inside the coil = MUCH stronger
+// (iron amplifies ~1000x). Turn off the current = magnet stops. Unlike a permanent
+// magnet, you can switch an electromagnet on and off. That is how electric bells
+// and relays work.
+
+
+```
+Magnetism {
+  // Magnetic fields are created by:
+  //   1. Permanent magnets (lodestone — naturally magnetized magnetite Fe₃O₄)
+  //   2. Electric current flowing through a conductor (electromagnet)
+
+  // MaterialPacket addition:
+  //   magneticPermeability: number    // relative permeability (dimensionless)
+  //     Vacuum/air: μ_r = 1
+  //     Iron: μ_r = 200-5000 (ferromagnetic — strongly attracted to magnets)
+  //     Nickel: μ_r = 100-600
+  //     Cobalt: μ_r = 250
+  //     Copper, aluminum, wood, stone: μ_r ≈ 1 (non-magnetic)
+  //
+  //   permanentMagnetization: Vec3    // residual magnetic field (Tesla), zero for non-magnets
+  //     Natural lodestone: |B| ≈ 0.01-0.1 T
+  //     Magnetized iron: |B| ≈ 0.1-1.0 T (depends on how it was magnetized)
+  //     A compass needle is a small piece of magnetized iron or lodestone.
+
+  // Magnetic field from a current-carrying wire:
+  //   B = μ₀ × I / (2π × r)
+  //   μ₀ = 4π × 10⁻⁷ T·m/A (permeability of free space)
+  //   At 1A current, 0.01m from wire: B = 4π×10⁻⁷ × 1 / (2π × 0.01) = 2×10⁻⁵ T
+  //   This is weak — about half of Earth's magnetic field (~5×10⁻⁵ T).
+
+  // Magnetic field from a coil (solenoid):
+  //   B = μ₀ × μ_r × N × I / L
+  //   N = number of turns, L = coil length
+  //   100 turns, iron core (μ_r = 1000), 1A, 0.1m long:
+  //   B = 4π×10⁻⁷ × 1000 × 100 × 1 / 0.1 = 1.26 T (strong electromagnet!)
+  //   Strong enough to pick up iron tools, separate iron from ore, or drive a motor.
+
+  // Force between magnets / on ferromagnetic materials:
+  //   F_per_pole = (B² × A) / (2 × μ₀) (force per pole face, magnet near a flat surface)
+  //   For an electromagnet with two pole faces touching the load (horseshoe magnet):
+  //     F_total = 2 × F_per_pole = B² × A / μ₀
+  //   At B = 0.1T, A = 0.01m²: F_total = (0.01 × 0.01) / (4π×10⁻⁷) = 80 N (can lift 8 kg)
+  //   Single pole face: F = (0.01 × 0.01) / (2 × 4π×10⁻⁷) = 40 N (can lift 4 kg)
+
+  // Compass: a magnetized needle on a low-friction pivot (axle joint §3.8)
+  //   aligns with the vector sum of: Earth's field + nearby permanent magnets + nearby current
+  //   Implementation: compute B_total at the compass position, apply torque to align the needle
+}
+```
+
+**Worked Example — Electromagnet Picks Up Iron:**
+
+A player winds 200 turns of copper wire around an iron rod (μ_r = 2000, length 0.15m). They connect it to a 5-cell voltaic pile (5.5V). Wire resistance: 10m of copper wire at 1mm² = 10 × 0.0168 = 0.168 Ω. Battery R_internal = 2.5 Ω. Total R = 2.668 Ω. Current: I = 5.5 / 2.668 = 2.06 A. Solenoid field: B = 4π×10⁻⁷ × 2000 × 200 × 2.06 / 0.15 = 6.90 T. This is unrealistically high because the formula assumes unsaturated iron. Iron saturates at ~2.0 T (B_sat). Clamping: B = min(6.90, 2.0) = 2.0 T. Lifting force at the pole face (area = π × 0.01² = 3.14×10⁻⁴ m²): F = (2.0² × 3.14e-4) / (2 × 4π×10⁻⁷) = 1,000 N ≈ lifting 100 kg. A small electromagnet powered by a primitive battery can lift heavy iron objects. Disconnect the battery → field collapses → iron drops. This is how magnetic cranes work, and the player discovers it through physics.
+
+**Pseudocode — Magnetic Field Computation:**
+
+```
+fn compute_magnetic_field(world: &World, point: Vec3) -> Vec3 {
+    let mut b_total = world.earth_magnetic_field(point);  // ~5e-5 T, varies by latitude
+
+    // Contribution from permanent magnets (dipole approximation)
+    for magnet in world.permanent_magnets_near(point, MAX_MAGNET_RANGE) {
+        let r = point - magnet.position;
+        let r_mag = r.length();
+        if r_mag < 0.001 { continue; }  // avoid singularity at center
+
+        // Dipole field: B = (μ₀/4π) × (3(m·r̂)r̂ - m) / r³
+        let m = magnet.magnetic_moment();  // m = B_r × V / μ₀ for a permanent magnet
+        let r_hat = r / r_mag;
+        let b = (MU_0 / (4.0 * PI)) * (3.0 * m.dot(r_hat) * r_hat - m) / r_mag.powi(3);
+        b_total += b;
+    }
+
+    // Contribution from current-carrying coils
+    for coil in world.active_coils_near(point, MAX_COIL_RANGE) {
+        // Solenoid approximation for points near the axis
+        let axis_dist = coil.distance_to_axis(point);
+        if axis_dist < coil.radius * 3.0 {
+            // On-axis or near-axis: B ≈ μ₀ × μ_r × N × I / L (along axis)
+            let b_mag = MU_0 * coil.core_permeability * coil.turns as f64
+                        * coil.current / coil.length;
+            let b_mag = b_mag.min(coil.core_saturation_b);  // saturation clamp
+            b_total += coil.axis_direction * b_mag;
+        } else {
+            // Far field: treat as magnetic dipole
+            let m = coil.magnetic_moment();  // m = N × I × A × axis_dir
+            // ... dipole formula same as above
+        }
+    }
+
+    b_total
+}
+```
+
+**Edge Cases:**
+- Demagnetization: hitting a permanent magnet hard enough (impact energy exceeds domain-wall energy) randomizes magnetic domains → B_residual drops. Heating a magnet above its Curie temperature (iron: 770°C, nickel: 358°C) destroys magnetization entirely. Implementation: when temperature > T_curie, set `permanentMagnetization = 0`. When impact energy > demagnetization_threshold, reduce `permanentMagnetization` by a fraction proportional to impact/threshold.
+- Magnetic shielding: wrapping a region in high-μ material (iron, mu-metal) diverts field lines around the interior. Implementation: if a closed shell of ferromagnetic material surrounds a point, multiply external B contributions by `1 / μ_r` of the shell material. Practical use: protecting a compass from nearby electromagnets.
+- Earth's magnetic field: varies by location. At the equator: ~30 μT horizontal. At the poles: ~60 μT vertical. Implementation: `B_earth = f(latitude, altitude)` — a simple dipole model is sufficient.
+
+---
+
+#### Electromagnetic Induction (Generators and Motors)
+
+// **What this means (Faraday's Law):** Wave a magnet near a wire and
+// electricity flows in the wire. This is how EVERY generator and power plant works.
+// Spin a magnet near a coil of wire and voltage appears. Faster spinning = more voltage.
+// It also works backwards: push electricity through a wire near a magnet and
+// the wire moves. That is a motor. Generator and motor are the same device.
+
+
+```
+Induction {
+  // Faraday's Law: changing magnetic flux through a coil induces voltage:
+  //   EMF = -N × d(Φ_B)/dt
+  //   Φ_B = B × A × cos(θ) (magnetic flux through the coil)
+  //   where θ = angle between the field and the coil normal
+
+  // Generator: rotate a coil in a magnetic field → voltage appears
+  //   A coil of N turns, area A, rotating at ω rad/s in field B:
+  //   EMF = N × B × A × ω × sin(ω × t) (AC voltage — alternates with rotation)
+  //   Peak EMF = N × B × A × ω
+  //
+  //   100 turns, B = 0.5T (permanent magnet), A = 0.01m², 30 rev/s (ω = 188 rad/s):
+  //   Peak EMF = 100 × 0.5 × 0.01 × 188 = 94V
+  //   At 1A load: Power = 94W → decent for lighting or small motor
+  //
+  //   The coil is on an axle joint (§3.8). The waterwheel/windmill/steam engine
+  //   drives the rotation. Faraday's law produces the voltage. Ohm's law determines
+  //   the current through whatever is connected. P = V × I = useful electrical power.
+
+  // Motor: current through a coil in a magnetic field → rotation
+  //   A motor is a generator run in reverse.
+  //   Apply voltage to the coil → current flows → Lorentz force on the wire
+  //   F = I × L × B (force on a wire of length L carrying current I in field B)
+  //   The force creates torque on the coil → rotation
+  //
+  //   Torque: τ = N × I × A × B × sin(θ)
+  //   A motor with 100 turns, 2A, 0.01m², 0.5T:
+  //   τ_max = 100 × 2 × 0.01 × 0.5 = 1.0 N·m
+  //   At 30 rev/s: Power = τ × ω = 1.0 × 188 = 188W ≈ 0.25 HP
+  //
+  //   Implementation: when current flows through a coil AND the coil is in a
+  //   magnetic field AND the coil is on an axle joint → apply Lorentz torque.
+  //   The motor converts electrical power to mechanical rotation.
+  //   The generator converts mechanical rotation to electrical power.
+  //   Same device, same physics, different direction of energy flow.
+
+  // Transformer: two coils on a shared iron core
+  //   AC voltage in coil 1 → changing magnetic field in iron core →
+  //   changing flux through coil 2 → induced voltage in coil 2
+  //   V2/V1 = N2/N1 (voltage ratio = turns ratio)
+  //   Step-up transformer: N2 > N1 → higher voltage (for transmission)
+  //   Step-down transformer: N2 < N1 → lower voltage (for use)
+  //   Power conserved: V1 × I1 = V2 × I2 (minus losses from core heating)
+}
+```
+
+**Worked Example — Waterwheel Generator:**
+
+A player has built a waterwheel (§3.8) on a river. The wheel turns at 2 rev/s (ω = 12.6 rad/s). They attach a coil of 500 turns of copper wire (area 0.02 m²) to the wheel axle, positioned between two lodestone magnets providing B = 0.08 T. Peak EMF = 500 × 0.08 × 0.02 × 12.6 = 10.1 V. Connected to a circuit with 5 Ω total resistance: I_peak = 10.1 / 5 = 2.02 A. Average power (AC): P_avg = 0.5 × V_peak × I_peak = 0.5 × 10.1 × 2.02 = 10.2 W. This is enough to run a single bright incandescent lamp (a resistive wire in a vacuum bulb) or to charge a lead-acid battery. To get more power: more turns, stronger magnets (electromagnet with iron core instead of lodestone), larger coil area, or faster rotation (gearing up from the waterwheel via the gear system §3.8).
+
+**Worked Example — Electric Motor Drives a Grinding Wheel:**
+
+A player connects a 12V lead-acid battery (6 cells) to a coil motor: 200 turns, area 0.015 m², between magnets providing B = 0.3 T. Coil resistance = 1.5 Ω, battery R_internal = 0.3 Ω. At startup (ω = 0, no back-EMF): I = 12 / 1.8 = 6.67 A. Starting torque: τ = 200 × 6.67 × 0.015 × 0.3 = 6.0 N·m. The motor accelerates. As ω increases, the spinning coil generates back-EMF: V_back = N × B × A × ω. At steady state, V_back = V_battery - I × R_total. If the motor reaches 20 rev/s (ω = 125.7): V_back = 200 × 0.3 × 0.015 × 125.7 = 113.1 V — this exceeds the battery voltage, so the motor cannot reach this speed. Steady state: V_back = 12 - I × 1.8. Also V_back = 200 × 0.3 × 0.015 × ω = 0.9 × ω. And I = τ_load / (N × A × B) = τ_load / 0.9. If the grinding wheel requires τ_load = 0.5 N·m: I = 0.5 / 0.9 = 0.56 A. V_back = 12 - 0.56 × 1.8 = 10.99 V. ω = 10.99 / 0.9 = 12.2 rad/s = 1.9 rev/s. Power delivered to grinding: P = 0.5 × 12.2 = 6.1 W. Enough for light grinding/polishing work.
+
+**Pseudocode — Generator/Motor Tick:**
+
+```
+fn update_electromechanical(world: &mut World, dt: f64) {
+    for device in &mut world.coil_in_field_devices {
+        let coil = &device.coil;
+        let axle = &mut device.axle;  // from §3.8 rotational mechanics
+        let b_field = compute_magnetic_field(world, coil.center);
+        let b_along_axis = b_field.dot(coil.normal);
+
+        // Current angle between coil normal and field
+        let theta = axle.angle;  // from rotational mechanics
+        let omega = axle.angular_velocity;
+
+        // Faraday's law: EMF from rotation
+        let emf = coil.turns as f64 * b_along_axis * coil.area * omega * theta.sin();
+
+        // Feed EMF into circuit solver as a voltage source
+        device.circuit_voltage_source.emf = emf;
+
+        // After circuit solver runs, get the current through this coil
+        let current = device.circuit_solution.current;
+
+        // Lorentz torque: motor effect (opposes rotation in generator, drives rotation in motor)
+        let torque = coil.turns as f64 * current * coil.area * b_along_axis * theta.sin();
+
+        // Apply torque to the axle (§3.8 handles angular acceleration, friction, load)
+        axle.apply_torque(torque, dt);
+
+        // Power dissipation in the coil (Joule heating)
+        let p_coil = current * current * coil.resistance;
+        coil.material.add_heat(p_coil * dt);
+    }
+}
+```
+
+**Edge Cases:**
+- No magnets available: without permanent magnets, the first generators cannot be built. Lodestone (naturally magnetized magnetite) must be found in the world. It is rare but not impossibly so — historically, lodestone was known in antiquity. World generation (§4.1) places lodestone deposits in magnetite-rich volcanic regions. Once a player has a generator and a coil, they can magnetize iron by passing current through a coil wrapped around it (creating an electromagnet), then removing the current — some residual magnetization remains. This bootstraps the magnet supply.
+- AC vs DC: generators naturally produce AC (alternating current). A commutator (a split-ring contact on the axle) converts AC to pulsating DC. Implementation: if the coil has a commutator attachment (two half-ring conductors), the output voltage is |EMF| instead of EMF. Smoother DC requires a capacitor (two parallel conductive plates separated by an insulator — charge stores on the plates, smoothing voltage fluctuations).
+- Back-EMF protection: when a motor is suddenly disconnected from its load, it spins freely and generates high voltage (back-EMF spike) that can damage other circuit components. Implementation: track the voltage spike; if V > breakdown_threshold of any component in the circuit, that component fails (insulation breaks down, spark jumps, wire melts).
+- Transformer only works with AC: a constant DC current through coil 1 produces a constant magnetic field → d(Φ)/dt = 0 → no induced voltage in coil 2. Only changing current (AC) induces voltage. The system handles this naturally because Faraday's law computes d(Φ)/dt per tick — if Φ is constant between ticks, EMF = 0.
+
+---
+
+#### Electrolysis (Electricity Drives Chemistry)
+
+// **What this means:** Use electricity to force a chemical reaction that
+// would not happen on its own. This is how aluminum is made -- you cannot
+// melt aluminum out of its ore with any fire (it is too stubborn).
+// But run enough electricity through melted aluminum ore and pure aluminum separates out.
+// It uses ENORMOUS amounts of electricity, which is why aluminum was once
+// more expensive than gold.
+
+
+```
+Electrolysis {
+  // Reverse of a battery: force current through a solution to drive a non-spontaneous reaction.
+  // This is how aluminum is smelted (impossible by fire — Al₂O₃ melting point is 2072°C,
+  // and carbon reduction doesn't work because aluminum is more reactive than carbon).
+
+  // Faraday's Laws of Electrolysis:
+  //   m = (M × I × t) / (n × F)
+  //   m = mass deposited (kg)
+  //   M = molar mass of the element (kg/mol)
+  //   I = current (A)
+  //   t = time (s)
+  //   n = electrons transferred per atom
+  //   F = Faraday constant = 96,485 C/mol
+  //
+  //   Copper electroplating: Cu²⁺ + 2e⁻ → Cu
+  //   At 10A for 1 hour: m = (0.0635 × 10 × 3600) / (2 × 96485) = 0.0119 kg = 11.9 g
+  //
+  //   Aluminum smelting: Al³⁺ + 3e⁻ → Al
+  //   At 100A for 1 hour: m = (0.027 × 100 × 3600) / (3 × 96485) = 0.0336 kg = 33.6 g
+  //   Real aluminum smelting uses ~15 kWh per kg — enormous energy.
+  //   This is why aluminum was more expensive than gold until electricity became cheap.
+
+  // Implementation: when current flows through an electrolyte (conductive liquid)
+  // containing dissolved metal ions, the reaction engine (§3.1) is triggered
+  // with the current as an energy input (replaces thermal activation energy).
+  // The Nernst equation determines the minimum voltage needed:
+  //   V_min = E_standard + (RT / nF) × ln(Q)
+  // If applied voltage > V_min: electrolysis proceeds. If less: nothing happens.
+}
+```
+
+**Worked Example — Copper Electroplating:**
+
+A player wants to coat an iron tool with copper to prevent rust. They dissolve copper sulfate (CuSO₄) in water (blue solution). They connect a 3-cell voltaic pile (3.3V) to two electrodes submerged in the solution: the iron tool as cathode (negative), a scrap copper plate as anode (positive). Minimum voltage for copper deposition: E_standard = 0.34V. Applied voltage 3.3V > 0.34V — electrolysis proceeds. Solution resistance: ~2 Ω. Battery R_internal: 1.5 Ω. Current: I = (3.3 - 0.34) / 3.5 = 0.85 A. Copper deposited per hour: m = (0.0635 × 0.85 × 3600) / (2 × 96485) = 1.0 g. A thin copper layer (~0.01 mm) covers the iron tool in about 1 hour. The copper anode dissolves at the same rate, maintaining the solution concentration. The iron tool now has `electricalConductivity` of copper on its surface and is protected from galvanic corrosion (§3.4) because copper is nobler than iron.
+
+**Worked Example — Aluminum Smelting (Late-Game Technology):**
+
+Aluminum requires: (1) bauxite ore → alumina (Al₂O₃) via the Bayer process (dissolve in NaOH, filter, calcine), (2) cryolite flux (Na₃AlF₆) to lower the melting point from 2072°C to ~960°C, (3) enormous electrical power. A player with a large waterwheel generator (500W) attempts smelting. Current at ~5V (minimum for Al): I = 500/5 = 100A. But generator voltage is AC and much higher. They need a step-down transformer: 100V AC → 5V AC (turns ratio 20:1), then a rectifier (not easily available without semiconductors). Alternative: multiple batteries in parallel for high DC current. 50 voltaic cells in parallel (each 1.1V, 2A max): V = 1.1V (too low — need ~5V). Cells in series-parallel: 5 series × 10 parallel = 5.5V, 20A max. At 20A: m = (0.027 × 20 × 3600) / (3 × 96485) = 6.7 g/hour. Tiny yield. This is why aluminum smelting historically required industrial-scale hydroelectric power. The game accurately reflects that aluminum is inaccessible until the player builds serious electrical infrastructure.
+
+**Edge Cases:**
+- Electrolysis of water: 2H₂O → 2H₂ + O₂ at V > 1.23V. Produces hydrogen gas (flammable — connects to combustion §3.1) and oxygen gas. A player can generate hydrogen fuel via electrolysis, store it, and use it for high-temperature flames (H₂ + O₂ → 2860°C) or for filling balloons (H₂ is lighter than air → buoyancy).
+- Competing reactions: if multiple ions are present, the one with the least negative electrode potential deposits first. In a solution containing Cu²⁺ and Zn²⁺, copper deposits before zinc because E_Cu > E_Zn. The reaction engine priority system handles this.
+- Electrode degradation: inert electrodes (carbon, platinum) do not participate in the reaction. Active electrodes (copper anode in copper plating) dissolve. If the anode is consumed entirely, electrolysis stops (no source of ions). Track electrode mass via the reaction engine.
+
+---
+
+#### Arc Furnace (Electricity → Extreme Heat)
+
+```
+ArcFurnace {
+  // When voltage is high enough to ionize air between two electrodes,
+  // an electric arc forms — a continuous plasma discharge at 3000-20000°C.
+  // This is the highest temperature achievable in the game.
+  //
+  // Arc voltage: V_arc ≈ 20-50V (depends on gap distance and gas)
+  // Arc current: I = (V_supply - V_arc) / R_circuit
+  // Power: P = V_arc × I
+  //
+  // A 100V supply, 10Ω circuit, 30V arc: I = (100-30)/10 = 7A, P = 210W
+  // A 500V supply, 1Ω circuit, 50V arc: I = 450A, P = 22,500W (22.5 kW)
+  //
+  // At 22.5 kW focused on a small area: temperature exceeds 3000°C easily.
+  // This enables:
+  //   Melting steel (1538°C) — possible with lower-power arc
+  //   Melting tungsten (3422°C) — requires powerful arc
+  //   Making steel from scrap (electric arc furnace steelmaking)
+  //   Welding (joining metals by melting their junction)
+  //
+  // Implementation: when two electrodes are close but not touching, and
+  // voltage between them exceeds breakdown threshold (~3 MV/m × gap distance):
+  //   Create an arc entity (continuous plasma between the electrodes)
+  //   The arc converts electrical power to heat at the arc location
+  //   Temperature propagation (Stage 1) distributes the heat
+  //   MaterialPackets in the arc zone heat rapidly
+  //   Sound: continuous broadband noise from the plasma (noise synthesis §3.3)
+  //   Light: intense white/blue glow (emissive rendering)
+}
+```
+
+**Worked Example — Arc Welding Two Iron Plates:**
+
+A player has a generator producing 80V AC (from a steam engine, §3.11, driving a 400-turn coil in a 0.3T field at 10 rev/s: EMF = 400 × 0.3 × 0.02 × 62.8 = 150V peak, 80V RMS). They touch a carbon electrode to the junction between two iron plates, then pull it back 3mm. Breakdown voltage: 3 MV/m × 0.003 m = 9,000V — too high for 80V! But the electrode was touching the iron: as it pulls away, the contact point heats to incandescence, creating a hot ionized channel. Hot air breaks down at much lower voltage (~0.5 MV/m). Revised breakdown: 0.5 MV/m × 0.003 = 1,500V — still too high. In practice, arc welding works because the initial contact creates a molten bridge that ionizes as it stretches. Implementation: if two conductors were in contact within the last 5 ticks and are now separated by < 10mm, use a reduced breakdown threshold (V_breakdown = 20V + 10V/mm × gap). At 3mm gap: V_breakdown = 50V. With 80V supply: arc strikes. Arc current with 0.5 Ω circuit resistance: I = (80 - 30) / 0.5 = 100A. Power: P = 30 × 100 = 3,000W concentrated at the junction. Temperature at the weld zone rises past iron's melting point (1538°C) in seconds. The two plates fuse.
+
+**Edge Cases:**
+- Arc in vacuum: no gas to ionize. Arc cannot form (electrons need gas molecules to create a conductive channel). Implementation: if the arc gap is in a vacuum chamber, breakdown threshold → infinity.
+- Arc in inert gas: argon, nitrogen have different breakdown voltages. Argon is lower → easier to strike an arc. This is why real welding uses argon shielding gas (prevents oxidation of the weld). If the player surrounds the weld zone with argon (collected from air distillation, late-game), weld quality improves (no oxide inclusions).
+- Carbon electrode consumption: carbon electrodes gradually oxidize (C + O₂ → CO₂) at arc temperatures. The electrode shortens over time. Player must periodically advance the electrode to maintain the gap. Tracked by the reaction engine.
+- Electromagnetic interference: the arc produces broadband electromagnetic radiation (radio noise). Any nearby compass or sensitive magnetic instrument is disturbed while the arc is active. Implementation: add a noise component to `compute_magnetic_field()` when an arc is within range.
+
+---
+
+#### Resistance Wire Applications (Emergent Devices)
+
+This subsection does not add new physics — it documents emergent devices that arise naturally from current + resistance + temperature propagation. None of these are coded as special objects. They exist because the physics produces them.
+
+```
+EmergentElectricalDevices {
+  // Incandescent lamp:
+  //   A thin wire (tungsten, carbon, or iron) in a sealed glass bulb (vacuum or inert gas).
+  //   Current heats the wire. At ~2500°C, it glows white-hot (Wien's law, §3.12).
+  //   Vacuum prevents oxidation (without vacuum: wire burns in seconds).
+  //   The emissive rendering system (§3.5) already handles glowing hot objects.
+  //   A lamp is just: a hot wire + a transparent enclosure + a vacuum.
+  //
+  //   100V supply, tungsten filament R = 100Ω: I = 1A, P = 100W.
+  //   ~5% of power becomes visible light (historically accurate for incandescent lamps).
+
+  // Electric fence:
+  //   A wire at high voltage. Anything that touches it and is grounded completes
+  //   a circuit through its body. Current = V / (R_wire + R_body + R_ground).
+  //   Human body: R ≈ 1000Ω (wet skin) to 100,000Ω (dry skin).
+  //   At 100V through wet skin: I = 100/1000 = 0.1A (dangerous — can cause muscle spasm).
+  //   Implementation: already handled by the circuit solver. The fence wire is a circuit
+  //   element. The entity's body is a resistor. Contact creates a new circuit path.
+
+  // Telegraph:
+  //   A long wire from point A to point B. A battery at A, an electromagnet at B.
+  //   Close a switch at A → current flows → electromagnet at B activates → clicks.
+  //   Open the switch → current stops → electromagnet releases.
+  //   Morse code: patterns of short/long activations encode messages.
+  //   Implementation: no new physics needed. The circuit solver, the electromagnet force
+  //   calculation, and the switch (a mechanical contact that opens/closes a circuit path)
+  //   are all already defined. A telegraph is an emergent composition of existing systems.
+
+  // Electric bell / alarm:
+  //   An electromagnet pulls a hammer toward a bell (gong). The hammer's motion
+  //   breaks the circuit (the hammer arm IS the switch). Circuit breaks → magnet releases →
+  //   spring pulls hammer back → circuit closes → magnet pulls again → repeat.
+  //   This creates an oscillation at ~5-20 Hz. The bell rings continuously while
+  //   the battery is connected. Implementation: entirely emergent from the circuit solver
+  //   + electromagnet force + structural mechanics. No special code.
+}
+```
+
+---
+
+#### Performance Budget
+
+```
+ElectromagnetismPerformance {
+  // Circuit solving: sparse linear system Ax = b
+  //   5-node circuit: ~0.01 ms (Gaussian elimination)
+  //   20-node circuit: ~0.1 ms (LU decomposition)
+  //   100-node circuit (complex factory): ~1 ms (iterative solver)
+  //
+  // Magnetic field computation:
+  //   Per permanent magnet: ~0.005 ms (dipole field evaluation at nearby points)
+  //   Per current-carrying coil: ~0.01 ms (solenoid field formula)
+  //   10 magnets + 5 coils in range: ~0.1 ms
+  //
+  // Static charge: negligible (< 0.01 ms — only computed when insulating objects
+  //   are being rubbed, which is a player-initiated action, not a world-tick process)
+  //
+  // Arc furnace: ~0.02 ms per active arc (one heat injection + one sound event per tick)
+  //
+  // Electrolysis: ~0.01 ms per active electrolysis cell (one Faraday's law calculation
+  //   + one reaction engine trigger per tick)
+  //
+  // Total EM budget: ~0.2-1.0 ms per tick (comparable to structural physics)
+  // Only computed when electrical systems exist near active players.
+  // A world with no batteries or generators: zero EM cost.
+  //
+  // Circuit graph updates: event-driven (not every tick)
+  //   Wire placed/removed → rebuild circuit graph
+  //   Battery connected/disconnected → resolve voltages
+  //   Generator speed changes → update EMF
+  //   Circuit graph is cached between events (dirty flag pattern)
+  //
+  // Tick rate: 30 Hz (same as environment physics — electrical changes are smooth)
+  // Magnetic field is cached per-frame for each query point (LRU cache, 256 entries)
+  //   Recomputed only when magnets/coils move or currents change
+
+  // MaterialPacket additions for this section:
+  //   magneticPermeability: number    // relative, dimensionless (iron: 200-5000, air/wood: 1)
+  //   permanentMagnetization: Vec3    // Tesla (zero vector for non-magnets, 0.01-1.0 magnitude for magnets)
+  //   triboelectricIndex: number      // position in triboelectric series (-1 to +1)
+  //   These three fields add 20 bytes per MaterialPacket (2 × f32 + 1 × Vec3).
+  //   At 100,000 active packets: 2.0 MB additional memory (negligible).
+}
+```
+
+---
+
+#### Connections (5 new — Connections 58-62)
+
+> **Connection 58:** Battery Voltage from Electrode Potentials *(see §3.6 for full spec)*
+
+
+> **Connection 59:** Current → Resistive Heating *(see §3.6 for full spec)*
+
+
+> **Connection 60:** Generator ← Rotational Mechanics *(see §3.6 for full spec)*
+
+
+> **Connection 61:** Motor → Rotational Mechanics *(see §3.6 for full spec)*
+
+
+> **Connection 62:** Electrolysis → Reaction Engine *(see §3.6 for full spec)*
+
+
+> Connections 63-99 are listed by name in §3.6 above. The full specification includes complete data structures and trigger conditions for each.
 
 # PART III — GAME WORLD
 ---
@@ -1554,15 +7706,15 @@ For hybrid mode (state + video):
 
 ---
 
-#### 3.1.0 Planetary Formation and Bulk Geochemistry
+#### 4.1.1 Planetary Formation and Bulk Geochemistry
 
 The current world-generation pipeline starts at tectonic plates. That is the wrong starting point. Tectonic plates are an emergent consequence of planetary cooling — they are not where resources come from. Resources come from the planet's bulk chemistry, which was set at accretion, then sorted by differentiation, then fractionated by partial melting, then concentrated by hydrothermal circulation. The tectonic plate is just the last step in a chain that starts in the solar nebula.
 
-This section documents that full chain. The tectonic rules in 6.4.1–6.4.8 are downstream consequences of what this section establishes. A resource node is only valid if it is consistent with the geochemical rules here. Nothing gets seeded by proximity to a boundary type alone — everything derives from the planet's initial chemistry.
+This section documents that full chain. The tectonic rules in 4.5.1–4.5.8 are downstream consequences of what this section establishes. A resource node is only valid if it is consistent with the geochemical rules here. Nothing gets seeded by proximity to a boundary type alone — everything derives from the planet's initial chemistry.
 
 ---
 
-##### 3.1.0.1 Planetary Accretion and Bulk Composition
+##### 4.1.1.1 Planetary Accretion and Bulk Composition
 
 A rocky planet forms by gravitational accretion of planetesimals from the protoplanetary disk. The disk's composition follows stellar abundances (solar composition), but the innermost zone where rocky planets form is depleted of volatile elements (H, He, C, N, noble gases) because the young star's heat drove them outward. What remains to build a rocky planet is dominated by refractory elements — those with high condensation temperatures from a cooling gas.
 
@@ -1586,7 +7738,7 @@ These numbers are not arbitrary — they are the cosmic abundances of refractory
 
 ---
 
-##### 3.1.0.2 Planetary Differentiation and Goldschmidt Classification
+##### 4.1.1.2 Planetary Differentiation and Goldschmidt Classification
 
 When a newly accreted planet is hot enough (from accretional energy + short-lived radioisotope decay — primarily ²⁶Al, with a 730,000-year half-life), the interior melts. This melting is the most important event in planetary history for resource distribution: elements sort themselves by chemical affinity.
 
@@ -1600,7 +7752,7 @@ These elements followed iron when it melted and sank to form the core. Earth's c
 **Lithophile elements** ("rock-loving") — partition into silicate minerals and melts:
 O, Si, Al, Mg, Ca, Na, K, Ti, P, Li, Be, B, Rb, Sr, Y, Zr, Nb, Ba, REEs (La–Lu), Hf, Ta, U, Th, Cs, F, Cl (partial)
 
-These stayed in the mantle and crust. U and Th are lithophile and radioactive — their ongoing decay (~45 TW globally) is the principal heat source driving mantle convection and therefore plate tectonics today. Without U and Th, Earth's interior would have cooled, tectonics would have ceased, and volcanism would have stopped billions of years ago.
+These stayed in the mantle and crust. U and Th are lithophile and radioactive — their ongoing decay (~20 TW globally from U, Th, and K combined — about half of Earth's ~47 TW total surface heat flow; the rest is primordial heat from formation) is the principal heat source driving mantle convection and therefore plate tectonics today. Without U and Th, Earth's interior would have cooled, tectonics would have ceased, and volcanism would have stopped billions of years ago.
 
 **Chalcophile elements** ("sulfur-loving") — partition into sulfide melt:
 S, Cu, Pb, Zn, Ag, Cd, In, Tl, Hg, As, Bi, Sb, Se, Te, Sn (partial), Mo (partial)
@@ -1616,7 +7768,7 @@ These form the hydrosphere, atmosphere, and biosphere. The oceans and atmosphere
 
 ---
 
-##### 3.1.0.3 Bowen's Reaction Series and Magmatic Differentiation
+##### 4.1.1.3 Bowen's Reaction Series and Magmatic Differentiation
 
 Once differentiation has established the mantle, further chemical fractionation occurs every time a piece of mantle melts. This is the second major sorting mechanism, and it controls which elements end up in which types of crustal rock.
 
@@ -1645,7 +7797,7 @@ As a basaltic magma cools from ~1200°C to ~600°C, minerals crystallize in a pr
 
 7. **Muscovite mica**, ~700°C.
 
-8. **Quartz** (SiO₂) crystallizes last, below ~600°C. The last liquid to crystallize is quartz-rich.
+8. **Quartz** (SiO₂) crystallizes last, below ~700°C. The last liquid to crystallize is quartz-rich.
 
 **Incompatible elements — the pegmatite concentration mechanism:**
 
@@ -1672,14 +7824,14 @@ With each melting and crystallization cycle at subduction zones, the crustal col
 
 ---
 
-##### 3.1.0.4 Planet Layer Model
+##### 4.1.1.4 Planet Layer Model
 
 The game must generate and track these layers. Each layer has a distinct composition and set of accessible resources:
 
 | Layer | Primary mineralogy | Elemental character | Avg. thickness | T range | Player-accessible |
 |-------|-------------------|---------------------|----------------|---------|-------------------|
 | **Inner core** | Fe–Ni alloy (solid) | Siderophile: Fe 85%, Ni 5%, Si+S 10% | 1220 km radius | ~5000–6000°C | No |
-| **Outer core** | Fe–Ni–S melt (liquid) | Siderophile: Fe 82%, Ni 5%, S 9%, O+Si 4% | 2260 km | 4000–5000°C | No — generates magnetic field via dynamo |
+| **Outer core** | Fe–Ni–S melt (liquid) | Siderophile: Fe 82%, Ni 5%, S 9%, O+Si 4% | 2260 km | 4400–5500°C | No — generates magnetic field via dynamo |
 | **Lower mantle** | Bridgmanite (MgSiO₃ perovskite), ferropericlase (MgO) | Lithophile, high-pressure phases | 2300 km | 1500–4000°C | No |
 | **Upper mantle** | Peridotite: olivine (Mg,Fe)₂SiO₄ + pyroxene MgSiO₃ | Lithophile: Mg, Fe, Si, O, Cr, Ni | 660 km | 500–1500°C | Only via volcanic transport (xenoliths, kimberlites) |
 | **Oceanic crust** | Basalt: SiO₂ 50%, Al₂O₃ 16%, FeO 10%, MgO 7%, CaO 11%, Na₂O 3% | Chalcophile enriched by seafloor hydrothermal vents | 5–10 km | surface–400°C | Yes — seafloor and island arcs |
@@ -1692,7 +7844,7 @@ The game must generate and track these layers. Each layer has a distinct composi
 
 ---
 
-##### 3.1.0.5 Crustal Abundance — Clarke Numbers
+##### 4.1.1.5 Crustal Abundance — Clarke Numbers
 
 The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–1931) is the average abundance of an element in the continental crust, in parts per million (ppm) by mass. These numbers define how common or rare a resource is in the game world. A resource with a Clarke number of 60 ppm (copper) is ~15,000 times more abundant than one with 0.004 ppm (gold). The game must respect these ratios in deposit size and discovery frequency.
 
@@ -1712,11 +7864,11 @@ The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–
 | Phosphorus (P) | 1,050 | Lithophile | Apatite — ubiquitous accessory mineral |
 | Manganese (Mn) | 950 | Lithophile/siderophile | Pyrolusite, seafloor nodules |
 | Fluorine (F) | 585 | Lithophile | Fluorapatite, fluorite |
-| Chlorine (Cl) | 130 | Atmophile | Halite — concentrated by evaporation |
+| Chlorine (Cl) | 145 | Atmophile | Halite — concentrated by evaporation |
 | Chromium (Cr) | 102 | Siderophile | Chromite in mafic/ultramafic rock |
 | Zinc (Zn) | 70 | Chalcophile | Sphalerite — hydrothermal concentration |
 | Copper (Cu) | 60 | Chalcophile | Sulfide minerals — hydrothermal concentration |
-| Nickel (Ni) | 59 | Siderophile | Pentlandite in mafic intrusions |
+| Nickel (Ni) | 84 | Siderophile | Pentlandite in mafic intrusions |
 | Lithium (Li) | 20 | Lithophile (incompatible) | Pegmatite and continental brine |
 | Lead (Pb) | 14 | Chalcophile | Galena — MVT and hydrothermal veins |
 | Cobalt (Co) | 25 | Siderophile | Ni–Cu sulfide deposits |
@@ -1732,7 +7884,7 @@ The **Clarke number** (named after geochemist Frank Wigglesworth Clarke, 1847–
 
 ---
 
-##### 3.1.0.6 Mineral Stability — Formation Conditions
+##### 4.1.1.6 Mineral Stability — Formation Conditions
 
 A resource node can only exist if the conditions that formed it actually existed at that location. The game's resource seeder must run a mineral stability check before placing any deposit. Each mineral has a valid temperature window, pressure window, chemical activity window, and atmospheric condition:
 
@@ -1763,7 +7915,7 @@ A resource node can only exist if the conditions that formed it actually existed
 
 ---
 
-##### 3.1.0.7 World Generation Algorithm — From First Principles
+##### 4.1.1.7 World Generation Algorithm — From First Principles
 
 This is the full ordered sequence the game runs when generating a new world:
 
@@ -1809,11 +7961,54 @@ Every resource node in the game has a surface expression that derives from the r
 
 ---
 
-#### 3.1.1 Surface Terrain and Biomes
+#### 4.1.2 Surface Terrain and Biomes
 
 The planet is a sphere with a 4-kilometer radius. The terrain is generated using a technique called 3D Fractional Brownian Motion (FBM) with domain warping — this produces natural-looking mountain ranges, valleys, and coastlines without any repetition. Additional passes add ridged mountains and Voronoi-based tectonic plates.
 
 20 Whittaker biomes are assigned based on elevation and moisture (tundra, boreal forest, temperate forest, tropical rainforest, desert, grassland, etc.). Each biome has real ecological properties: net primary productivity (how much plant life grows), carrying capacity (how many organisms can live here), and decomposition rate (how quickly dead matter breaks down).
+
+```
+  // ── Biome Net Primary Productivity (NPP) ──────────────────────────────
+  //
+  // In plain English: NPP is how much plant life grows per year in each biome.
+  // Hot wet places (tropical forest) grow the most. Cold dry places (tundra) grow the least.
+  // This number determines how many animals can live in a biome, how fast crops grow,
+  // and how quickly resources regenerate.
+  //
+  // | Biome                    | NPP (g C/m²/year) | NPP (kcal/m²/year) | Carrying capacity multiplier |
+  // |--------------------------|--------------------|--------------------|------------------------------|
+  // | Tropical rainforest       | 1000-2000          | 10,000-20,000      | 1.0 (reference)              |
+  // | Tropical seasonal forest  | 700-1500           | 7,000-15,000       | 0.8                          |
+  // | Temperate deciduous forest| 600-1200           | 6,000-12,000       | 0.7                          |
+  // | Temperate rainforest      | 800-1500           | 8,000-15,000       | 0.85                         |
+  // | Boreal forest (taiga)     | 200-600            | 2,000-6,000        | 0.35                         |
+  // | Temperate grassland       | 200-600            | 2,000-6,000        | 0.35                         |
+  // | Tropical savanna          | 300-800            | 3,000-8,000        | 0.45                         |
+  // | Mediterranean shrub       | 200-500            | 2,000-5,000        | 0.30                         |
+  // | Desert (hot)              | 0-50               | 0-500              | 0.03                         |
+  // | Desert (cold)             | 0-50               | 0-500              | 0.03                         |
+  // | Tundra                    | 10-100             | 100-1,000          | 0.06                         |
+  // | Ice/polar                 | 0-10               | 0-100              | 0.01                         |
+  // | Freshwater wetland        | 800-2000           | 8,000-20,000       | 0.9                          |
+  // | Mangrove                  | 500-1500           | 5,000-15,000       | 0.7                          |
+  // | Coral reef (coastal)      | 1000-2500          | 10,000-25,000      | 1.0                          |
+  // | Open ocean                | 50-200             | 500-2,000          | 0.1                          |
+  // | Estuary                   | 500-1500           | 5,000-15,000       | 0.7                          |
+  //
+  // These values are from Lieth & Whittaker (1975) and updated IPCC data.
+  //
+  // NOTE: These NPP values serve as VALIDATION TARGETS for the emergent biome
+  // productivity system. In the full implementation, NPP per cell should be
+  // computed from:
+  //   NPP = f(solar_irradiance(§4.6), T_air(§4.6), annual_rainfall(§4.6), soil_fertility(§4.4))
+  // The Whittaker values verify that the formula produces correct output.
+  // Until the NPP formula is implemented, these values are used directly.
+  //
+  // Usage:
+  //   maxOrganisms(biome) = baseCapacity × carryingCapacityMultiplier
+  //   cropGrowthRate(biome) = baseGrowthRate × (NPP / 10000)
+  //   treeRegrowthTime(biome) = baseTime / (NPP / 1000)
+```
 
 River networks are generated with valley carving. Coastal areas are identified and affect settlement behavior.
 
@@ -1838,12 +8033,55 @@ dPredator/dt =  δ·Prey·Predator  −  γ·Predator
 
 When autotrophs (prey) are abundant, heterotrophs (predators) reproduce faster than they die. As heterotrophs grow, they deplete autotrophs. Autotroph population crashes. Heterotrophs starve and decline. Autotrophs recover. The cycle repeats. No designer writes this behavior — it emerges from energy accounting per organism per tick.
 
+```
+  // ── Organism Energy Budget ─────────────────────────────────────────────
+  //
+  // In plain English: every organism needs energy to live. Plants get it from 
+  // sunlight. Animals get it from eating plants or other animals. If energy in < 
+  // energy out, the organism starves and dies.
+  //
+  // Photosynthesis efficiency:
+  //   E_plant = solarIrradiance × leafArea × photosyntheticEfficiency × dayLength
+  //   solarIrradiance: ~1000 W/m² (peak), varies with latitude/season/clouds
+  //   leafArea: proportional to organism size (allometric: A ∝ mass^(2/3))
+  //   photosyntheticEfficiency: 1-2% for most plants (max theoretical ~11%)
+  //   dayLength: hours of sunlight per game-day (from §4.6 season system)
+  //
+  //   A 1m² plant in full sun: 1000 × 1 × 0.015 × 12 = 180 Wh/day = 155 kcal/day
+  //
+  // Metabolic rate (energy consumption):
+  //   Kleiber's law: BMR = 70 × mass^(0.75) kcal/day (for mammals)
+  //   mass in kg
+  //   A 1 kg rabbit: 70 × 1 = 70 kcal/day
+  //   A 50 kg deer: 70 × 50^0.75 = 70 × 18.8 = 1316 kcal/day
+  //   A 500 kg cow: 70 × 500^0.75 = 70 × 105.7 = 7400 kcal/day
+  //
+  // Energy balance per game-day:
+  //   energyBalance = energyIntake - metabolicRate
+  //   if energyBalance > 0: organism gains fat (stores energy)
+  //   if energyBalance < 0: organism loses fat (burns reserves)
+  //   if fatReserves <= 0: starvation → health decreases → death
+  //
+  // Food chain efficiency (trophic levels):
+  //   Plants capture ~1-2% of solar energy
+  //   Herbivores extract ~10% of plant energy
+  //   Predators extract ~10% of herbivore energy
+  //   This is why there are many plants, fewer herbivores, and few predators.
+  //   A biome with 10,000 kcal/m²/year of plant growth supports:
+  //     ~1,000 kcal/m²/year of herbivore biomass
+  //     ~100 kcal/m²/year of predator biomass
+```
+
 **Scientific grounding — genome and speciation:**
 The 256-bit genome and Hamming distance speciation threshold implement the conceptual framework from Richard Dawkins' *The Selfish Gene* (1976): evolution operates on genes, not individuals. Two populations that diverge beyond a Hamming distance of 32 bits are treated as separate species — a computational proxy for reproductive isolation. Traits encoded in the genome (size, metabolic rate, diet preference) determine fitness. Unfit organisms die sooner. Fit ones reproduce more. Selection pressure does the rest.
 
+// Mutation rate: 0.001 per bit per generation (1 in 1000 bits mutates).
+// At 256 bits: ~0.256 mutations per offspring on average.
+// This produces gradual drift without overwhelming selection.
+
 ---
 
-#### Full Organism Species Registry
+#### 4.2.1 Full Organism Species Registry
 
 Every living thing in the game is an organism in the simulation. There are no static resource nodes for biological materials — wood, grain, wool, wax, guano, and every other biological product comes from a living organism that was born, grew, and can die. This section documents every species that must exist in the system, organized by kingdom, with their ecological role, biome constraints, products they yield, and how their population dynamics interact with the rest of the simulation.
 
@@ -2362,7 +8600,7 @@ The current system models organisms as abstract entities with diet types and ene
 | ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `speciesId`       | string                 | Unique species identifier (e.g., `"quercus_robur"`, `"apis_mellifera"`)                  |
 | `kingdom`         | enum                   | `plant`, `animal`, `fungus`, `bacteria`                                                  |
-| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest                           |
+| `bodyMass`        | number                 | Current mass in kg — scales energy stored and yield on harvest. NOTE: bodyMass is currently a standalone stat. In the full implementation, it should be the sum of component MaterialPacket masses: bodyMass = skeleton.mass + muscle.mass + fat.mass + organ.mass. Fat reserves change with feeding (increase) and starvation (decrease). This makes Kleiber's law truly emergent from the material system (§3.1). VALIDATION TARGET — species body masses (cattle 400-800kg, sheep 40-100kg, etc.) should be the sum of component MaterialPacket masses, not standalone numbers. |
 | `growthStage`     | enum                   | `seed`, `juvenile`, `mature`, `senescent` (plants); `pup`, `juvenile`, `adult` (animals) |
 | `biomeAffinity`   | number[]               | Compatibility score per biome (0–1 per biome type) — replaces binary biome assignment    |
 | `contaminantLoad` | Record<string, number> | Accumulated contaminant concentrations — e.g., `{ "DDT": 0.003 }` in mg/kg body fat      |
@@ -2374,7 +8612,7 @@ The current system models organisms as abstract entities with diet types and ene
 
 - Plants grow biomass per tick proportional to sunlight × biome productivity × soil nitrogen × mycorrhizal network density. They yield products proportional to current biomass.
 - Animals move toward food sources. Herbivores graze plant patches. Carnivores pursue prey. Prey flees (behavioral state machine).
-- Contaminant transfer: at each feeding interaction, transfer a fraction of predator's contaminant load × bioaccumulation factor to prey's load.
+- Contaminant transfer: at each feeding interaction, transfer a fraction of prey's contaminant load to predator's load (bioaccumulation — toxins concentrate UP the food chain) × bioaccumulation factor.
 - Decomposition: dead organisms lose mass at decomposition rate. Nutrients released to soil cell.
 - Bee pollination: each tick, bees within territory radius increase seed production of nearby flowering plants by a pollination factor. Without bees, seed production drops.
 
@@ -2386,9 +8624,1608 @@ The current system models organisms as abstract entities with diet types and ene
 - Apex predator cap = f(secondary consumer population)
 
 
-### 4.3 Geology & Resource Distribution
+### 4.3 Animal Behavior — Individual AI and Real Traits
 
-Resource distribution builds on the planetary formation and tectonic structure defined in §1. Resource nodes are concentrated according to real geological processes. Settlement specialties assigned by server-side geology query (matching the client algorithm exactly).
+#### The Principle
+
+Every animal in the species registry (§4.2.1) is not just a walking resource bag. Each animal is an individual with real behavioral traits based on its species' biology. A wolf doesn't just "patrol" — it hunts in a pack, communicates with howls, establishes territory, avoids larger predators, raises pups, and remembers where prey was found before. A sheep doesn't just "graze" — it follows the flock, panics when separated, recognizes individual faces (sheep can remember 50 faces for years — real research), and moves toward fresh grass while avoiding areas that smell like predators.
+
+The animal AI uses the **same three-tier system as NPCs** (§5.2), but with a species-specific Tier 2 model fine-tuned on animal behavior rather than human behavior.
+
+#### Animal Brain — Simplified Three-Tier
+
+```
+AnimalBrain {
+  // Animals use the same architecture as NPCs but with different training:
+
+  // TIER 1: Instinct (every tick, no AI)
+  // Pure reflexive responses hardwired per species:
+  //   Predator detected → flee (prey species) or assess-attack (predator species)
+  //   Fire detected → flee (all species)
+  //   Offspring threatened → defend (parental species)
+  //   Drowning → swim to shore
+  //   Pain → vocalize + flee source
+  //
+  // These are faster than NPC reflexes — animal reaction time is shorter than human.
+  // Cost: ~0.005ms per animal per tick
+
+  // TIER 2: Species-Specific SLM (every 5-20 game-seconds)
+  // A small model trained on behavioral data for each species category:
+  //   - Ungulate model (cattle, sheep, goat, deer, horse): herd behavior, grazing, flight
+  //   - Carnivore model (wolf, lion): pack hunting, territory, stalking
+  //   - Omnivore model (boar, bear): foraging, rooting, opportunistic
+  //   - Bird model (eagle, chicken): flight/ground, nesting, migration
+  //   - Small prey model (rabbit, fish): hiding, burrow, schooling
+  //
+  // Instead of one model per species, ~5 category models cover all species.
+  // Species-specific parameters (pack size, flight distance, diet) are passed as input.
+  //
+  // Cost: ~5ms per decision (simpler than human NPC model)
+  // Animals far from players use Tier 1 only (LOD system same as NPC)
+
+  // TIER 3: Full LLM (extremely rare)
+  // Only for unprecedented situations:
+  //   Animal encounters a player-built structure it's never seen → how to react?
+  //   Domesticated animal given a completely novel command → interpret intent?
+  // In practice: <1 call per real-hour for the entire animal population
+}
+```
+
+#### Species Trait System
+
+Every individual animal has traits determined by its genome (§4.2 — 256-bit genome with Hamming distance speciation). Traits are expressed as continuous values that affect behavior.
+
+```
+AnimalTraits {
+  // ── Universal traits (all species) ────────────────────────────────────
+
+  // Physical
+  mass: number                       // kg — determines speed, strength, food requirement
+  age: number                        // game-days since birth
+  health: number                     // 0-100 — same injury system as players (§7.1)
+  stamina: number                    // 0-100 — sprint capacity, recovery rate
+  pregnancyState: number             // 0 = not pregnant, 1.0 = about to give birth
+
+  // Behavioral (from genome, permanent)
+  boldness: 0.0–1.0                  // willingness to approach novel objects/beings
+  // High boldness: approaches players, investigates new things, easier to tame
+  // Low boldness: flees from anything unfamiliar, harder to tame, better at surviving predators
+
+  aggressiveness: 0.0–1.0            // tendency to fight vs. flee
+  // High: fights when cornered, attacks smaller animals, defends territory fiercely
+  // Low: always flees, avoids confrontation
+
+  sociability: 0.0–1.0               // desire to be near conspecifics (same species)
+  // High: stays in herds/packs, distressed when isolated
+  // Low: solitary, independent
+
+  tamability: 0.0–1.0                // base ease of domestication (species-dependent range)
+  // Dog ancestor (wolf): tamability range 0.4–0.8 (highest of any wild animal)
+  // Sheep: tamability range 0.5–0.9 (very tamable — follows flock, low aggression)
+  // Horse: tamability range 0.2–0.6 (moderate — flighty but trainable)
+  // Deer: tamability range 0.05–0.2 (very low — they bolt)
+  // Wolf (as adult): tamability range 0.01–0.15 (nearly impossible unless raised from pup)
+  // Lion: tamability range 0.0–0.05 (essentially untamable)
+  // The actual value is from the genome — individual variation within species range
+
+  intelligence: 0.0–1.0              // learning speed, problem-solving
+  // High intelligence: learns tricks faster, remembers more, navigates obstacles
+  // Pig: 0.7–0.9 (smarter than dogs in tests)
+  // Dog: 0.6–0.85
+  // Horse: 0.4–0.7
+  // Sheep: 0.3–0.5 (smarter than people think — facial recognition)
+  // Chicken: 0.15–0.3
+
+  // ── Species-specific traits ───────────────────────────────────────────
+
+  // Herd animals (cattle, sheep, goat, horse, deer):
+  flockingStrength: 0.0–1.0         // how tightly they stick to the group
+  flightDistance: number             // meters — how close a threat can get before fleeing
+  // Deer: 50-100m (very flighty)
+  // Cattle: 10-30m (moderate)
+  // Sheep (wild): 30-50m, (domesticated): 5-15m
+  // Horse (wild): 40-80m, (domesticated): 5-10m
+  followLeader: boolean              // do they follow a lead animal?
+  // Sheep: true (strong — one sheep moves, all follow)
+  // Cattle: true (moderate — lead cow guides herd)
+  // Horse: true (lead mare, stallion guards rear)
+
+  // Pack hunters (wolf):
+  packRole: 'alpha' | 'beta' | 'omega' | 'disperser'
+  packCoordination: 0.0–1.0         // how well they hunt as a team
+  howlFrequency: number              // communication — territory marking, pack bonding
+  // Wolves coordinate flanking maneuvers when hunting:
+  //   Alpha initiates chase
+  //   Beta wolves fan out to cut off escape routes
+  //   Pack surrounds prey → exhaust it → bring it down
+  //   This is emergent from the pack hunting model, not scripted
+
+  // Territorial animals (wolf, lion, bear):
+  territoryRadius: number            // meters — home range center
+  markingBehavior: boolean           // scent marking at territory borders
+  // Animals that detect another pack's territory marks avoid that area
+  // Players can notice territory marks (visual: scratched trees, scat piles)
+
+  // Migratory (deer, birds, wildebeest):
+  migrationTrigger: 'season' | 'food_scarcity' | 'none'
+  migrationDistance: number          // how far they move seasonally
+  // Deer: move uphill in summer (cooler), downhill in winter (sheltered)
+  // Wildebeest: follow rain → grass → hundreds of km
+  // Fish: salmon migrate upstream to spawn (seasonal)
+
+  // Nocturnal/diurnal:
+  activityPattern: 'diurnal' | 'nocturnal' | 'crepuscular'
+  // Diurnal (active during day): most birds, cattle, sheep, goat
+  // Nocturnal (active at night): owls, bats, some cats
+  // Crepuscular (dawn/dusk): deer, rabbit, wolf (most active at twilight)
+}
+```
+
+#### Animal Social Structure
+
+```
+AnimalSocialBehavior {
+  // Different species organize differently. This is not a game mechanic —
+  // it's a simulation of real animal social systems.
+
+  // ── Herd structure (cattle, sheep, goat, horse) ────────────────────────
+  Herd {
+    members: Animal[]
+    leader: Animal                   // usually the oldest female (matriarch)
+    // Decision to move: leader initiates, others follow
+    // Grazing: herd moves together, maintains ~2-5m spacing between individuals
+    // Threat response: one animal panics → all panic (contagion model)
+    //   panicSpread = proximity × hearingRange × boldness_inverse
+    //   A bold sheep at the edge spots a wolf → bleats → herd bolts
+    //
+    // Herd formation:
+    //   Grazing: spread loosely, leader at front or center
+    //   Moving: column formation, leader at front
+    //   Threatened: tight cluster, adults on outside, young in center
+    //
+    // Young animals: stay near mother for first ~30% of lifespan
+    //   Imprinting: first large animal the newborn sees becomes "mother"
+    //   (this is real — and it's how hand-raising works for taming)
+  }
+
+  // ── Pack structure (wolf) ──────────────────────────────────────────────
+  Pack {
+    members: Animal[]
+    alpha: Animal                    // dominant pair (male + female)
+    territory: { center: Vec3, radius: number }
+
+    // Pack behavior cycle:
+    //   1. Rest at den (daytime mostly — wolves are crepuscular)
+    //   2. Howl at dusk (communication — "where is everyone?", territory announcement)
+    //   3. Hunt at twilight/night
+    //      - Alpha leads, picks target (weakest prey animal in nearby herd)
+    //      - Pack fans out, coordinates approach
+    //      - Chase: wolves have endurance (can run 60 km/h short burst, 30 km/h sustained)
+    //      - If prey escapes: pack regroups, tries again or picks new target
+    //      - Kill: pack brings down prey with bites to legs and neck
+    //      - Feeding order: alpha pair first, then others by rank
+    //   4. Return to den with food for pups
+    //
+    // Territory defense:
+    //   Scent-mark borders (urine + scratches on trees)
+    //   Howl to warn neighboring packs
+    //   If another pack encroaches: confrontation (snarl → chase → fight if neither yields)
+    //   Lone wolves (dispersers): young wolves that leave their birth pack to find mates
+    //   They wander between territories, avoiding established packs
+  }
+
+  // ── Solitary animals (bear, big cat, boar) ─────────────────────────────
+  Solitary {
+    // No group. Each animal has its own territory.
+    // Encounters with conspecifics:
+    //   Male meets male at territory boundary → aggressive display → fight or retreat
+    //   Male meets female in mating season → courtship → mating → separate
+    //   Mother with cubs → highly defensive, attacks anything that approaches
+    //
+    // Bear: hibernates in winter (find cave, sleep for entire winter season,
+    //   emerge in spring very hungry, body mass -30%)
+    // Big cat: ambush predator (stalks → pounces → one bite to neck)
+    // Boar: rooting behavior (digs up soil with snout → finds tubers, grubs)
+  }
+
+  // ── Flocking (birds) ──────────────────────────────────────────────────
+  Flock {
+    // Boids algorithm (Reynolds 1987) — three rules produce realistic flocking:
+    //   1. Separation: steer to avoid crowding neighbors
+    //   2. Alignment: steer toward average heading of neighbors
+    //   3. Cohesion: steer toward average position of neighbors
+    //
+    // Additional: avoid obstacles, flee from raptors, land at food sources
+    // Migratory birds form V-formations (reduced air resistance — real physics)
+    // Nesting: birds return to the same nesting site each season
+  }
+
+  // ── Schooling (fish) ───────────────────────────────────────────────────
+  School {
+    // Same boids algorithm as birds but in 3D water volume
+    // Fish school to confuse predators (harder to track one individual in a swirling mass)
+    // Schooling breaks when a predator attacks — fish scatter, then reform
+    // Salmon: upstream migration for spawning (against river current, jump waterfalls)
+    //   This creates seasonal food abundance at river locations (bears, eagles, players all benefit)
+  }
+}
+```
+
+#### Domestication — How Players Tame Wild Animals
+
+```
+DomesticationSystem {
+  // Domestication is not a button press. It is a real process that takes time,
+  // patience, and understanding of the animal's behavior — the same way it
+  // worked for ancient humans over generations.
+
+  // ── The real mechanism ────────────────────────────────────────────────
+  //
+  // In reality, domestication happened in two stages:
+  //   1. Taming (individual animal learns to tolerate humans)
+  //   2. Breeding (selecting tame individuals over generations → domesticated species)
+  //
+  // The game simulates both.
+
+  // ── Stage 1: Taming an individual ─────────────────────────────────────
+
+  TamingProcess {
+    // Each animal has a tameness score: 0.0 (fully wild) to 1.0 (fully tame)
+    // Starting tameness = 0.0 for wild animals
+    // The score changes based on player interactions:
+
+    // Positive interactions (increase tameness):
+    feedingByPlayer: +0.02 per feeding
+    //   Player drops food near the animal. Animal eats it.
+    //   Animal remembers: "this human gave me food" (social memory)
+    //   Requires the animal to be close enough AND not fleeing
+    //   First feedings are hard — animal's flightDistance keeps it away
+    //   Player must leave food and back away, wait for animal to approach
+    //   Over many feedings: flightDistance toward THIS player decreases
+
+    proximityWithoutThreat: +0.005 per game-hour spent within 10m without attacking
+    //   Just being near the animal without scaring it builds trust
+    //   The animal learns: "this specific human is not a threat"
+
+    protectionFromPredator: +0.1 per event
+    //   If the player kills a predator that was threatening the animal
+    //   The animal notices and remembers
+
+    healingByPlayer: +0.15 per event
+    //   Player bandages an injured animal (cloth + proximity + interact)
+
+    // Negative interactions (decrease tameness):
+    attackByPlayer: -0.5 per attack
+    //   Hitting the animal with a tool — massive trust loss
+    //   The animal also warns nearby conspecifics (distress call)
+    //   All nearby animals of the same species become harder to tame
+
+    chasing: -0.1 per chase event
+    //   Running at the animal causes it to flee and lose trust
+
+    trapping: -0.2 per trap event
+    //   Confining the animal against its will (pen, cage)
+    //   Trust decreases while confined UNLESS the player also feeds regularly
+    //   Stockholm-style conditioning: feed + confine = slow net positive taming
+    //   This is historically accurate — early goat/sheep domestication
+    //   involved penning wild-caught animals and feeding them
+
+    // ── Species difficulty ──────────────────────────────────────────────
+    //
+    // Time to tame (tameness 0.0 → 0.8, feeding twice per game-day):
+    //   Dog (from wolf pup):  ~30 game-days (~7.5 real days)
+    //   Sheep:                ~15 game-days (~3.75 real days)
+    //   Goat:                 ~20 game-days (~5 real days)
+    //   Pig (from boar):      ~25 game-days (~6.25 real days)
+    //   Cattle:               ~40 game-days (~10 real days)
+    //   Horse:                ~60 game-days (~15 real days)
+    //   Chicken:              ~10 game-days (~2.5 real days)
+    //   Cat:                  ~50 game-days (~12.5 real days) — cats tame slowly, on their terms
+    //   Deer:                 ~200 game-days (~50 real days) — extremely difficult
+    //   Wolf (adult):         nearly impossible — must start from pup
+
+    // ── Imprinting (pups/calves/foals/lambs) ────────────────────────────
+    //
+    // Young animals are MUCH easier to tame than adults.
+    // If the player finds or takes a young animal before it imprints on its mother:
+    //   Tameness starts at 0.3 instead of 0.0
+    //   Taming rate is 3× faster
+    //   The animal treats the player as its parent figure
+    //   This is how wolves were domesticated into dogs — adopt wolf pups
+    //
+    // Finding young animals:
+    //   Spring is birthing season for most species
+    //   Nests, dens, and herds with young are findable
+    //   Taking a young animal from its mother is possible but the mother will defend
+  }
+
+  // ── Stage 2: Breeding for domestication ───────────────────────────────
+
+  SelectiveBreeding {
+    // A single tamed animal is useful but mortal. To create a lasting
+    // domesticated population, the player must BREED tame animals.
+
+    // Breeding requirements:
+    //   Two tame animals (tameness > 0.6) of the same species, opposite sex
+    //   Sufficient food (both well-fed)
+    //   Appropriate season (most species breed in spring)
+    //   Proximity (animals must be within 10m of each other)
+
+    // When conditions met: mating probability per game-day = 0.05
+    // Gestation period: species-dependent (real values)
+    //   Sheep: 150 game-days (~37.5 real days)
+    //   Cattle: 280 game-days (~70 real days)
+    //   Horse: 340 game-days (~85 real days)
+    //   Pig: 114 game-days (~28.5 real days)
+    //   Dog: 63 game-days (~15.75 real days)
+    //   Chicken: 21 game-days (~5.25 real days) — eggs hatch
+
+    // Offspring traits:
+    //   Genome: crossover + mutation from parents (§4.2 genome system)
+    //   Tameness: offspring inherit partial tameness from parents
+    //     offspringTameness = populationMeanTameness + heritability × (midParent - populationMeanTameness)
+    //     heritability ≈ 0.4 for behavioral traits
+    //     This regresses toward the POPULATION MEAN, not toward zero.
+    //     populationMeanTameness starts at ~0.1 for wild animals.
+    //     As the domesticated population grows tamer, the mean rises, so offspring
+    //     start from a higher baseline each generation.
+    //     Plus imprinting bonus if the player is present at birth: +0.2
+    //
+    //   If the player consistently breeds the TAMEST individuals:
+    //     Generation 1: average tameness 0.3
+    //     Generation 5: average tameness 0.55
+    //     Generation 10: average tameness 0.75
+    //     Generation 20: average tameness 0.9 (essentially domestic)
+    //
+    //   This IS the domestication process. Over 20 generations (~5-10 real months
+    //   depending on species), wild wolves become dogs, wild boar become pigs,
+    //   wild horses become domestic horses.
+
+    // Other traits also shift with selective breeding:
+    //   Player breeds the LARGEST sheep → wool yield increases per generation
+    //   Player breeds the CALMEST cattle → flightDistance decreases
+    //   Player breeds the FASTEST horses → speed increases
+    //   Player breeds the SMARTEST dogs → intelligence increases
+    //   Each trait shifts ~2-5% per selected generation toward the selected extreme
+    //
+    //   This is exactly how real selective breeding works. All domestic animals
+    //   are the product of thousands of years of this process. The game compresses
+    //   it into months of real-time play.
+  }
+}
+```
+
+#### Training — Teaching Domestic Animals Tasks
+
+```
+AnimalTraining {
+  // Once tamed (tameness > 0.6), animals can be trained to perform tasks.
+  // Training uses a simple conditioning model (real animal learning theory).
+
+  // ── Conditioning: action → reward → association ───────────────────────
+  //
+  // The player performs an action (gesture, sound, touch) followed by
+  // guiding the animal to do something, then rewards with food.
+  //
+  // Over repetitions, the animal associates the signal with the action.
+  //
+  // Example: training a dog to guard
+  //   1. Player leads dog to settlement perimeter
+  //   2. Player points at perimeter (gesture)
+  //   3. If dog stays → player feeds dog (reward)
+  //   4. Repeat 10-20 times over several game-days
+  //   5. Dog learns: "point at perimeter + stay = food"
+  //   6. Eventually: dog patrols perimeter independently
+  //   7. If a stranger approaches: dog's natural aggression triggers bark/growl
+  //      The dog was "trained" to guard, but it's really: positioned at boundary + natural behavior
+
+  // ── Trainable tasks per species ───────────────────────────────────────
+
+  trainableTasks: {
+    dog: [
+      'guard'         // bark at unknown entities near a location
+      'herd'          // chase and group target species (sheep, goat) toward a location
+      'hunt'          // track and chase prey, bring back to player
+      'follow'        // stay within 5m of player, move when player moves
+      'fetch'         // retrieve thrown object and bring it back
+      'alert'         // bark when predators detected within territory
+    ]
+
+    horse: [
+      'ride'          // accept player mounting, respond to directional input
+      'pull'          // attach to plow/cart, walk forward on command
+      'carry'         // accept heavy items on back (pack horse, increases player carry capacity)
+      'follow'        // follow player without rider
+      'stay'          // remain at a location until called
+    ]
+
+    cattle: [
+      'pull'          // attach to plow/cart (slower than horse, more sustained power)
+      'stay'          // remain in a fenced area
+      'follow'        // follow player (slow, uses food lure)
+    ]
+
+    pig: [
+      'truffle'       // find buried mushrooms/truffles using smell (pig snout detects underground food)
+      'follow'        // follow player (pigs are very food-motivated)
+      'root'          // till soil in a specific area (pig's natural rooting turns over soil — free plowing)
+    ]
+
+    sheep_goat: [
+      'follow'        // follow a bell-wearing lead animal or player
+      'stay'          // remain in a fenced area (grazing)
+    ]
+
+    chicken: [
+      'none'          // chickens can't be trained — they just exist in a coop and lay eggs
+      // Management: player builds a coop, puts chickens inside, feeds grain
+      // Chickens produce eggs automatically (1 egg per 1-2 game-days per hen)
+    ]
+
+    cat: [
+      'none'          // cats can't be trained — they train YOU
+      // Benefit: cats naturally hunt rodents near where they live
+      // A cat in a grain storage area reduces rodent damage to stored food
+      // Cats domesticated themselves historically — attracted by rodents in grain stores
+    ]
+  }
+
+  // ── Training speed ────────────────────────────────────────────────────
+  //
+  // trainingProgress += (animalIntelligence × 0.1 + tameness × 0.05) per successful session
+  // A training session = 1 correct repetition with reward
+  // ~10-30 sessions per task (depending on intelligence):
+  //   Dog (intelligence 0.7): ~10 sessions for 'follow', ~20 for 'herd'
+  //   Horse (intelligence 0.5): ~15 sessions for 'ride', ~25 for 'pull'
+  //   Pig (intelligence 0.8): ~8 sessions for 'truffle' (pigs are very smart)
+  //
+  // Failed training (animal doesn't comply, player punishes) → -0.1 tameness
+  // Patience and consistency are required — like real animal training
+
+  // ── Riding mechanics (horse) ──────────────────────────────────────────
+  //
+  // When a horse is trained for 'ride' and player mounts (interact key):
+  //   Camera stays first-person (player's eye height + horse height = ~2.5m eye level)
+  //   Movement: WASD controls the horse, not the player
+  //     W = walk forward → hold W = trot → shift+W = gallop
+  //     A/D = turn
+  //     S = slow down / stop
+  //     Space = jump (horse can jump ~1.2m obstacles)
+  //   Speed:
+  //     Walk: 1.5 m/s
+  //     Trot: 4 m/s
+  //     Gallop: 12 m/s (much faster than player sprint of ~10 m/s)
+  //   Stamina: horse has its own stamina bar (gallop drains it, walk recovers)
+  //   The player's hands are free while riding — can hold tools, look around
+  //   Dismount: press interact key again
+  //
+  // Untrained horse: bucks player off (throws them — fall damage possible)
+  //   trainedRide < 0.5 → 50% chance of being thrown each mount attempt
+  //   trainedRide > 0.8 → reliable riding
+
+  // ── Plowing mechanics (horse/cattle + plow) ───────────────────────────
+  //
+  // Attach a crafted plow to a trained horse/cattle:
+  //   Player crafts plow: wood frame + iron blade (or stone blade early game)
+  //   Player attaches rope from plow to horse harness
+  //   Player leads horse forward → plow cuts through soil
+  //   Result: tilled soil in the plow's path (terrain modification)
+  //   Speed: much faster than hand-tilling with a hoe
+  //     Hand hoe: ~0.5 m²/game-minute
+  //     Horse plow: ~5 m²/game-minute (10× faster)
+  //   This is why animal domestication was the agricultural revolution —
+  //   it multiplied farming productivity by an order of magnitude
+}
+```
+
+#### Animal Needs and Death
+
+```
+AnimalNeeds {
+  // Animals have survival needs like players, but species-specific:
+
+  // ── Food ──────────────────────────────────────────────────────────────
+  // Each animal must eat according to its diet and body mass.
+  // food_requirement = basalMetabolicRate × activityMultiplier
+  //   Cattle (500kg): ~50 kg grass per game-day
+  //   Sheep (60kg): ~8 kg grass per game-day
+  //   Horse (450kg): ~45 kg grass per game-day
+  //   Dog (30kg): ~2 kg meat per game-day
+  //   Chicken (3kg): ~0.1 kg grain per game-day
+  //
+  // VALIDATION TARGET — these food requirements should be derived from
+  // Kleiber's BMR (70 × mass^0.75 kcal/day) × food energy density (§3.1).
+  // Values here are calibration targets, not hardcoded constants.
+  //
+  // Wild animals forage automatically (Tier 2 AI decides where to graze/hunt)
+  // Domesticated animals in enclosures must be FED by the player
+  // If not fed: health declines → starvation → death (same timeline as §7.2)
+  //
+  // Overgrazing: if too many herbivores in one area, grass is consumed faster
+  //   than it regrows → area becomes barren → animals must move or starve
+
+  // ── Water ─────────────────────────────────────────────────────────────
+  // Animals drink at water sources (rivers, ponds, troughs)
+  // Wild animals know where water is (memory)
+  // Domesticated animals need access to water within their enclosure
+  //   Player can build a trough (container) and fill it manually
+  //   Or build the enclosure near a natural water source
+
+  // ── Shelter ───────────────────────────────────────────────────────────
+  // Most animals can survive outdoors (they're adapted to weather)
+  // Extreme weather: blizzard, extreme heat → health damage if unsheltered
+  // Domesticated animals benefit from a barn/shelter:
+  //   Reduces weather stress
+  //   Wool production increases (sheep in shelter → less energy spent on warmth → more wool)
+
+  // ── Disease ───────────────────────────────────────────────────────────
+  // Animals can get sick — same bacterial infection model as players (§7.6)
+  // Crowding increases disease spread (density-dependent transmission)
+  //   10 sheep in a small pen: high disease risk
+  //   10 sheep in a large pasture: low disease risk
+  // Disease can spread between animals AND from animals to players (zoonosis)
+  //   This is historically critical: smallpox, influenza, measles all jumped
+  //   from domesticated animals to humans. Diamond's Guns, Germs, and Steel
+  //   documents this as a major factor in civilizational development.
+  // Treatment: herbal medicine (identify medicinal plants → apply to animal)
+  //   Or isolate sick animals to prevent spread
+
+  // ── Reproduction ──────────────────────────────────────────────────────
+  // Wild animals reproduce according to species parameters (§4.2 genome system)
+  // Domesticated animals: player controls breeding by keeping male + female together
+  // Without player breeding control: domesticated animals breed freely → population explosion
+  //   → food shortage → mass starvation in the enclosure
+  //   Player must manage herd size (cull or release excess animals)
+
+  // ── Death ─────────────────────────────────────────────────────────────
+  // Animals die from: starvation, dehydration, predation, disease, old age, player hunting
+  // On death: corpse remains (same as §7.6 but no respawn)
+  //   Corpse can be harvested for products (hide, meat, bone, etc. per §4.2.1)
+  //   Unharvested corpse decomposes (turns into organic matter → soil nutrients)
+
+  // ── Butchering ─────────────────────────────────────────────────────────
+  // When an animal dies, the corpse can be butchered by interacting with a cutting tool.
+  // Butchering uses precision craft mode (§6.4) — the player cuts along the body
+  // to separate products. Each cut uses the tool's sharpness (§3.6 Connection 11).
+  // Better tools = cleaner cuts = less wasted material = more yield.
+  // Without a tool: bare hands can tear ~30% of available meat (slow, wasteful).
+  // With stone knife: ~60% yield. With iron knife: ~85%. With steel knife: ~95%.
+  //   Decomposition time: ~7 game-days (fungal decomposers from §4.2.1)
+  //
+  // Lifespan:
+  //   Dog: 10-15 game-years    Cattle: 15-20 game-years
+  //   Horse: 25-30 game-years  Sheep: 10-12 game-years
+  //   Pig: 10-15 game-years    Chicken: 5-8 game-years
+  //   Cat: 12-18 game-years
+}
+```
+
+#### Animal-Player Interaction
+
+```
+AnimalPlayerInteraction {
+  // How animals react to players depends on species, tameness, and experience.
+
+  // ── Wild animal encountering a player ─────────────────────────────────
+  //
+  // Prey species (deer, sheep, rabbit):
+  //   Player at > flightDistance: animal ignores or watches
+  //   Player at < flightDistance: animal flees
+  //   Player running toward animal: immediate bolt (entire herd flees)
+  //   Player crouching + moving slowly: flightDistance reduced by 50%
+  //     (sneaking — real hunting technique)
+  //
+  // Predator species (wolf, lion, bear):
+  //   Single predator vs player: usually avoids (humans are unusual/large)
+  //   Wolf pack: may stalk a lone player, especially at night
+  //   Bear: ignores player unless player approaches cubs or food
+  //   If player attacks: predator either fights or flees based on size comparison
+  //
+  // Neutral omnivores (boar):
+  //   Usually ignores player
+  //   If startled or cornered: aggressive charge (boar tusks deal significant damage)
+  //   Mother with piglets: aggressive if approached within 10m
+
+  // ── Tame animal with player ───────────────────────────────────────────
+  //
+  // Tameness > 0.3: animal doesn't flee from this specific player
+  // Tameness > 0.6: animal approaches player for food, follows within 10m
+  // Tameness > 0.8: animal responds to trained commands, can be mounted/led
+  //
+  // Tame animals still remember INDIVIDUAL players:
+  //   Player A tamed the sheep → sheep trusts player A
+  //   Player B (stranger) approaches → sheep is wary (normal wild behavior)
+  //   Player B who ATTACKED the sheep before → sheep flees from player B specifically
+  //   This individual recognition is real — dogs, horses, sheep, pigs all do this
+
+  // ── Sound communication ───────────────────────────────────────────────
+  //
+  // Animals vocalize (part of the physics-driven sound system §3.3):
+  //   Cow: moo (contact call — "where are you?"), bellow (distress/mating)
+  //   Sheep: baa (contact call), bleat (lamb calling mother)
+  //   Horse: neigh (alert), nicker (friendly greeting), snort (alarm)
+  //   Dog: bark (alert/play), growl (threat), whine (submission/pain), howl (long-distance)
+  //   Wolf: howl (territory/pack communication), bark (alarm), growl (threat)
+  //   Chicken: cluck (contact), squawk (alarm), crow (rooster dawn call)
+  //   Pig: grunt (foraging), squeal (distress/excitement)
+  //
+  // Players learn to interpret these sounds:
+  //   Dog barking at the forest edge = predator nearby
+  //   Chickens squawking = fox in the coop
+  //   Horse snorting and stamping = something spooked it
+  //   These are real signals that farmers use daily
+}
+```
+
+
+### 4.4 Farming and Agriculture — Growing Food from Soil
+
+```
+  // ── Gathering and Harvesting Rates ─────────────────────────────────────
+  //
+  // In plain English: how fast can a player collect resources?
+  // These rates come from the tool's impact energy (§3.9) and the target's
+  // material hardness (§3.1) — NOT from hardcoded constants.
+  //
+  // Base gathering formula:
+  //   harvestTime = targetVolume × targetHardness / (toolForce × toolSharpness)
+  //   where:
+  //     targetVolume: m³ of material to remove
+  //     targetHardness: Mohs from §3.1 property calculator
+  //     toolForce: player strength × tool mass × swing speed (from §7.2 stamina)
+  //     toolSharpness: edge sharpness from §3.6 Connection 11
+  //
+  // Approximate times (for a player with basic stone tools):
+  //   | Action              | Target hardness | Time per unit | Yield |
+  //   |--------------------|----|-------------|-------|
+  //   | Pick berries        | 0 (no tool needed) | 3 sec/bush | 0.3-0.5 kg berries |
+  //   | Dig root vegetables | 1 (soft soil)   | 10 sec/plant | 0.15-0.30 kg |
+  //   | Chop small tree     | 3 (wood)        | 60 sec       | 5-10 kg wood |
+  //   | Mine soft stone     | 4 (limestone)   | 30 sec/block | 50-100 kg stone |
+  //   | Mine hard rock      | 7 (granite)     | 120 sec/block| 50-100 kg stone |
+  //   | Knap flint          | 7 (hard)        | 15 sec/tool  | 1 cutting edge (§3.1 fracture mechanics) |
+  //
+  //   Better tools = faster:
+  //     Iron pickaxe on limestone: 30 × (4/4) / (3×1.5) = 6.7 sec (5× faster than stone)
+  //     Steel pickaxe on granite: 120 × (7/6) / (3×2) = 23 sec (5× faster than stone)
+  //
+  //   These emerge from the formula, not from a lookup table.
+```
+
+#### The Principle
+
+Farming is not a minigame. It is the application of soil science, plant biology, weather, and seasonal cycles to produce food at scale. The player does not "plant wheat seed → wait → harvest wheat." They clear land, prepare soil that has real nutrient content, plant seeds in soil that may or may not support that crop, provide water if rain is insufficient, protect from pests and disease, harvest at the right moment, process the harvest, and manage soil fertility across seasons so the land doesn't die.
+
+Every step interacts with systems already specified: weather (§4.6) provides rain and temperature, seasons (§4.6) determine growing windows, terrain (§7.4) determines soil access, animals (§4.3) provide manure and plowing, organisms (§4.2.1) define plant species, and the material system (§3.1) handles everything as MaterialPackets.
+
+#### Soil Model
+
+Every terrain cell has soil properties tracked by the server. Soil is not just "dirt" — it is a complex medium with measurable properties that determine what can grow.
+
+```
+SoilState {
+  // NOTE: Soil nutrient changes (NPK depletion from crops, NPK restoration from
+  // fertilizer) are computed as chemical transfers, not arbitrary constants.
+  // When a crop absorbs nitrogen: the soil's N composition decreases and the
+  // plant's N composition increases, conserving total nitrogen (§3.1 mass conservation).
+  // The per-harvest depletion values below are EXPECTED RESULTS of this transfer,
+  // not hardcoded constants. They serve as validation targets for the reaction engine.
+
+  // Per terrain cell (~2m × 2m resolution, same as nav mesh)
+
+  // ── Composition ───────────────────────────────────────────────────────
+  texture: {
+    sand: 0.0–1.0                    // drainage, aeration (too much = water drains too fast)
+    silt: 0.0–1.0                    // balanced retention and drainage
+    clay: 0.0–1.0                    // water retention, compaction (too much = waterlogged)
+    // sand + silt + clay = 1.0 always
+    // Ideal for most crops: "loam" = roughly equal parts (~0.4 sand, 0.4 silt, 0.2 clay)
+  }
+  // Soil texture is determined by geology (§4.5):
+  //   Near rivers: silty (flood deposits)
+  //   Volcanic areas: fertile loam (volcanic ash → nutriite-rich)
+  //   Desert: sandy
+  //   Wetlands: high clay
+  //   Mountain: rocky (thin soil layer, high gravel)
+
+  // ── Nutrients (the big three: N-P-K) ──────────────────────────────────
+  nitrogen: number                   // kg/m² — drives leaf growth (most commonly depleted)
+  phosphorus: number                 // kg/m² — drives root and seed development
+  potassium: number                  // kg/m² — drives overall plant health and disease resistance
+
+  // Starting values depend on biome:
+  //   Forest floor: N=0.5, P=0.3, K=0.4 (centuries of leaf litter decomposition)
+  //   Grassland: N=0.4, P=0.25, K=0.35 (grass root decomposition)
+  //   Desert: N=0.05, P=0.05, K=0.1 (almost nothing)
+  //   Volcanic: N=0.3, P=0.6, K=0.5 (phosphorus-rich volcanic minerals)
+  //   River floodplain: N=0.6, P=0.4, K=0.45 (annual flood deposits — best farmland)
+  //
+  // VALIDATION TARGET for §3.1 reaction engine + §4.5 geology: these starting NPK
+  // values should emerge from geological mineral composition and centuries of organic
+  // decomposition. Until then, these serve as calibration targets.
+
+  // ── Water ─────────────────────────────────────────────────────────────
+  moisture: 0.0–1.0                  // current water saturation
+  // 0.0 = bone dry (nothing grows)
+  // 0.2–0.6 = optimal range for most crops
+  // 0.8+ = waterlogged (roots suffocate — only rice tolerates this)
+  //
+  // Moisture changes from:
+  //   Rain: +rate depends on precipitation (§4.6) and soil texture
+  //     sandySoil: absorbs fast, drains fast (moisture spikes then drops)
+  //     claySoil: absorbs slow, retains long (waterlogging risk)
+  //   Evaporation: -rate depends on temperature, wind, sun exposure
+  //     evapRate = (1 - humidity) × (temperature / 50) × sunExposure × (1 + wind × 0.1)
+  //   Plant uptake: -rate depends on crop type and growth stage
+  //   Irrigation: +controlled addition by player
+
+  // ── Other properties ──────────────────────────────────────────────────
+  pH: number                         // 0–14 (most crops: 6.0–7.0)
+  // Affected by: rock type (limestone raises pH, granite lowers),
+  //   rain (slightly acidic — pH drops over time in wet climates),
+  //   wood ash addition (+0.5 pH per application),
+  //   lime addition (+1.0 pH per application)
+  //
+  // VALIDATION TARGET for §3.1 acid-base chemistry: pH shifts from ash, lime,
+  // and rain should be computed from ion exchange reactions, not flat deltas.
+  // These +0.5/+1.0 values are calibration targets for the reaction engine.
+
+  organicMatter: 0.0–1.0            // decomposed plant/animal material (humus)
+  // High organic matter: better water retention, more nutrients, healthier microbes
+  // Increased by: composting, mulching, leaving crop residue, manure
+  // Decreased by: erosion, over-tilling, removing all crop material
+
+  earthwormDensity: 0.0–1.0         // from §4.2.1 — earthworms improve soil structure
+  // High: better aeration, better drainage, nutrient cycling
+  // Killed by: heavy tilling, waterlogging, extreme cold, no organic matter
+
+  tilled: boolean                    // has the soil been prepared for planting?
+  // Tilling: loosens soil, mixes in organic matter, kills surface weeds
+  // Methods: hand hoe (slow), plow + animal (fast — §4.3)
+  // Tilled soil reverts to untilled after ~30 game-days (compacts from rain/traffic)
+}
+```
+
+#### Plant Growth Simulation
+
+Every planted crop is a living organism running the same energy model as §4.2. Growth rate is computed from real inputs, not a timer.
+
+```
+CropGrowth {
+  // A planted seed becomes a crop entity tracked by the server.
+
+  CropEntity {
+    species: string                  // 'wheat' | 'barley' | 'rice' | 'potato' | 'corn' | ...
+    position: Vec3                   // where it's planted
+    growthStage: number              // 0.0 (seed) to 1.0 (harvestable)
+    health: number                   // 0-100 (disease, pest, drought reduce this)
+    age: number                      // game-days since planting
+    waterStress: number              // 0 (well-watered) to 1 (wilting)
+    nutrientStress: number           // 0 (well-fed) to 1 (starving)
+    quality: number                  // 0.0–1.0 (affects yield and seed quality for next generation)
+  }
+
+  // ── Growth rate formula ───────────────────────────────────────────────
+  //
+  // growthPerDay = baseGrowthRate
+  //              × temperatureFactor
+  //              × waterFactor
+  //              × nutrientFactor
+  //              × lightFactor
+  //              × healthFactor
+  //
+  // Each factor is 0.0 (no growth) to 1.0 (optimal):
+
+  temperatureFactor(T, species) {
+    // Each species has an optimal range and absolute limits:
+    //   Wheat: min 5°C, optimal 15-20°C, max 30°C
+    //   Rice:  min 15°C, optimal 25-30°C, max 40°C
+    //   Corn:  min 10°C, optimal 20-30°C, max 35°C
+    //   Potato: min 5°C, optimal 15-20°C, max 25°C
+    //
+    // Below min or above max: factor = 0 (no growth, damage accumulates)
+    // In optimal range: factor = 1.0
+    // Between min/optimal and optimal/max: linear interpolation
+    //
+    // Frost (T < 0°C): immediate damage to non-frost-resistant crops
+    //   health -= 20 per frost night
+    //   Frost-resistant: wheat (survives brief frost), potato tubers (underground, protected)
+    //   Frost-killed: rice, corn, most vegetables
+  }
+
+  waterFactor(moisture, species) {
+    // Too little: plant wilts → growth stops → dies
+    // Too much: roots suffocate → rot → dies
+    //   Wheat: optimal moisture 0.3–0.5
+    //   Rice: optimal moisture 0.7–0.9 (paddy rice grows IN water)
+    //   Potato: optimal 0.3–0.5
+    //   Corn: optimal 0.4–0.6 (heavy water demand)
+    //
+    // waterStress increases when moisture is outside optimal range
+    // waterStress > 0.7 for 3+ game-days → plant dies
+  }
+
+  nutrientFactor(soil, species, growthStage) {
+    // Plants consume nutrients as they grow:
+    //   Early growth (0.0–0.3): heavy nitrogen demand (leaf development)
+    //   Mid growth (0.3–0.7): balanced N-P-K
+    //   Late growth (0.7–1.0): heavy phosphorus demand (seed/fruit development)
+    //
+    // Nutrient consumption per game-day:
+    //   nitrogen -= 0.005 × growthRate (wheat is nitrogen-hungry)
+    //   phosphorus -= 0.003 × growthRate
+    //   potassium -= 0.002 × growthRate
+    //
+    // VALIDATION TARGET for §3.1 reaction engine: these per-day rates should
+    // emerge from Gibbs-favorable N/P/K transfer (Connection 76), not be
+    // hardcoded. Values here are calibration targets.
+    //
+    // When a nutrient drops below 0.05: nutrientFactor for that nutrient = 0.3
+    // When a nutrient = 0: nutrientFactor = 0 (growth stops, plant yellows and dies)
+    //
+    // CRITICAL: every harvest removes nutrients. Planting the same crop repeatedly
+    // on the same soil depletes it. Within 3-5 harvests without replenishment,
+    // the soil is dead. This is why crop rotation and fertilization are essential.
+  }
+
+  lightFactor(daylightHours, species) {
+    // Photoperiod sensitivity:
+    //   Long-day plants (wheat, barley, oats): need >14 hours daylight to flower
+    //     → plant in spring, flower in summer (longest days)
+    //   Short-day plants (rice, soybean, cotton): need <12 hours to flower
+    //     → plant in late summer, flower in autumn (shortening days)
+    //   Day-neutral (potato, corn, tomato): flower regardless of day length
+    //     → plant whenever temperature is right
+    //
+    // Light intensity:
+    //   Full sun (no shade): factor = 1.0
+    //   Partial shade (near tree, cloudy): factor = 0.5–0.8
+    //   Deep shade (under dense canopy): factor = 0.1–0.3
+    //     Most crops need full sun. A few tolerate shade (lettuce, spinach, herbs).
+  }
+
+  healthFactor(health) {
+    // health / 100 — simple scaling
+    // Diseased or pest-damaged plants grow slower
+  }
+}
+```
+
+#### Crop Species and Wild-to-Domestic Progression
+
+```
+CropSpecies {
+  // Crops exist in the wild as organisms (§4.2.1). The player domesticates them
+  // the same way they domesticate animals — by selection over generations.
+
+  // ── Wild vs. domestic ─────────────────────────────────────────────────
+  //
+  // Wild wheat: seeds shatter when ripe (fall off the stalk → good for wild reproduction)
+  //   Player harvests: gets ~30% of seeds (rest fell before harvest)
+  //   Seed quality: low (small, inconsistent)
+  //
+  // After 10 generations of selecting plants that HOLD their seeds longer:
+  //   Domestic wheat: seeds stay on stalk until cut → player gets ~90% of seeds
+  //   Seed quality: higher (larger, more consistent)
+  //
+  // This is the Neolithic revolution compressed into gameplay.
+  // Each generation: plant → grow → select best → save seeds → replant
+  //   Quality improves ~3-5% per selected generation
+  //   10 generations of wheat at ~90 game-days per generation = ~900 game-days
+  //   At 4× time: ~225 real days (~7.5 months) to fully domesticate wheat
+  //   This is long — but it's real, and it gives farming players a huge advantage
+
+  // ── Available crop species by biome ───────────────────────────────────
+
+  crops: {
+    // GRAINS (staple calories — civilization builders)
+    wheat: {
+      biome: 'temperate grassland, Mediterranean'
+      tempRange: [5, 30]             // °C
+      optimalTemp: [15, 20]
+      waterRange: [0.3, 0.5]
+      photoperiod: 'long-day'        // needs summer to flower
+      daysToHarvest: 100             // game-days from planting to harvest
+      caloriesPerKg: 3400            // EXPECTED computed value — see composition below
+      // Wheat composition (per kg):
+      //   protein: 0.13, fat: 0.02, carbohydrate: 0.71, fiber: 0.12, water: 0.02
+      //   caloriesPerKg = protein×4000 + fat×9000 + carb×4000 + fiber×2000
+      //                 = 520 + 180 + 2840 + 240 = 3780 kcal/kg (theoretical)
+      //   Actual (USDA): 3400 kcal/kg (digestibility reduces theoretical value)
+      //   The property calculator (§3.1) computes this from composition.
+      products: ['grain (flour → bread)', 'straw (animal bedding, thatching, rope)']
+      wildYield: 0.3                 // fraction of potential harvest from wild type
+      domesticYield: 1.0             // after full domestication
+      nutrientDemand: { N: 'high', P: 'medium', K: 'medium' }
+    }
+
+    barley: {
+      biome: 'temperate, semi-arid — more drought-tolerant than wheat'
+      tempRange: [3, 30]
+      optimalTemp: [12, 18]
+      waterRange: [0.2, 0.4]         // less water than wheat
+      photoperiod: 'long-day'
+      daysToHarvest: 90
+      caloriesPerKg: 3500            // EXPECTED computed value — see composition below
+      // Barley composition (per kg):
+      //   protein: 0.12, fat: 0.02, carbohydrate: 0.73, fiber: 0.10, water: 0.03
+      //   caloriesPerKg = 480 + 180 + 2920 + 200 = 3780 kcal/kg (theoretical)
+      //   Actual (USDA): 3500 kcal/kg (digestibility reduces theoretical value)
+      //   The property calculator (§3.1) computes this from composition.
+      products: ['grain (beer fermentation, bread, animal feed)', 'straw']
+      // Barley was the first grain used for beer (~10,000 BC)
+      // Beer was actually a primary motivation for early agriculture
+      nutrientDemand: { N: 'medium', P: 'medium', K: 'low' }
+    }
+
+    rice: {
+      biome: 'tropical, subtropical — requires warm + wet'
+      tempRange: [15, 40]
+      optimalTemp: [25, 30]
+      waterRange: [0.7, 0.95]        // paddy rice: grows in standing water
+      photoperiod: 'short-day'
+      daysToHarvest: 130
+      caloriesPerKg: 3600            // EXPECTED computed value
+      // Rice composition (per kg):
+      //   protein: 0.07, fat: 0.01, carbohydrate: 0.80, fiber: 0.01, water: 0.11
+      //   caloriesPerKg = 280 + 90 + 3200 + 20 = 3590 kcal/kg (theoretical)
+      //   Actual (USDA): 3600 kcal/kg. The property calculator (§3.1) computes this.
+      products: ['grain (staple food for half the world)', 'straw (weaving, thatching)']
+      specialRequirement: 'paddy'    // needs flooded field — player must build berms to hold water
+      nutrientDemand: { N: 'very high', P: 'high', K: 'medium' }
+    }
+
+    corn: {
+      biome: 'temperate to tropical — needs warm summer'
+      tempRange: [10, 35]
+      optimalTemp: [20, 30]
+      waterRange: [0.4, 0.6]         // heavy water demand
+      photoperiod: 'day-neutral'
+      daysToHarvest: 80
+      caloriesPerKg: 3600            // EXPECTED computed value
+      // Corn composition (per kg):
+      //   protein: 0.09, fat: 0.04, carbohydrate: 0.74, fiber: 0.07, water: 0.06
+      //   caloriesPerKg = 360 + 360 + 2960 + 140 = 3820 kcal/kg (theoretical)
+      //   Actual (USDA): 3600 kcal/kg. The property calculator (§3.1) computes this.
+      products: ['grain (food, animal feed)', 'stalk (fuel, building)', 'cob (fuel)']
+      nutrientDemand: { N: 'very high', P: 'medium', K: 'high' }
+      // Corn depletes soil extremely fast — requires heavy fertilization or rotation
+    }
+
+    // LEGUMES (nitrogen fixers — essential for crop rotation)
+    beans: {
+      biome: 'temperate to tropical — wide range'
+      tempRange: [10, 35]
+      optimalTemp: [18, 28]
+      waterRange: [0.3, 0.5]
+      photoperiod: 'short-day'
+      daysToHarvest: 70
+      caloriesPerKg: 3400            // EXPECTED computed value
+      // Bean composition (per kg):
+      //   protein: 0.21, fat: 0.01, carbohydrate: 0.63, fiber: 0.12, water: 0.03
+      //   caloriesPerKg = 840 + 90 + 2520 + 240 = 3690 kcal/kg (theoretical)
+      //   Actual (USDA): 3400 kcal/kg. The property calculator (§3.1) computes this.
+      products: ['beans (protein-rich food, dried storage)', 'plant matter (compost)']
+      nitrogenFixing: true           // ADDS nitrogen to soil instead of depleting it
+      // Legume roots host Rhizobium bacteria that convert atmospheric N₂ → NH₃
+      // After harvest, roots left in soil release nitrogen for the next crop
+      // This is why the ancient three-field rotation works:
+      //   Year 1: wheat (consumes nitrogen)
+      //   Year 2: beans (restores nitrogen)
+      //   Year 3: fallow or different crop
+      nutrientDemand: { N: 'negative (adds N)', P: 'medium', K: 'low' }
+    }
+
+    lentils: {
+      biome: 'temperate, semi-arid, Mediterranean'
+      tempRange: [5, 30]
+      optimalTemp: [15, 25]
+      daysToHarvest: 80
+      caloriesPerKg: 3500            // EXPECTED computed value
+      // Lentil composition (per kg):
+      //   protein: 0.25, fat: 0.01, carbohydrate: 0.60, fiber: 0.11, water: 0.03
+      //   caloriesPerKg = 1000 + 90 + 2400 + 220 = 3710 kcal/kg (theoretical)
+      //   Actual (USDA): 3500 kcal/kg. The property calculator (§3.1) computes this.
+      nitrogenFixing: true
+      nutrientDemand: { N: 'negative', P: 'low', K: 'low' }
+    }
+
+    peas: {
+      biome: 'temperate, cool — tolerates light frost'
+      tempRange: [3, 25]
+      optimalTemp: [10, 18]
+      daysToHarvest: 60
+      caloriesPerKg: 800             // fresh peas; dried: 3400
+      nitrogenFixing: true
+      nutrientDemand: { N: 'negative', P: 'low', K: 'low' }
+    }
+
+    // ROOT CROPS (calorie-dense, underground storage)
+    potato: {
+      biome: 'temperate, cool highlands — Andean origin'
+      tempRange: [5, 25]
+      optimalTemp: [15, 20]
+      waterRange: [0.3, 0.5]
+      photoperiod: 'day-neutral'
+      daysToHarvest: 90
+      caloriesPerKg: 770             // lower per kg but HUGE yield per area
+      products: ['tubers (food — boil, roast, mash)', 'starch (extracted)']
+      propagation: 'tuber'           // planted from cut tuber pieces, not seeds
+      // Potatoes produce more calories per hectare than any grain
+      // This is why they transformed European agriculture
+      nutrientDemand: { N: 'medium', P: 'high', K: 'very high' }
+    }
+
+    // FIBER AND INDUSTRIAL CROPS
+    flax: {
+      biome: 'temperate, cool — Fertile Crescent origin'
+      tempRange: [5, 25]
+      optimalTemp: [15, 20]
+      daysToHarvest: 100
+      products: [
+        'fiber (linen cloth — strongest plant textile, used for 30,000+ years)',
+        'seeds (linseed — food, linseed oil for wood treatment and paint base)',
+      ]
+      // Flax fiber processing: pull entire plant → ret in water (soak to rot outer bark) →
+      //   dry → break (crush stems) → scutch (scrape) → hackle (comb) → spin → weave
+      // This is a long production chain that creates employment for many NPCs
+      nutrientDemand: { N: 'low', P: 'medium', K: 'low' }
+    }
+
+    cotton: {
+      biome: 'tropical, subtropical — needs long hot growing season'
+      tempRange: [20, 40]
+      optimalTemp: [25, 35]
+      waterRange: [0.3, 0.5]
+      daysToHarvest: 150
+      products: ['fiber (cotton cloth — soft, breathable, dyeable)', 'seeds (cottonseed oil)']
+      nutrientDemand: { N: 'high', P: 'medium', K: 'medium' }
+    }
+
+    // FRUITS AND VEGETABLES (nutrition, variety, trade value)
+    // These have faster cycles but lower calorie density:
+    berries:  { daysToHarvest: 60, caloriesPerKg: 500, biome: 'temperate forest edge' }
+    squash:   { daysToHarvest: 80, caloriesPerKg: 260, biome: 'temperate to tropical' }
+    onion:    { daysToHarvest: 90, caloriesPerKg: 400, biome: 'temperate, wide range' }
+    cabbage:  { daysToHarvest: 70, caloriesPerKg: 250, biome: 'temperate, cool' }
+    carrot:   { daysToHarvest: 75, caloriesPerKg: 410, biome: 'temperate' }
+
+    // TREES (extremely slow but permanent — plant once, harvest forever)
+    apple:    { daysToFirstHarvest: 1095, // ~3 game-years (~9 real months)
+                caloriesPerKg: 520, annualYieldAfterMature: '50-200 kg per tree',
+                lifespan: '50-100 game-years' }
+    olive:    { daysToFirstHarvest: 1825, // ~5 game-years (~15 real months)
+                products: ['fruit (food, oil — olive oil for cooking, lamp fuel, soap, medicine)'],
+                lifespan: '500+ game-years — nearly immortal' }
+    grape:    { daysToFirstHarvest: 1095,
+                products: ['fruit (food, wine — fermented grape juice, vinegar)'],
+                lifespan: '50-100 game-years' }
+  }
+}
+```
+
+#### Farming Actions — What the Player Does
+
+```
+FarmingActions {
+  // Each action is a physical interaction in the world using existing systems.
+  // No farming UI, no crop menu. Just tools + terrain + seeds.
+
+  // ── 1. Clear land ─────────────────────────────────────────────────────
+  // Remove trees (axe), remove rocks (pickaxe), remove brush (hands or machete)
+  // Slash-and-burn: set fire to vegetation → ash adds potassium to soil (+0.1 K, +0.3 pH)
+  // Already covered by terrain interaction (§7.4) and fire system
+
+  // ── 2. Till soil ──────────────────────────────────────────────────────
+  // Break up topsoil to prepare for planting
+  //
+  // Methods (from §7.4 + §4.3):
+  //   Digging stick: poke holes for individual seeds → 0.1 m²/game-minute
+  //   Stone hoe: scrape and turn topsoil → 0.3 m²/game-minute
+  //   Iron hoe: faster, deeper till → 0.5 m²/game-minute
+  //   Animal-drawn plow: continuous furrow → 5.0 m²/game-minute (requires §4.3 trained animal)
+  //
+  // Effect on soil:
+  //   tilled = true
+  //   organicMatter += 0.02 (surface material mixed in)
+  //   earthwormDensity -= 0.05 (tilling damages worm tunnels)
+  //   Over-tilling: earthwormDensity approaches 0 → soil structure degrades → drainage worsens
+  //   Real-world parallel: modern no-till farming exists because over-tilling destroys soil life
+
+  // ── 3. Plant ──────────────────────────────────────────────────────────
+  // Player holds seeds in hand → aims at tilled soil → interact key
+  // Seed is placed in the ground (visible as a small mound)
+  //
+  // Planting rules:
+  //   Soil must be tilled (tilled = true)
+  //   Spacing: ~0.5m between seeds (too close = competition, too far = wasted space)
+  //     Optimal density: 4 plants per m² for grain, 1 per m² for corn, 1 per 4m² for trees
+  //   Depth: automatic (player places on surface, game handles appropriate depth)
+  //   Season: must be within the species' planting window
+  //     Wheat: plant in early spring (day 10-60) OR autumn (day 250-300) for winter wheat
+  //     Rice: plant in late spring (day 60-120) — needs warm soil
+  //     Potato: plant in spring (day 30-90) after last frost
+  //   Wrong season: seed germinates but growth factor = 0 from temperature → dies
+
+  // ── 4. Water (if needed) ──────────────────────────────────────────────
+  // Rain handles most watering automatically (§4.6 weather → §SoilState moisture)
+  // In dry climates or dry seasons, player must irrigate:
+  //
+  //   Manual watering: carry water in container → pour on crop → +0.05 moisture per liter
+  //     Tedious, doesn't scale. Works for a small garden.
+  //
+  //   Irrigation channel: dig a shallow trench from water source to field (§7.4 digging)
+  //     Water flows by gravity (must be downhill from source)
+  //     Channel width determines flow rate
+  //     Continuously supplies moisture to adjacent soil cells
+  //     The player invents irrigation by digging — no special "irrigation" system needed
+  //     The fluid system (§3.2) handles water flow in channels
+  //
+  //   Flood irrigation (rice paddy): build berms (low walls of mud) around a flat area
+  //     Fill with water → water stands in the paddy → rice grows in standing water
+  //     Requires flat terrain + water source + berms to contain
+
+  // ── Irrigation Water Requirements ──────────────────────────────────────
+  //
+  // In plain English: crops need water. If rain isn't enough, the player 
+  // must bring water from a river, well, or reservoir.
+  //
+  // Water need per crop per m² per game-day:
+  //   | Crop    | Water need (L/m²/day) | Drought tolerance | Notes |
+  //   |--------|----------------------|------------------|-------|
+  //   | Wheat   | 4-6                  | Moderate          | Needs steady moisture during grain fill |
+  //   | Rice    | 8-12                 | None              | Standing water required (paddy) |
+  //   | Potato  | 3-5                  | Low               | Needs consistent soil moisture |
+  //   | Beans   | 2-4                  | High              | Deep roots, some drought tolerance |
+  //   | Flax    | 3-5                  | Moderate          | Needs water during flowering |
+  //
+  // Water sources:
+  //   Rain: automatically distributed by weather system (§4.6)
+  //     precipitationRate is in mm/hr from §4.6
+  //     waterNeed is in L/m²/day = mm/day (1 mm of rain = 1 L/m²)
+  //     Convert: dailyRain = precipitationRate × hoursOfRain (mm/day)
+  //     if dailyRain > waterNeed: crop is watered by rain, no irrigation needed
+  //     Example: 2 hours of 3 mm/hr rain = 6 mm/day = 6 L/m²/day → wheat (4-6 L/m²/day) is fine
+  //   River/stream: player builds channel from water source to field
+  //     Flow rate from §3.2 (Manning's equation in grid-based water)
+  //     Channel capacity: Q = (1/n) × A × R^(2/3) × S^(1/2) m³/s
+  //   Well: player digs to water table → groundwater flows in (§3.2 Darcy's law)
+  //     Yield limited by hydraulic conductivity of soil
+  //   Reservoir: player builds a dam → collects rainwater → releases to fields
+  //
+  // Crop stress from insufficient water:
+  //   waterRatio = waterReceived / waterNeeded
+  //   if waterRatio >= 1.0: normal growth
+  //   if 0.5 ≤ waterRatio < 1.0: growth rate × waterRatio (reduced)
+  //   if waterRatio < 0.5: crop wilts → yield × 0.2 if it survives
+  //   if waterRatio < 0.1 for 5+ game-days: crop dies
+
+  // ── 5. Maintain ───────────────────────────────────────────────────────
+  //
+  //   Weeding: unwanted plants grow in any tilled soil with nutrients
+  //     Weeds compete for water, nutrients, and light
+  //     If not removed: crop growth factor reduced by ~30-50%
+  //     Removal: pull by hand (slow), hoe (faster), animal grazing between rows (goats eat weeds)
+  //     Frequency: every ~10 game-days during growing season
+  //
+  //   Pest protection:
+  //     Insects eat crops (caterpillars on cabbage, aphids on grain, locusts on everything)
+  //     Pest arrival: random events, probability scales with crop monoculture size
+  //       Small diverse garden: low pest risk
+  //       Large single-crop field: high pest risk (monoculture attracts specialists)
+  //     Natural pest control:
+  //       Birds eat insects → maintaining bird habitat near fields helps
+  //       Companion planting: some plants repel pests (marigolds repel nematodes,
+  //         basil repels aphids, garlic repels many insects)
+  //       Cats hunt rodents in grain storage (§4.3)
+  //     Chemical pest control (later technology): sulfur dust, pyrethrin (from chrysanthemum flowers)
+  //
+  //   Disease protection:
+  //     Fungal diseases: blight (potato), rust (wheat), mildew (grape)
+  //     Spread: density-dependent (close planting → faster spread)
+  //     Wet weather increases fungal disease risk
+  //     Prevention: proper spacing, crop rotation, remove infected plants immediately
+  //     Treatment: copper sulfate spray (Bordeaux mixture — §3.1 emergent chemistry)
+
+  // ── 6. Harvest ────────────────────────────────────────────────────────
+  //
+  // When growthStage reaches 1.0 (maturity), the crop is harvestable.
+  // Visual: plant changes color/appearance at maturity
+  //   Wheat: green stalks → golden yellow
+  //   Potato: green leaves → yellowing and wilting (tubers ready underground)
+  //   Corn: green → dry brown husks, ears droop
+  //
+  // Harvest window: the crop stays harvestable for ~15 game-days
+  // After that: quality degrades
+  //   Grain: seeds drop (shatter) → yield decreases 5% per game-day past maturity
+  //   Fruit: falls from tree → rots on ground
+  //   Root crops: stay viable longer in soil (natural cold storage)
+  //
+  // Harvest tools:
+  //   Bare hands: berries, vegetables, pulling root crops
+  //   Sickle (flint → copper → iron): grain harvesting — cut stalks at base
+  //   Knife: fruit, vegetables
+  //
+  // Yield: determined by quality × species domestication level × soil health
+  //   The yield table uses INTERMEDIATE domestic yields (after ~5 generations of selection).
+  //   Wild: 0.5 kg/m². Early domestic: 1.0 kg/m². Improved domestic: 1.5 kg/m². Modern: 2.0 kg/m².
+  //   Wild wheat: ~0.5 kg grain per m²
+  //   Domestic wheat (after 10+ generations): ~2.0 kg grain per m²
+  //   Modern wheat (real world): ~8.0 kg/m² — shows how far selective breeding goes
+
+  // ── Crop Yield Per Plant ───────────────────────────────────────────────
+  //
+  // In plain English: one wheat plant produces a handful of grain. 
+  // You need a field of them to feed yourself.
+  //
+  // | Crop         | Yield (kg/plant) | Plants/m² | Yield (kg/m²) | kcal/m² (raw) | Feeds 1 person (days/m²) |
+  // |-------------|-----------------|-----------|---------------|---------------|--------------------------|
+  // | Wheat        | 0.005           | 300       | 1.5           | 5,100         | 2.8                      |
+  // | Barley       | 0.004           | 350       | 1.4           | 4,900         | 2.7                      |
+  // | Rice         | 0.003           | 250       | 0.75          | 2,700         | 1.5                      |
+  // | Potato       | 0.50            | 8         | 4.0           | 3,080         | 1.7                      |
+  // | Carrot       | 0.15            | 16        | 2.4           | 984           | 0.55                     |
+  // | Beans        | 0.02            | 20        | 0.4           | 1,360         | 0.75                     |
+  // | Flax (fiber) | 0.01 (seed)     | 200       | 2.0           | —             | — (fiber crop)           |
+  //
+  // "Feeds 1 person" assumes 1,800 kcal/day (BMR from §7.2).
+  // A 10m × 10m wheat field: 100 m² × 2.8 days/m² = 280 person-days of food.
+  // That's about 9 months of wheat from a small garden — enough for one person.
+  //
+  // Yield is modified by:
+  //   soilQuality: yield × (0.5 + 0.5 × soilFertility) — poor soil = half yield
+  //   water: yield × min(1.0, waterAvailable / waterNeeded) — drought reduces yield
+  //   temperature: yield × tempFactor(biome) — too hot or too cold reduces yield
+  //   season: only grows during the growing season (spring-summer in temperate)
+
+  // ── 7. Process ────────────────────────────────────────────────────────
+  //
+  // Raw harvest → usable food/material (uses existing crafting system §6.3):
+  //
+  //   Grain processing chain:
+  //     Harvest stalks → thresh (beat with flail at threshing floor → separates grain from straw)
+  //     → winnow (toss in air, wind removes chaff) → clean grain
+  //     → grind (grinding stone → flour) → mix with water → bake (fire/oven → bread)
+  //   Each step is a physical action at a craft arrangement or by hand
+  //
+  //   Potato: dig from soil → wash → cook (boil, roast, or dry for storage)
+  //   Flax: pull → ret (soak in water 7-14 days) → dry → break → scutch → hackle → spin → weave
+  //   Grape: crush (stomping or press) → ferment in container (yeast + sugar → alcohol + CO₂)
+
+  // ── 8. Save seeds ─────────────────────────────────────────────────────
+  //
+  // The player must save some of the harvest as seeds for next season.
+  // This is the selective breeding mechanism:
+  //   Player looks at harvested plants and picks the BEST ones:
+  //     Tallest wheat → seeds from this plant have +quality
+  //     Biggest potato tuber → cut piece with eyes for replanting
+  //     Sweetest fruit → save seeds
+  //   Saving seeds from the best plants = next generation is slightly better
+  //   quality += 0.03-0.05 per selected generation
+  //
+  // If the player loses all seeds (ate them, destroyed by fire, stolen):
+  //   Must find wild plants again or trade for seeds from NPCs
+  //   This is a real historical catastrophe — seed loss meant famine
+}
+```
+
+#### Soil Depletion and Restoration
+
+```
+SoilFertilityManagement {
+  // The most important concept in agriculture: soil is not infinite.
+  // Every harvest removes nutrients. Without management, land dies.
+
+  // ── Depletion rates ───────────────────────────────────────────────────
+  //
+  // Per harvest (per m²) — see Fertilizer Replenishment Rates table below:
+  //   Wheat:  N -= 0.02, P -= 0.005, K -= 0.01
+  //   Potato: N -= 0.015, P -= 0.008, K -= 0.025
+  //
+  // Starting soil nitrogen = ~0.5 (forest floor)
+  // After 25 harvests without restoration: nitrogen depleted
+  //   (0.5 / 0.02 = 25 wheat harvests to exhaust nitrogen)
+  //
+  // This is why slash-and-burn agriculture moves every few years:
+  //   Clear forest → farm many seasons → soil exhausted → abandon → clear new forest
+  //   The abandoned plot takes 20-50 game-years to recover naturally (forest regrowth)
+
+  // ── Restoration methods ───────────────────────────────────────────────
+
+  // 1. CROP ROTATION (free, requires knowledge)
+  cropRotation {
+    // Legumes (beans, peas, lentils) ADD nitrogen to soil
+    //   nitrogen += 0.1 per legume growth cycle (from Rhizobium bacteria)
+    //
+    // Three-field system:
+    //   Field A: wheat (year 1) → beans (year 2) → fallow (year 3) → wheat (year 4)
+    //   Field B: beans (year 1) → fallow (year 2) → wheat (year 3) → beans (year 4)
+    //   Field C: fallow (year 1) → wheat (year 2) → beans (year 3) → fallow (year 4)
+    //   Result: always 1 field producing grain, 1 restoring nitrogen, 1 resting
+    //   Sustainable: can farm the same three fields FOREVER with this rotation
+    //
+    // The player discovers this by trial and error:
+    //   First few wheat harvests: great yield!
+    //   Next few: declining yield. "Why is my wheat smaller?"
+    //   Player notices legume field nearby has greener soil
+    //   Tries planting wheat after beans → yield recovers!
+    //   Discovery: crop rotation (recorded in discovery system)
+  }
+
+  // 2. MANURE (requires domesticated animals)
+  manure {
+    // Animal dung is the original fertilizer (§4.3):
+    // Per kg of manure applied per m² (see Fertilizer Replenishment Rates table below):
+    //   Cow manure:     N +0.005, P +0.002, K +0.005 (best all-round, slow release)
+    //   Chicken manure: N +0.008, P +0.006, K +0.003 (highest N and P, can burn plants if fresh)
+    //   Horse manure:   N +0.004, P +0.001, K +0.004 (similar to cow, slightly less)
+    //   Pig manure:     N +0.006, P +0.003, K +0.003
+    //   Sheep manure:   N +0.004, P +0.002, K +0.003
+    //
+    // Application: player collects dung from animal enclosures → carries to field → spreads
+    // Or: graze animals directly on the field after harvest (they eat stubble, deposit manure)
+    //   This is "folding" — a real practice. The field gets fertilized AND weeded simultaneously.
+    //
+    // Composting: pile manure + plant waste → wait 30-60 game-days → compost
+    //   Compost is more balanced and doesn't burn plant roots like fresh manure can
+    //   organicMatter += 0.05 per compost application
+  }
+
+  // 3. OTHER FERTILIZERS
+  otherFertilizers {
+    // Bone meal: ground animal bones → best P source.
+    //   Made at grinding stone from any bone (§4.2.1 animal products)
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+    //
+    // Wood ash: from any fire → excellent K source, raises pH.
+    //   Easy to obtain — every campfire produces ash.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+    //
+    // Fish: buried in soil near plants → good N and P source.
+    //   The Squanto method — Native Americans taught European colonists this.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+    //
+    // Guano: bat/bird droppings from caves → extremely potent N and P source.
+    //   If the player finds a bat cave, they have the best fertilizer.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+    //
+    // Seaweed: collected from coastline → good K source, plus trace minerals.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+    //
+    // Green manure: grow a crop specifically to plow it back into the soil.
+    //   Plant clover → let it grow → till it under before it seeds.
+    //   Same as legume rotation but sacrifices a harvest.
+    //   See Fertilizer Replenishment Rates table below for per-kg values.
+  }
+
+  // ── Fertilizer Replenishment Rates ─────────────────────────────────────
+  //
+  // VALIDATION TARGET for §3.1 decomposition chemistry: these per-kg
+  // replenishment rates should emerge from organic decomposition reactions
+  // in the reaction engine, not be applied as flat additions.
+  //
+  // In plain English: harvesting crops takes nutrients out of the soil.
+  // Adding fertilizer puts them back. Different fertilizers restore different nutrients.
+  //
+  // Depletion per harvest (per m²):
+  //   Wheat: N -= 0.02, P -= 0.005, K -= 0.01
+  //   Potato: N -= 0.015, P -= 0.008, K -= 0.025
+  //   Beans: N += 0.01 (legumes FIX nitrogen from air!), P -= 0.003, K -= 0.008
+  //
+  // Replenishment per kg of fertilizer applied per m²:
+  //   | Fertilizer      | N restored | P restored | K restored | Notes |
+  //   |----------------|-----------|-----------|-----------|-------|
+  //   | Cow manure      | +0.005    | +0.002    | +0.005    | Best all-round, slow release |
+  //   | Horse manure    | +0.004    | +0.001    | +0.004    | Similar to cow, slightly less |
+  //   | Chicken manure  | +0.008    | +0.006    | +0.003    | Highest N and P, can burn plants if fresh |
+  //   | Wood ash        | +0.000    | +0.001    | +0.030    | Excellent K source, no nitrogen |
+  //   | Bone meal       | +0.001    | +0.015    | +0.000    | Best P source |
+  //   | Compost         | +0.003    | +0.002    | +0.003    | Balanced, improves soil structure |
+  //   | Green manure    | +0.010    | +0.001    | +0.002    | Cover crop plowed under (legumes) |
+  //   | Seaweed         | +0.002    | +0.001    | +0.008    | Good K, trace minerals |
+  //   | Fish (buried)   | +0.010    | +0.008    | +0.002    | Good N and P, slow release |
+  //   | Guano           | +0.020    | +0.018    | +0.003    | Extremely potent N and P |
+  //
+  // Crop rotation strategy:
+  //   Year 1: Wheat (depletes N heavily)
+  //   Year 2: Beans (restores N via nitrogen fixation)
+  //   Year 3: Potato (depletes K)
+  //   Year 4: Fallow + manure (restores everything)
+  //   This 4-year cycle maintains soil fertility indefinitely.
+
+  // 4. FALLOW (simplest, slowest)
+  fallow {
+    // Leave the field unplanted for a full season
+    // Natural processes slowly restore:
+    //   nitrogen += 0.02 per game-month (decomposition of weeds and organic matter)
+    //   organicMatter += 0.01 per game-month
+    //   earthwormDensity += 0.02 per game-month (worms return to undisturbed soil)
+    // Full recovery from depleted to healthy: ~12-18 game-months (3-4.5 real months)
+    // Faster than natural forest regrowth but slower than active fertilization
+    //
+    // VALIDATION TARGET for §3.1 reaction engine + §4.2 ecosystem: fallow
+    // recovery rates should emerge from weed decomposition, microbial activity,
+    // and atmospheric nitrogen fixation — not flat per-month increments.
+  }
+
+  // ── Erosion ───────────────────────────────────────────────────────────
+  //
+  // Tilled soil on slopes is vulnerable to rain erosion:
+  //   erosionRate = rainfall × slopeAngle × (1 - vegetationCover) × (1 - organicMatter)
+  //   Erosion removes topsoil: all nutrient values decrease proportionally
+  //   Severe erosion: soil layer thins until bedrock is exposed (unfarmable)
+  //
+  // Prevention:
+  //   Terracing: cut steps into hillside → flat planting surfaces → no slope erosion
+  //     Requires significant digging (§7.4) but makes mountain farming possible
+  //     This is how Inca agriculture worked on Andean slopes
+  //   Contour plowing: plow across the slope, not up/down → water follows furrows instead of eroding downhill
+  //   Cover crops: plant ground cover between main crops → roots hold soil
+  //   Mulching: lay straw/leaves on soil surface → protects from rain impact
+}
+```
+
+#### Food Preservation — Making Harvests Last
+
+```
+FoodPreservation {
+  // A harvest happens once per season. The food must last until the next harvest.
+  // Without preservation, organic material rots (§7.2 food spoilage model).
+
+  // ── Preservation methods (all from real chemistry/physics) ─────────────
+
+  drying {
+    // Remove water → bacteria can't grow → food lasts months/years
+    // Methods:
+    //   Sun drying: lay food in direct sunlight, low humidity → moisture drops to <15%
+    //     Requires: clear weather, 3-5 game-days of exposure
+    //     Works for: grain (already low moisture), meat (jerky), fish, fruit (raisins, dates)
+    //   Smoke drying: hang food over a smoky fire → heat + smoke chemicals preserve
+    //     Requires: smokehouse (enclosed structure with fire pit)
+    //     The smoke contains formaldehyde and phenols that are antimicrobial
+    //     Works for: meat, fish (smoked salmon, smoked ham)
+    //   Result: food moisture < 0.15 → spoilage rate reduced to ~1% of normal
+    //   Dried food lasts 6-12 game-months at room temperature
+  }
+
+  salting {
+    // Salt draws water out of food (osmosis) → bacteria can't grow in high-salt environment
+    // Requires: salt (from §4.5 evaporite deposits or coastal evaporation)
+    // Application: rub salt into meat/fish, or brine (soak in saturated salt water)
+    // Result: food moisture effectively 0 for bacterial purposes
+    // Salted food lasts 1-2 game-years
+    // Salt was the single most important trade commodity in the ancient world for this reason
+  }
+
+  fermentation {
+    // Controlled bacterial/yeast growth that PRESERVES food by producing acid or alcohol
+    // The bacteria you want outcompete the bacteria that cause rot
+    //
+    // Types:
+    //   Lactic fermentation: cabbage → sauerkraut, cucumbers → pickles, milk → yogurt/cheese
+    //     Bacteria (Lactobacillus) convert sugar → lactic acid → pH drops → food preserved
+    //     Requires: container (clay pot), salt (for initial bacterial selection), time (7-30 game-days)
+    //
+    //   Alcoholic fermentation: grain → beer, grape → wine, honey → mead
+    //     Yeast converts sugar → ethanol + CO₂ → alcohol preserves the liquid
+    //     Requires: sugar source, container, yeast (wild yeast from fruit skins or cultivated)
+    //     Beer: grain → malt (soak, sprout, dry) → mash (crush + hot water) → boil → add yeast → wait
+    //     Wine: crush grapes → add yeast (or use natural yeast on grape skin) → seal container → wait
+    //     Time: 14-30 game-days for basic fermentation
+    //
+    //   Vinegar: wine/beer exposed to air → acetic acid bacteria convert alcohol → vinegar
+    //     Vinegar is both a preservative AND a condiment
+    //
+    // Fermented food lasts months to years AND has higher nutritional value than raw
+    // (fermentation breaks down anti-nutrients, produces vitamins, aids digestion)
+  }
+
+  coldStorage {
+    // Cold slows bacterial growth (§7.2 spoilage model: temperatureFactor = 0 below 4°C)
+    // Methods:
+    //   Root cellar: dig a pit, store food underground → temperature is ~10-15°C year-round
+    //     Requires: digging (§7.4), structure to prevent collapse
+    //     Extends food life by ~3×
+    //   Ice cellar: harvest ice in winter, store in insulated pit → keeps food near 0°C
+    //     Extends food life by ~10×
+    //     Requires: winter cold enough to freeze water + insulation material (straw, sawdust)
+    //   Snow: in winter, simply bury food in snow → natural freezer
+  }
+
+  smoking {
+    // Combined heat + antimicrobial smoke chemicals
+    // Build a smokehouse: enclosed structure with fire pit, racks above
+    // Place meat/fish on racks, maintain low fire with hardwood (oak, hickory best)
+    //   Softwood (pine) produces bitter, resinous smoke — bad for preservation
+    //   Different woods produce different flavors (applewood, cherrywood, mesquite)
+    // Duration: 12-48 game-hours depending on thickness of food
+    // Result: smoked food lasts 3-6 game-months at room temperature
+  }
+
+  // ── Storage containers ────────────────────────────────────────────────
+  //
+  // Preserved food needs proper containers:
+  //   Clay pots with lids: grain, dried food, ferments (sealed with beeswax)
+  //   Barrels (cooper-crafted): salted meat, beer, wine (requires advanced woodworking)
+  //   Leather bags: dried food, grain (portable for travel)
+  //   Baskets (woven): fresh fruit, vegetables (short-term, breathable)
+  //   Underground pits lined with stone: bulk grain storage
+  //
+  // Rodent protection: stored grain attracts rats and mice
+  //   Cat in storage area: reduces rodent loss (§4.3)
+  //   Elevated granary: raised platform keeps rodents from ground access
+  //   Sealed containers: clay pots with wax seal — rodent-proof
+}
+```
+
+#### NPC Farming — Settlements Grow Food
+
+```
+NPCFarming {
+  // NPCs farm using the same systems as players. The SLM (§5.2) decides
+  // when and what to plant based on settlement needs and available knowledge.
+
+  // ── How settlements start farming ─────────────────────────────────────
+  //
+  // Early settlements: gathering only (forage wild plants, hunt animals)
+  // A curious NPC (high openness) notices: "wild wheat grows near the river every year.
+  //   What if I try putting seeds in the ground near our settlement?"
+  //
+  // The SLM handles this discovery:
+  //   Input: boredom from gathering, knowledge of wild wheat location, curiosity high
+  //   Output: "I'll collect wild wheat seeds and try planting them near camp"
+  //
+  // First harvest is small (wild-type yield). NPC remembers: "planting works!"
+  // Knowledge spreads to other NPCs in the settlement.
+  // Over generations (NPC-selected seeds → domestic quality improves),
+  //   the settlement transitions from gathering → farming.
+  //
+  // This IS the Neolithic revolution happening organically in the game.
+
+  // ── Settlement agricultural decisions (SLM-driven) ─────────────────────
+  //
+  // "We have 30 NPCs. We need ~60,000 kcal/day. Wild gathering provides ~40,000.
+  //  We need to farm to close the gap."
+  //
+  // "It's spring. The soil near the river is fertile. I'll organize planting."
+  //
+  // "Last year's wheat harvest was poor because we didn't weed.
+  //  This year I'll assign two NPCs to weeding duty."
+  //
+  // "The soil is depleted. I remember: planting beans restored the field two years ago.
+  //  Let's rotate to beans this season."
+  //
+  // "We have cattle now. Their dung can fertilize the wheat field.
+  //  I'll have the herder graze them on the harvested stubble."
+  //
+  // All of these are SLM Tier 2 decisions based on memory and needs.
+  // The settlement's agricultural sophistication grows as NPCs learn from
+  //   experience and observation.
+
+  // ── Visible farming activity ──────────────────────────────────────────
+  //
+  // Players visiting a farming settlement see:
+  //   NPCs walking to fields with tools
+  //   NPCs tilling soil (hoe animation)
+  //   Animals pulling plows (if domesticated)
+  //   NPCs scattering seeds (planting animation)
+  //   NPCs pulling weeds between crop rows
+  //   Crops visibly growing over days (tiny sprout → full plant)
+  //   NPCs harvesting with sickles (cutting animation)
+  //   NPCs carrying harvest bundles to threshing area
+  //   NPCs threshing (beating stalks on a flat surface)
+  //   NPCs winnowing (tossing grain in the air near the wind)
+  //   NPCs storing grain in clay pots in a storage structure
+  //
+  // A player can watch this entire chain and learn farming by observation —
+  //   same knowledge transfer system as all NPC skills (§5.3).
+}
+```
+
+
+### 4.5 Geology & Resource Distribution
+
+Resource distribution builds on the planetary formation and tectonic structure defined in §4.1. Resource nodes are concentrated according to real geological processes. Settlement specialties assigned by server-side geology query (matching the client algorithm exactly).
 
 **Scientific grounding — why geology determines civilization:**
 Jared Diamond's *Guns, Germs, and Steel* (1997) argues that geography is the primary driver of civilizational development — not intelligence, culture, or luck. Societies that happened to sit on land with domesticable crops, workable metals, and navigable rivers developed faster and outcompeted those that did not. The same logic applies here. A player who starts near a copper-rich volcanic zone has access to metal tools earlier than one who starts in a sedimentary basin with only flint. This is not unfair — it is how reality works. The world rewards exploration and trade precisely because different regions have different resources.
@@ -2397,7 +10234,7 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 3.4.1 Metals and Ores
+#### 4.5.1 Metals and Ores
 
 **Copper** (native copper, malachite, azurite, chalcopyrite)
 
@@ -2529,7 +10366,7 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 3.4.2 Non-Metallic Rock and Mineral Resources
+#### 4.5.2 Non-Metallic Rock and Mineral Resources
 
 **Limestone and chalk** (calcite CaCO₃, aragonite CaCO₃)
 
@@ -2655,6 +10492,11 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 **Diamond** (C — cubic crystal structure)
 
+// Diamond forms where the carbon phase diagram (§3.1) indicates diamond stability:
+//   T > 900°C AND P > 4.5 GPa (~150 km depth)
+//   These conditions are computed from the carbon allotrope phase diagram,
+//   not hardcoded — graphite and diamond are two phases of the same composition (pure C).
+
 *Formation mechanism 1 — Kimberlite pipes:* Diamonds form under extreme pressure and temperature (>45 kbar, >900°C) in the mantle, at depths of 150–200 km, within the ancient, cold keels of cratons (stable continental cores). They are brought to the surface by kimberlite eruptions — rare, violent volcanic intrusions that ascend so rapidly (several hours) that diamonds have no time to convert back to graphite. Kimberlites are funnel-shaped pipes of dark, altered volcanic rock found exclusively on ancient cratons (Africa, Siberia, Canada, Australia). Not all kimberlites are diamond-bearing; only those from depths below the continental lithosphere.
 
 *Formation mechanism 2 — Alluvial/marine placer diamonds:* Diamonds eroded from kimberlites accumulate in river and coastal deposits. Many of the world's gem diamonds (Namibia, Sierra Leone, Botswana coast) were mined from alluvial gravels downstream of ancient kimberlites. Diamonds are dense and inert — they survive transport intact.
@@ -2663,13 +10505,13 @@ Every resource in the game has one or more real geological formation mechanisms.
 
 ---
 
-#### 3.4.3 Evaporite and Sedimentary Resources
+#### 4.5.3 Evaporite and Sedimentary Resources
 
 These are addressed with their minerals above (salt, gypsum, potash). See entries above.
 
 ---
 
-#### 3.4.4 Carbon-Bearing Materials
+#### 4.5.4 Carbon-Bearing Materials
 
 **Coal** (peat → lignite → sub-bituminous → bituminous → anthracite)
 
@@ -2697,7 +10539,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 3.4.5 Radioactive Materials
+#### 4.5.5 Radioactive Materials
 
 **Uranium** (uraninite/pitchblende UO₂, carnotite K₂(UO₂)₂(VO₄)₂, coffinite USiO₄)
 
@@ -2713,7 +10555,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 3.4.6 Biogenic and Organic Resources
+#### 4.5.6 Biogenic and Organic Resources
 
 **Wood**
 
@@ -2737,13 +10579,37 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 *Game search signal:* Fauna spawn points by biome. Grassland and savanna have the greatest diversity and density of large ungulates. Tracking animals and hunting — no geological context. Animal products cannot be found in rock.
 
+```
+  // ── Animal Product Material Properties ─────────────────────────────────
+  //
+  // In plain English: every part of an animal is a MaterialPacket with real 
+  // physical properties. Leather isn't just "leather" — it's a composition of
+  // collagen, water, and fat that determines its strength, flexibility, and warmth.
+  //
+  // | Product    | Composition                          | Tensile (MPa) | Density (kg/m³) | Thermal κ (W/mK) | Notes |
+  // |-----------|--------------------------------------|--------------|----------------|------------------|-------|
+  // | Cowhide    | collagen 0.70, water 0.15, fat 0.15 | 20-30        | 1100           | 0.14             | Good leather, moderate warmth |
+  // | Sheepskin  | collagen 0.55, keratin 0.25, fat 0.20| 10-15       | 900            | 0.08             | Excellent insulation (wool fibers trap air) |
+  // | Bone       | calcium_phosphate 0.70, collagen 0.20, water 0.10 | 130-180 | 1900 | 0.32 | Hard, brittle. Tools, needles, buttons |
+  // | Sinew      | collagen 0.85, water 0.15           | 50-100       | 1100           | 0.20             | Strongest natural fiber. Bowstrings, lashing |
+  // | Fat/tallow | triglycerides 0.95, water 0.05      | ~0 (liquid)  | 920            | 0.17             | Fuel, waterproofing, soap, candles |
+  // | Wool       | keratin 0.90, lanolin 0.05, water 0.05 | 1-2       | 1300           | 0.04             | Best insulator. Retains warmth when wet |
+  // | Feathers   | keratin 0.95, air 0.05              | 2-5          | 8 (with air)   | 0.025            | Lightest insulator. Fletching for arrows |
+  // | Horn/antler| keratin 0.60, calcium_phosphate 0.30, water 0.10 | 80-120 | 1800 | 0.40 | Hard, workable. Tool handles, vessels |
+  //
+  // These compositions are set when the animal dies (§3.6 Connection 3: Death → MaterialPacket).
+  // The property calculator (§3.1) computes all 44 properties from these compositions.
+  // A player who skins a deer gets a MaterialPacket with the cowhide composition,
+  // and the physics determines its behavior — not a lookup table.
+```
+
 ---
 
-**Clay (for ceramics)** — see section 6.4.2 above.
+**Clay (for ceramics)** — see §4.5.2.
 
 ---
 
-#### 3.4.7 Rare and Strategic Materials
+#### 4.5.7 Rare and Strategic Materials
 
 **Platinum group metals** (platinum Pt, palladium Pd, rhodium Rh, iridium Ir, osmium Os, ruthenium Ru)
 
@@ -2765,7 +10631,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
 
 ---
 
-#### 3.4.8 How the Game Uses This Information
+#### 4.5.8 How the Game Uses This Information
 
 All resource node placement derives from these formation rules. The game runs a geological simulation at world generation time:
 
@@ -2786,7 +10652,7 @@ All resource node placement derives from these formation rules. The game runs a 
 Settlement specialties are assigned by querying what resource nodes fall within 200 meters of the settlement seed point. The most abundant or highest-value node determines the specialty. A settlement seeded near a copper porphyry becomes a copper mining town. A settlement seeded in a sedimentary basin near limestone and clay becomes a pottery and masonry town. A settlement near a forest biome boundary with good clay soil becomes a farming and charcoal settlement. No designer places these — the geology places them.
 
 
-### 4.4 Atmospheric Model — Weather and Seasons
+### 4.6 Atmospheric Model — Weather and Seasons
 
 #### The Principle
 
@@ -2867,8 +10733,11 @@ Where:
   ΔT_wind(windSpeed):
     // Wind chill: effective temperature drop from wind
     // Uses the NWS wind chill formula (simplified):
+    //   windChill = 13.12 + 0.6215×T - 11.37×(v×3.6)^0.16 + 0.3965×T×(v×3.6)^0.16
+    //   NOTE: v×3.6 converts m/s to km/h (NWS formula expects km/h)
     if (T_air < 10 && windSpeed > 1.3)
-      ΔT = 13.12 + 0.6215 × T_air - 11.37 × windSpeed^0.16 + 0.3965 × T_air × windSpeed^0.16 - T_air
+      v_kmh = windSpeed × 3.6                // convert m/s → km/h for NWS coefficients
+      ΔT = 13.12 + 0.6215 × T_air - 11.37 × v_kmh^0.16 + 0.3965 × T_air × v_kmh^0.16 - T_air
     else ΔT = 0
 ```
 
@@ -2897,7 +10766,9 @@ Wind generation:
 ```
 Cloud formation process:
   1. Air rises (updraft from heating, terrain uplift, or pressure convergence)
-  2. Rising air cools at the adiabatic lapse rate (9.8°C/km dry, 6.5°C/km wet)
+  2. Rising air cools at the adiabatic lapse rate (9.8°C/km dry, ~4-6°C/km saturated — varies
+     with temperature; lower at warm surface temps, higher at cold temps).
+     Note: 6.5°C/km is the ENVIRONMENTAL lapse rate (average observed), not the moist adiabatic rate.
   3. When air cools below dew point → water vapor condenses → cloud forms
      dewPoint = T - (100 - humidity × 100) / 5    // simplified Magnus formula
      if (T_air < dewPoint) → cloudCover increases, cloudWaterContent increases
@@ -2905,13 +10776,46 @@ Cloud formation process:
   4. When cloudWaterContent exceeds threshold → precipitation begins
      precipThreshold = 0.3    // g/m³ — typical for real clouds
      if (cloudWaterContent > precipThreshold)
-       precipitationRate = (cloudWaterContent - precipThreshold) × 10    // mm/hour
+       precipitationRate = (cloudWaterContent - precipThreshold) × 2.0   // mm/hour
+       // (multiplier 2.0 produces realistic rain: at LWC=1.0, rate = 1.4 mm/hr = light rain)
+       // Previous multiplier 10 was unrealistically high — removed
 
   5. Precipitation type depends on air temperature at ground level:
      if (T_ground > 2°C)   → rain
      if (T_ground ∈ [-2, 2]) → sleet (mixed)
      if (T_ground < -2°C)  → snow
      if (updraft > 10 m/s && T_cloud < -20°C) → hail (strong thunderstorm)
+```
+
+```
+  // ── Saturation and Condensation ────────────────────────────────────────
+  //
+  // In plain English: warm air holds more moisture than cold air. When air cools 
+  // enough, the moisture condenses into water droplets (clouds, fog, dew).
+  // The temperature at which this happens is the "dew point."
+  //
+  // Saturation vapor pressure (Magnus formula):
+  //   e_sat(T) = 6.1078 × exp(17.27 × T / (T + 237.3)) hPa
+  //   where T is in °C
+  //   At 20°C: e_sat = 23.4 hPa
+  //   At 30°C: e_sat = 42.4 hPa (warm air holds 81% more moisture)
+  //   At 0°C: e_sat = 6.1 hPa (cold air holds very little moisture)
+  //
+  // Relative humidity:
+  //   RH = (e_actual / e_sat) × 100%
+  //
+  // Dew point (temperature at which current moisture saturates):
+  //   T_dew = (237.3 × ln(e_actual / 6.1078)) / (17.27 - ln(e_actual / 6.1078))
+  //
+  // Condensation trigger:
+  //   if (cellTemperature <= T_dew): condensation occurs
+  //     Cloud formation: water droplets appear in atmosphere cell
+  //     When cloudWaterContent > 0.3 g/m³: precipitation begins
+  //     Precipitation rate = (cloudWaterContent - 0.3) × 2.0 mm/hour
+  //
+  // Fog:
+  //   if (groundTemperature <= T_dew AND windSpeed < 2 m/s): ground fog forms
+  //   Visibility reduced to: 1000 / (1 + fogDensity × 10) meters
 ```
 
 #### Rain Shadow Effect
@@ -3020,7 +10924,7 @@ SeasonSystem {
 
 ```
 Season effects on systems:
-  // Organism energy budgets (§2):
+  // Organism energy budgets (§4.2):
   autotroph.photosynthesisRate *= daylightHours / 12    // more light = more energy
   heterotroph.metabolicRate *= 1 + (30 - T_air) × 0.01  // cold = higher metabolism to stay warm
 
@@ -3077,20 +10981,20 @@ Settlement {
   // e.g., "34kg of Cu₀.₈₅Fe₀.₁₀S₀.₀₅ (impure copper)" and "12kg of charcoal"
 
   // ── Built Infrastructure (what NPCs have physically constructed) ──────────
-  structures: WorldObject[]                  // every building, wall, path, workstation that exists
-  // A settlement with 3 huts and a campfire is different from one with stone walls and a bloomery
+  structures: WorldObject[]                  // every building, wall, path, craft arrangement that exists
+  // A settlement with 3 huts and a campfire is different from one with stone walls and a smelting enclosure
   // These are actual world objects — players can see and interact with them
 
-  // ── Workstations (what machines the settlement has built) ─────────────────
-  workstations: Workstation[]                // campfire, grinding stone, bloomery, kiln, forge, etc.
-  // NPCs build workstations when they have the materials and knowledge
-  // A settlement can only smelt copper IF it has built a bloomery
-  // A settlement cannot "unlock" smelting — it must physically construct the machine
+  // ── Built Arrangements (what physical conditions the settlement can create) ──
+  // There is no Workstation[] array. Craft capability is derived from what structures exist.
+  // NPCs build arrangements when they have the materials and knowledge.
+  // A settlement can only smelt copper IF it has built an enclosure that reaches ~1100°C.
+  // A settlement cannot "unlock" smelting — it must physically construct the arrangement.
 
   // ── Knowledge (what processes NPCs have discovered through practice) ──────
   knownProcesses: Set<string>                // 'fire_starting', 'copper_smelting', 'pottery', etc.
   // Knowledge grows when: an NPC successfully performs a new interaction (same discovery system as players)
-  // Knowledge spreads via trade (§8.7): when settlements trade, there's a chance of knowledge transfer
+  // Knowledge spreads via trade (§5.3): when settlements trade, there's a chance of knowledge transfer
   // Knowledge is NEVER assigned — it is earned through NPC practice
 
   // ── Trade Connections ─────────────────────────────────────────────────────
@@ -3120,8 +11024,8 @@ function assessSettlement(s: Settlement): SettlementAssessment {
   const hasFireMaking    = s.knownProcesses.has('fire_starting')
   const hasPottery       = s.knownProcesses.has('pottery')
   const hasMetalSmelting = [...s.knownProcesses].some(p => p.includes('smelting'))
-  const hasForge         = s.workstations.some(w => w.type === 'forge')
-  const hasBlastFurnace  = s.workstations.some(w => w.type === 'blast_furnace')
+  const canReach1300C    = s.structures.some(st => getMaxTemperature(st) >= 1300)  // e.g., a forced-draft enclosure
+  const canReach1500C    = s.structures.some(st => getMaxTemperature(st) >= 1500)  // e.g., a tall-stack enclosure with coke
   const stoneBuildings   = s.structures.filter(st => st.material.hardness > 4).length
   const hasWalls         = s.structures.some(st => st.subtype === 'wall' && st.material.hardness > 3)
   const tradeRoutes      = s.tradePartners.size
@@ -3132,11 +11036,11 @@ function assessSettlement(s: Settlement): SettlementAssessment {
     return { label: 'Camp', description: 'A handful of people around a fire' }
   if (!hasMetalSmelting && populationSize < 20)
     return { label: 'Hamlet', description: 'Small group with basic tools and shelter' }
-  if (hasMetalSmelting && !hasForge && populationSize < 50)
+  if (hasMetalSmelting && !canReach1300C && populationSize < 50)
     return { label: 'Village', description: 'Settled community with early metalwork' }
-  if (hasForge && stoneBuildings > 5 && populationSize < 150)
-    return { label: 'Town', description: 'Established settlement with smithing and stone construction' }
-  if (hasBlastFurnace && hasWalls && tradeRoutes > 2 && populationSize >= 150)
+  if (canReach1300C && stoneBuildings > 5 && populationSize < 150)
+    return { label: 'Town', description: 'Established settlement with high-temperature crafting and stone construction' }
+  if (canReach1500C && hasWalls && tradeRoutes > 2 && populationSize >= 150)
     return { label: 'City', description: 'Fortified center with advanced industry and trade networks' }
 
   // ... and so on. These are OBSERVATIONS, not levels.
@@ -3204,51 +11108,789 @@ Diamond's *Guns, Germs, and Steel* adds a further insight: the east-west axis of
 
 #### The Principle
 
-NPCs are not scripts. They are simulated humans with curiosity, needs, emotions, memory, and the ability to learn. An NPC doesn't follow a behavior tree — it *thinks* about what to do based on its internal state and surroundings. This requires a hybrid AI architecture: cheap fast decisions for routine moments, and deeper reasoning for novel situations.
+NPCs are not scripts. They are simulated humans with curiosity, needs, emotions, memory, and the ability to learn. An NPC doesn't follow a behavior tree that says "if hungry, go to food." An NPC *thinks*: "I'm hungry. Last time I was hungry near the river, I tried fishing and it worked. But it's raining now and the river is high. Maybe I should check the storage first. If there's nothing stored, I'll try fishing anyway — I'm curious if rain affects the catch."
 
-#### Three-Tier Decision Architecture
+This level of reasoning requires language-model-scale intelligence. But running a full LLM (Claude, GPT) for every NPC decision is financially impossible at scale. The solution is a **three-tier hybrid** where most decisions are handled by a cheap custom-trained small model, and full LLMs are reserved for rare, important moments.
 
-**Tier 1 — Survival Reflex (every tick, no AI):** Am I on fire? Drowning? Being attacked? Pure reactive math, no thinking required. Like human reflexes.
+#### The Three Tiers
 
-**Tier 2 — Custom Small Language Model (every 10-30 game-seconds):** A purpose-trained small model (~1-4B parameters) that reasons about NPC decisions. Input: needs, emotions, personality, environment, memories. Output: next action with reasoning. Runs on the server at ~10ms per decision. Handles ~90% of all NPC behavior.
+```
+NPC Brain Architecture {
 
-**Tier 3 — Full LLM (rare, important moments):** For genuinely novel situations the custom model wasn't trained on. Settlement-level strategic decisions, complex social conflicts, first encounters with unprecedented events. ~1-5 calls per settlement per hour.
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 1: Survival Reflex (every server tick, no AI, pure math)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Handles: immediate survival — things a human body does without thinking.
+  // These bypass the brain entirely, like real reflexes.
+  //
+  // Checks (evaluated in priority order, first match wins):
+  //   1. Am I on fire?           → run to water / drop and roll
+  //   2. Am I drowning?          → swim toward surface / shore
+  //   3. Is a predator attacking? → fight (if armed) or flee (if not)
+  //   4. Am I freezing?          → move toward nearest fire / shelter
+  //   5. Is something falling on me? → dodge
+  //
+  // Implementation: simple if/else priority queue
+  // Cost: ~0.01ms per NPC per tick
+  // Frequency: every server tick (6 Hz)
+  //
+  // If no reflex triggers → pass control to Tier 2
 
-#### Personality — Every NPC Is Different
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 2: Custom Small Language Model (every 10-30 game-seconds)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // The NPC's "thinking brain." A custom fine-tuned small language model
+  // (1-4B parameters) that reasons about what to do next.
+  //
+  // This model was trained specifically for NPC decision-making in this game.
+  // It is NOT a general-purpose LLM. It understands: hunger, curiosity,
+  // social bonds, weather, material properties, crafting processes, danger,
+  // time of day, seasonal patterns, settlement needs, and player interactions.
+  //
+  // ── Input (structured prompt fed to the SLM) ───────────────────────────
+  //
+  // Each decision call packs the NPC's full context into a structured prompt:
 
-Based on the Big Five personality model (Costa & McCrae 1992). Each NPC has permanent traits generated at birth:
+  SLMInput {
+    // Identity
+    name: string                     // "Kora"
+    age: number                      // 34 game-years
+    personality: PersonalityVector   // see below
 
-- **Openness** (0-1): curiosity, willingness to explore and experiment. High = wanders far, tries new things. Low = sticks to routine.
-- **Conscientiousness** (0-1): work ethic, organization. High = finishes tasks, maintains structures. Low = unreliable but sometimes creative.
-- **Extraversion** (0-1): sociability. High = seeks company, talks to players, teaches. Low = works alone, productive in isolation.
-- **Agreeableness** (0-1): cooperativeness. High = shares, helps, avoids conflict. Low = competitive, hoards resources, better at defending.
-- **Neuroticism** (0-1): emotional reactivity. High = panics easily, avoids risk. Low = calm under pressure, handles crises.
+    // Physical state
+    needs: {
+      hunger: number                 // 0.0 (full) to 1.0 (starving)
+      thirst: number                 // 0.0 to 1.0
+      fatigue: number                // 0.0 to 1.0
+      warmth: number                 // 0.0 (freezing) to 1.0 (overheating)
+      safety: number                 // 0.0 (terrified) to 1.0 (completely safe)
+    }
 
-Same scenario + different personality = different NPC decision.
+    // Emotional state
+    emotions: {
+      curiosity: number              // 0.0 to 1.0 — how much they want to explore/try new things
+      satisfaction: number           // 0.0 to 1.0 — contentment with current situation
+      loneliness: number             // 0.0 to 1.0 — desire for social interaction
+      boredom: number                // 0.0 to 1.0 — need for novelty (drives exploration)
+      fear: number                   // 0.0 to 1.0 — current anxiety level
+      pride: number                  // 0.0 to 1.0 — satisfaction from accomplishment
+    }
 
-#### Curiosity — How NPCs Discover
+    // Environment
+    environment: {
+      timeOfDay: string              // 'dawn' | 'morning' | 'afternoon' | 'dusk' | 'night'
+      weather: string                // 'clear' | 'cloudy' | 'rain' | 'storm' | 'snow' | 'fog'
+      temperature: number            // °C at NPC's position
+      nearbyEntities: string[]       // ["player:John (trusted)", "wolf (dangerous)", "NPC:Mara (friend)"]
+      nearbyResources: string[]      // ["copper_ore (12m)", "river (30m)", "oak_tree (5m)"]
+      nearbyCraftLocations: string[] // ["smelting enclosure (8m, vacant)", "campfire (3m, burning)"]
+      currentLocation: string        // "inside settlement", "forest edge", "riverbank"
+    }
 
-Curiosity is the engine of NPC progress. Boredom from repetition increases curiosity. Seeing something novel increases curiosity. When curiosity is high, the NPC explores, experiments, tries new material combinations at workstations. Discoveries happen through the same physics-based crafting system as players — the NPC puts materials in a furnace and the reaction engine computes the result. If it's new, the NPC remembers it and can teach others.
+    // Memory (most relevant recent memories)
+    recentMemories: string[]         // last 10 significant events, most recent first
+    // e.g., ["Tried fishing in rain — caught 2 fish (5 min ago)",
+    //        "Player John gave me copper ore (1 hour ago)",
+    //        "Burned hand on bloomery — was not careful (yesterday)",
+    //        "Found clay deposit south of settlement (3 days ago)"]
 
-#### Memory — What NPCs Remember
+    // Knowledge
+    knownProcesses: string[]         // ["fire_starting", "copper_smelting", "pottery", "fishing"]
+    currentGoal: string | null       // "bring copper ore to bloomery" or null if undecided
 
-Each NPC stores ~200 episodic memories ranked by emotional significance. Traumatic and joyful memories persist longest. Neutral memories fade first. During sleep, similar memories consolidate into general knowledge ("fishing usually works 2/3 of the time"). Social memory tracks trust and relationships with specific entities (players, other NPCs, predators).
+    // Settlement context
+    settlementNeeds: string[]        // ["low on food", "need more charcoal", "smelting enclosure is damaged"]
+    socialRelationships: string[]    // ["Mara: close friend", "Boro: rival", "Elder Tain: respected"]
+  }
 
-#### Daily Life
+  // ── Output (action decision from the SLM) ──────────────────────────────
 
-NPCs live on a daily cycle driven by needs, not scripts. They wake at dawn, eat, work during peak energy hours, socialize at midday, continue working in the afternoon, gather around fire at dusk, and sleep at night. Every aspect varies by personality — a high-openness NPC explores instead of working, a high-neuroticism NPC goes to bed early.
+  SLMOutput {
+    thought: string                  // internal reasoning (logged for debugging, not shown to players)
+    // e.g., "I'm hungry (0.7) and bored (0.6). The settlement needs food.
+    //        I know how to fish and the river is 30m away. It's raining but
+    //        last time I caught fish in rain. I'll go fishing — it satisfies
+    //        hunger AND settlement need AND reduces boredom."
 
-#### Social Behavior
+    action: string                   // the chosen action
+    // e.g., "walk_to:river" | "gather:oak_tree" | "craft_at:smelting_enclosure" |
+    //        "talk_to:Mara" | "explore:south" | "sleep" | "eat:stored_fish" |
+    //        "teach:player_nearby" | "build:wall_segment" | "trade:offer_copper"
 
-NPCs form relationships (+0.05 per shared task, +0.15 for sharing food, -0.3 for theft). High relationships lead to pair bonds, shared shelters, and eventually children. Leadership emerges from reputation — NPCs whose decisions led to good outcomes are consulted more often. Conflicts between low-agreeableness NPCs can escalate to physical confrontation (same combat physics as players).
+    priority: number                 // 0.0 to 1.0 — how committed to this action
+    // High priority = won't be easily interrupted
+    // Low priority = will switch if something more interesting happens
 
-#### Settlement Expansion
+    emotionalShift: {                // how this decision affects emotions
+      curiosity: number              // delta (-0.1 to +0.1)
+      satisfaction: number
+      boredom: number
+    }
+  }
 
-NPCs build structures through the same system as players. The AI decides what's needed ("We have 25 NPCs but only 6 shelters — I should build one"). When a settlement becomes overcrowded, adventurous NPCs leave to found new settlements elsewhere. Dead settlements leave ruins that can be re-settled.
+  // ── The SLM itself ─────────────────────────────────────────────────────
 
-#### Self-Improving System
+  CustomSLM {
+    // Base model: fine-tuned from an open-source small model
+    // Candidates: Llama 3.2 1B, Llama 3.2 3B, Phi-3 mini 3.8B, Gemma 2B
+    // Final choice depends on quality vs speed benchmarking
 
-Every time the full LLM (Tier 3) handles a novel situation, the response becomes a training pair for the custom model. Periodic retraining means the NPC AI gets smarter over time. Month 1: ~80% handled by custom model. Year 1: ~97%. The game's NPCs literally become more intelligent the longer the game runs.
+    modelSize: '1-4 GB'             // small enough to run on a single GPU
+    inferenceTime: '5-15ms per NPC' // on server GPU (NVIDIA)
+    contextWindow: 2048              // tokens — enough for the structured input above
+
+    // Training data generation:
+    // 1. Define ~200 scenario templates covering all situations an NPC faces
+    // 2. Use Claude/GPT to generate 500,000+ scenario-response pairs
+    //    Each pair: (SLMInput → SLMOutput with reasoning chain)
+    // 3. Include edge cases:
+    //    - NPC discovers something it's never seen before (curiosity → explore)
+    //    - NPC is starving but the only food is guarded by a predator (risk assessment)
+    //    - Two NPCs want the same resource (social negotiation)
+    //    - NPC witnesses a player helping vs. stealing (trust update)
+    //    - NPC gets bored of the same routine (drive for novelty)
+    //    - Weather changes mid-task (adaptive replanning)
+    // 4. Fine-tune the small model on these pairs using LoRA (low-rank adaptation)
+    //    Training time: ~24-48 hours on a single A100
+    //    Training cost: ~$50-100 per training run
+    // 5. Iterate: play-test → find bad decisions → generate corrections → retrain
+    //    Budget 5 iterations: ~$500 total
+    // 6. Deploy on server GPU alongside the game physics
+
+    // Throughput on a single GPU (e.g., RTX 5070):
+    //   ~100-200 NPC decisions per second (batched inference)
+    //   200 NPCs × 1 decision per 10 game-seconds = 20 decisions per 2.5 real-seconds
+    //   = 8 decisions per real-second — well within budget
+
+    // The model runs as a separate process on the server:
+    //   Python process with vLLM or llama.cpp for inference
+    //   Game server sends SLMInput via local HTTP or Unix socket
+    //   Model returns SLMOutput as JSON
+    //   Latency: <20ms round-trip locally
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 3: Full LLM (rare, high-stakes moments only)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // For moments that require genuine open-ended reasoning beyond what the
+  // custom SLM was trained on. These are RARE — maybe 1-5 calls per
+  // settlement per real-hour.
+  //
+  // Triggers:
+  //   - NPC encounters a completely novel situation not in training data
+  //     (e.g., player builds something NPCs have never seen)
+  //   - Settlement-level strategic decisions
+  //     (e.g., "should we send a trade expedition to the distant settlement?")
+  //   - Complex social conflicts
+  //     (e.g., two NPCs both claim the same resource, elder must mediate)
+  //   - First contact with a player (generate a unique greeting/reaction)
+  //   - NPC attempts to invent a new process (creative problem-solving)
+  //
+  // Implementation:
+  //   API call to Claude Haiku or GPT-4o-mini (cheapest viable models)
+  //   Same SLMInput format but with full conversation context
+  //   Response cached: similar future situations reuse the response
+  //     (cache key: hash of situation-type + key parameters)
+  //
+  // Cost:
+  //   ~$0.00015-0.00025 per call
+  //   5 calls/hour × 10 settlements × 24 hours = 1,200 calls/day
+  //   = ~$0.18-0.30/day = ~$100/year
+  //
+  // The LLM response is also added to the SLM training dataset:
+  //   Every Tier 3 call generates a new training pair
+  //   Periodically retrain the SLM with accumulated new pairs
+  //   Over time, the SLM learns to handle more situations → fewer Tier 3 calls
+  //   This is a SELF-IMPROVING system: the game gets smarter as it runs
+}
+```
+
+#### Personality System — Every NPC Is Different
+
+```
+PersonalityVector {
+  // Each NPC has a fixed personality generated at birth from the world seed.
+  // Personality does NOT change (like real humans — core traits are stable).
+  // These values bias the SLM's decisions.
+
+  // Big Five personality traits (real psychology model, Costa & McCrae 1992):
+  openness: 0.0–1.0               // curiosity, creativity, willingness to try new things
+  // High: explores far, tries unknown processes, experiments with materials
+  // Low: sticks to known routines, stays close to home, risk-averse
+
+  conscientiousness: 0.0–1.0      // organization, reliability, work ethic
+  // High: finishes tasks, maintains built structures, keeps settlement tidy
+  // Low: abandons tasks mid-way, messy, unreliable but sometimes creative
+
+  extraversion: 0.0–1.0           // sociability, talkativeness, energy from others
+  // High: seeks company, talks to players, initiates trade, teaches eagerly
+  // Low: works alone, avoids crowds, productive in isolation
+
+  agreeableness: 0.0–1.0          // cooperativeness, empathy, conflict avoidance
+  // High: shares resources, helps others, avoids fights, trusts easily
+  // Low: hoards resources, competitive, suspicious, but better at defending
+
+  neuroticism: 0.0–1.0            // emotional reactivity, anxiety, mood swings
+  // High: panics easily, overreacts to danger, avoids risk, needs reassurance
+  // Low: calm under pressure, handles crises well, stoic
+
+  // Personality is passed to the SLM as part of the input prompt:
+  // "Personality: very curious (openness 0.9), introverted (extraversion 0.2),
+  //  anxious (neuroticism 0.7), hardworking (conscientiousness 0.8)"
+  // The SLM was trained on personality-conditioned responses:
+  //   Same scenario + different personality → different decision
+  //   A high-openness NPC explores a new cave. A low-openness NPC avoids it.
+
+  // Generated deterministically: personality = hash(worldSeed, npcId) → 5 values
+  // Permanent for the NPC's entire life
+}
+```
+
+#### Curiosity System — How NPCs Discover New Things
+
+```
+CuriositySystem {
+  // Curiosity is the engine of NPC progress. Without it, NPCs would
+  // repeat the same actions forever. Curiosity drives them to explore,
+  // experiment, and accidentally discover new processes.
+
+  // ── What triggers curiosity ───────────────────────────────────────────
+  //
+  // Boredom: doing the same task repeatedly increases boredom → increases curiosity
+  //   boredomRate = 0.01 per repetition of the same action type
+  //   After 50 repetitions of "gather_wood": boredom = 0.5, curiosity spikes
+  //
+  // Novel stimuli: seeing something new for the first time
+  //   NPC walks past an unexplored area → curiosity += 0.1
+  //   NPC sees a player using an unknown process → curiosity += 0.2
+  //   NPC finds an unknown material → curiosity += 0.15
+  //
+  // Other NPCs: watching another NPC succeed at something new
+  //   NPC sees Mara make pottery for the first time → curiosity += 0.1
+  //   NPC sees player smelt copper → curiosity += 0.3 (player actions are extra novel)
+
+  // ── What curiosity causes ─────────────────────────────────────────────
+  //
+  // When curiosity > 0.6: the SLM starts considering exploration/experimentation
+  //   "I'm curious about that clay deposit Mara found. Let me go look."
+  //   "I wonder what happens if I put this rock in the fire."
+  //   "That player was doing something at the bloomery I haven't tried."
+  //
+  // When curiosity > 0.8: NPC actively seeks novelty
+  //   Wanders beyond settlement territory
+  //   Tries combining materials it hasn't combined before
+  //   Approaches players to observe what they're doing
+  //
+  // Curiosity decreases when:
+  //   NPC discovers something new → satisfaction spike → curiosity drops by 0.3
+  //   NPC fails at an experiment → curiosity drops by 0.1 (mild discouragement)
+  //   NPC is satisfied with current routine → curiosity slowly decays
+
+  // ── How NPCs make discoveries ─────────────────────────────────────────
+  //
+  // NPCs use the SAME crafting system as players (§6.3).
+  // When a curious NPC tries a new material combination at a craft arrangement:
+  //   1. The reaction engine (§3.1) computes the result
+  //   2. If the result is new: NPC stores it as a discovery
+  //   3. NPC remembers: "heating malachite with charcoal produced copper"
+  //   4. This memory persists → NPC can repeat the process
+  //   5. Other NPCs who watch may also learn (§5.3 knowledge transfer)
+  //
+  // Example: How an NPC discovers copper smelting
+  //   1. NPC has high openness (0.8) and growing boredom from gathering
+  //   2. SLM decides: "I'm bored of gathering wood. I found green rocks near
+  //      the volcano last week. I'm curious what happens if I heat them."
+  //   3. NPC carries malachite to the campfire
+  //   4. Campfire temperature (400°C) is too low. Nothing visible happens.
+  //      Memory: "green rock + campfire = nothing interesting"
+  //   5. Days later, boredom rises again. NPC tries the bloomery (1100°C).
+  //   6. Reaction engine: malachite + charcoal at 1100°C → copper + CO2
+  //   7. NPC sees shiny orange material appear. Discovery!
+  //      Memory: "green rock + charcoal + bloomery = orange metal!"
+  //      Satisfaction: +0.5, curiosity: -0.3, pride: +0.4
+  //   8. NPC repeats the process. Practice counter increases.
+  //   9. Other NPCs observe. Knowledge spreads through the settlement.
+
+  // ── NPC Learning Curve ─────────────────────────────────────────────────
+  //
+  // In plain English: NPCs get better at crafting the more they practice.
+  // The first time an NPC tries to smelt copper, it probably fails.
+  // After 5-10 attempts, success rate improves. After 50 attempts, they're reliable.
+  //
+  // Learning model (exponential saturation curve):
+  //   successRate(attempts) = maxRate × (1 - exp(-attempts / learnRate))
+  //   maxRate = 0.95 (even experts fail 5% of the time)
+  //   learnRate = 10 (attempts to reach ~63% of max skill)
+  //
+  //   After 1 attempt: successRate = 0.95 × (1 - e^(-0.1)) = 9%
+  //   After 5 attempts: 0.95 × (1 - e^(-0.5)) = 37%
+  //   After 10 attempts: 0.95 × (1 - e^(-1.0)) = 60%
+  //   After 20 attempts: 0.95 × (1 - e^(-2.0)) = 82%
+  //   After 50 attempts: 0.95 × (1 - e^(-5.0)) = 94%
+  //
+  // Each successful craft stores in NPC memory:
+  //   { inputs, conditions (temperature, atmosphere), output, attempts }
+  //   The NPC reuses the same conditions for future attempts.
+  //   Failed attempts also store — the NPC avoids conditions that failed.
+  //
+  // Knowledge transfer:
+  //   Watching another NPC succeed gives +3 "virtual attempts"
+  //   Being shown by a player gives +5 virtual attempts
+  //   Reading/hearing about it (through NPC language): +1 virtual attempt
+  //
+  // Discovery vs. known recipes:
+  //   For a NOVEL combination (no NPC has ever tried): start at 0 attempts
+  //   For a KNOWN combination (seen another NPC do it): start at 3-5 attempts
+  //   This means NPCs in established settlements learn faster than isolated NPCs
+}
+```
+
+#### Episodic Memory — What NPCs Remember
+
+```
+MemorySystem {
+  // Each NPC has a memory that stores significant events.
+  // Not everything is remembered — only events that were emotionally significant.
+
+  // ── Memory structure ──────────────────────────────────────────────────
+
+  Memory {
+    timestamp: number                // game-time when it happened
+    description: string              // natural language: "Caught 3 fish at river during rain"
+    emotionalWeight: number          // -1.0 (traumatic) to +1.0 (joyful)
+    entities: string[]               // who/what was involved: ["river", "rain", "fish"]
+    outcome: 'success' | 'failure' | 'neutral'
+    location: Vec3                   // where it happened
+  }
+
+  // ── Storage limits ────────────────────────────────────────────────────
+  //
+  // Each NPC stores up to 200 memories.
+  // When full, the least emotionally significant memory is overwritten.
+  // Traumatic memories (weight < -0.5) and joyful memories (weight > 0.5) persist longer.
+  // Neutral memories fade first — like real human memory.
+  //
+  // Memory consolidation: every game-night (during NPC sleep),
+  //   memories are "consolidated" — similar memories merge into general knowledge:
+  //   ["caught fish at river (success)", "caught fish at river (success)", "caught fish at river (failure)"]
+  //   → consolidated: "fishing at river: usually works (2/3 success rate)"
+  //   This is analogous to how human memory generalizes from episodes to schemas.
+
+  // ── Memory retrieval for SLM ──────────────────────────────────────────
+  //
+  // When building the SLM input, the server selects the 10 most relevant memories:
+  //   Relevance = emotionalWeight × recency × situationalMatch
+  //
+  //   situationalMatch: how similar the memory's context is to the current situation
+  //     Current: "near river, hungry, raining" → memories about rivers, food, rain score high
+  //     Implemented as: keyword overlap between memory.entities and current environment
+  //
+  //   recency: exponential decay — recent memories are more relevant
+  //     recencyScore = e^(-timeSinceMemory / halfLife)
+  //     halfLife = 30 game-days (~7.5 real days)
+  //     A memory from 1 game-day ago: score 0.98
+  //     A memory from 30 game-days ago: score 0.50
+  //     A memory from 90 game-days ago: score 0.13
+  //     Traumatic memories have longer halfLife (180 game-days) — they linger
+
+  // ── Social memory ─────────────────────────────────────────────────────
+  //
+  // NPCs remember interactions with specific entities:
+  //   "Player John gave me copper ore" → trust toward John +0.2
+  //   "Player Alex stole from storage" → trust toward Alex -0.5
+  //   "NPC Mara helped me carry wood" → relationship with Mara +0.1
+  //   "Wolf attacked me at the forest edge" → fear of that area +0.3
+  //
+  // Social memory persists separately from episodic memory (not overwritten by limit).
+  // Each NPC tracks trust/relationship scores for up to 50 entities.
+  // Stored as: Map<entityId, { trust: number, interactions: number, lastSeen: timestamp }>
+}
+```
+
+#### NPC Daily Life Cycle
+
+```
+DailyLifeCycle {
+  // NPCs live on a daily schedule driven by their body simulation.
+  // They have the same survival stats as players (§7.2) running at 4× time.
+  // Their day emerges from needs, not from a script.
+
+  // ── Typical day (emergent, not scripted) ──────────────────────────────
+  //
+  // Dawn (~06:00 game-time):
+  //   NPC wakes (fatigue drops below wake threshold during sleep)
+  //   SLM assesses: "Morning. Hungry (0.4). Settlement needs charcoal. Clear weather."
+  //   Decision: eat breakfast from stored food, then work
+  //
+  // Morning (06:00–12:00):
+  //   Primary work period — highest energy, best productivity
+  //   SLM cycles every ~10-30 game-seconds choosing work tasks:
+  //     Gather resources, process at craft arrangements, build structures
+  //   Curiosity may divert: "I've gathered wood 30 times. Boredom is high.
+  //     I want to explore that hill to the south."
+  //
+  // Midday (12:00–14:00):
+  //   Hunger peaks → eat
+  //   Social time: NPCs gather near campfire or central area
+  //   SLM may choose: talk to another NPC, share food, rest
+  //   High-extraversion NPCs initiate conversations
+  //   Low-extraversion NPCs eat alone and go back to work
+  //
+  // Afternoon (14:00–18:00):
+  //   Second work period — less energy, slower
+  //   If it's hot: NPCs with high neuroticism seek shade
+  //   If it's raining: some continue working, some shelter (personality-dependent)
+  //
+  // Dusk (18:00–20:00):
+  //   NPCs return to settlement if they wandered
+  //   Gather around fire (light, warmth, social)
+  //   SLM social decisions: tell stories (gesture + sounds), share discoveries
+  //   A high-openness NPC who discovered something today "demonstrates" it to others
+  //
+  // Night (20:00–06:00):
+  //   Fatigue rises → NPCs seek sleeping spots
+  //   Sleep in shelters (if built) or near fire
+  //   Nocturnal threats: NPCs with low neuroticism may stay up as guards
+  //   SLM for guards: "It's dark. I hear something. Fear is rising.
+  //     I'll add wood to the fire and watch the perimeter."
+  //
+  // This cycle VARIES per NPC. A high-openness NPC might stay out exploring
+  // until dark. A high-conscientiousness NPC follows a regular schedule.
+  // A high-neuroticism NPC goes to bed early because the dark scares them.
+  // The SLM produces these variations naturally from personality + needs.
+}
+```
+
+#### NPC Social Behavior
+
+```
+SocialSystem {
+  // NPCs form relationships, argue, cooperate, compete, and form hierarchies.
+  // All of this emerges from the SLM making social decisions.
+
+  // ── Relationships ─────────────────────────────────────────────────────
+  //
+  // Each NPC tracks relationship scores with every other NPC they've interacted with:
+  //   relationship: -1.0 (hostile) to +1.0 (close bond)
+  //
+  // Relationship changes from interactions:
+  //   Working together on a task:          +0.05 per shared task
+  //   Sharing food when the other is hungry: +0.15
+  //   Competing for the same resource:     -0.05
+  //   Stealing from storage:               -0.3 (affects all who witness)
+  //   Helping when injured:                +0.2
+  //   Teaching a new process:              +0.1 (teacher) / +0.15 (learner)
+  //
+  // High relationship (>0.5): NPCs prefer working together, share food,
+  //   warn each other of danger, sleep nearby
+  // Neutral (0.0): standard coexistence, no preference
+  // Negative (<-0.3): avoid each other, compete for resources, may refuse to help
+
+  // ── Family and reproduction ───────────────────────────────────────────
+  //
+  // When two NPCs have relationship > 0.7, they may form a pair bond:
+  //   SLM decides: "Mara and I have worked together for months. I feel
+  //   close to her. I want to build a shelter near hers."
+  //
+  // Pair-bonded NPCs:
+  //   Share shelter (build one together if needed)
+  //   Share food preferentially
+  //   Work near each other
+  //
+  // Children: if settlement has food surplus AND pair-bonded NPCs exist:
+  //   Probability per game-month: 0.05 (5% chance per month per pair)
+  //   Child NPC spawns with:
+  //     Personality: blend of parents with random variation
+  //     Knowledge: none (must learn everything from scratch)
+  //     Size: small (grows over ~15 game-years to adult size)
+  //   Child NPCs:
+  //     Follow parents, observe their work, gradually learn processes
+  //     Begin independent decisions at ~8 game-years
+  //     Reach adult capability at ~15 game-years
+  //     SLM is active for children too — but with limited knowledge/memory
+
+  // ── Hierarchy (emergent, not assigned) ────────────────────────────────
+  //
+  // There is no "leader" role. Leadership emerges from behavior:
+  //   The NPC who consistently makes good decisions (stored food before winter,
+  //   discovered copper smelting, resolved conflicts) builds social capital.
+  //   Other NPCs remember: "Elder Tain's advice led to good outcomes 8/10 times."
+  //   Over time, NPCs with high social capital are consulted more often.
+  //
+  // The SLM handles this naturally:
+  //   "The settlement needs to decide whether to send a trade party. I remember
+  //   Elder Tain suggested trading last time and it went well. I'll follow
+  //   Tain's suggestion again."
+  //
+  // This is not a formal hierarchy — it's reputation-based influence.
+  // A new NPC with high openness and good ideas can gain influence quickly.
+  // An old NPC who makes bad decisions loses influence gradually.
+
+  // ── Conflict resolution ───────────────────────────────────────────────
+  //
+  // When NPCs disagree (both want the same resource, different plans):
+  //   High-agreeableness NPCs yield
+  //   Low-agreeableness NPCs compete
+  //   If neither yields: the dispute is "noticed" by nearby NPCs
+  //   An NPC with high social capital may mediate (Tier 3 LLM call if complex)
+  //   Unresolved conflicts decrease relationships for both parties
+  //
+  // Physical conflict between NPCs:
+  //   Rare — only when relationship < -0.5 AND both have low agreeableness
+  //   Uses the same physics-based combat system as player combat (§7.5)
+  //   Other NPCs react: high-agreeableness NPCs try to stop it,
+  //   high-neuroticism NPCs flee, others watch
+}
+```
+
+#### Settlement Expansion — How NPCs Build
+
+```
+SettlementExpansion {
+  // NPCs build structures through the same building system as players (§7.4).
+  // The SLM decides WHAT to build. The NPC physically constructs it.
+
+  // ── Decision to build ─────────────────────────────────────────────────
+  //
+  // The SLM considers settlement needs:
+  //   "We have 25 NPCs but only 6 shelters. 4 NPCs are sleeping outside.
+  //   I have wood and clay. I should build a new shelter."
+  //
+  //   "Winter is coming. Our food storage is exposed to rain.
+  //   I'll build a storage hut with a roof."
+  //
+  //   "Predators attacked twice this month. I'll build a wall section
+  //   on the forest-facing side."
+  //
+  // Building priority emerges from needs, not from a build queue:
+  //   Shelter > food storage > craft arrangements > walls > aesthetic improvements
+
+  // ── Construction process ──────────────────────────────────────────────
+  //
+  // 1. NPC decides to build (SLM output: "build:shelter_hut")
+  // 2. NPC gathers required materials (multiple gather → carry trips)
+  //    The SLM handles this: "I need 20 logs and 50 clay. I have 5 logs.
+  //    I'll gather more wood first."
+  // 3. NPC walks to the build site (SLM chooses location:
+  //    "Near the other shelters but not blocking the path to the river")
+  // 4. NPC places materials using the build system (§7.4)
+  //    Walls → roof → door opening
+  //    Each placement is a physical action in the world (visible to players)
+  // 5. Construction takes many game-hours (NPC takes breaks for food, sleep)
+  // 6. Completed structure is added to settlement.structures
+  //    Other NPCs can use it
+
+  // ── New settlement formation ──────────────────────────────────────────
+  //
+  // When a settlement grows too large (population > territory capacity):
+  //   Overcrowding increases boredom and conflict for all NPCs
+  //   SLM for high-openness NPCs: "This settlement is crowded. I've heard
+  //   there are resources to the east. I want to explore and maybe start fresh."
+  //   1-5 NPCs leave together (pair-bonded NPCs leave as a group)
+  //   They walk to a new location (chosen by SLM based on resource proximity)
+  //   They begin building a new settlement from scratch
+  //   The new settlement starts as a "camp" (§5.1 assessment)
+  //   Trade routes may form back to the parent settlement
+
+  // ── Settlement death ──────────────────────────────────────────────────
+  //
+  // If population drops to 0 (starvation, predators, disease, players):
+  //   Structures remain as ruins (permanent terrain objects)
+  //   Resources in storage remain (players or NPCs from other settlements can loot)
+  //   Craft arrangements remain functional (anyone can use them)
+  //   The settlement is "dead" — no NPC activity, no trade, no growth
+  //   Over time: structures decay (durability drops from weather, no maintenance)
+  //   A dead settlement with remaining resources may attract NPCs from elsewhere
+  //   who "re-settle" the ruins (SLM: "These ruins have a working bloomery.
+  //   This is a better location than building from scratch.")
+}
+```
+
+#### NPC Appearance
+
+```
+NPCAppearance {
+  // NPCs use the SAME character model system as players (§7.1).
+  // Same 67-bone skeleton, same blend shapes, same clothing system.
+  //
+  // Face and body are generated deterministically from worldSeed + npcId:
+  //   face_params = hash(worldSeed, npcId, 'face') → 40 blend shape values
+  //   body_params = hash(worldSeed, npcId, 'body') → 10 body morph values
+  //   height = 155 + hash(worldSeed, npcId, 'height') % 36  // 155-190cm
+  //   skinColor, hairColor, eyeColor = hash-derived within human-realistic ranges
+  //
+  // NPCs wear clothing crafted from local materials:
+  //   Early settlement: rough hide, woven grass, basic cloth
+  //   Developed settlement: leather, dyed cloth, metal accessories
+  //   Clothing quality reflects settlement sophistication
+  //
+  // NPCs age visually at the same rate as players (§7.1 aging system):
+  //   Born → child (small body) → adolescent → adult → elder
+  //   Wrinkles, grey hair, stooped posture in old age
+  //   Death from old age after 90 game-years (~22.5 real years)
+  //
+  // Animation: same state machine as players (§7.1 animation).
+  //   NPCs walk, run, crouch, carry, swing tools, eat, sleep, sit
+  //   Injury animations apply when damaged
+  //   Social animations: gesturing while "talking," pointing, waving
+}
+```
+
+#### NPC Pathfinding
+
+```
+Pathfinding {
+  // NPCs need to navigate the world — walk to resources, avoid obstacles,
+  // return to settlement, flee from danger.
+
+  // ── Navigation mesh (server-side) ─────────────────────────────────────
+  //
+  // The server maintains a navigation mesh generated from terrain:
+  //   Walkable surfaces: slope < 45°, not underwater, not blocked by structures
+  //   Updated when terrain changes (dig, build, lava flow)
+  //   Resolution: ~2m per nav cell (balance between accuracy and memory)
+  //
+  // Pathfinding algorithm: A* on the nav mesh
+  //   Heuristic: spherical distance (planet is a sphere, not flat)
+  //   Cost function: distance + slope penalty + danger penalty
+  //     slopeCost = 1.0 + tan(slope) × 2.0  // steep terrain costs more
+  //     dangerCost = memory-based (NPC remembers where predators were seen)
+  //
+  // Path caching: frequently traveled paths (settlement → river, settlement → mine)
+  //   are cached and reused by all NPCs in the settlement.
+  //   Cache invalidated when terrain changes along the path.
+
+  // ── Movement execution ────────────────────────────────────────────────
+  //
+  // Once a path is computed:
+  //   NPC walks along waypoints at walkSpeed (affected by terrain, weather, fatigue)
+  //   Foot IK adapts to terrain (§7.1)
+  //   NPC avoids other NPCs and players (local avoidance: steer away from collision)
+  //   If path is blocked (new structure, fallen tree): recompute path
+  //
+  // Movement speed:
+  //   Walk: 1.2 m/s (default)
+  //   Walk with heavy load: 0.8 m/s
+  //   Run (fleeing danger): 3.0 m/s
+  //   In rain/snow: -20% speed
+  //   Uphill: -30% speed
+  //   Injured leg: speed × (legHealth / 100)
+
+  // ── Exploration pathfinding ───────────────────────────────────────────
+  //
+  // When the SLM decides "explore south":
+  //   NPC picks a point ~200m in the chosen direction
+  //   Pathfinds toward it, detouring around obstacles
+  //   Along the way: scans for resources, threats, interesting features
+  //   Each new area discovered is remembered in NPC memory
+  //   If something interesting is found: SLM re-evaluates ("Found a clay deposit!
+  //     Should I gather clay or keep exploring?")
+  //   Exploration range limited by: daylight remaining, fatigue, food/water supply
+  //   NPC always pathfinds back to settlement before night (unless very brave)
+}
+```
+
+#### Performance Budget — NPC AI Server Cost
+
+```
+NPCPerformanceBudget {
+  // For 10 settlements × 20 NPCs = 200 NPCs total:
+
+  // ── Tier 1: Survival reflexes ─────────────────────────────────────────
+  // 200 NPCs × 6 Hz × 0.01ms = 12ms/second (trivial)
+
+  // ── Tier 2: Custom SLM ────────────────────────────────────────────────
+  // Decision frequency: 1 per 10 game-seconds = 1 per 2.5 real-seconds
+  // 200 NPCs / 2.5s = 80 decisions per real-second
+  // At 10ms per inference (batched on GPU): 800ms of GPU time per real-second
+  // This is ~80% of one GPU's capacity — tight but workable
+  // Optimization: stagger decisions (not all NPCs think at the same tick)
+  //   Spread across 2.5 seconds: 80 decisions / 150 ticks = <1 per tick
+  //   Actual GPU utilization: ~15ms bursts every ~30ms — sustainable
+
+  // ── Tier 3: Full LLM API calls ────────────────────────────────────────
+  // 5 calls/hour × 10 settlements = 50 calls/hour
+  // At 200ms per API call: 10 seconds of total wait time per hour
+  // These are async — server doesn't block. NPC continues previous action while waiting.
+
+  // ── Memory storage ────────────────────────────────────────────────────
+  // Per NPC: 200 memories × ~200 bytes = 40 KB
+  // 200 NPCs: 8 MB total memory storage (trivial)
+  // Social memory: 50 entities × 20 bytes = 1 KB per NPC = 200 KB total
+
+  // ── Pathfinding ───────────────────────────────────────────────────────
+  // Nav mesh: ~2MB for the planet (2m resolution, only near settlements)
+  // A* per path request: ~0.5ms
+  // 200 NPCs × ~1 path per 30 game-seconds = 80 paths per 7.5 real-seconds
+  // = ~11 paths per real-second × 0.5ms = 5.5ms/second (trivial)
+
+  // ── Total server cost for NPC AI ──────────────────────────────────────
+  // CPU: ~20ms/second (reflexes + pathfinding + memory management)
+  // GPU: ~800ms/second (SLM inference — shared with video streaming GPU)
+  // RAM: ~10 MB (memory + nav mesh + state)
+  // API: ~$0.30/day (Tier 3 LLM calls)
+  //
+  // For 500 NPCs: GPU becomes the bottleneck. Solutions:
+  //   Reduce decision frequency for distant NPCs (LOD — NPCs far from any player think less)
+  //   Second GPU for inference
+  //   Quantize the SLM to INT4 (2× throughput, slight quality loss)
+
+  // ── NPC LOD (Level of Detail) ─────────────────────────────────────────
+  // NPCs far from all players don't need full AI:
+  //
+  // Distance to nearest player:
+  //   < 100m:   Full AI — Tier 1 + 2 + 3, normal decision rate
+  //   100-500m: Reduced AI — Tier 1 + 2 at half rate (1 per 20 game-seconds)
+  //   500m-2km: Minimal AI — Tier 1 only + simplified daily routine
+  //   > 2km:    Suspended — NPC state frozen, resumes when player approaches
+  //
+  // This means: a world with 500 NPCs but only 30 near a player
+  //   → only 30 NPCs running full AI at any time → GPU budget is fine
+}
+```
+
+#### Self-Improving Training Loop
+
+```
+SLMTrainingLoop {
+  // The NPC AI gets smarter over time. Every Tier 3 LLM call generates a
+  // new training pair that is added to the SLM's training dataset.
+
+  // ── Continuous data collection ────────────────────────────────────────
+  //
+  // 1. Tier 3 call fires (novel situation requiring full LLM reasoning)
+  // 2. Input (SLMInput) and output (full LLM response) are logged
+  // 3. The response is formatted as an SLMOutput training pair
+  // 4. Pair is added to a training buffer (append-only file on disk)
+  //
+  // ── Periodic retraining ───────────────────────────────────────────────
+  //
+  // Every ~1000 new training pairs (roughly every few days of runtime):
+  //   1. Server flags: "SLM retrain available"
+  //   2. Admin (or automated cron) triggers retraining:
+  //      - Load base SLM + LoRA weights
+  //      - Fine-tune on accumulated new pairs (takes ~1-2 hours on GPU)
+  //      - Validate: test against held-out scenarios for quality
+  //      - If quality ≥ previous model: hot-swap the SLM on the server
+  //      - If quality < previous: discard, investigate bad training pairs
+  //   3. New model serves all future Tier 2 decisions
+  //
+  // ── Result over time ──────────────────────────────────────────────────
+  //
+  // Month 1: SLM handles ~80% of situations, 20% go to Tier 3
+  // Month 6: SLM handles ~92% of situations, 8% go to Tier 3
+  // Year 1:  SLM handles ~97% of situations, 3% go to Tier 3
+  //
+  // The game's NPCs literally get smarter the longer the game runs.
+  // Tier 3 costs decrease over time as the SLM absorbs more knowledge.
+  // Eventually, Tier 3 calls become rare edge cases that only fire for
+  // truly unprecedented situations (which means the game is producing
+  // genuinely novel emergent behavior — exactly the goal).
+}
+```
 
 
 ### 5.3 NPC Language & Knowledge Transfer
@@ -3331,7 +11973,7 @@ NPCSpeech {
   //    'greeting': raises open hand
   //    'warning': points away + shakes head
   //    'offer_trade': extends one hand with item, other hand open (receiving)
-  //    'show_process': turns toward workstation and begins working
+  //    'show_process': turns toward craft arrangement and begins working
   //    Gestures are the REAL communication channel. The spoken words are atmosphere.
 }
 ```
@@ -3342,15 +11984,15 @@ This is the core system. NPCs do not tell players what to do. They **do things**
 
 ```
 DemonstrationSystem {
-  // Each NPC in a settlement runs their goal loop (§8.1):
+  // Each NPC in a settlement runs their goal loop (§5.2):
   // idle → gather → carry → process → deliver → idle
 
   // During the 'process' step, the NPC performs a visible crafting action:
 
   ProcessDemonstration {
     npcId: string
-    workstationId: string
-    inputMaterials: MaterialPacket[]         // what the NPC puts into the workstation
+    craftLocationId: string
+    inputMaterials: MaterialPacket[]         // what the NPC puts into the arrangement
     action: string                           // 'smelt' | 'grind' | 'shape' | 'fire' | 'weave'
     outputMaterial: MaterialPacket           // what comes out
     duration: number                         // seconds the process takes (visible to the watching player)
@@ -3382,7 +12024,7 @@ DemonstrationSystem {
   // 1. Notice what the NPC is doing (attention)
   // 2. Figure out what materials they used (observation)
   // 3. Find those materials themselves (exploration)
-  // 4. Try the same process at a workstation (experimentation)
+  // 4. Try the same process at an arrangement (experimentation)
   // 5. Fail a few times and adjust (learning)
   // 6. Succeed (discovery — recorded in their discoveries set)
 
@@ -3444,9 +12086,9 @@ SettlementKnowledge {
 
 The knowledge transfer system works because of the synergy between three other systems:
 
-1. **Physics-based crafting (§3)** — there are no recipes to "teach." The knowledge IS the physical process. Seeing it done IS learning it.
-2. **Emergent materials (§3.3)** — the output isn't a named item. It's whatever physics produces. The NPC doesn't make "copper" — they make "the orange metal that comes from heating green rock." The player figures out the name (or doesn't — names don't matter, properties do).
-3. **Workstation system (§8.1)** — the machine is a physical place. The NPC goes there. The player goes there. They're in the same space doing the same thing. No abstract menu bridges them.
+1. **Physics-based crafting (§6.3)** — there are no recipes to "teach." The knowledge IS the physical process. Seeing it done IS learning it.
+2. **Emergent materials (§3.1)** — the output isn't a named item. It's whatever physics produces. The NPC doesn't make "copper" — they make "the orange metal that comes from heating green rock." The player figures out the name (or doesn't — names don't matter, properties do).
+3. **Physics-based crafting (§6.3)** — the arrangement is a physical place. The NPC goes there. The player goes there. They're in the same space doing the same thing. No abstract menu bridges them.
 
 The language barrier is intentional. It forces players to rely on **observation** rather than **instruction**. This is harder, slower, and more frustrating than a tutorial — and that's the point. The satisfaction of figuring out copper smelting by watching an NPC is incomparably greater than reading "combine copper ore + charcoal in bloomery."
 
@@ -4216,7 +12858,7 @@ The game has no recipe database. Instead it has **transformation rules** — phy
 - Inputs: Large animal tendons (Achilles tendon or backstrap from deer, cattle, horse)
 - Assembly: Drying rack, rounded stone for pounding
 - Conditions: Dry 1–3 days. Pound dried tendon to separate fiber bundles. Moisten and twist like rope
-- Physics: Dried tendon is nearly pure collagen — tensile strength ~1000 MPa, stronger than most plant fibers. Stretches when wet, shrinks dry — bowstrings tighten in humidity (this is a material property the interaction engine tracks)
+- Physics: Dried tendon is nearly pure collagen — Young's modulus ~1000 MPa (stiffness), ultimate tensile strength ~100-150 MPa, stronger than most plant fibers. Stretches when wet, shrinks dry — bowstrings tighten in humidity (this is a material property the interaction engine tracks)
 
 **Bone tools**
 
@@ -5149,89 +13791,173 @@ The game has no recipe database. Instead it has **transformation rules** — phy
 ---
 
 
-### 6.3 Physics-Based Crafting & Workstations
+### 6.3 Physics-Based Crafting — No Workstations, Only Conditions
 
-116 materials with 11 physics properties each. Five physics interactions: bow-drill fire, flint-and-iron fire, stone knapping, clay pottery, copper/iron smelting. Success rates computed from material properties. Hidden practice tracking. Discovery system for first successes.
+#### The Principle
 
----
+There is no such thing as a "workstation" in this game. There is no bloomery object, no forge object, no kiln object. What we casually call a "bloomery" is actually **a player-built arrangement of clay blocks, shaped into a cylinder with a hole at the base, connected to a leather bellows, fueled with charcoal.** The game does not know the word "bloomery." It knows: this arrangement creates an enclosed space where temperature reaches ~1100°C with sufficient airflow and reducing atmosphere.
 
+This follows the same principle as everything else in the simulation: materials are not pre-defined (they emerge from composition), sounds are not pre-defined (they emerge from material properties), structural integrity is not pre-defined (it emerges from forces). Crafting environments are not pre-defined — they emerge from the physical conditions created by whatever the player or NPC has built.
 
-Crafting happens **at a location**, not in a menu. The player walks to a machine, stands next to it, and works with it. The machine is a physical object with a 3D position in the world.
+A player who builds a clay cylinder with a tuyere hole and bellows gets copper smelting capability — not because they built a "bloomery," but because they created the physical conditions (1100°C, CO atmosphere, containment) that make the reaction CuCO₃ → Cu + CO₂ thermodynamically favorable. A player who achieves the same conditions by a completely different arrangement — a stone-lined pit, a clay dome, a repurposed natural cave with forced airflow — gets the same result. The physics does not care about the shape. It cares about temperature, atmosphere, and containment.
 
-#### Two Separate Things: Tools vs. Machines
+#### What the Interaction Engine Actually Checks
 
-**Tools** are carried in inventory. They affect *how well* the player does something — better tools mean higher success rate and better quality output.
+When a player places materials together, the server samples the physical conditions at the interaction point. There is no "workstation type" lookup. There are only physics queries:
 
+```
+CraftEnvironment {
+  // Sampled at the player's interaction point (where materials are placed)
 
-| Tool    | Made from                     | Improves                           |
-| ------- | ----------------------------- | ---------------------------------- |
-| Hammer  | Stone → Copper → Iron → Steel | Metalworking success rate, quality |
-| Chisel  | Flint → Iron                  | Stone shaping precision            |
-| Saw     | Flint → Iron                  | Wood splitting, bone               |
-| Needle  | Bone → Bronze                 | Leatherwork, cloth quality         |
-| Spindle | Wood                          | Spinning speed, thread quality     |
+  temperature: number           // °C — from the temperature propagation system (§3.0 Stage 1)
+                                // A pile of burning charcoal in open air: ~400°C
+                                // Same charcoal inside a clay enclosure with bellows: ~1100°C
+                                // Same enclosure but taller stack + double bellows: ~1500°C
+                                // The temperature depends on: fuel energy, oxygen supply,
+                                // insulation (enclosure material's thermal conductivity),
+                                // and draft (stack height, bellows rate)
 
+  atmosphere: {
+    oxygenFraction: number      // 0-1 — normal air is 0.21
+                                // Burning fuel consumes oxygen → drops in enclosed space
+                                // Bellows pump fresh air → raises it
+                                // Excess carbon (charcoal) + low O₂ → reducing atmosphere (CO)
+                                // Reducing atmosphere strips oxygen from ore (smelting)
+    carbonMonoxide: number      // 0-1 — produced by incomplete combustion of carbon
+    sealed: boolean             // is the reaction space enclosed? Affects gas retention
+  }
 
-**Machines** are fixed in the world. They control *what the player can do at all* — copper cannot be smelted without a furnace nearby, regardless of inventory contents.
+  containment: {
+    volume: number              // m³ — measured from the geometry of surrounding blocks
+                                // Open air: infinite (gases escape immediately)
+                                // Clay pot: 0.001 m³ (tiny, for mixing)
+                                // Stone-lined pit: 0.1 m³ (for charcoal burning)
+                                // Clay cylinder (what we'd call a "bloomery"): 0.05-0.3 m³
+    heatRetention: number       // 0-1 — from surrounding blocks' thermal conductivity
+                                // Open air: 0 (heat escapes instantly)
+                                // Clay walls: 0.7 (good insulation)
+                                // Stone walls: 0.5 (moderate)
+                                // Metal walls: 0.3 (conducts heat away)
+    openings: number            // count — affects airflow and gas escape
+                                // Sealed: 0 (no oxygen renewal, fire suffocates)
+                                // Tuyere hole: 1 (directed airflow, good for smelting)
+                                // Open top + bottom hole: 2 (natural draft, chimney effect)
+  }
 
-#### Machine Types by Era
+  surface: {
+    hardness: number            // Pa — from the surface block's MaterialPacket
+                                // Determines if the surface can serve as an "anvil"
+                                // Flat granite: ~6 GPa (good for hammering)
+                                // Iron block: ~4 GPa (excellent)
+                                // Wood: ~1 GPa (too soft for metalwork, fine for food prep)
+    flatness: number            // 0-1 — from block geometry (flat top = 1.0, irregular = 0.3)
+    area: number                // m² — working surface area
+  }
 
+  waterAccess: {
+    nearby: boolean             // water source within 2m? (for quenching, washing, mixing)
+    volume: number              // liters available
+    temperature: number         // °C of the water
+  }
 
-| Machine            | Era        | Enables                                                 | Max temperature |
-| ------------------ | ---------- | ------------------------------------------------------- | --------------- |
-| Campfire           | Stone Age  | Cooking, drying, birch tar, fire adhesives              | ~400°C          |
-| Grinding stone     | Stone Age  | Flour, ochre powder, seed crushing                      | —               |
-| Stone anvil        | Bronze Age | Basic hammering, knapping on a stable surface           | —               |
-| Bloomery           | Bronze Age | Copper, tin, lead smelting                              | ~1100°C         |
-| Kiln               | Bronze Age | High-temperature ceramics, fired bricks                 | ~1200°C         |
-| Blast furnace      | Iron Age   | Iron smelting (requires coke or charcoal + bellows)     | ~1500°C         |
-| Forge              | Iron Age   | Steel-level metalwork (anvil + bellows + fire combined) | ~1300°C         |
-| Quench bucket      | Iron Age   | Steel tempering (hot steel plunged into water)          | —               |
-| Distillation still | Medieval   | Alcohol concentration, acid production                  | —               |
-| Loom               | Medieval   | Cloth weaving from spun thread                          | —               |
+  airflow: {
+    natural: number             // m/s — from wind + chimney effect (stack height × temperature diff)
+    forced: number              // m/s — from bellows or trompe (water-powered air pump)
+                                // Single bellows: ~2 m/s → +300°C over natural draft
+                                // Double bellows: ~4 m/s → +600°C (continuous airflow)
+                                // Trompe: ~3 m/s (hands-free, requires running water)
+    total: number               // natural + forced → determines oxygen supply rate
+  }
 
+  // The temperature ceiling of any fire is determined by:
+  //   maxTemp = fuelEnergy × combustionEfficiency × (1 + airflow.total × 0.15)
+  //            × containment.heatRetention / (surfaceArea × heatLossRate)
+  //
+  // This is why the same charcoal produces different temperatures:
+  //   Open campfire: ~400°C (heat escapes in all directions)
+  //   Stone-lined pit: ~600°C (some insulation, natural draft)
+  //   Clay cylinder + single bellows: ~1100°C (good insulation + forced air)
+  //   Tall clay cylinder + double bellows: ~1500°C (great insulation + maximum O₂)
+  //   Same with coke instead of charcoal: ~1600°C+ (coke has higher energy density)
+}
+```
 
-Temperature determines what smelts. A campfire cannot smelt copper ore — it never reaches 1085°C. A bloomery can. A blast furnace can smelt iron. The player cannot bypass this by carrying a recipe card or unlocking a skill.
+#### Tools vs. Surfaces
+
+**Tools** are carried in inventory. They affect how well the player can perform mechanical actions — hammering, cutting, grinding, spinning. A better tool means more force, better precision, or faster work. Tool quality comes from composition (§3.1): a steel hammer hits harder than a stone one because steel has higher hardness and Young's modulus.
+
+| Tool type | What it does | Key property |
+|---|---|---|
+| Hammer | Applies impact force to deform material | Mass × velocity (energy), hardness of head |
+| Chisel | Concentrates force on a narrow edge | Edge sharpness (§Connection 11), hardness |
+| Saw | Abrasive cutting through friction | Tooth hardness, spacing |
+| Needle | Pierces soft materials (leather, cloth) | Tip sharpness, tensile strength |
+| Spindle | Twists fibers into thread | Rotational inertia (mass × radius²) |
+| Bellows | Pushes air into an enclosure | Volume per stroke, seal quality |
+
+**Surfaces** are whatever the player works on. A flat stone IS an anvil. A heavy iron block IS a better anvil. There is no "anvil" object type — there is only the hardness, flatness, and mass of whatever surface the player puts their material on. A heavier surface absorbs less rebound energy, so more force goes into deforming the workpiece.
 
 #### How a Crafting Moment Works
 
-1. Player walks within 5 meters of a machine
-2. `[F] Use Bloomery` appears on screen
-3. Player presses F — a simple panel opens with a plain-language description: *"A bloomery. Reaches ~1100°C with charcoal. Hot enough to smelt copper ore."*
-4. Player has malachite and charcoal in inventory. They select them and choose "Smelt"
-5. The interaction engine checks the physics: Is temperature high enough? Does the ore's melting point match? Is a reducing agent (charcoal) present?
-6. If yes → copper produced. Player discovered copper smelting — not because a recipe unlocked, but because the right physical conditions existed.
-7. If no → natural feedback: *"The bloomery isn't hot enough yet. Add more charcoal and wait."*
+1. Player arranges materials in the world (places ore on a flat stone, puts charcoal in a clay enclosure, attaches bellows)
+2. Player interacts with the material they want to transform (press F)
+3. Server samples the `CraftEnvironment` at that point — temperature, atmosphere, containment, surface, tools
+4. Server runs the reaction engine (§3.1) with those conditions: Is temperature above the reaction threshold? Is the atmosphere right (reducing for smelting, oxidizing for calcining)? Is there containment for the products?
+5. If conditions are met → reaction proceeds. Products appear. The player discovered something.
+6. If conditions are NOT met → nothing happens, or partial reaction occurs. Player sees the material unchanged or partly changed. No error message — just physics not being satisfied.
 
-No recipe list appears at any point.
+**No recipe list. No workstation panel. No "Use Bloomery" prompt.** The player places ore in a hot enclosed space with charcoal and bellows. If the temperature is high enough and the atmosphere is reducing, copper appears. The game never tells the player they built a "bloomery." They built a thing that works.
 
-#### Settlements Use Their Machines
+#### What NPCs Build
 
-Each settlement generates workstations matching its specialty. A copper mining settlement has a bloomery. The settlement's NPCs use it — their behavior follows a repeating goal loop:
+NPCs don't build "workstations." They build **arrangements of materials** that they've learned create useful conditions. An NPC who has discovered copper smelting knows: "I need a clay enclosure, a hole for air, bellows, and charcoal. When I put green rock inside and pump the bellows, orange metal comes out." The NPC's memory stores the physical arrangement, not a workstation type.
 
-1. **Gather** — walk to the nearest copper ore deposit within territory
-2. **Mine** — pause at the deposit for several seconds (simulates extraction)
-3. **Carry** — walk to the bloomery with ore in hand
-4. **Process** — stand at the bloomery while it smelts (workstation is "occupied")
-5. **Deliver** — walk to the settlement's storage area
-6. **Deposit** — add smelted copper to the settlement's trade inventory
-7. **Idle** — brief rest, then repeat
+```
+NPCCraftKnowledge {
+  // What an NPC remembers about how to achieve a transformation:
 
-Players can walk into any settlement and use their workstations too. The bloomery is not locked to the NPCs — it is a shared physical resource, like a village blacksmith's forge.
+  recipe: {
+    inputs: MaterialPacket[]        // "green rock" (malachite) + "black rock" (charcoal)
+    conditions: {
+      minTemperature: number        // ~1100°C (learned from experience)
+      atmosphere: string            // "needs lots of charcoal smoke" (reducing)
+      containment: boolean          // "needs to be enclosed" (yes)
+      airflow: string               // "need to pump the leather bag" (bellows)
+    }
+    output: MaterialPacket          // "orange metal" (copper)
+    arrangement: BlockPattern       // the physical layout the NPC builds:
+                                    // clay blocks in a cylinder, hole at bottom,
+                                    // bellows attached to hole
+  }
 
-#### What This Means for the Codebase
+  // The NPC builds this arrangement from available materials.
+  // If clay is unavailable, a clever NPC might try stone blocks instead.
+  // The result: different thermal properties (stone insulates less than clay),
+  // possibly lower max temperature, possibly fails. The NPC learns from this.
+  //
+  // NPCs don't share a global "bloomery blueprint." Each NPC who discovers
+  // smelting may build a slightly different arrangement. Some work better
+  // than others. Over generations, the best designs spread through observation
+  // (other NPCs watch and copy the most successful arrangements).
+}
+```
 
-**New files:**
+Settlements develop crafting capability by building these arrangements. A copper mining settlement has NPC-built clay enclosures near the ore deposit — not because the game spawned "bloomery objects," but because NPCs built them from clay, stone, and leather based on their accumulated knowledge. Players can use these same arrangements. They're shared physical structures in the world, not locked resources.
 
-- `src/world/WorkstationManager.ts` — client registry of all workstation positions, proximity detection (5m radius), temperature sampling from fire simulation
-- `src/store/workstationStore.ts` — tracks the currently-focused workstation
-- `src/ui/WorkstationPanel.tsx` — the F-key panel showing machine capability and contextual actions
-- `src/rendering/WorkstationRenderer.tsx` — 3D mesh per machine type (campfire = log cone, bloomery = stone cylinder with ember glow, kiln = beehive dome)
+#### Temperature Ceilings Emerge From Physics
 
-**Modified files:**
+What we casually call different "machines" are really just different physical arrangements that achieve different maximum temperatures:
 
-- `src/crafting/InteractionEngine.ts` — `CraftEnvironment` gains two new optional fields: `nearbyWorkstation` (controls temperature ceiling and available actions) and `heldTool` (affects success rate)
-- `universe-server/src/SettlementManager.js` — settlements generate workstations deterministically from seed + specialty; NPCs get a state machine (idle → gather → carry → process → deliver → deposit → idle) ticking at 0.5 Hz
+| Arrangement | Why it reaches that temp | Max temp |
+|---|---|---|
+| Open campfire (logs on ground) | Heat escapes in all directions, limited O₂ | ~400°C |
+| Stone-lined fire pit | Some heat retention, natural updraft | ~600°C |
+| Clay enclosure + single bellows | Good insulation + forced O₂ | ~1100°C |
+| Tall clay stack + double bellows | Great insulation + maximum O₂ supply | ~1500°C |
+| Same + coke fuel (instead of charcoal) | Higher energy density fuel | ~1600°C+ |
+| Electric arc (late game, if achieved) | No combustion limit | ~3000°C+ |
+
+The player discovers these progressively — not by "unlocking" them, but by experimenting with enclosure design, fuel types, and airflow methods. A player who independently invents a taller stack with better bellows gets higher temperatures. No one tells them to do this. The physics rewards it.
 
 
 ### 6.4 Precision Crafting Mode — Zoom-In Interaction
@@ -5243,7 +13969,7 @@ Some crafting actions require fine motor control — shaping clay on a wheel, kn
 ```
 PrecisionCraftMode {
   // ── Activation ────────────────────────────────────────────────────────────
-  // Triggered when a player interacts with a workstation or material that requires precision:
+  // Triggered when a player initiates close-up interaction with materials that require precision:
   //   - Clay on a pottery wheel
   //   - Stone held for knapping (flint knapping)
   //   - Wood held for carving
@@ -5440,7 +14166,7 @@ FootIK {
 **Hand IK — interaction targeting:**
 ```
 HandIK {
-  // When the player interacts with something (mine, pick up, use workstation),
+  // When the player interacts with something (mine, pick up, craft),
   // the hand reaches toward the interaction point
 
   // Mining: dominant hand grips tool, follows swing arc (pre-authored animation)
@@ -5449,8 +14175,8 @@ HandIK {
   // Picking up: hand reaches down to the item's world position
   //             spine bends forward, knees may flex if item is low
 
-  // Workstation: hands position to the machine's interaction points
-  //              (e.g., hands on bellows handles, or placing ore into furnace opening)
+  // Crafting: hands position to the arrangement's interaction points
+  //           (e.g., hands on bellows handles, or placing ore into furnace opening)
 
   // The IK chain: shoulder → elbow → wrist → hand
   // Solver: FABRIK (Forward And Backward Reaching Inverse Kinematics)
@@ -5521,7 +14247,7 @@ InjurySystem {
   // Healing: injuries heal at baseHealRate × (nutrition_factor) × (rest_factor) × (temperature_factor)
   // baseHealRate: 0.5 HP/minute (a bad cut takes ~2 real hours to heal fully at rest with food)
   // Bandaging (cloth + pressure): stops bleedRate, doubles healRate for that region
-  // Infection risk: open wound (bleedRate > 0) in dirty environment → bacterial growth (see §8.2 death causes)
+  // Infection risk: open wound (bleedRate > 0) in dirty environment → bacterial growth (see §7.6 death causes)
 }
 ```
 
@@ -5665,7 +14391,7 @@ BodyCustomization {
   //   High muscle + high fat  = powerlifter build  (low speed, very high strength, high insulation)
 
   // ── Stat Effects from Body Type ───────────────────────────────────────────
-  // These modify the BASE values of the fitness stats in §8.11:
+  // These modify the BASE values of the fitness stats in §7.2:
   //
   // Strength baseline:     0.4 + muscularity × 0.3 + bodyFat × 0.05
   //   thin build: 0.4, muscular: 0.7, powerlifter: 0.75
@@ -5693,8 +14419,14 @@ BodyCustomization {
   handSize: 0.0–1.0               // small ↔ large
   neckThickness: 0.0–1.0          // thin ↔ thick
 
-  // Body shape stored as ~10 morph target values (40 bytes)
-  // Total character appearance data: face (160 bytes) + body (40 bytes) = 200 bytes per player
+  // ── Handedness ──────────────────────────────────────────────────────────
+  dominantHand: 'right' | 'left'  // affects: tool grip default, minimap position,
+                                   // first-person arm priority, which hand swings tools
+  // Right-handed (~90% of real population): tools in right hand, minimap bottom-left
+  // Left-handed (~10%): tools in left hand, minimap bottom-right
+
+  // Body shape stored as ~10 morph target values + 1 byte handedness (41 bytes)
+  // Total character appearance data: face (160 bytes) + body (41 bytes) = 201 bytes per player
 }
 ```
 
@@ -5702,7 +14434,7 @@ BodyCustomization {
 
 ```
 CharacterAppearance {
-  // Stored in database on first creation:
+  // Stored in Neon Postgres on first creation:
   character_appearance {
     user_id:      TEXT PRIMARY KEY
     face_params:  FLOAT[40]          // 40 blend shape values
@@ -5721,7 +14453,7 @@ CharacterAppearance {
   //   - Aging system (wrinkleDepth increases over time)
   //   - Plastic surgery (late-game: another player with medical tools can modify face_params)
   //   - Hair growth (hairLength slowly increases, player must cut it — or not)
-  //   - Fitness changes (muscularity/bodyFat morph slightly with §8.11 training over long periods)
+  //   - Fitness changes (muscularity/bodyFat morph slightly with §7.2 training over long periods)
 
   // When a player's character is rendered by another client:
   //   1. Client receives face_params + body_params in the player's first WORLD_SNAPSHOT appearance
@@ -5733,7 +14465,7 @@ CharacterAppearance {
 
 #### Clothing Appearance and Equipment Screen
 
-Clothing is not just inventory (§8.9) — it is visible on the character model. Every piece of clothing the player wears changes how they look to other players. **Clothing is also a primary monetization channel — cosmetic clothing skins/patterns can be sold.**
+Clothing is not just inventory (§7.3) — it is visible on the character model. Every piece of clothing the player wears changes how they look to other players. **Clothing is also a primary monetization channel — cosmetic clothing skins/patterns can be sold.**
 
 **Equipment Screen Layout:**
 
@@ -5785,7 +14517,7 @@ EquipmentScreenUI {
   }
   // Total: 13 visible equipment slots
 
-  // Each slot accepts a ClothingItem (defined in §8.9)
+  // Each slot accepts a ClothingItem (defined in §7.3)
   // Drag from inventory pocket/backpack to an equipment slot to equip
   // Drag from equipment slot back to inventory to unequip
   // If no free inventory slot: can't unequip (must drop something first)
@@ -5858,7 +14590,7 @@ The player character ages in real-time — very slowly, because the world runs i
 
 ```
 AgingSystem {
-  // ── Time scale: 4× real life (from §7) ──────────────────────────────────
+  // ── Time scale: 4× real life (from §4.6) ──────────────────────────────────
   // 1 real hour = 4 game hours
   // 1 real year ≈ 4 game years
   //
@@ -5894,7 +14626,7 @@ AgingSystem {
   // Age 95+: death from old age becomes possible (daily survival check)
 
   // ── Stat effects of aging ─────────────────────────────────────────────────
-  // These modify the FITNESS CAPS from §8.11:
+  // These modify the FITNESS CAPS from §7.2:
   //
   // Age 18-35:  all caps at 1.0 (peak human)
   // Age 35-50:  speed cap = 1.0 - (age - 35) × 0.005       // loses 0.5% per year
@@ -5925,7 +14657,7 @@ AgingSystem {
   // knowledge, discoveries, and world modifications become legacy.
   //
   // When death from old age occurs:
-  //   - Same death mechanics as §8.2 (item drop, corpse, respawn)
+  //   - Same death mechanics as §7.6 (item drop, corpse, respawn)
   //   - BUT: the character is reborn as a NEW character (back to age 18)
   //   - They KEEP: discoveries, shelter, placed objects, friend list
   //   - They LOSE: physical appearance (must re-customize face), fitness progress,
@@ -6034,6 +14766,44 @@ AnimationStateMachine {
       // Trigger: landing with velocity > 8 m/s (fall damage)
       // Player is immobilized during this animation
     }
+
+    // ── Fall Damage — From Physics, Not Magic Numbers ──────────────────────
+    //
+    // In plain English: falling hurts because you stop suddenly. The damage 
+    // depends on how fast you hit AND what you land on. Soft ground = less damage.
+    // Hard rock = more damage. Same fall, different outcome.
+    //
+    // Impact force:
+    //   F_impact = m × v² / (2 × d_stop)
+    //   m = player mass (~70 kg)
+    //   v = impact velocity = √(2 × g × fallHeight)
+    //   d_stop = stopping distance (how much the surface compresses):
+    //     Rock/stone: d_stop = 0.01m (nearly instant stop — maximum force)
+    //     Packed dirt: d_stop = 0.05m
+    //     Soft soil: d_stop = 0.15m
+    //     Sand: d_stop = 0.30m
+    //     Deep water: d_stop = 1.0m (if feet-first)
+    //     Snow (deep): d_stop = 0.5m
+    //
+    // Damage thresholds (from bone fracture mechanics, §3.1):
+    //   Human leg bone breaks at ~7,500 N (Connection from §7.1 skeleton)
+    //   Human spine compresses dangerously at ~5,000 N
+    //
+    //   | Fall height | v (m/s) | F on rock (N) | F on soil (N) | Result |
+    //   |------------|---------|---------------|---------------|--------|
+    //   | 1 m         | 4.4     | 67,760        | 4,517         | Rock: bruised. Soil: fine |
+    //   | 2 m         | 6.3     | 138,915       | 9,261         | Rock: fracture. Soil: bruised |
+    //   | 3 m         | 7.7     | 207,515       | 13,834        | Rock: broken legs. Soil: sprain |
+    //   | 5 m         | 9.9     | 343,035       | 22,869        | Rock: severe. Soil: fractures |
+    //   | 10 m        | 14.0    | 686,000       | 45,733        | Both: lethal |
+    //
+    // Armor reduces damage by distributing impact over larger area:
+    //   F_effective = F_impact / (1 + armorCoverage × armorHardness / 10)
+    //
+    // Landing technique:
+    //   Roll on impact: d_stop × 3 (martial arts roll distributes deceleration over time)
+    //   Crouch landing: d_stop × 1.5
+    //   Stiff landing: d_stop × 1.0 (default)
 
     swim_surface: {
       clip: 'swim_surface'           // freestyle arms, kick, head above water
@@ -6158,7 +14928,7 @@ AnimationStateMachine {
   }
 
   // ── Layer 2: Injury Modifiers (additive) ──────────────────────────────────
-  // These modify the base animations based on injury state (§8.4 injury system).
+  // These modify the base animations based on injury state (§7.1 injury system).
   // They are ALWAYS active but with weight = 0 when healthy.
 
   injuryModifiers: {
@@ -6275,13 +15045,49 @@ HumanBodyState {
   // Calorie drain rates by activity:
   //   Sleeping:     0.8 × BMR
   //   Standing:     1.0 × BMR
-  //   Walking:      1.5 × BMR
-  //   Running:      3.0 × BMR
-  //   Mining:       4.0 × BMR
-  //   Swimming:     5.0 × BMR
+  //   Walking:      3.5 × BMR
+  //   Running:      8.0 × BMR
+  //   Mining:       5.5 × BMR
+  //   Swimming:     7.0 × BMR
   //   Fighting:     4.5 × BMR
   //   Crafting:     1.2 × BMR
   //   In cold (<10°C): BMR × (1 + (10 - T_ambient) × 0.03)  // shivering burns calories
+
+  // ── Food Calorie Values ────────────────────────────────────────────────
+  //
+  // In plain English: these are how many calories each food gives you back.
+  // Your body burns ~75 kcal/hour at rest. Running burns ~600 kcal/hour.
+  // So a piece of cooked meat (800 kcal) fuels about 1.3 hours of running.
+  //
+  // Raw food provides fewer calories than cooked (§3.6 Connection 29):
+  //   Raw multiplier: 1.0×
+  //   Cooked (70-100°C): 1.5×
+  //   Well-cooked (100-150°C): 1.8×
+  //   Baked/roasted (150-200°C): 2.0×
+  //
+  // | Food item          | Base kcal/kg (raw) | Cooked (×1.8) | Spoilage time (game-days) |
+  // |-------------------|--------------------|---------------|--------------------------|
+  // | Red meat (venison)  | 1500               | 2700          | 3 (raw), 7 (cooked), 30 (salted) |
+  // | Fish                | 800                | 1440          | 1 (raw), 5 (cooked), 20 (smoked) |
+  // | Berries/fruit       | 400                | —             | 5 (fresh), 60 (dried) |
+  // | Nuts/seeds          | 5500               | —             | 90 (shelled), 365 (whole) |
+  // | Root vegetables     | 600                | 1080          | 30 (raw), 14 (cooked) |
+  // | Grain (wheat/barley)| 3400               | —             | 365 (dry grain) |
+  // | Bread (baked grain) | —                  | 2500          | 5 |
+  // | Eggs                | 1500               | 2700          | 14 (raw), 7 (cooked) |
+  // | Honey               | 3000               | —             | Never (natural preservative) |
+  // | Milk                | 600                | —             | 2 (fresh), 30 (cheese), 365 (hard cheese) |
+  // | Insects             | 2000               | 3600          | 1 (raw), 14 (dried) |
+  //
+  // These values are per KILOGRAM of food. A typical meal is 0.2-0.5 kg.
+  // A 0.3 kg cooked venison steak: 0.3 × 2700 = 810 kcal ≈ 10.8 hours of rest.
+  //
+  // Calorie values are NOT hardcoded per food name. They come from the MaterialPacket
+  // composition via the property calculator (§3.1):
+  //   calorieContent = Σ(mass_fraction_i × energyDensity_i)
+  //   where energyDensity: protein = 4000 kcal/kg, fat = 9000 kcal/kg, 
+  //   carbohydrate = 4000 kcal/kg, fiber = 2000 kcal/kg
+  //   The cooking multiplier comes from denaturation improving digestibility.
 
   // ── Hydration (Water) ─────────────────────────────────────────────────────
   hydration: number                  // liters of body water
@@ -6331,7 +15137,7 @@ HumanBodyState {
   //   Clothing insulation: traps body heat
 
   // Heat loss:
-  //   Convection: wind carries heat away (wind chill from §6)
+  //   Convection: wind carries heat away (wind chill from §4.6)
   //   Radiation: body radiates heat to cold surroundings
   //   Evaporation: sweating (only works if humidity < 0.9)
   //   Conduction: touching cold surfaces (standing in snow, swimming in cold water)
@@ -6342,9 +15148,9 @@ HumanBodyState {
 
   // Danger zones:
   //   > 40°C: heat exhaustion (vision blur, stamina drain ×3)
-  //   > 42°C: lethal (heat stroke, organ failure — see §8.2)
+  //   > 42°C: lethal (heat stroke, organ failure — see §7.6)
   //   < 35°C: hypothermia (shivering, stamina drain ×2, movement slow)
-  //   < 28°C: lethal (cardiac arrhythmia — see §8.2)
+  //   < 28°C: lethal (cardiac arrhythmia — see §7.6)
 
   // ── Sleep / Fatigue ───────────────────────────────────────────────────────
   fatigue: number                    // 0-100 (0 = fully rested, 100 = exhausted)
@@ -6373,9 +15179,46 @@ HumanBodyState {
   // ── Health / Hit Points ───────────────────────────────────────────────────
   health: number                     // 0-100
   // This is NOT an abstract HP bar. It represents overall body integrity.
-  // Damage comes from: physical injury (§8.4 injury system), disease, poison, starvation
+  // Damage comes from: physical injury (§7.1 injury system), disease, poison, starvation
   // Health regeneration: 0.5 HP/hour when well-fed, hydrated, rested, warm
-  // At 0 health: death (§8.2)
+  // At 0 health: death (§7.6)
+
+  // ── Disease System ─────────────────────────────────────────────────────
+  //
+  // NOTE: Disease parameters (R0, mortality, incubation) are simplified models
+  // for the current implementation. In the full system, pathogens would be
+  // MaterialPackets with compositions (protein coat, nucleic acid core) and
+  // transmission properties derived from material properties:
+  //   - Airborne persistence: from particle size and surface tension (§3.2)
+  //   - Surface survival: from thermal stability and UV sensitivity (§3.1, §3.12)
+  //   - Virulence: from binding affinity computed by reaction engine (§3.1)
+  // The current R0 constants are placeholders until the full pathogen model
+  // is implemented. They are calibrated against historical epidemiology data.
+  //
+  // In plain English: diseases spread between organisms. Crowded settlements 
+  // get sick more often. Clean water and good nutrition reduce risk.
+  //
+  // | Disease type    | R0 (spread rate) | Incubation (game-days) | Mortality | Cure |
+  // |----------------|-----------------|----------------------|-----------|------|
+  // | Food poisoning  | 0 (not contagious)| 0.5                 | 5%        | Rest + water |
+  // | Wound infection | 0 (not contagious)| 1-3                 | 15%       | Clean + herbal poultice |
+  // | Dysentery       | 2-4              | 1-2                  | 10%       | Clean water + rest |
+  // | Flu/cold        | 1.3-2.1          | 1-3                  | 2%        | Rest + warmth |
+  // | Plague          | 1.5-3.5          | 3-5                  | 30-60%    | Quarantine + herbal medicine |
+  //
+  // R0 = average number of organisms one sick individual infects.
+  // R0 > 1: disease spreads (epidemic). R0 < 1: disease dies out.
+  //
+  // Infection probability per contact:
+  //   P_infect = R0 / (avgContacts × infectiousDuration)
+  //   A settlement with 50 NPCs, each contacting ~10 others/day:
+  //     Flu: P = 1.7 / (10 × 5) = 0.034 per contact (3.4% per interaction)
+  //
+  // Resistance factors:
+  //   Well-fed (calories > 90% BMR): infection probability × 0.5
+  //   Warm shelter: × 0.7
+  //   Clean water source: × 0.3 for waterborne diseases
+  //   Previous infection (immunity): × 0.1 for same disease type
 }
 ```
 
@@ -6392,7 +15235,7 @@ FoodSystem {
 
   // Caloric content (kcal per kg) — derived from material composition:
   //   Raw meat: ~1500 kcal/kg
-  //   Cooked meat: ~2500 kcal/kg (cooking breaks down proteins → more digestible)
+  //   Cooked meat: ~2700 kcal/kg (cooking breaks down proteins → more digestible)
   //   Raw fish: ~1000 kcal/kg
   //   Berries: ~500 kcal/kg
   //   Grain: ~3500 kcal/kg (very calorie-dense when processed)
@@ -6408,7 +15251,7 @@ FoodSystem {
   //   Charred food: ~100 kcal/kg (mostly carbon)
 
   // Food poisoning:
-  //   Raw meat has a bacterial load that grows over time (see §8.2 infection model)
+  //   Raw meat has a bacterial load that grows over time (see §7.6 infection model)
   //   Fresh raw meat (just killed): low risk
   //   Meat left in warm environment for hours: high risk
   //   Preserved meat (salted, smoked, dried): low risk indefinitely
@@ -6494,7 +15337,9 @@ ClothingItem {
   material: MaterialPacket             // what it's made of (affects durability, warmth, weight)
   slots: number                        // how many inventory slots it provides
   slotCapacity: number                 // max weight per slot (kg) — pockets hold less than backpack
-  warmth: number                       // °C of insulation (reduces heat loss to environment)
+  insulation: number                    // CLO units — derived from material thermal conductivity:
+                                        // CLO = thickness(m) / (0.155 × thermalConductivity(W/mK))
+                                        // See Clothing Insulation Values table for typical values
   waterResistance: number              // 0-1 (leather = 0.7, woven cloth = 0.2, fur = 0.5)
   durability: number                   // 0-1 (wears out from use, weather, damage)
   slotType: 'any' | 'tools_only'      // belt slots only hold tools
@@ -6505,7 +15350,7 @@ ItemSlot {
   maxWeight: number                    // kg — determined by clothing's slotCapacity
   // Pocket slots: maxWeight = 0.5 kg (small items only)
   // Backpack slots: maxWeight = 5.0 kg per slot
-  // Hand slots: maxWeight = player's carry strength (see §8.11 character body)
+  // Hand slots: maxWeight = player's carry strength (see §7.2 character body)
   // Belt slots: maxWeight = 2.0 kg (tool weight)
 }
 ```
@@ -6522,7 +15367,7 @@ The first priority for a new player is making better clothing and a carrying con
 
 #### Material Packets in Inventory
 
-Every item in inventory IS a MaterialPacket (§3.3). It has composition, mass, temperature, and phase.
+Every item in inventory IS a MaterialPacket (§3.1). It has composition, mass, temperature, and phase.
 
 ```
 Inventory rules for MaterialPackets:
@@ -6568,7 +15413,7 @@ LiquidInInventory {
   // - Jumping: spills if > 50% full
   // - Inverting (looking down): spills everything
 
-  // Container contents are ephemeral (see §8.3):
+  // Container contents are ephemeral (see §7.3):
   // On server restart, containers are empty. The container itself persists.
 }
 ```
@@ -6654,7 +15499,7 @@ DigSystem {
   //     iron pickaxe on rock: 0.4
   //     iron shovel on dirt: 1.0
   //
-  //   playerStrength: 0.5–1.0 based on character fitness (see §8.11)
+  //   playerStrength: 0.5–1.0 based on character fitness (see §7.2)
   //     newPlayer: 0.5, trained player: 0.8, maximum human: 1.0
   //
   //   swingEnergy: kinetic energy of the tool swing (joules)
@@ -6800,7 +15645,7 @@ PhysicsDamage {
   //   Steel armor: absorption = 0.85
 
   // Hit region determined by collision point:
-  // Raycast from tool/projectile → character mesh → which body region (§8.4 injury system)
+  // Raycast from tool/projectile → character mesh → which body region (§7.1 injury system)
   // Head hits deal more damage (lower threshold) AND have additional effects (daze, vision blur)
 
   // Tool sharpness matters:
@@ -6854,7 +15699,7 @@ PvPSystem {
 
 ```
 ToolGripSystem {
-  // When a player crafts a tool (§8.14 precision craft mode), they don't just
+  // When a player crafts a tool (§6.4 precision craft mode), they don't just
   // create a tool — they also define HOW to hold it.
 
   // After crafting, the player enters "grip setup":
@@ -6970,7 +15815,7 @@ CorpseEntity {
 
 - **Duration:** 60 seconds after death, the corpse fades out over 3 seconds and is removed from the server entity list.
 - **Duplicate prevention:** If the same `playerId` dies again while a previous corpse exists, the old corpse is **immediately removed** (server deletes the old CorpseEntity before creating the new one). This prevents a player dying repeatedly in the same spot from filling the server with corpse entities.
-- **Rendering:** The client renders corpses as the full player body model (same skeleton rig as §8.4) in a collapsed ragdoll pose. The pose is calculated once on the server when death occurs (simple ragdoll settle: body falls, limbs sprawl based on terrain slope) and sent as a static skeletal pose. No ongoing ragdoll physics — just a frozen body.
+- **Rendering:** The client renders corpses as the full player body model (same skeleton rig as §7.1) in a collapsed ragdoll pose. The pose is calculated once on the server when death occurs (simple ragdoll settle: body falls, limbs sprawl based on terrain slope) and sent as a static skeletal pose. No ongoing ragdoll physics — just a frozen body.
 
 **Step 3 — Dropped Item World Entities**
 
@@ -6987,13 +15832,13 @@ Dropped items become standard world entities visible to all players within rende
 RespawnSequence {
   deathTimestamp: number
   respawnDelay: 10_000               // 10 seconds, constant
-  respawnPosition: Vec3              // player's registered shelter position (from database)
+  respawnPosition: Vec3              // player's registered shelter position (from Neon Postgres)
   adSlotWindow: [2_000, 8_000]      // milliseconds 2-8 after death: available for ad display (future)
 }
 ```
 
 - **What the player sees:** Screen fades to black over 1 second. For the next 10 seconds, the player sees a minimal UI: death cause text ("You froze to death"), a countdown timer, and (future) an ad slot in the center.
-- **Respawn location:** The player's registered shelter (stored in the database).
+- **Respawn location:** The player's registered shelter, read from `shelters` table in Neon Postgres: `SELECT position FROM shelters WHERE user_id = $1 ORDER BY registered_at DESC LIMIT 1`.
 - **State on respawn:** Full health, full hunger/thirst/energy (you "rested" while dead), same discovery knowledge, same practice counters, inventory minus whatever dropped. The player is not punished twice — the item loss IS the punishment.
 
 #### Causes of Death — Physical Triggers
@@ -7007,7 +15852,7 @@ Each death cause maps to a real physical condition crossing a lethal threshold:
 | Hypothermia | `bodyTemperature < 28°C` | Core temp below threshold → heart arrhythmia. Body temp follows Newton's law of cooling: `dT/dt = -k(T_body - T_env)` where k depends on clothing insulation |
 | Hyperthermia | `bodyTemperature > 42°C` | Protein denaturation → organ failure |
 | Drowning | `oxygenLevel ≤ 0` while submerged | Breath-hold timer (90s base) depletes, then health drops at 20 HP/s |
-| Fall damage | `impactVelocity > 8 m/s` | Damage = `mass × (v - 8)² / 2` (kinetic energy above safe threshold). Lethal above ~15 m/s (~11m fall) |
+| Fall damage | `impactVelocity > safe threshold` | Fall damage uses the physics-based impact force formula (§7.1): F_impact = m × v² / (2 × d_stop). See the detailed fall damage table in §7.1 for surface-specific stopping distances. Damage is proportional to F_impact / boneStrength. |
 | Burn | `skinTemperature > 60°C` for sustained contact | Tissue damage rate = `k × (T - 45)²` per second. Third-degree at >70°C |
 | Infection | `bacterialLoad > 10⁹` (logistic growth model) | Untreated wound → bacterial population doubles every ~4 hours at 37°C, slower when cold. Lethal when load overwhelms immune response |
 | Attack | `health ≤ 0` from physical damage | Impact force from another entity (animal, player, falling object) exceeds body's structural tolerance |
@@ -7086,7 +15931,7 @@ ContainerPhysics {
   // Pouring liquid in:
   // 1. Player holds a container with liquid and presses "pour" while aiming at the target container
   // 2. Server creates a pour stream (SPH particles or visual) from source to target
-  // 3. Target container's contents update: mass-weighted composition merge (§3.3 compounding rule)
+  // 3. Target container's contents update: mass-weighted composition merge (§3.1 compounding rule)
   //    newComposition[element] = (existingMass × existingFraction[element] + addedMass × addedFraction[element]) / totalMass
   //    newTemperature = (existingMass × existingTemp + addedMass × addedTemp) / totalMass
   // 4. If two players pour simultaneously:
@@ -7096,19 +15941,19 @@ ContainerPhysics {
 }
 ```
 
-#### Workstation Access
+#### Craft Interaction Point Access
 
 ```
-WorkstationAccess {
-  // A workstation has a single operator slot.
+CraftInteractionAccess {
+  // A craft interaction point is occupied by one entity at a time.
   state: 'vacant' | 'occupied'
   operatorId: string | null                  // userId of current operator
 
   // Player presses F within 5m:
   //   If vacant: server sets operatorId = playerId, state = 'occupied'
-  //              client opens WorkstationPanel
-  //   If occupied: client shows "[Workstation in use by another player]"
-  //               player must wait or find another workstation
+  //              client enters precision craft mode
+  //   If occupied: client shows "[In use by another entity]"
+  //               player must wait or find another arrangement
 
   // Operator leaves (walks away >5m, presses Esc, disconnects):
   //   Server sets state = 'vacant', operatorId = null
@@ -7117,7 +15962,7 @@ WorkstationAccess {
   //   But a craft requiring active input (hammering on anvil) pauses.
 
   // No queue system. No reservation. You walk up, if it's free you use it.
-  // Two players approaching at the same time: first WORKSTATION_USE request to reach the server wins.
+  // Two players approaching at the same time: first CRAFT_INTERACT request to reach the server wins.
 }
 ```
 
@@ -7179,7 +16024,7 @@ ChatSystem {
   // Messenger pigeon (medieval): send a written note to a known location (slow, unreliable)
   // Signal fire/mirror: visible at 1-5km, binary messaging
   // Telegraph (industrial): electrical signal over wire between two connected stations
-  // Radio (§9 late-game): wireless text over any distance to anyone with a receiver
+  // Radio (late-game): wireless text over any distance to anyone with a receiver
   // Phone: voice communication (future, requires advanced electronics)
 
   // Each advancement mirrors the real history of human communication technology.
@@ -7225,7 +16070,7 @@ SwimmingSystem {
   //                           training (endurance 1.0 → 120s max)
 
   // When breath runs out:
-  //   Health drains at 20 HP/s (drowning — see §8.2)
+  //   Health drains at 20 HP/s (drowning — see §7.6)
   //   Vision darkens from edges
   //   Player must surface or die
 
@@ -7235,7 +16080,7 @@ SwimmingSystem {
   //   Murky/swamp: 1-3m
   //   At depth > 20m: light dims (exponential absorption by water)
 
-  // Underwater sound: §8.6 applies — low-pass filter at 800 Hz, speed 1500 m/s
+  // Underwater sound: §3.3 applies — low-pass filter at 800 Hz, speed 1500 m/s
 
   // ── Carried items while swimming ──────────────────────────────────────────
   // All items are still in inventory. But:
@@ -7260,7 +16105,7 @@ Light in reality comes from the sun, fire, and (later in the technology arc) art
 ```
 LightingSystem {
   // ── Sun ───────────────────────────────────────────────────────────────────
-  // Sun position is computed from: time of day + season (§7)
+  // Sun position is computed from: time of day + season (§4.6)
   sunAzimuth = (hourOfDay / 24) × 360 - 180          // degrees (east to west)
   sunElevation = maxElevation × sin(hourFraction × π)  // arc across sky
   // maxElevation depends on latitude + season (higher in summer, lower in winter)
@@ -7355,22 +16200,37 @@ NavigationSystem {
   // "Found copper here", "Dangerous wolves", "Good clay by this river"
 
   // ── Minimap ────────────────────────────────────────────────────────────────
-  // A small minimap is always visible in the corner of the screen.
-  // Shows top-down view of immediate surroundings (~100m radius).
+  // A small minimap is always visible in the corner of the screen during gameplay.
+  // It shows a top-down view of the immediate surroundings (~100m radius).
   //
   // Position depends on the player's dominant hand (set in character creation):
   //   Right-handed player: minimap at BOTTOM-LEFT corner
   //   Left-handed player: minimap at BOTTOM-RIGHT corner
-  // Keeps the minimap opposite the dominant hand's interaction zone.
   //
-  // Content: terrain relief, water, player dot with facing cone,
-  //          nearby players, settlement icons, compass ring, fog of war.
-  // Only shows explored terrain — not a satellite view.
-  // Toggleable in settings. Clicking it opens the full map (M key).
+  // This keeps the minimap on the opposite side of the screen from the player's
+  // dominant hand interaction zone, avoiding visual interference when using tools
+  // or interacting with objects.
+  //
+  // Minimap content:
+  //   - Terrain elevation as shaded relief (dark = low, light = high)
+  //   - Water bodies in blue
+  //   - Player position: centered white dot with facing direction cone
+  //   - Other nearby players: smaller dots (friends in green, others in grey)
+  //   - Settlement buildings: small square icons
+  //   - Compass ring around the minimap edge (N/S/E/W)
+  //   - Fog of war: unexplored areas are dark/hidden
+  //
+  // The minimap is NOT a satellite view — it only shows what the player has explored.
+  // It updates in real-time as the player moves and discovers new terrain.
+  //
+  // Size: ~120px diameter circle, slightly transparent background
+  // Can be toggled off in settings for players who prefer full immersion
+  // Clicking the minimap opens the full map screen (M key)
 
   // ── No GPS ────────────────────────────────────────────────────────────────
-  // No waypoint arrows, no distance-to-target, no turn-by-turn
-  // Navigation by memory, landmarks, sun, compass, and minimap
+  // There is no waypoint arrow, no distance-to-target, no turn-by-turn navigation
+  // Navigation is by memory, landmarks, sun position, compass, and the minimap
+  // This is how real navigation worked before GPS
 }
 ```
 
@@ -7381,7 +16241,7 @@ NavigationSystem {
 
 The world has two categories of state, determined by a single principle: **did a player intentionally create this, or is it physics running on its own?** Player-created changes are sacred and permanent. Physics-in-progress is ephemeral and can be recomputed or reset.
 
-#### Tier 1 — Permanent State (database)
+#### Tier 1 — Permanent State (Neon Postgres)
 
 These tables survive server restarts, crashes, and migrations. They are the canonical truth of the world.
 
@@ -7405,8 +16265,8 @@ terrain_modifications {
 world_objects {
   id:           UUID PRIMARY KEY
   world_seed:   BIGINT NOT NULL
-  object_type:  TEXT NOT NULL                 // 'container'|'workstation'|'shelter'|'wall'|'door'|'torch'|...
-  subtype:      TEXT                          // 'bloomery'|'kiln'|'clay_pot'|'stone_wall'|...
+  object_type:  TEXT NOT NULL                 // 'container'|'craft_structure'|'shelter'|'wall'|'door'|'torch'|...
+  subtype:      TEXT                          // 'clay_enclosure'|'stone_lined_pit'|'clay_pot'|'stone_wall'|...
   position:     FLOAT[3] NOT NULL            // world-space [x, y, z]
   rotation:     FLOAT[4] NOT NULL            // quaternion [x, y, z, w]
   placed_by:    TEXT NOT NULL                 // player userId
@@ -7433,7 +16293,7 @@ settlements {
   position:     FLOAT[3] NOT NULL
   specialty:    TEXT NOT NULL                 // 'copper_mining'|'iron_mining'|'farming'|...
   population:   INT DEFAULT 20
-  // No civ_level — sophistication is derived from what NPCs have built and learned (§5)
+  // No civ_level — sophistication is derived from what NPCs have built and learned (§5.1)
   known_processes: TEXT[] DEFAULT '{}'       // processes NPCs have discovered: 'fire_starting', 'copper_smelting', ...
   storage:      JSONB DEFAULT '{}'           // MaterialPacket array with real compositions and masses
   trade_offers: JSONB DEFAULT '[]'           // current public trade offers
@@ -7510,7 +16370,7 @@ These exist only while the server is running. On restart, they vanish.
 // ── Active Physics Simulations ────────────────────────────────────────────────
 EphemeralState {
   // SPH particles: all active liquid/gas simulations in the world
-  sphParticles: Map<ParticleId, SPHParticle>     // see §3.4 for SPHParticle structure
+  sphParticles: Map<ParticleId, SPHParticle>     // see §3.2 for SPHParticle structure
   // typically 0–20,000 active at any time; 0 when no one is melting/pouring
 
   // Temperature field: materials in the world that are not at ambient temperature
@@ -7518,7 +16378,7 @@ EphemeralState {
   // a campfire heats nearby objects; when fire dies, they cool back to ambient
 
   // Active crafting: smelting in progress, pottery firing, etc.
-  activeCrafts: Map<CraftId, { workstationId: string, startTime: number, materials: MaterialPacket[], progress: number }>
+  activeCrafts: Map<CraftId, { craftLocationId: string, startTime: number, materials: MaterialPacket[], progress: number }>
 
   // Dropped loot: items on the ground from player death or intentional drop
   groundItems: Map<ItemId, { packet: MaterialPacket, position: Vec3, velocity: Vec3, despawnAt: number }>
@@ -7547,9 +16407,44 @@ Some ephemeral processes produce permanent results:
 
 ### 7.13 New Player Experience — First Spawn
 
+```
+  // ── First Tool: Spawn to Cutting Edge ──────────────────────────────────
+  //
+  // In plain English: the first thing a player must do is make a cutting tool.
+  // Without one, they can't chop trees, harvest animals, or shape materials.
+  //
+  // Path (works in ANY biome):
+  //   1. Pick up a loose stone (interact with ground — no tool needed)
+  //      Every biome has stones within 50m of spawn (§7.13 guarantees this)
+  //   2. Find a hard stone surface (boulder, cliff face, large rock)
+  //   3. Strike the loose stone against the hard surface (§3.1 impact → fracture)
+  //      The stone breaks along fracture planes determined by its composition:
+  //        Flint/obsidian/chert (SiO₂ amorphous): conchoidal fracture → sharp edge
+  //        Granite/basalt: irregular fracture → rough edge (weaker tool)
+  //        Quartz: conchoidal fracture → decent edge
+  //   4. The resulting fragment has an edge. Edge sharpness depends on fracture
+  //      type (§3.6 Connection 11: sharpness from edge radius).
+  //
+  // Biome-specific stone availability:
+  //   Temperate forest: flint in river beds, quartz in rock outcrops
+  //   Tropical: basalt, obsidian near volcanic terrain
+  //   Desert: flint, chert in exposed sedimentary layers
+  //   Tundra: any exposed rock (granite, gneiss)
+  //   Beach/coast: cobbles of mixed composition
+  //
+  // The game does NOT need to know "flint." It needs to know:
+  //   - This stone has high SiO₂ content (amorphous)
+  //   - Amorphous SiO₂ fractures conchoidally (§3.1 fracture toughness: low K_IC)
+  //   - Conchoidal fracture produces sharp edges (small edge radius)
+  //   - Sharp edges cut (§3.6 Connection 11)
+  //
+  // A player who picks up ANY stone and hits it against a rock gets SOME kind
+  // of edge. The quality depends on the stone's composition through §3.1.
+```
+
 #### What the Player Sees on First Login
 
-After character creation (§8.4), the player spawns in the world for the first time. This moment must be intuitive without tutorials.
+After character creation (§7.1), the player spawns in the world for the first time. This moment must be intuitive without tutorials.
 
 ```
 FirstSpawnDesign {
@@ -7592,8 +16487,17 @@ FirstSpawnDesign {
   //   They get hungry after a few game-hours → they look for food
   //   They notice it getting dark → the campfire becomes essential
   //
-  // The companion system (§8.7) can provide subtle hints if the player
+  // The companion system (§5.3) can provide subtle hints if the player
   // seems stuck (no actions for several minutes), but never explicit instructions.
+
+  // ── Starting equipment ──────────────────────────────────────────────────
+  // Starting equipment: basic cloth wrapping (linen, 0.3 CLO per piece):
+  //   Torso wrap: 0.3 CLO
+  //   Leg wrap: 0.3 CLO
+  //   Total: 0.6 CLO — enough for temperate climate, not winter.
+  // Cold biome spawn: add fur scrap (1.0 CLO torso) found near spawn shelter.
+  // The game guarantees survivability for 1 game-day at any spawn location
+  // by providing a campfire in the initial shelter (§7.13).
 
   // ── Nearby resources guaranteed at spawn ──────────────────────────────────
   // The server ensures every new player shelter has within 50m:
@@ -7613,7 +16517,7 @@ FirstSpawnDesign {
 
 ---
 
-## 8. All UI Panels and Hotkeys
+## 8. UI Panels and Hotkeys
 
 
 | Key | Panel            | Status                                                       |
@@ -7635,12 +16539,8 @@ FirstSpawnDesign {
 
 ---
 
----
 
-# PART VII — REFERENCES
----
-
-
+# REFERENCES
 ---
 
 ## 9. References
