@@ -103,15 +103,24 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var transmittance = exp(-uniforms.density * thickness * (1.0 - diffuse_color));
     var refraction_color = background.rgb * transmittance;
 
-    // Reflection: environment color — metals tint reflections with their own color
+    // Reflection: procedural environment — brighter for metallic materials
     var reflect_dir = reflect(ray_dir, normal);
-    var sky_color = vec3f(0.1, 0.15, 0.25) + reflect_dir.y * vec3f(0.05, 0.08, 0.15);
+    // Gradient sky: dark at bottom, bright at top, with horizon glow
+    var sky_up = max(reflect_dir.y, 0.0);
+    var sky_down = max(-reflect_dir.y, 0.0);
+    var sky_color = mix(vec3f(0.15, 0.2, 0.3), vec3f(0.5, 0.6, 0.8), sky_up)  // ground→sky
+                  + vec3f(0.3, 0.25, 0.2) * exp(-8.0 * sky_down)                // warm horizon
+                  + vec3f(0.1, 0.1, 0.12) * exp(-3.0 * abs(reflect_dir.y));     // horizon band
     var reflection_color = mix(sky_color, sky_color * diffuse_color, uniforms.metalness);
 
-    // Specular highlight (Blinn-Phong) — power varies per material
+    // Specular highlights (Blinn-Phong) — primary + rim light
     var light_dir = normalize(uniforms.light_dir);
     var H = normalize(light_dir - ray_dir);
     var specular = pow(max(0.0, dot(H, normal)), uniforms.specular_power);
+    // Secondary rim light from below-right for depth
+    var light2 = normalize(vec3f(-0.3, -0.5, 0.8));
+    var H2 = normalize(light2 - ray_dir);
+    specular += 0.3 * pow(max(0.0, dot(H2, normal)), uniforms.specular_power * 0.5);
 
     // Diffuse lighting for non-metals (Lambertian)
     var NdotL = max(dot(normal, light_dir), 0.0);

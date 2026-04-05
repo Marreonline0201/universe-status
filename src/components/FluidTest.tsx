@@ -529,13 +529,13 @@ export function FluidTest() {
             // Per-material rendering properties based on real physics:
             // F0: Fresnel base reflectance (Schlick), metalness, emissive glow, specular
             const matVisuals: Record<string, { density: number, F0: number, emissive: number, specPow: number, metalness: number }> = {
-              'Water':          { density: 3.0,  F0: 0.02, emissive: 0.0, specPow: 250, metalness: 0.0 },
+              'Water':          { density: 2.0,  F0: 0.02, emissive: 0.0, specPow: 300, metalness: 0.0 },
               'Honey':          { density: 8.0,  F0: 0.04, emissive: 0.0, specPow: 80,  metalness: 0.0 },
               'Molten Copper':  { density: 1.5,  F0: 0.6,  emissive: 1.2, specPow: 150, metalness: 0.8 },
-              'Mercury':        { density: 5.0,  F0: 0.8,  emissive: 0.0, specPow: 500, metalness: 0.95 },
-              'Olive Oil':      { density: 5.0,  F0: 0.03, emissive: 0.0, specPow: 120, metalness: 0.0 },
+              'Mercury':        { density: 8.0,  F0: 0.9,  emissive: 0.0, specPow: 600, metalness: 0.98 },
+              'Olive Oil':      { density: 4.0,  F0: 0.03, emissive: 0.0, specPow: 120, metalness: 0.0 },
               'Lava (Basaltic)':{ density: 1.0,  F0: 0.04, emissive: 1.5, specPow: 60,  metalness: 0.0 },
-              'Blood':          { density: 6.0,  F0: 0.03, emissive: 0.0, specPow: 150, metalness: 0.0 },
+              'Blood':          { density: 5.0,  F0: 0.03, emissive: 0.0, specPow: 150, metalness: 0.0 },
             }
             const vis = matVisuals[matName] ?? matVisuals['Water']
             sim.fluidRenderer.setFluidMaterial({
