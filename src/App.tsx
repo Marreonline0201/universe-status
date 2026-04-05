@@ -3,13 +3,15 @@ import { useStatusSocket } from './hooks/useStatusSocket'
 import { DocsPage } from './components/DocsPage'
 import { AgentControlCenter } from './components/AgentControlCenter'
 import { ConnectionMap } from './components/ConnectionMap'
+import { FluidTest } from './components/FluidTest'
 
-type View = 'docs' | 'connections' | 'agents'
+type View = 'docs' | 'connections' | 'agents' | 'fluid'
 
 const VIEWS: { id: View; label: string }[] = [
   { id: 'docs',        label: 'GAME GUIDE' },
   { id: 'connections',  label: 'CONNECTIONS' },
   { id: 'agents',      label: 'AGENT CONTROL' },
+  { id: 'fluid',       label: 'FLUID TEST' },
 ]
 
 export function App() {
@@ -111,6 +113,7 @@ export function App() {
             <AgentControlCenter agentState={world.agentState} />
           </div>
         )}
+        {view === 'fluid' && <FluidTest />}
       </div>
     </div>
   )
