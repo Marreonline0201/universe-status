@@ -292,11 +292,31 @@ export class FluidRenderer {
     this.device.queue.writeBuffer(this.particleBuffer, 0, data, 0, count * 8)
   }
 
-  updateCamera(viewMatrix: Float32Array, projMatrix: Float32Array, sphereSize: number) {
+  /**
+   * Build projection matrix directly for WebGPU (Z: 0 to 1)
+   * instead of extracting from Three.js which may have wrong coordinate system.
+   */
+  updateCamera(
+    viewMatrix: Float32Array,
+    fov: number, aspect: number, near: number, far: number,
+    sphereSize: number,
+  ) {
     if (!this.initialized) return
+
+    // Build perspective projection for WebGPU NDC (Z: 0 to 1)
+    const f = 1.0 / Math.tan(fov / 2)
+    const nf = 1.0 / (near - far)
+    const proj = new Float32Array(16)
+    proj[0] = f / aspect
+    proj[5] = f
+    proj[10] = far * nf           // WebGPU: Z maps to [0, 1]
+    proj[11] = -1
+    proj[14] = near * far * nf
+    // All other elements are 0
+
     const buf = new Float32Array(36)
     buf[0] = 1 / this.width; buf[1] = 1 / this.height; buf[2] = sphereSize; buf[3] = 0
-    buf.set(projMatrix, 4)
+    buf.set(proj, 4)
     buf.set(viewMatrix, 20)
     this.device.queue.writeBuffer(this.uniformBuffer, 0, buf)
   }
