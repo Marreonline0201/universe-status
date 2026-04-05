@@ -496,7 +496,7 @@ export function FluidTest() {
             sim.instMeshes[m].setMatrixAt(localIdx, sim.dummy)
           }
 
-          // Mark for GPU upload
+          // Mark for GPU upload — show both particles and MC surface
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
           })
@@ -558,6 +558,13 @@ export function FluidTest() {
               }
             }
           }
+          // Check field values
+          let maxF = 0, nzCount = 0
+          for (let fi = 0; fi < MC_RES*MC_RES*MC_RES; fi++) {
+            if (fieldArr[fi] > 0) nzCount++
+            if (fieldArr[fi] > maxF) maxF = fieldArr[fi]
+          }
+          ;(window as any).__mcDebug = { maxField: maxF, nonZero: nzCount, threshold: MC_THRESHOLD, particles: count, mcCount: (sim.mcubes as any).count }
           sim.mcubes.update()
 
           setParticleCount(count)
