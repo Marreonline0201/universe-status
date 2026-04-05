@@ -34,6 +34,13 @@ struct CompositeUniforms {
 @group(0) @binding(3) var scene_texture: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> uniforms: CompositeUniforms;
 
+// Simple hash for procedural micro-surface noise
+fn hash2(p: vec2f) -> f32 {
+    var p2 = fract(p * vec2f(443.8975, 397.2973));
+    p2 += dot(p2, p2.yx + 19.19);
+    return fract(p2.x * p2.y);
+}
+
 fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
     // Reconstruct view-space position from screen UV and eye-space depth.
     // depth = |view.z|, stored by the depth sprite pass.
@@ -80,6 +87,14 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     if (abs(ddy.z) > abs(ddy2.z)) { ddy = ddy2; }
 
     var normal = normalize(cross(ddy, ddx));
+
+    // Micro-surface wave perturbation — adds subtle specular variation
+    // Dielectrics (water) get more perturbation; metals (mercury) stay mirror-smooth
+    var wave_strength = 0.03 * (1.0 - uniforms.metalness * 0.8);
+    var noise_uv = pixel * 0.15; // frequency of micro waves
+    var nx = hash2(noise_uv) * 2.0 - 1.0;
+    var ny = hash2(noise_uv + vec2f(7.3, 13.7)) * 2.0 - 1.0;
+    normal = normalize(normal + vec3f(nx, ny, 0.0) * wave_strength);
 
     // §3.2 Pass 5: Compositing — per-material Fresnel, refraction, absorption
     var thickness = textureLoad(thickness_texture, vec2u(pixel), 0).r;
