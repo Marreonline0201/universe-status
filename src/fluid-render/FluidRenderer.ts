@@ -536,7 +536,7 @@ export class FluidRenderer {
     // Use cached inverse projection from last updateCamera call
     compData.set(this.invProj, 4) // offset 4 = byte 16
 
-    compData[20] = 0.5; compData[21] = 1.0; compData[22] = 0.3 // light_dir
+    compData[20] = 3.0; compData[21] = 5.0; compData[22] = 3.0 // light_dir (matches Three.js directional)
     compData[23] = 0 // _pad2
     compData[24] = this.fluidColor[0]; compData[25] = this.fluidColor[1]; compData[26] = this.fluidColor[2]
     compData[27] = this.fluidDensity
