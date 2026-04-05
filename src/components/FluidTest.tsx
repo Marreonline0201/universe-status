@@ -308,11 +308,11 @@ export function FluidTest() {
       pointsGeo.setDrawRange(0, 0)
 
       const pointsMat = new THREE.PointsMaterial({
-        size: VISUAL_RADIUS * 3,
+        size: 0.06,
         sizeAttenuation: true,
         vertexColors: true,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.95,
         depthWrite: true,
       })
       const points = new THREE.Points(pointsGeo, pointsMat)
@@ -397,7 +397,7 @@ export function FluidTest() {
         const count = sim.simulation.get_count()
         if (count > 0) {
           const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-          sim.simulation.step(sim.gravity, simDt, 4)
+          sim.simulation.step(sim.gravity, simDt, 2)
 
           // Get results from WASM
           const positions = sim.simulation.get_positions()
