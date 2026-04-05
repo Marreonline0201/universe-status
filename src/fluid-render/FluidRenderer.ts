@@ -477,8 +477,8 @@ export class FluidRenderer {
     p1.draw(6, numParticles)
     p1.end()
 
-    // ── Pass 2: Bilateral blur × 4 — smooth but preserve surface curvature ──
-    for (let i = 0; i < 4; i++) {
+    // ── Pass 2: Bilateral blur × 3 — smooth surface, preserve curvature ──
+    for (let i = 0; i < 3; i++) {
       // H blur: depth → tmpDepth
       const bh = encoder.beginRenderPass({
         colorAttachments: [{ view: tmpDepthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],
