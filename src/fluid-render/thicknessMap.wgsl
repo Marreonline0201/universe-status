@@ -34,7 +34,7 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
 
     // §3.2: t(x,y) = 2R * sqrt(1 - x² - y²)
     var thickness = sqrt(1.0 - r2);
-    let particle_alpha: f32 = 0.05;
+    let particle_alpha: f32 = 0.15;
 
     return vec4f(vec3f(particle_alpha * thickness), 1.0);
 }
