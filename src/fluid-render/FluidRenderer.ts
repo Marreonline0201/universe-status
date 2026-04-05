@@ -17,6 +17,7 @@ import thicknessMapWGSL from './thicknessMap.wgsl?raw'
 import gaussianWGSL from './gaussian.wgsl?raw'
 import compositeWGSL from './composite.wgsl?raw'
 import fullScreenWGSL from './fullScreen.wgsl?raw'
+import debugDepthWGSL from './debugDepth.wgsl?raw'
 
 export class FluidRenderer {
   private device!: GPUDevice
@@ -40,6 +41,8 @@ export class FluidRenderer {
   private thicknessPipeline!: GPURenderPipeline
   private gaussianPipeline!: GPURenderPipeline
   compositePipeline!: GPURenderPipeline
+  private debugPipeline!: GPURenderPipeline
+  private debugBGL!: GPUBindGroupLayout
 
   // Buffers
   private particleBuffer!: GPUBuffer
@@ -251,6 +254,29 @@ export class FluidRenderer {
       fragment: { module: compositeMod, entryPoint: 'fs', targets: [{ format: this.presentationFormat }] },
       primitive: { topology: 'triangle-list' },
     })
+
+    // ── Debug: depth visualization pipeline ───────────────────────
+    const debugMod = d.createShaderModule({ code: debugDepthWGSL })
+    this.debugBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
+      ],
+    })
+    this.debugPipeline = d.createRenderPipeline({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.debugBGL] }),
+      vertex: { module: fullScreenMod, entryPoint: 'vs', constants: { screenWidth: w, screenHeight: h } },
+      fragment: {
+        module: debugMod, entryPoint: 'fs',
+        targets: [{
+          format: this.presentationFormat,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-list' },
+    })
   }
 
   updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
@@ -430,11 +456,22 @@ export class FluidRenderer {
 
     if (this.context) {
       const outputView = this.context.getCurrentTexture().createView()
-      const p5 = encoder.beginRenderPass({
-        colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 } }],
+
+      // DEBUG: show depth map directly instead of composite
+      // This verifies depth sprites + bilateral blur are working
+      const debugBG = d.createBindGroup({
+        layout: this.debugBGL,
+        entries: [{ binding: 0, resource: depthView }],
       })
-      p5.setPipeline(this.compositePipeline)
-      p5.setBindGroup(0, compositeBG)
+      const p5 = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: outputView,
+          loadOp: 'clear', storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 0 }, // transparent where no fluid
+        }],
+      })
+      p5.setPipeline(this.debugPipeline)
+      p5.setBindGroup(0, debugBG)
       p5.draw(6)
       p5.end()
     }
