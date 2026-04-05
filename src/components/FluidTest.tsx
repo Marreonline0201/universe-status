@@ -1,12 +1,13 @@
 // ── FluidTest ────────────────────────────────────────────────────────────────
-// SPH Fluid Simulation — Testing the physics from structure.md section 3.2
-// Real SPH algorithm with real material properties from section 3.1
-// Simulation runs in a Web Worker for 60fps rendering with 5000 particles
+// SPH Fluid Simulation — Rust/WASM SPH solver (replaces JS Web Worker)
+// Real SPH algorithm with real material properties from structure.md S3.1
+// WASM runs on main thread — fast enough for 5000+ tiny particles at 60fps
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
 
@@ -97,10 +98,10 @@ const MATERIALS: MaterialPacket[] = [
   },
 ]
 
-// ── Simulation constants (must match worker) ─────────────────────────────────
+// ── Simulation constants ─────────────────────────────────────────────────────
 
-const PARTICLE_RADIUS = 0.02
-const MAX_PARTICLES = 5000
+const PARTICLE_RADIUS = 0.008
+const MAX_PARTICLES = 8000
 
 // Box dimensions
 const BOX_W = 2.0
@@ -110,8 +111,8 @@ const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
 
-// Visual radius for rendering (smaller looks more natural)
-const VISUAL_RADIUS = 0.012
+// Visual radius for rendering
+const VISUAL_RADIUS = 0.008
 
 // ── React Component ──────────────────────────────────────────────────────────
 
@@ -124,10 +125,11 @@ export function FluidTest() {
   const [particleCount, setParticleCount] = useState(0)
   const [showInfo, setShowInfo] = useState(true)
   const [fpsWarning, setFpsWarning] = useState(false)
+  const [wasmReady, setWasmReady] = useState(false)
 
   // Refs for simulation state
   const simRef = useRef<{
-    worker: Worker
+    simulation: Simulation
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
     renderer: THREE.WebGLRenderer
@@ -143,36 +145,25 @@ export function FluidTest() {
     raycaster: THREE.Raycaster
     mouse: THREE.Vector2
     boxMesh: THREE.LineSegments
-    // Latest simulation data from worker
-    latestPositions: Float32Array | null
-    latestVelocities: Float32Array | null
-    latestMaterials: Uint8Array | null
-    latestCount: number
-    workerBusy: boolean
-    workerReady: boolean
   } | null>(null)
 
   const resetSim = useCallback(() => {
     if (!simRef.current) return
-    simRef.current.worker.postMessage({ type: 'reset' })
+    simRef.current.simulation.reset()
     simRef.current.instancedMeshes.forEach((mesh) => {
       mesh.count = 0
     })
-    simRef.current.latestCount = 0
-    simRef.current.latestPositions = null
-    simRef.current.latestVelocities = null
-    simRef.current.latestMaterials = null
     setParticleCount(0)
     setFpsWarning(false)
   }, [])
 
   const spawnParticles = useCallback((worldPos: THREE.Vector3) => {
-    if (!simRef.current || !simRef.current.workerReady) return
+    if (!simRef.current) return
     const matIdx = simRef.current.selectedMaterial
 
-    // Spawn a cluster of particles: 6x6x6 = 216 per click
+    // Spawn a cluster of particles: 7x7x7 = 343 per click
     const spacing = PARTICLE_RADIUS * 2.2
-    const gridSize = 6
+    const gridSize = 7
     const positions: number[] = []
 
     for (let xi = 0; xi < gridSize; xi++) {
@@ -192,10 +183,8 @@ export function FluidTest() {
 
     if (positions.length > 0) {
       const buf = new Float32Array(positions)
-      simRef.current.worker.postMessage(
-        { type: 'addParticles', positions: buf, materialIndex: matIdx },
-        [buf.buffer],
-      )
+      const newCount = simRef.current.simulation.add_particles(buf, matIdx)
+      setParticleCount(newCount)
     }
   }, [])
 
@@ -215,333 +204,316 @@ export function FluidTest() {
     const container = canvasRef.current
     if (!container) return
 
-    // ── Create Web Worker ──────────────────────────────────────────────
-    const worker = new Worker(
-      new URL('../workers/sph-worker.ts', import.meta.url),
-      { type: 'module' },
-    )
+    let cancelled = false
 
-    // Scene
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x060810)
+    const setup = async () => {
+      // ── Initialize WASM ───────────────────────────────────────────
+      await initWasm('/sph_wasm_bg.wasm')
+      if (cancelled) return
+      const simulation = new Simulation()
+      setWasmReady(true)
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(
-      50,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      50,
-    )
-    camera.position.set(2.5, 1.8, 2.5)
-    camera.lookAt(0, 0, 0)
+      // Scene
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0x060810)
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setSize(container.clientWidth, container.clientHeight)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.2
-    container.appendChild(renderer.domElement)
+      // Camera
+      const camera = new THREE.PerspectiveCamera(
+        50,
+        container.clientWidth / container.clientHeight,
+        0.1,
+        50,
+      )
+      camera.position.set(2.5, 1.8, 2.5)
+      camera.lookAt(0, 0, 0)
 
-    // Controls
-    const controls = new OrbitControls(camera, renderer.domElement)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.08
-    controls.minDistance = 1.5
-    controls.maxDistance = 8
+      // Renderer
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+      renderer.setSize(container.clientWidth, container.clientHeight)
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+      renderer.toneMapping = THREE.ACESFilmicToneMapping
+      renderer.toneMappingExposure = 1.2
+      container.appendChild(renderer.domElement)
 
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x334466, 0.6)
-    scene.add(ambientLight)
-    const directLight = new THREE.DirectionalLight(0xffffff, 1.0)
-    directLight.position.set(3, 5, 3)
-    scene.add(directLight)
-    const pointLight = new THREE.PointLight(0x00aaff, 0.4, 10)
-    pointLight.position.set(-2, 2, -2)
-    scene.add(pointLight)
+      // Controls
+      const controls = new OrbitControls(camera, renderer.domElement)
+      controls.enableDamping = true
+      controls.dampingFactor = 0.08
+      controls.minDistance = 1.5
+      controls.maxDistance = 8
 
-    // Glass box (wireframe edges)
-    const boxGeo = new THREE.BoxGeometry(BOX_W, BOX_H, BOX_D)
-    const edgesGeo = new THREE.EdgesGeometry(boxGeo)
-    const edgesMat = new THREE.LineBasicMaterial({
-      color: 0x00bbff,
-      transparent: true,
-      opacity: 0.35,
-    })
-    const boxMesh = new THREE.LineSegments(edgesGeo, edgesMat)
-    scene.add(boxMesh)
+      // Lighting
+      const ambientLight = new THREE.AmbientLight(0x334466, 0.6)
+      scene.add(ambientLight)
+      const directLight = new THREE.DirectionalLight(0xffffff, 1.0)
+      directLight.position.set(3, 5, 3)
+      scene.add(directLight)
+      const pointLight = new THREE.PointLight(0x00aaff, 0.4, 10)
+      pointLight.position.set(-2, 2, -2)
+      scene.add(pointLight)
 
-    // Glass panels (very transparent)
-    const glassMat = new THREE.MeshPhysicalMaterial({
-      color: 0x88ccff,
-      transparent: true,
-      opacity: 0.06,
-      roughness: 0.05,
-      metalness: 0.0,
-      side: THREE.DoubleSide,
-    })
-    const glassBox = new THREE.Mesh(boxGeo, glassMat)
-    scene.add(glassBox)
-
-    // Ground plane for click detection
-    const clickPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(BOX_W, BOX_D),
-      new THREE.MeshBasicMaterial({ visible: false }),
-    )
-    clickPlane.rotation.x = -Math.PI / 2
-    clickPlane.position.y = 0
-    scene.add(clickPlane)
-
-    // Floor grid inside box
-    const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 10, 10)
-    const floorMat = new THREE.MeshBasicMaterial({
-      color: 0x0a1828,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.2,
-    })
-    const floorMesh = new THREE.Mesh(floorGeo, floorMat)
-    floorMesh.rotation.x = -Math.PI / 2
-    floorMesh.position.y = -HALF_H + 0.001
-    scene.add(floorMesh)
-
-    // ── Instanced meshes (one per material for color) ─────────────────
-    const instancedMeshes = new Map<number, THREE.InstancedMesh>()
-    const sphereGeo = new THREE.SphereGeometry(VISUAL_RADIUS, 8, 6)
-
-    MATERIALS.forEach((mat, idx) => {
-      const color = new THREE.Color(mat.color)
-      const meshMat = new THREE.MeshStandardMaterial({
-        color: color,
-        roughness: 0.3,
-        metalness: mat.name === 'Mercury' ? 0.9 : 0.1,
-        emissive: mat.emissive ? color.clone().multiplyScalar(0.5) : new THREE.Color(0x000000),
-        emissiveIntensity: mat.emissive ? 1.5 : 0,
+      // Glass box (wireframe edges)
+      const boxGeo = new THREE.BoxGeometry(BOX_W, BOX_H, BOX_D)
+      const edgesGeo = new THREE.EdgesGeometry(boxGeo)
+      const edgesMat = new THREE.LineBasicMaterial({
+        color: 0x00bbff,
+        transparent: true,
+        opacity: 0.35,
       })
-      const instMesh = new THREE.InstancedMesh(sphereGeo, meshMat, MAX_PARTICLES)
-      instMesh.count = 0
-      instMesh.frustumCulled = false
-      scene.add(instMesh)
-      instancedMeshes.set(idx, instMesh)
-    })
+      const boxMesh = new THREE.LineSegments(edgesGeo, edgesMat)
+      scene.add(boxMesh)
 
-    // Raycaster for click-to-spawn
-    const raycaster = new THREE.Raycaster()
-    const mouse = new THREE.Vector2()
+      // Glass panels (very transparent)
+      const glassMat = new THREE.MeshPhysicalMaterial({
+        color: 0x88ccff,
+        transparent: true,
+        opacity: 0.06,
+        roughness: 0.05,
+        metalness: 0.0,
+        side: THREE.DoubleSide,
+      })
+      const glassBox = new THREE.Mesh(boxGeo, glassMat)
+      scene.add(glassBox)
 
-    // ── Store in ref ──────────────────────────────────────────────────
-    simRef.current = {
-      worker,
-      scene,
-      camera,
-      renderer,
-      controls,
-      instancedMeshes,
-      animId: 0,
-      lastTime: performance.now(),
-      fpsAccum: 0,
-      fpsFrames: 0,
-      selectedMaterial: 0,
-      gravity: 9.81,
-      timeScale: 1.0,
-      raycaster,
-      mouse,
-      boxMesh,
-      latestPositions: null,
-      latestVelocities: null,
-      latestMaterials: null,
-      latestCount: 0,
-      workerBusy: false,
-      workerReady: false,
-    }
+      // Ground plane for click detection
+      const clickPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(BOX_W, BOX_D),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      )
+      clickPlane.rotation.x = -Math.PI / 2
+      clickPlane.position.y = 0
+      scene.add(clickPlane)
 
-    // ── Worker message handler ────────────────────────────────────────
-    worker.onmessage = (e: MessageEvent) => {
-      const sim = simRef.current
-      if (!sim) return
+      // Floor grid inside box
+      const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 10, 10)
+      const floorMat = new THREE.MeshBasicMaterial({
+        color: 0x0a1828,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.2,
+      })
+      const floorMesh = new THREE.Mesh(floorGeo, floorMat)
+      floorMesh.rotation.x = -Math.PI / 2
+      floorMesh.position.y = -HALF_H + 0.001
+      scene.add(floorMesh)
 
-      const msg = e.data
-      switch (msg.type) {
-        case 'ready':
-          sim.workerReady = true
-          worker.postMessage({ type: 'init' })
-          break
+      // ── Instanced meshes (one per material for color) ─────────────────
+      const instancedMeshes = new Map<number, THREE.InstancedMesh>()
+      const sphereGeo = new THREE.SphereGeometry(VISUAL_RADIUS, 6, 4)
 
-        case 'initDone':
-          // Worker is initialized
-          break
-
-        case 'stepResult':
-          sim.latestPositions = msg.positions as Float32Array
-          sim.latestVelocities = msg.velocities as Float32Array
-          sim.latestMaterials = msg.materials as Uint8Array
-          sim.latestCount = msg.count as number
-          sim.workerBusy = false
-          break
-
-        case 'particlesAdded':
-          setParticleCount(msg.count as number)
-          break
-
-        case 'resetDone':
-          setParticleCount(0)
-          break
-      }
-    }
-
-    // ── Click handler ─────────────────────────────────────────────────
-    const onPointerDown = (e: PointerEvent) => {
-      if (!simRef.current) return
-      if (e.button !== 0) return
-      const rect = renderer.domElement.getBoundingClientRect()
-      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-
-      raycaster.setFromCamera(mouse, camera)
-
-      const intersects = raycaster.intersectObject(glassBox)
-      if (intersects.length > 0) {
-        const pt = intersects[0].point
-        const spawnY = Math.min(HALF_H - 0.15, Math.max(-HALF_H + 0.15, pt.y))
-        spawnParticles(new THREE.Vector3(
-          Math.max(-HALF_W + 0.2, Math.min(HALF_W - 0.2, pt.x)),
-          spawnY,
-          Math.max(-HALF_D + 0.2, Math.min(HALF_D - 0.2, pt.z)),
-        ))
-      }
-    }
-    renderer.domElement.addEventListener('pointerdown', onPointerDown)
-
-    // ── Dummy matrix for instance updates ─────────────────────────────
-    const dummy = new THREE.Matrix4()
-    const tempColor = new THREE.Color()
-
-    // ── Animation loop ────────────────────────────────────────────────
-    const animate = () => {
-      const sim = simRef.current
-      if (!sim) return
-      sim.animId = requestAnimationFrame(animate)
-
-      const now = performance.now()
-      const rawDt = (now - sim.lastTime) / 1000
-      sim.lastTime = now
-
-      // FPS tracking
-      sim.fpsAccum += rawDt
-      sim.fpsFrames++
-      if (sim.fpsAccum >= 0.5) {
-        const currentFps = Math.round(sim.fpsFrames / sim.fpsAccum)
-        setFps(currentFps)
-        setFpsWarning(currentFps < 30 && sim.latestCount > 100)
-        sim.fpsAccum = 0
-        sim.fpsFrames = 0
-      }
-
-      // Send step to worker if it's not busy
-      if (!sim.workerBusy && sim.workerReady && sim.latestCount > 0) {
-        sim.workerBusy = true
-        const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-        // More substeps for high-viscosity materials (honey, lava) to keep simulation stable
-        const matVisc = MATERIALS[sim.selectedMaterial].viscosity
-        const subSteps = matVisc > 1 ? 8 : 4
-        sim.worker.postMessage({
-          type: 'step',
-          gravity: sim.gravity,
-          dt: simDt,
-          subSteps,
+      MATERIALS.forEach((mat, idx) => {
+        const color = new THREE.Color(mat.color)
+        const meshMat = new THREE.MeshStandardMaterial({
+          color: color,
+          roughness: 0.3,
+          metalness: mat.name === 'Mercury' ? 0.9 : 0.1,
+          emissive: mat.emissive ? color.clone().multiplyScalar(0.5) : new THREE.Color(0x000000),
+          emissiveIntensity: mat.emissive ? 1.5 : 0,
         })
+        const instMesh = new THREE.InstancedMesh(sphereGeo, meshMat, MAX_PARTICLES)
+        instMesh.count = 0
+        instMesh.frustumCulled = false
+        scene.add(instMesh)
+        instancedMeshes.set(idx, instMesh)
+      })
+
+      // Raycaster for click-to-spawn
+      const raycaster = new THREE.Raycaster()
+      const mouse = new THREE.Vector2()
+
+      // ── Store in ref ──────────────────────────────────────────────────
+      simRef.current = {
+        simulation,
+        scene,
+        camera,
+        renderer,
+        controls,
+        instancedMeshes,
+        animId: 0,
+        lastTime: performance.now(),
+        fpsAccum: 0,
+        fpsFrames: 0,
+        selectedMaterial: 0,
+        gravity: 9.81,
+        timeScale: 1.0,
+        raycaster,
+        mouse,
+        boxMesh,
       }
 
-      // ── Update instanced meshes from latest worker data ──────────
-      if (sim.latestPositions && sim.latestCount > 0) {
-        const positions = sim.latestPositions
-        const velocities = sim.latestVelocities!
-        const mats = sim.latestMaterials!
-        const cnt = sim.latestCount
+      // ── Click handler ─────────────────────────────────────────────────
+      const onPointerDown = (e: PointerEvent) => {
+        if (!simRef.current) return
+        if (e.button !== 0) return
+        const rect = renderer.domElement.getBoundingClientRect()
+        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
 
-        // Count per material
-        const counts = new Map<number, number>()
-        const offsets = new Map<number, number>()
-        MATERIALS.forEach((_, idx) => {
-          counts.set(idx, 0)
-          offsets.set(idx, 0)
-        })
+        raycaster.setFromCamera(mouse, camera)
 
-        for (let i = 0; i < cnt; i++) {
-          const m = mats[i]
-          counts.set(m, (counts.get(m) || 0) + 1)
+        const intersects = raycaster.intersectObject(glassBox)
+        if (intersects.length > 0) {
+          const pt = intersects[0].point
+          const spawnY = Math.min(HALF_H - 0.15, Math.max(-HALF_H + 0.15, pt.y))
+          spawnParticles(new THREE.Vector3(
+            Math.max(-HALF_W + 0.2, Math.min(HALF_W - 0.2, pt.x)),
+            spawnY,
+            Math.max(-HALF_D + 0.2, Math.min(HALF_D - 0.2, pt.z)),
+          ))
+        }
+      }
+      renderer.domElement.addEventListener('pointerdown', onPointerDown)
+
+      // ── Dummy matrix for instance updates ─────────────────────────────
+      const dummy = new THREE.Matrix4()
+      const tempColor = new THREE.Color()
+
+      // ── Animation loop ────────────────────────────────────────────────
+      const animate = () => {
+        const sim = simRef.current
+        if (!sim) return
+        sim.animId = requestAnimationFrame(animate)
+
+        const now = performance.now()
+        const rawDt = (now - sim.lastTime) / 1000
+        sim.lastTime = now
+
+        // FPS tracking
+        sim.fpsAccum += rawDt
+        sim.fpsFrames++
+        if (sim.fpsAccum >= 0.5) {
+          const currentFps = Math.round(sim.fpsFrames / sim.fpsAccum)
+          setFps(currentFps)
+          const count = sim.simulation.get_count()
+          setFpsWarning(currentFps < 30 && count > 100)
+          sim.fpsAccum = 0
+          sim.fpsFrames = 0
         }
 
-        sim.instancedMeshes.forEach((mesh, idx) => {
-          mesh.count = counts.get(idx) || 0
-        })
+        // ── Step WASM simulation ──────────────────────────────────────
+        const count = sim.simulation.get_count()
+        if (count > 0) {
+          const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
+          sim.simulation.step(sim.gravity, simDt, 4)
 
-        // Set transforms and colors
-        for (let i = 0; i < cnt; i++) {
-          const m = mats[i]
-          const mesh = sim.instancedMeshes.get(m)
-          if (!mesh) continue
-          const localIdx = offsets.get(m) || 0
-          offsets.set(m, localIdx + 1)
+          // Get results from WASM
+          const positions = sim.simulation.get_positions()
+          const velocities = sim.simulation.get_velocities()
+          const mats = sim.simulation.get_materials()
 
-          dummy.makeTranslation(
-            positions[i * 3],
-            positions[i * 3 + 1],
-            positions[i * 3 + 2],
-          )
-          mesh.setMatrixAt(localIdx, dummy)
+          // Count per material
+          const counts = new Map<number, number>()
+          const offsets = new Map<number, number>()
+          MATERIALS.forEach((_, idx) => {
+            counts.set(idx, 0)
+            offsets.set(idx, 0)
+          })
 
-          // Color variation based on velocity magnitude
-          const svx = velocities[i * 3]
-          const svy = velocities[i * 3 + 1]
-          const svz = velocities[i * 3 + 2]
-          const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
-          const brightness = Math.min(1.0, 0.6 + speed * 0.15)
-          const mat = MATERIALS[m]
-          tempColor.setHex(mat.color)
-          tempColor.multiplyScalar(brightness)
-          mesh.setColorAt(localIdx, tempColor)
-        }
-
-        // Mark for GPU upload
-        sim.instancedMeshes.forEach((mesh) => {
-          if (mesh.count > 0) {
-            mesh.instanceMatrix.needsUpdate = true
-            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+          for (let i = 0; i < count; i++) {
+            const m = mats[i]
+            counts.set(m, (counts.get(m) || 0) + 1)
           }
-        })
 
-        setParticleCount(cnt)
+          sim.instancedMeshes.forEach((mesh, idx) => {
+            mesh.count = counts.get(idx) || 0
+          })
+
+          // Set transforms and colors
+          for (let i = 0; i < count; i++) {
+            const m = mats[i]
+            const mesh = sim.instancedMeshes.get(m)
+            if (!mesh) continue
+            const localIdx = offsets.get(m) || 0
+            offsets.set(m, localIdx + 1)
+
+            dummy.makeTranslation(
+              positions[i * 3],
+              positions[i * 3 + 1],
+              positions[i * 3 + 2],
+            )
+            mesh.setMatrixAt(localIdx, dummy)
+
+            // Color variation based on velocity magnitude
+            const svx = velocities[i * 3]
+            const svy = velocities[i * 3 + 1]
+            const svz = velocities[i * 3 + 2]
+            const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
+            const brightness = Math.min(1.0, 0.6 + speed * 0.15)
+            const mat = MATERIALS[m]
+            tempColor.setHex(mat.color)
+            tempColor.multiplyScalar(brightness)
+            mesh.setColorAt(localIdx, tempColor)
+          }
+
+          // Mark for GPU upload
+          sim.instancedMeshes.forEach((mesh) => {
+            if (mesh.count > 0) {
+              mesh.instanceMatrix.needsUpdate = true
+              if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+            }
+          })
+
+          setParticleCount(count)
+        }
+
+        // Update controls and render
+        sim.controls.update()
+        sim.renderer.render(sim.scene, sim.camera)
       }
 
-      // Update controls and render
-      sim.controls.update()
-      sim.renderer.render(sim.scene, sim.camera)
+      animate()
+
+      // ── Resize handler ────────────────────────────────────────────────
+      const onResize = () => {
+        if (!container || !simRef.current) return
+        const w = container.clientWidth
+        const h = container.clientHeight
+        camera.aspect = w / h
+        camera.updateProjectionMatrix()
+        renderer.setSize(w, h)
+      }
+      window.addEventListener('resize', onResize)
+
+      // Store cleanup references
+      cleanupRef.onResize = onResize
+      cleanupRef.onPointerDown = onPointerDown
+      cleanupRef.renderer = renderer
+      cleanupRef.container = container
     }
 
-    animate()
+    // Cleanup refs
+    const cleanupRef: {
+      onResize?: () => void
+      onPointerDown?: (e: PointerEvent) => void
+      renderer?: THREE.WebGLRenderer
+      container?: HTMLDivElement
+    } = {}
 
-    // ── Resize handler ────────────────────────────────────────────────
-    const onResize = () => {
-      if (!container || !simRef.current) return
-      const w = container.clientWidth
-      const h = container.clientHeight
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(w, h)
-    }
-    window.addEventListener('resize', onResize)
+    setup()
 
     // ── Cleanup ───────────────────────────────────────────────────────
     return () => {
-      window.removeEventListener('resize', onResize)
-      renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+      cancelled = true
+      if (cleanupRef.onResize) {
+        window.removeEventListener('resize', cleanupRef.onResize)
+      }
+      if (cleanupRef.renderer && cleanupRef.onPointerDown) {
+        cleanupRef.renderer.domElement.removeEventListener('pointerdown', cleanupRef.onPointerDown)
+      }
       if (simRef.current) {
         cancelAnimationFrame(simRef.current.animId)
-        simRef.current.worker.terminate()
+        simRef.current.simulation.free()
       }
-      renderer.dispose()
-      container.removeChild(renderer.domElement)
+      if (cleanupRef.renderer) {
+        cleanupRef.renderer.dispose()
+      }
+      if (cleanupRef.container && cleanupRef.renderer) {
+        try {
+          cleanupRef.container.removeChild(cleanupRef.renderer.domElement)
+        } catch (_) {
+          // Element may already be removed
+        }
+      }
       simRef.current = null
     }
   }, [spawnParticles])
@@ -582,7 +554,7 @@ export function FluidTest() {
             color: 'rgba(100,150,200,0.5)',
             letterSpacing: 1,
           }}>
-            structure.md S3.2 | Web Worker
+            structure.md S3.2 | Rust/WASM
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -603,6 +575,19 @@ export function FluidTest() {
           }}>
             FPS: {fps}
           </span>
+          {wasmReady && (
+            <span style={{
+              fontSize: 8,
+              fontWeight: 700,
+              color: '#000',
+              background: '#00ff88',
+              padding: '1px 5px',
+              borderRadius: 3,
+              letterSpacing: 1,
+            }}>
+              WASM
+            </span>
+          )}
           <span style={{
             fontSize: 10,
             color: 'rgba(100,150,200,0.6)',
@@ -639,10 +624,10 @@ export function FluidTest() {
               textAlign: 'center',
               lineHeight: 2,
             }}>
-              CLICK THE BOX TO DROP FLUID
+              {wasmReady ? 'CLICK THE BOX TO DROP FLUID' : 'LOADING WASM...'}
               <br />
               <span style={{ fontSize: 10, opacity: 0.6 }}>
-                Drag to orbit / Scroll to zoom
+                {wasmReady ? 'Drag to orbit / Scroll to zoom' : 'Initializing Rust SPH solver'}
               </span>
             </div>
           )}
@@ -828,7 +813,7 @@ export function FluidTest() {
                   <div>F_p = -\u03a3 m_j(P_i/\u03c1_i\u00b2 + P_j/\u03c1_j\u00b2)\u2207W</div>
                   <div>F_v = \u03bc\u03a3 m_j(v_j-v_i)/\u03c1_j \u2207\u00b2W</div>
                   <div>Kernel: Cubic spline (M4)</div>
-                  <div>Solver: Web Worker, 4-8 substeps</div>
+                  <div>Solver: Rust/WASM, 4 substeps</div>
                   <div style={{ marginTop: 4, color: 'rgba(0,180,255,0.4)', letterSpacing: 1 }}>
                     From structure.md S3.2
                   </div>
