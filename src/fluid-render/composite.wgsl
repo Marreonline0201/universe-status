@@ -153,7 +153,11 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var fluid_contribution = diffuse_color * diffuse_light * opacity;
 
     // Emissive glow: lava and molten copper emit their own light
-    var emissive = diffuse_color * uniforms.emissive_intensity;
+    // Glow intensity varies with thickness — thicker = brighter core, thin edges glow softly
+    var glow_core = smoothstep(0.0, 0.5, thickness);
+    var emissive = diffuse_color * uniforms.emissive_intensity * (0.6 + 0.8 * glow_core);
+    // Add hot-white core for thick emissive regions (simulates incandescence)
+    emissive += vec3f(1.0, 0.9, 0.5) * uniforms.emissive_intensity * 0.3 * glow_core * glow_core;
 
     // Mix: transparent fluid shows background through, opaque shows color
     var base_color = mix(refraction_color, fluid_contribution, opacity * 0.7);
@@ -167,9 +171,10 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var spec_intensity = mix(1.2, 2.5, uniforms.metalness);
     var final_color = shaded + vec3f(specular * spec_intensity) + emissive;
 
-    // Edge darkening — subtle contact shadow where fluid meets container
+    // Edge darkening — subtle contact shadow (reduced for emissive materials)
     var edge_ao = smoothstep(0.0, 0.3, thickness);
-    final_color *= mix(0.7, 1.0, edge_ao);
+    var ao_strength = mix(0.7, 1.0, max(edge_ao, uniforms.emissive_intensity * 0.5));
+    final_color *= ao_strength;
 
     // Alpha: fluid pixels are semi-transparent at thin edges, emissive fluids more opaque
     var alpha = clamp(opacity * 1.5 + uniforms.emissive_intensity * 0.3, 0.3, 1.0);
