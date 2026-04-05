@@ -110,6 +110,7 @@ const BOX_D = 1.5
 const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
+const AMBIENT_TEMP = 20.0
 
 
 // ── React Component ──────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ export function FluidTest() {
     raycaster: THREE.Raycaster
     mouse: THREE.Vector2
     boxMesh: THREE.LineSegments
+    avgTemp: number
   } | null>(null)
 
   const resetSim = useCallback(() => {
@@ -353,6 +355,7 @@ export function FluidTest() {
         raycaster,
         mouse,
         boxMesh,
+        avgTemp: AMBIENT_TEMP,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -409,14 +412,18 @@ export function FluidTest() {
           const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
           sim.simulation.step(sim.gravity, simDt, 2)
 
-          // Get results from WASM
+          // Get results from WASM (including temperature + phase)
           const positions = sim.simulation.get_positions()
           const velocities = sim.simulation.get_velocities()
           const mats = sim.simulation.get_materials()
+          const temps = sim.simulation.get_temperatures()
+          const phases = sim.simulation.get_phases()
 
           // Write positions and colors directly into GPU buffers
           const posArr = sim.posAttr.array as Float32Array
           const colArr = sim.colAttr.array as Float32Array
+
+          let avgTemp = 0
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
@@ -424,17 +431,53 @@ export function FluidTest() {
             posArr[i3 + 1] = positions[i3 + 1]
             posArr[i3 + 2] = positions[i3 + 2]
 
-            // Color from material + velocity brightness
-            const svx = velocities[i3]
-            const svy = velocities[i3 + 1]
-            const svz = velocities[i3 + 2]
-            const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
-            const brightness = Math.min(1.0, 0.6 + speed * 0.15)
             const mat = MATERIALS[mats[i]]
-            tempColor.setHex(mat.color).multiplyScalar(brightness)
+            const temp = temps[i]
+            const phase = phases[i]
+            avgTemp += temp
+
+            // §3.0: Color encodes temperature + phase
+            // Base: material color, then shift toward orange/white as temperature rises
+            tempColor.setHex(mat.color)
+
+            if (phase === 1) {
+              // Gas phase: white/light, faded
+              tempColor.lerp(new THREE.Color(0xffffff), 0.6)
+              tempColor.multiplyScalar(0.5 + Math.random() * 0.3) // shimmer
+            } else if (phase === 2) {
+              // Solid/frozen: darken and desaturate
+              tempColor.lerp(new THREE.Color(0x334455), 0.5)
+            } else {
+              // Liquid: brightness from velocity + temperature glow
+              const svx = velocities[i3]
+              const svy = velocities[i3 + 1]
+              const svz = velocities[i3 + 2]
+              const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
+              const brightness = Math.min(1.0, 0.6 + speed * 0.15)
+              tempColor.multiplyScalar(brightness)
+
+              // Hot glow: shift toward orange/white above 200°C
+              if (temp > 200) {
+                const hotFactor = Math.min(1.0, (temp - 200) / 1000)
+                const hotColor = new THREE.Color(0xff6600).lerp(new THREE.Color(0xffffff), hotFactor * 0.5)
+                tempColor.lerp(hotColor, hotFactor * 0.7)
+              }
+
+              // Cold tint: shift toward ice blue below 0°C
+              if (temp < 0) {
+                const coldFactor = Math.min(1.0, -temp / 50)
+                tempColor.lerp(new THREE.Color(0x88ccff), coldFactor * 0.5)
+              }
+            }
+
             colArr[i3]     = tempColor.r
             colArr[i3 + 1] = tempColor.g
             colArr[i3 + 2] = tempColor.b
+          }
+
+          // Update average temperature display
+          if (count > 0) {
+            sim.avgTemp = avgTemp / count
           }
 
           sim.posAttr.needsUpdate = true
@@ -542,7 +585,7 @@ export function FluidTest() {
             color: 'rgba(100,150,200,0.5)',
             letterSpacing: 1,
           }}>
-            structure.md S3.2 | Rust/WASM
+            structure.md S3.0+S3.1+S3.2+S3.11 | Rust/WASM
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>

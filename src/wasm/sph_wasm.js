@@ -12,6 +12,7 @@ export class Simulation {
         wasm.__wbg_simulation_free(ptr, 0);
     }
     /**
+     * Add particles with a specific starting temperature
      * @param {Float32Array} positions
      * @param {number} mat_idx
      * @returns {number}
@@ -20,6 +21,19 @@ export class Simulation {
         const ptr0 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.simulation_add_particles(this.__wbg_ptr, ptr0, len0, mat_idx);
+        return ret >>> 0;
+    }
+    /**
+     * Add particles with explicit temperature (-999 = use material default)
+     * @param {Float32Array} positions
+     * @param {number} mat_idx
+     * @param {number} temp
+     * @returns {number}
+     */
+    add_particles_with_temp(positions, mat_idx, temp) {
+        const ptr0 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.simulation_add_particles_with_temp(this.__wbg_ptr, ptr0, len0, mat_idx, temp);
         return ret >>> 0;
     }
     /**
@@ -39,10 +53,30 @@ export class Simulation {
         return v1;
     }
     /**
+     * Get phase state per particle (0=liquid, 1=gas, 2=solid)
+     * @returns {Uint8Array}
+     */
+    get_phases() {
+        const ret = wasm.simulation_get_phases(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * @returns {Float32Array}
      */
     get_positions() {
         const ret = wasm.simulation_get_positions(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * §3.0: get temperature per particle for visualization
+     * @returns {Float32Array}
+     */
+    get_temperatures() {
+        const ret = wasm.simulation_get_temperatures(this.__wbg_ptr);
         var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
@@ -64,6 +98,13 @@ export class Simulation {
     }
     reset() {
         wasm.simulation_reset(this.__wbg_ptr);
+    }
+    /**
+     * Set floor temperature (simulates heated/cooled surface)
+     * @param {number} _floor_temp
+     */
+    set_heat_source(_floor_temp) {
+        wasm.simulation_set_heat_source(this.__wbg_ptr, _floor_temp);
     }
     /**
      * @param {number} gravity

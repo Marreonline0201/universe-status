@@ -4,13 +4,32 @@
 export class Simulation {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Add particles with a specific starting temperature
+     */
     add_particles(positions: Float32Array, mat_idx: number): number;
+    /**
+     * Add particles with explicit temperature (-999 = use material default)
+     */
+    add_particles_with_temp(positions: Float32Array, mat_idx: number, temp: number): number;
     get_count(): number;
     get_materials(): Uint8Array;
+    /**
+     * Get phase state per particle (0=liquid, 1=gas, 2=solid)
+     */
+    get_phases(): Uint8Array;
     get_positions(): Float32Array;
+    /**
+     * §3.0: get temperature per particle for visualization
+     */
+    get_temperatures(): Float32Array;
     get_velocities(): Float32Array;
     constructor();
     reset(): void;
+    /**
+     * Set floor temperature (simulates heated/cooled surface)
+     */
+    set_heat_source(_floor_temp: number): void;
     step(gravity: number, dt: number, sub_steps: number): void;
 }
 
@@ -20,12 +39,16 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_simulation_free: (a: number, b: number) => void;
     readonly simulation_add_particles: (a: number, b: number, c: number, d: number) => number;
+    readonly simulation_add_particles_with_temp: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly simulation_get_count: (a: number) => number;
     readonly simulation_get_materials: (a: number) => [number, number];
+    readonly simulation_get_phases: (a: number) => [number, number];
     readonly simulation_get_positions: (a: number) => [number, number];
+    readonly simulation_get_temperatures: (a: number) => [number, number];
     readonly simulation_get_velocities: (a: number) => [number, number];
     readonly simulation_new: () => number;
     readonly simulation_reset: (a: number) => void;
+    readonly simulation_set_heat_source: (a: number, b: number) => void;
     readonly simulation_step: (a: number, b: number, c: number, d: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
