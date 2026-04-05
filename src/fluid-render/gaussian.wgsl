@@ -15,8 +15,9 @@ struct FilterUniforms {
 @group(0) @binding(2) var<uniform> uniforms: FilterUniforms;
 
 @fragment
-fn fs(input: FragmentInput) -> @location(0) vec4f {
-    var thickness = textureLoad(thickness_texture, vec2u(input.iuv), 0).r;
+fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) vec4f {
+    var pixel = frag_pos.xy;
+    var thickness = textureLoad(thickness_texture, vec2u(pixel), 0).r;
 
     if (thickness <= 0.0) {
         return vec4f(0.0, 0.0, 0.0, 1.0);
@@ -31,7 +32,7 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
 
     for (var x: i32 = -filter_size; x <= filter_size; x++) {
         var coords = vec2f(f32(x));
-        var sampled = textureLoad(thickness_texture, vec2u(input.iuv + coords * uniforms.blur_dir), 0).r;
+        var sampled = textureLoad(thickness_texture, vec2u(pixel + coords * uniforms.blur_dir), 0).r;
 
         var w = exp(-coords.x * coords.x / two_sigma);
         sum += sampled * w;

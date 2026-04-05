@@ -525,6 +525,17 @@ export function FluidTest() {
             // At SPACING=0.02, adjacent particles are 0.02 apart.
             // Sphere diameter should be >= spacing so sprites overlap: size >= 0.04
             sim.fluidRenderer.updateCamera(viewMat, projMat, 0.08)
+            // Debug: log first particle position + matrices once
+            if (count > 0 && !(window as any).__fluidDebugLogged) {
+              (window as any).__fluidDebugLogged = true
+              console.log('Particle 0 world pos:', positions[0], positions[1], positions[2])
+              console.log('Camera pos:', sim.camera.position.x, sim.camera.position.y, sim.camera.position.z)
+              console.log('View matrix[5] (Y scale):', viewMat[5])
+              console.log('Proj matrix[5] (Y scale):', projMat[5])
+              console.log('Proj matrix[10] (Z scale):', projMat[10])
+              console.log('Proj matrix[14] (Z offset):', projMat[14])
+              console.log('coordinateSystem:', (sim.camera as any).coordinateSystem)
+            }
           }
 
           if (count > 0) sim.avgTemp = avgTemp / count

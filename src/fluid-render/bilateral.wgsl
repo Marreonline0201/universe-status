@@ -27,8 +27,9 @@ override projected_particle_constant: f32 = 100.0;
 override max_filter_size: f32 = 20.0;
 
 @fragment
-fn fs(input: FragmentInput) -> @location(0) vec4f {
-    var depth = abs(textureLoad(depth_texture, vec2u(input.iuv), 0).r);
+fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) vec4f {
+    var pixel = frag_pos.xy; // (0,0) = top-left in WebGPU
+    var depth = abs(textureLoad(depth_texture, vec2u(pixel), 0).r);
 
     // No fluid at this pixel
     if (depth >= 1e4) {
@@ -47,7 +48,7 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
 
     for (var x: i32 = -filter_size; x <= filter_size; x++) {
         var coords = vec2f(f32(x));
-        var sampled_depth = abs(textureLoad(depth_texture, vec2u(input.iuv + coords * uniforms.blur_dir), 0).r);
+        var sampled_depth = abs(textureLoad(depth_texture, vec2u(pixel + coords * uniforms.blur_dir), 0).r);
 
         // Spatial Gaussian weight
         var rr = dot(coords, coords);
