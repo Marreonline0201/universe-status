@@ -392,7 +392,7 @@ export function FluidTest() {
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = 20
+      mcubes.isolation = 15
       mcubes.visible = true
       scene.add(mcubes)
 
@@ -637,8 +637,10 @@ export function FluidTest() {
           // Use MC's own addBall API — coordinates in [0,1] range
           // Map world particle positions to MC [0,1] with margin
           const margin = 0.08
-          const str = 0.005  // ball strength — positive field only
-          const sub = 0      // no per-ball subtract — isolation is the only threshold
+          // subtract MUST be > 0 — at 0, addBall computes infinite radius
+          // and iterates ALL grid cells per particle (O(n × res³) = death)
+          const str = 0.008
+          const sub = 10
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
