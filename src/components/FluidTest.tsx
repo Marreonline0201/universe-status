@@ -379,16 +379,16 @@ export function FluidTest() {
 
       // §3.2 Tier 2: SSFR — Screen-Space Fluid Rendering
       // Raw WebGPU fluid renderer — overlay canvas for SSFR
+      // Init async — updates simRef when ready
       let fluidRenderer: FluidRenderer | null = null
-      const initFluidRenderer = async () => {
+      ;(async () => {
         const fr = new FluidRenderer()
-        const w = container.clientWidth
-        const h = container.clientHeight
-        if (await fr.init(container, w, h)) {
+        if (await fr.init(container, container.clientWidth, container.clientHeight)) {
           fluidRenderer = fr
+          // Update the ref so the render loop picks it up
+          if (simRef.current) simRef.current.fluidRenderer = fr
         }
-      }
-      initFluidRenderer().catch(() => {})
+      })()
 
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
