@@ -5,10 +5,9 @@
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import * as THREE from 'three'
-import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
+import * as THREE from 'three/webgpu'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
@@ -150,7 +149,7 @@ export function FluidTest() {
     simulation: Simulation
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
-    renderer: WebGPURenderer
+    renderer: THREE.WebGPURenderer
     controls: OrbitControls
     points: THREE.Points
     posAttr: THREE.BufferAttribute
@@ -256,7 +255,7 @@ export function FluidTest() {
       camera.lookAt(0, 0, 0)
 
       // Renderer — WebGPU with WebGL fallback
-      const renderer = new WebGPURenderer({ antialias: true })
+      const renderer = new THREE.WebGPURenderer({ antialias: true })
       await renderer.init()
       renderer.setSize(container.clientWidth, container.clientHeight)
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -351,11 +350,9 @@ export function FluidTest() {
       const circleTexture = new THREE.CanvasTexture(metaballCanvas)
 
       const pointsMat = new THREE.PointsMaterial({
-        size: 14,
+        size: 50,
         sizeAttenuation: false,
         vertexColors: true,
-        map: circleTexture,
-        alphaTest: 0.1,
       })
       const points = new THREE.Points(pointsGeo, pointsMat)
       points.frustumCulled = false
@@ -687,7 +684,7 @@ export function FluidTest() {
     const cleanupRef: {
       onResize?: () => void
       onPointerDown?: (e: PointerEvent) => void
-      renderer?: WebGPURenderer
+      renderer?: THREE.WebGPURenderer
       container?: HTMLDivElement
     } = {}
 
