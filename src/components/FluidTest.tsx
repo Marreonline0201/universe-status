@@ -113,6 +113,23 @@ const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
 const AMBIENT_TEMP = 20.0
 
+// §3.2: SPH kernel and MC grid constants (from structure.md lines 1855-1863)
+const SPH_H = 0.04              // kernel radius (same as WASM)
+const SPACING = SPH_H * 0.5     // particle rest spacing = 0.02
+const MC_RES = 32               // 32³ grid (line 1855)
+const MC_THRESHOLD = 0.3        // ~0.6 for thick 3D fluid, lower for thin pools in demo
+const VOL_ELEMENT = SPACING * SPACING * SPACING  // m/ρ ≈ spacing³ for well-sampled SPH
+
+// §3.2: Cubic spline kernel W (same as WASM lib.rs)
+function sphKernelW(r: number): number {
+  const q = r / SPH_H
+  if (q >= 2.0) return 0
+  const sigma = 1.0 / (Math.PI * SPH_H * SPH_H * SPH_H)
+  if (q <= 1.0) return sigma * (1 - 1.5 * q * q + 0.75 * q * q * q)
+  const t = 2.0 - q
+  return sigma * 0.25 * t * t * t
+}
+
 
 // ── React Component ──────────────────────────────────────────────────────────
 
@@ -364,35 +381,17 @@ export function FluidTest() {
 
       // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
       // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
-      // MC provides smooth surface shape; Points provide per-material color
-      // Use clipping planes to prevent MC from extending outside box
-      const boxClipPlanes = [
-        new THREE.Plane(new THREE.Vector3(1, 0, 0), HALF_W),
-        new THREE.Plane(new THREE.Vector3(-1, 0, 0), HALF_W),
-        new THREE.Plane(new THREE.Vector3(0, 1, 0), HALF_H),
-        new THREE.Plane(new THREE.Vector3(0, -1, 0), HALF_H),
-        new THREE.Plane(new THREE.Vector3(0, 0, 1), HALF_D),
-        new THREE.Plane(new THREE.Vector3(0, 0, -1), HALF_D),
-      ]
-      renderer.localClippingEnabled = true
-
-      const mcMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xaaccee,
-        roughness: 0.05,
+      const mcMaterial = new THREE.MeshStandardMaterial({
+        color: 0x44aaff,
+        roughness: 0.2,
         metalness: 0.0,
-        transmission: 0.85,
-        thickness: 0.2,
-        transparent: true,
-        opacity: 0.35,
         side: THREE.DoubleSide,
-        depthWrite: false,
-        clippingPlanes: boxClipPlanes,
       })
-      const mcubes = new MarchingCubes(28, mcMaterial, false, true, 50000)
+      const mcubes = new MarchingCubes(MC_RES, mcMaterial, false, true, 50000)
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = 15
+      mcubes.isolation = MC_THRESHOLD
       mcubes.visible = true
       scene.add(mcubes)
 
@@ -564,7 +563,6 @@ export function FluidTest() {
 
           sim.posAttr.needsUpdate = true
           sim.colAttr.needsUpdate = true
-          // Show both: MC surface for smooth shape + Points for per-material color
           sim.points.geometry.setDrawRange(0, count)
 
           // §3.2 Tier 1: Marching Cubes surface extraction
@@ -634,21 +632,82 @@ export function FluidTest() {
             mcMat.opacity = 0.7
           }
 
-          // Use MC's own addBall API — coordinates in [0,1] range
-          // Map world particle positions to MC [0,1] with margin
-          const margin = 0.08
-          // subtract MUST be > 0 — at 0, addBall computes infinite radius
-          // and iterates ALL grid cells per particle (O(n × res³) = death)
-          const str = 0.008
-          const sub = 10
+          // §3.2 lines 1855-1863: Compute density field using SPH kernel
+          // φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
+          // Grid covers particle bounding box only (not full box)
+          // "Grid cell size = half the particle spacing (~0.03m)" — line 1856
+
+          // 1. Compute particle bounding box
+          let minX = Infinity, maxX = -Infinity
+          let minY = Infinity, maxY = -Infinity
+          let minZ = Infinity, maxZ = -Infinity
+          for (let i = 0; i < count; i++) {
+            const i3 = i * 3
+            if (positions[i3] < minX) minX = positions[i3]
+            if (positions[i3] > maxX) maxX = positions[i3]
+            if (positions[i3+1] < minY) minY = positions[i3+1]
+            if (positions[i3+1] > maxY) maxY = positions[i3+1]
+            if (positions[i3+2] < minZ) minZ = positions[i3+2]
+            if (positions[i3+2] > maxZ) maxZ = positions[i3+2]
+          }
+          // Expand by kernel radius (2H) so surface extends beyond outermost particles
+          const pad = 2 * SPH_H
+          minX -= pad; maxX += pad; minY -= pad; maxY += pad; minZ -= pad; maxZ += pad
+          // Clamp to box
+          minX = Math.max(minX, -HALF_W); maxX = Math.min(maxX, HALF_W)
+          minY = Math.max(minY, -HALF_H); maxY = Math.min(maxY, HALF_H)
+          minZ = Math.max(minZ, -HALF_D); maxZ = Math.min(maxZ, HALF_D)
+
+          const extW = maxX - minX, extH = maxY - minY, extD = maxZ - minZ
+
+          // 2. Position and scale MC to cover this region
+          sim.mcubes.position.set(minX, minY, minZ)
+          sim.mcubes.scale.set(extW, extH, extD)
+
+          // 3. Compute cell sizes — should be ~half particle spacing
+          const cellW = extW / MC_RES
+          const cellH = extH / MC_RES
+          const cellD = extD / MC_RES
+
+          // 4. Scatter particle density to grid using SPH kernel
+          const fieldArr = (sim.mcubes as any).field as Float32Array
+          const size2 = MC_RES * MC_RES
+          // Kernel support radius = 2H. Only need to check cells within that distance.
+          const kernelCells = Math.ceil(2 * SPH_H / Math.max(cellW, cellH, cellD))
+          const kernelRadSq = (2 * SPH_H) * (2 * SPH_H)
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-            // World to MC [0,1] with margin to keep surface inside box
-            const bx = margin + ((positions[i3]     + HALF_W) / BOX_W) * (1 - 2 * margin)
-            const by = margin + ((positions[i3 + 1] + HALF_H) / BOX_H) * (1 - 2 * margin)
-            const bz = margin + ((positions[i3 + 2] + HALF_D) / BOX_D) * (1 - 2 * margin)
-            sim.mcubes.addBall(bx, by, bz, str, sub)
+            const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2]
+
+            // Grid coordinates (particle relative to MC grid origin)
+            const gcx = (px - minX) / cellW
+            const gcy = (py - minY) / cellH
+            const gcz = (pz - minZ) / cellD
+
+            const ixMin = Math.max(0, Math.floor(gcx) - kernelCells)
+            const ixMax = Math.min(MC_RES - 1, Math.floor(gcx) + kernelCells)
+            const iyMin = Math.max(0, Math.floor(gcy) - kernelCells)
+            const iyMax = Math.min(MC_RES - 1, Math.floor(gcy) + kernelCells)
+            const izMin = Math.max(0, Math.floor(gcz) - kernelCells)
+            const izMax = Math.min(MC_RES - 1, Math.floor(gcz) + kernelCells)
+
+            for (let iz = izMin; iz <= izMax; iz++) {
+              const vz = minZ + iz * cellD
+              const dz = vz - pz
+              for (let iy = iyMin; iy <= iyMax; iy++) {
+                const vy = minY + iy * cellH
+                const dy = vy - py
+                for (let ix = ixMin; ix <= ixMax; ix++) {
+                  const vx = minX + ix * cellW
+                  const dx = vx - px
+                  const rsq = dx * dx + dy * dy + dz * dz
+                  if (rsq < kernelRadSq) {
+                    fieldArr[size2 * iz + MC_RES * iy + ix] += VOL_ELEMENT * sphKernelW(Math.sqrt(rsq))
+                  }
+                }
+              }
+            }
           }
           sim.mcubes.update()
 
