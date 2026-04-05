@@ -329,6 +329,20 @@ export function FluidTest() {
       wallMesh.position.z = -HALF_D + 0.001
       scene.add(wallMesh)
 
+      // Side wall grids — refraction visible from side angles
+      const sideGeo = new THREE.PlaneGeometry(BOX_D - 0.02, BOX_H - 0.02, 15, 15)
+      const sideMat = new THREE.MeshBasicMaterial({
+        color: 0x1a3050, wireframe: true, transparent: true, opacity: 0.25, side: THREE.DoubleSide,
+      })
+      const leftWall = new THREE.Mesh(sideGeo, sideMat)
+      leftWall.rotation.y = Math.PI / 2
+      leftWall.position.x = -HALF_W + 0.001
+      scene.add(leftWall)
+      const rightWall = new THREE.Mesh(sideGeo, sideMat)
+      rightWall.rotation.y = Math.PI / 2
+      rightWall.position.x = HALF_W - 0.001
+      scene.add(rightWall)
+
       // ── InstancedMesh per material (works on WebGL and WebGPU) ────
       // One InstancedMesh per material type with correct color baked in
       // Larger spheres so they overlap at rest spacing — creates continuous surface
