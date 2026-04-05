@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Rust build artifacts
+sph-wasm/target/

@@ -134,7 +134,9 @@ export function FluidTest() {
     camera: THREE.PerspectiveCamera
     renderer: THREE.WebGLRenderer
     controls: OrbitControls
-    instancedMeshes: Map<number, THREE.InstancedMesh>
+    points: THREE.Points
+    posAttr: THREE.BufferAttribute
+    colAttr: THREE.BufferAttribute
     animId: number
     lastTime: number
     fpsAccum: number
@@ -150,9 +152,7 @@ export function FluidTest() {
   const resetSim = useCallback(() => {
     if (!simRef.current) return
     simRef.current.simulation.reset()
-    simRef.current.instancedMeshes.forEach((mesh) => {
-      mesh.count = 0
-    })
+    simRef.current.points.geometry.setDrawRange(0, 0)
     setParticleCount(0)
     setFpsWarning(false)
   }, [])
@@ -297,25 +297,27 @@ export function FluidTest() {
       floorMesh.position.y = -HALF_H + 0.001
       scene.add(floorMesh)
 
-      // ── Instanced meshes (one per material for color) ─────────────────
-      const instancedMeshes = new Map<number, THREE.InstancedMesh>()
-      const sphereGeo = new THREE.SphereGeometry(VISUAL_RADIUS, 6, 4)
+      // ── Points-based rendering (much faster than InstancedMesh) ────────
+      const pointsGeo = new THREE.BufferGeometry()
+      const posAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
+      const colAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
+      posAttr.setUsage(THREE.DynamicDrawUsage)
+      colAttr.setUsage(THREE.DynamicDrawUsage)
+      pointsGeo.setAttribute('position', posAttr)
+      pointsGeo.setAttribute('color', colAttr)
+      pointsGeo.setDrawRange(0, 0)
 
-      MATERIALS.forEach((mat, idx) => {
-        const color = new THREE.Color(mat.color)
-        const meshMat = new THREE.MeshStandardMaterial({
-          color: color,
-          roughness: 0.3,
-          metalness: mat.name === 'Mercury' ? 0.9 : 0.1,
-          emissive: mat.emissive ? color.clone().multiplyScalar(0.5) : new THREE.Color(0x000000),
-          emissiveIntensity: mat.emissive ? 1.5 : 0,
-        })
-        const instMesh = new THREE.InstancedMesh(sphereGeo, meshMat, MAX_PARTICLES)
-        instMesh.count = 0
-        instMesh.frustumCulled = false
-        scene.add(instMesh)
-        instancedMeshes.set(idx, instMesh)
+      const pointsMat = new THREE.PointsMaterial({
+        size: VISUAL_RADIUS * 3,
+        sizeAttenuation: true,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: true,
       })
+      const points = new THREE.Points(pointsGeo, pointsMat)
+      points.frustumCulled = false
+      scene.add(points)
 
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
@@ -328,7 +330,9 @@ export function FluidTest() {
         camera,
         renderer,
         controls,
-        instancedMeshes,
+        points,
+        posAttr,
+        colAttr,
         animId: 0,
         lastTime: performance.now(),
         fpsAccum: 0,
@@ -364,8 +368,7 @@ export function FluidTest() {
       }
       renderer.domElement.addEventListener('pointerdown', onPointerDown)
 
-      // ── Dummy matrix for instance updates ─────────────────────────────
-      const dummy = new THREE.Matrix4()
+      // ── Temp color for per-particle coloring ───────────────────────────
       const tempColor = new THREE.Color()
 
       // ── Animation loop ────────────────────────────────────────────────
@@ -401,57 +404,32 @@ export function FluidTest() {
           const velocities = sim.simulation.get_velocities()
           const mats = sim.simulation.get_materials()
 
-          // Count per material
-          const counts = new Map<number, number>()
-          const offsets = new Map<number, number>()
-          MATERIALS.forEach((_, idx) => {
-            counts.set(idx, 0)
-            offsets.set(idx, 0)
-          })
+          // Write positions and colors directly into GPU buffers
+          const posArr = sim.posAttr.array as Float32Array
+          const colArr = sim.colAttr.array as Float32Array
 
           for (let i = 0; i < count; i++) {
-            const m = mats[i]
-            counts.set(m, (counts.get(m) || 0) + 1)
-          }
+            const i3 = i * 3
+            posArr[i3]     = positions[i3]
+            posArr[i3 + 1] = positions[i3 + 1]
+            posArr[i3 + 2] = positions[i3 + 2]
 
-          sim.instancedMeshes.forEach((mesh, idx) => {
-            mesh.count = counts.get(idx) || 0
-          })
-
-          // Set transforms and colors
-          for (let i = 0; i < count; i++) {
-            const m = mats[i]
-            const mesh = sim.instancedMeshes.get(m)
-            if (!mesh) continue
-            const localIdx = offsets.get(m) || 0
-            offsets.set(m, localIdx + 1)
-
-            dummy.makeTranslation(
-              positions[i * 3],
-              positions[i * 3 + 1],
-              positions[i * 3 + 2],
-            )
-            mesh.setMatrixAt(localIdx, dummy)
-
-            // Color variation based on velocity magnitude
-            const svx = velocities[i * 3]
-            const svy = velocities[i * 3 + 1]
-            const svz = velocities[i * 3 + 2]
+            // Color from material + velocity brightness
+            const svx = velocities[i3]
+            const svy = velocities[i3 + 1]
+            const svz = velocities[i3 + 2]
             const speed = Math.sqrt(svx * svx + svy * svy + svz * svz)
             const brightness = Math.min(1.0, 0.6 + speed * 0.15)
-            const mat = MATERIALS[m]
-            tempColor.setHex(mat.color)
-            tempColor.multiplyScalar(brightness)
-            mesh.setColorAt(localIdx, tempColor)
+            const mat = MATERIALS[mats[i]]
+            tempColor.setHex(mat.color).multiplyScalar(brightness)
+            colArr[i3]     = tempColor.r
+            colArr[i3 + 1] = tempColor.g
+            colArr[i3 + 2] = tempColor.b
           }
 
-          // Mark for GPU upload
-          sim.instancedMeshes.forEach((mesh) => {
-            if (mesh.count > 0) {
-              mesh.instanceMatrix.needsUpdate = true
-              if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-            }
-          })
+          sim.posAttr.needsUpdate = true
+          sim.colAttr.needsUpdate = true
+          sim.points.geometry.setDrawRange(0, count)
 
           setParticleCount(count)
         }

@@ -21,7 +21,7 @@ const PARTICLE_SPACING: f32 = H * 0.5;  // rest spacing = h/2 (standard for SPH)
 
 // Tait equation
 const GAMMA: f32 = 7.0;
-const CS: f32 = 40.0;    // speed of sound — MUST be >> max particle velocity for stability
+const CS: f32 = 8.0;     // speed of sound — balanced with gravity for stable pooling
 
 // Box
 const HALF_W: f32 = 1.0;
@@ -341,7 +341,7 @@ impl Simulation {
 
             // Velocity clamp
             let vsq = self.vx[i]*self.vx[i] + self.vy[i]*self.vy[i] + self.vz[i]*self.vz[i];
-            let max_v: f32 = 4.0;
+            let max_v: f32 = 2.0;  // lower max velocity for stability
             if vsq > max_v * max_v {
                 let s = max_v / vsq.sqrt();
                 self.vx[i] *= s; self.vy[i] *= s; self.vz[i] *= s;
