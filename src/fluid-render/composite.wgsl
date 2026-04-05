@@ -28,8 +28,7 @@ struct CompositeUniforms {
 @group(0) @binding(1) var depth_texture: texture_2d<f32>;
 @group(0) @binding(2) var thickness_texture: texture_2d<f32>;
 @group(0) @binding(3) var scene_texture: texture_2d<f32>;
-@group(0) @binding(4) var env_texture: texture_cube<f32>;
-@group(0) @binding(5) var<uniform> uniforms: CompositeUniforms;
+@group(0) @binding(4) var<uniform> uniforms: CompositeUniforms;
 
 fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
     var ndc = vec4f(coord * 2.0 - 1.0, 0.0, 1.0);
@@ -41,11 +40,13 @@ fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
 
 @fragment
 fn fs(input: FragmentInput) -> @location(0) vec4f {
+    // Sample textures BEFORE any non-uniform branches (WGSL requirement)
+    var scene_color = textureSample(scene_texture, texture_sampler, input.uv);
     var depth = abs(textureLoad(depth_texture, vec2u(input.iuv), 0).r);
 
     // No fluid — pass through scene
     if (depth >= 1e4) {
-        return textureSample(scene_texture, texture_sampler, input.uv);
+        return scene_color;
     }
 
     // §3.2 Pass 4: Normal reconstruction from smoothed depth
@@ -76,19 +77,21 @@ fn fs(input: FragmentInput) -> @location(0) vec4f {
     let F0: f32 = 0.02;
     var fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - dot(normal, -ray_dir), 5.0), 0.0, 1.0);
 
-    // Refraction: offset background UV
+    // Refraction: offset background UV (use textureLoad to avoid uniform control flow issue)
     var refract_dir = refract(ray_dir, normal, 1.0 / 1.333);
-    var refract_uv = input.uv + refract_dir.xy * thickness * 0.03;
-    var background = textureSample(scene_texture, texture_sampler, refract_uv);
+    var refract_uv = input.iuv + refract_dir.xy * thickness * 30.0;
+    var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u)))), 0);
 
     // Beer's law absorption: color = exp(-absorption × thickness)
     var diffuse_color = uniforms.fluid_color;
     var transmittance = exp(-uniforms.density * thickness * (1.0 - diffuse_color));
     var refraction_color = background.rgb * transmittance;
 
-    // Reflection from environment
+    // Reflection: use simple environment color (avoid textureSample in non-uniform flow)
     var reflect_dir = reflect(ray_dir, normal);
-    var reflection_color = textureSample(env_texture, texture_sampler, reflect_dir).rgb;
+    // Simple sky color based on reflection direction instead of cubemap sample
+    var sky_color = vec3f(0.05, 0.1, 0.2) + reflect_dir.y * vec3f(0.02, 0.05, 0.1);
+    var reflection_color = sky_color;
 
     // Specular highlight (Blinn-Phong)
     var light_dir = normalize(uniforms.light_dir);

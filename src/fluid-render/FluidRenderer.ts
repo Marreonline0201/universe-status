@@ -241,8 +241,7 @@ export class FluidRenderer {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // depth
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // thickness
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },                                   // scene
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: 'cube' } },            // env cubemap
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     })
 
@@ -417,7 +416,6 @@ export class FluidRenderer {
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()
-    const envView = this.envCubemap.createView({ dimension: 'cube' })
 
     const compositeBG = d.createBindGroup({
       layout: this.compositeBGL,
@@ -426,8 +424,7 @@ export class FluidRenderer {
         { binding: 1, resource: depthView },
         { binding: 2, resource: thickView },
         { binding: 3, resource: sceneView },
-        { binding: 4, resource: envView },
-        { binding: 5, resource: { buffer: this.compositeUniformBuf } },
+        { binding: 4, resource: { buffer: this.compositeUniformBuf } },
       ],
     })
 
