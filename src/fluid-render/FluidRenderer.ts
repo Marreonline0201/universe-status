@@ -57,7 +57,6 @@ export class FluidRenderer {
   private compositeBGL!: GPUBindGroupLayout
 
   private sampler!: GPUSampler
-  private envCubemap!: GPUTexture
   private maxParticles = 10000
   private boxHalf = [1.0, 0.75, 0.75] // half-extents for clipping
   private fluidColor = [0.13, 0.4, 0.87]
@@ -129,36 +128,6 @@ export class FluidRenderer {
     this.tmpThicknessTex = d.createTexture({ size: [w, h], format: 'r16float', usage: rt })
     this.depthTestTex = d.createTexture({ size: [w, h], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
     this.sceneTexture = d.createTexture({ size: [w, h], format: this.presentationFormat, usage: rt | GPUTextureUsage.COPY_DST })
-
-    // Cubemap for environment reflections (6 faces, each 4×4)
-    this.envCubemap = d.createTexture({
-      size: [4, 4, 6],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      dimension: '2d',
-      viewFormats: ['rgba8unorm'],
-    })
-    const faceColors = [
-      [15, 25, 50], // +X dark blue
-      [10, 20, 45], // -X
-      [20, 35, 60], // +Y slightly lighter (sky)
-      [5, 10, 25],  // -Y dark (ground)
-      [12, 22, 48], // +Z
-      [12, 22, 48], // -Z
-    ]
-    for (let face = 0; face < 6; face++) {
-      const faceData = new Uint8Array(4 * 4 * 4)
-      for (let i = 0; i < 16; i++) {
-        faceData[i*4] = faceColors[face][0]
-        faceData[i*4+1] = faceColors[face][1]
-        faceData[i*4+2] = faceColors[face][2]
-        faceData[i*4+3] = 255
-      }
-      d.queue.writeTexture(
-        { texture: this.envCubemap, origin: [0, 0, face] },
-        faceData, { bytesPerRow: 16 }, { width: 4, height: 4 },
-      )
-    }
   }
 
   private createBuffers() {
