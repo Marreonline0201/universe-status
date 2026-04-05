@@ -38,8 +38,9 @@ const CELL_SIZE: f32 = H * 2.0;
 
 // Thermal
 const AMBIENT_TEMP: f32 = 20.0;         // °C
-const THERMAL_SPEEDUP: f32 = 500.0;     // Demo speedup — real diffusivity is too slow to see
-// In real sim this would be 1.0 but demo needs visible heat transfer
+const THERMAL_SPEEDUP: f32 = 500.0;     // Demo speedup — for near-ambient temperatures
+// Scaled down for hot materials to prevent unrealistic rapid solidification
+// thermal_scale(T) = THERMAL_SPEEDUP / (1 + |T-ambient|/100)
 
 // Phase constants
 const PHASE_LIQUID: u8 = 0;
@@ -764,15 +765,17 @@ impl Simulation {
             self.fy[i] += fpy * rho_i + fvy;
             self.fz[i] += fpz * rho_i + fvz;
 
-            // Temperature change (with demo speedup)
-            dtemp[i] = heat_in * THERMAL_SPEEDUP;
+            // Temperature change — scaled speedup that slows for hot materials
+            // Prevents lava/copper from solidifying in <1 second
+            let t_scale = THERMAL_SPEEDUP / (1.0 + (self.temp[i] - AMBIENT_TEMP).abs() / 100.0);
+            dtemp[i] = heat_in * t_scale;
 
             // Ambient cooling — Newton's law of cooling to environment
             // Convective heat transfer coefficient h_conv ≈ 10 W/(m²·K) for natural convection in air
             // q = h_conv × A/m × (T_ambient - T) where A/m ≈ 6/(ρ·d) for spherical particle
             let h_conv = 10.0; // W/(m²·K) natural convection
             let a_over_m = 6.0 / (mat_i.density_si * PARTICLE_SPACING);
-            dtemp[i] += h_conv * a_over_m * (AMBIENT_TEMP - self.temp[i]) / mat_i.specific_heat * THERMAL_SPEEDUP;
+            dtemp[i] += h_conv * a_over_m * (AMBIENT_TEMP - self.temp[i]) / mat_i.specific_heat * t_scale;
 
             // §3.0: Radiation heat loss (Stefan-Boltzmann) — only above 500°C
             if self.temp[i] > 500.0 {
@@ -785,7 +788,7 @@ impl Simulation {
                 let a_over_m = 6.0 / (mat_i.density_si * d);
                 let q_rad = mat_i.emissivity * STEFAN_BOLTZMANN * a_over_m
                     * (t_k*t_k*t_k*t_k - t_amb_k*t_amb_k*t_amb_k*t_amb_k);
-                dtemp[i] -= q_rad / mat_i.specific_heat * THERMAL_SPEEDUP;
+                dtemp[i] -= q_rad / mat_i.specific_heat * t_scale;
             }
 
             shear_rates[i] = shear_sq.sqrt();
@@ -975,7 +978,8 @@ impl Simulation {
                 // §3.0: Floor heat exchange (Fourier's law with floor)
                 let k_contact = mat.thermal_conductivity;
                 let q_floor = k_contact * (AMBIENT_TEMP - self.temp[i]) / (PARTICLE_SPACING * 0.5);
-                self.temp[i] += q_floor / (mat.density_si * mat.specific_heat) * dt * THERMAL_SPEEDUP;
+                let t_scale_floor = THERMAL_SPEEDUP / (1.0 + (self.temp[i] - AMBIENT_TEMP).abs() / 100.0);
+                self.temp[i] += q_floor / (mat.density_si * mat.specific_heat) * dt * t_scale_floor;
             }
             if self.py[i] > HALF_H - pad {
                 self.py[i] = HALF_H - pad;
