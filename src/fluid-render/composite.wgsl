@@ -38,11 +38,24 @@ struct CompositeUniforms {
 @group(0) @binding(3) var scene_texture: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> uniforms: CompositeUniforms;
 
-// Simple hash for procedural micro-surface noise
+// Hash for procedural noise
 fn hash2(p: vec2f) -> f32 {
     var p2 = fract(p * vec2f(443.8975, 397.2973));
     p2 += dot(p2, p2.yx + 19.19);
     return fract(p2.x * p2.y);
+}
+
+// Smooth value noise — bilinear interpolation of hash values
+fn valueNoise(p: vec2f) -> f32 {
+    var i = floor(p);
+    var f = fract(p);
+    // Smooth hermite interpolation
+    var u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(hash2(i), hash2(i + vec2f(1.0, 0.0)), u.x),
+        mix(hash2(i + vec2f(0.0, 1.0)), hash2(i + vec2f(1.0, 1.0)), u.x),
+        u.y
+    );
 }
 
 fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
@@ -92,15 +105,16 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
 
     var normal = normalize(cross(ddy, ddx));
 
-    // Animated micro-surface wave perturbation — subtle ripples
+    // Animated micro-surface wave perturbation — smooth ripples
     // Dielectrics (water) get more perturbation; metals (mercury) stay mirror-smooth
-    var wave_strength = 0.04 * (1.0 - uniforms.metalness * 0.8);
+    var wave_strength = 0.05 * (1.0 - uniforms.metalness * 0.8);
     var t = uniforms.time;
-    // Two octaves of animated waves at different frequencies/speeds
-    var wave_uv1 = pixel * 0.12 + vec2f(t * 8.0, t * 5.0);
-    var wave_uv2 = pixel * 0.07 + vec2f(-t * 3.0, t * 7.0);
-    var nx = (hash2(wave_uv1) - 0.5) + 0.5 * (hash2(wave_uv2) - 0.5);
-    var ny = (hash2(wave_uv1 + vec2f(7.3, 13.7)) - 0.5) + 0.5 * (hash2(wave_uv2 + vec2f(31.1, 17.3)) - 0.5);
+    // Three octaves of smooth animated waves at different scales/speeds
+    var p1 = pixel * 0.08 + vec2f(t * 6.0, t * 4.0);
+    var p2 = pixel * 0.15 + vec2f(-t * 3.5, t * 5.5);
+    var p3 = pixel * 0.03 + vec2f(t * 2.0, -t * 1.5);
+    var nx = (valueNoise(p1) - 0.5) + 0.5 * (valueNoise(p2) - 0.5) + 0.25 * (valueNoise(p3) - 0.5);
+    var ny = (valueNoise(p1 + vec2f(7.3, 13.7)) - 0.5) + 0.5 * (valueNoise(p2 + vec2f(31.1, 17.3)) - 0.5) + 0.25 * (valueNoise(p3 + vec2f(53.7, 41.9)) - 0.5);
     normal = normalize(normal + vec3f(nx, ny, 0.0) * wave_strength);
 
     // §3.2 Pass 5: Compositing — per-material Fresnel, refraction, absorption
