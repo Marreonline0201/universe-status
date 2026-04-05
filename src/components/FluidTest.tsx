@@ -9,7 +9,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import { FluidRenderer } from '../fluid-render/FluidRenderer'
-import initWasm, { Simulation } from '../wasm/sph_wasm'
+import initWasm, { Simulation, MpmSimulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
 
@@ -136,10 +136,12 @@ export function FluidTest() {
   const [wasmReady, setWasmReady] = useState(false)
   const [showParticles, setShowParticles] = useState(false) // toggle raw particle spheres
   const [boxScale, setBoxScale] = useState(1.0) // 0.5 to 1.0 — shrink/expand box
+  const [solverType, setSolverType] = useState<'sph' | 'mpm'>('sph') // §3.2 solver toggle
 
   // Refs for simulation state
   const simRef = useRef<{
     simulation: Simulation
+    mpmSimulation: MpmSimulation
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
     renderer: any /* WebGPURenderer */
@@ -169,11 +171,13 @@ export function FluidTest() {
     avgTemp: number
     showParticles: boolean
     boxScale: number
+    solverType: 'sph' | 'mpm'
   } | null>(null)
 
   const resetSim = useCallback(() => {
     if (!simRef.current) return
     simRef.current.simulation.reset()
+    simRef.current.mpmSimulation.reset()
     simRef.current.instMeshes.forEach(im => { im.count = 0 })
     simRef.current.sprayPoints.geometry.setDrawRange(0, 0)
     simRef.current.mcubes.reset()
@@ -210,8 +214,13 @@ export function FluidTest() {
 
     if (positions.length > 0) {
       const buf = new Float32Array(positions)
-      const newCount = simRef.current.simulation.add_particles(buf, matIdx)
-      setParticleCount(newCount)
+      if (simRef.current.solverType === 'mpm') {
+        simRef.current.mpmSimulation.add_particles(buf, matIdx)
+        setParticleCount(simRef.current.mpmSimulation.get_count())
+      } else {
+        simRef.current.simulation.add_particles(buf, matIdx)
+        setParticleCount(simRef.current.simulation.get_count())
+      }
     }
   }, [])
 
@@ -228,6 +237,9 @@ export function FluidTest() {
   useEffect(() => {
     if (simRef.current) simRef.current.showParticles = showParticles
   }, [showParticles])
+  useEffect(() => {
+    if (simRef.current) simRef.current.solverType = solverType
+  }, [solverType])
   useEffect(() => {
     if (!simRef.current) return
     const sim = simRef.current
@@ -248,6 +260,7 @@ export function FluidTest() {
 
     // Update WASM boundary — particles must be pushed inside new bounds
     sim.simulation.set_bounds(sw / 2, sh / 2, sd / 2)
+    sim.mpmSimulation.set_bounds(sw / 2, sh / 2, sd / 2)
   }, [boxScale])
 
   // ── Main Three.js setup and render loop ─────────────────────────────────
@@ -262,6 +275,7 @@ export function FluidTest() {
       await initWasm('/sph_wasm_bg.wasm')
       if (cancelled) return
       const simulation = new Simulation()
+      const mpmSimulation = new MpmSimulation()
       setWasmReady(true)
 
       // Scene
@@ -457,6 +471,7 @@ export function FluidTest() {
       // ── Store in ref ──────────────────────────────────────────────────
       simRef.current = {
         simulation,
+        mpmSimulation,
         scene,
         camera,
         renderer,
@@ -486,6 +501,7 @@ export function FluidTest() {
         fluidRenderer,
         showParticles: false,
         boxScale: 1.0,
+        solverType: 'sph' as const,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -536,18 +552,21 @@ export function FluidTest() {
           sim.fpsFrames = 0
         }
 
-        // ── Step WASM simulation ──────────────────────────────────────
-        const count = sim.simulation.get_count()
+        // ── Step WASM simulation (SPH or MPM based on solver type) ──
+        const useMPM = sim.solverType === 'mpm'
+        const activeSim = useMPM ? sim.mpmSimulation : sim.simulation
+        const count = activeSim.get_count()
         if (count > 0) {
           const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-          sim.simulation.step(sim.gravity, simDt, 3)
+          const substeps = useMPM ? 4 : 3 // MPM: 4 substeps at 30Hz, SPH: 3 at 60Hz
+          activeSim.step(sim.gravity, simDt, substeps)
 
-          // Get results from WASM (including temperature + phase)
-          const positions = sim.simulation.get_positions()
-          void sim.simulation.get_velocities() // velocities available for future use
-          const mats = sim.simulation.get_materials()
-          const temps = sim.simulation.get_temperatures()
-          void sim.simulation.get_phases() // phases used by MC material adaptation
+          // Get results from WASM
+          const positions = activeSim.get_positions()
+          const velsRaw = activeSim.get_velocities()
+          const mats = useMPM ? activeSim.get_mat_ids() : sim.simulation.get_materials()
+          const temps = useMPM ? new Float32Array(count).fill(20) : sim.simulation.get_temperatures()
+          if (!useMPM) void sim.simulation.get_phases()
 
           // Update per-material InstancedMeshes
           let avgTemp = 0
@@ -583,8 +602,7 @@ export function FluidTest() {
 
           // Upload particles to WebGPU fluid renderer
           if (sim.fluidRenderer?.isInitialized) {
-            const vels = sim.simulation.get_velocities()
-            sim.fluidRenderer.updateParticles(positions, vels, mats, count)
+            sim.fluidRenderer.updateParticles(positions, velsRaw, mats, count)
 
             const viewMat = new Float32Array(16)
             sim.camera.matrixWorldInverse.toArray(viewMat)
@@ -858,6 +876,25 @@ export function FluidTest() {
           overflowY: 'auto',
           background: 'rgba(4,8,18,0.6)',
         }}>
+          {/* Solver toggle: SPH / MPM */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+            {(['sph', 'mpm'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => { resetSim(); setSolverType(s) }}
+                style={{
+                  flex: 1, padding: '5px 0', cursor: 'pointer',
+                  background: solverType === s ? 'rgba(0,180,255,0.2)' : 'rgba(0,180,255,0.05)',
+                  border: `1px solid ${solverType === s ? 'rgba(0,180,255,0.5)' : 'rgba(0,180,255,0.15)'}`,
+                  borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit',
+                  fontSize: 11, letterSpacing: 2, fontWeight: solverType === s ? 700 : 400,
+                }}
+              >
+                {s.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
           {/* Material select */}
           <div>
             <label style={labelStyle}>MATERIAL</label>

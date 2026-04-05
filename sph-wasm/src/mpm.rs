@@ -153,7 +153,8 @@ impl GridNode {
 struct MpmParticle {
     px: f32, py: f32, pz: f32,     // position
     vx: f32, vy: f32, vz: f32,     // velocity
-    f: Mat3,                         // deformation gradient
+    j: f32,                          // J = det(F) — volume ratio (fluid optimization)
+    f: Mat3,                         // full deformation gradient (for solids only)
     c: Mat3,                         // APIC affine velocity field
     mass: f32,
     volume0: f32,                    // initial volume
@@ -267,6 +268,7 @@ impl MpmSimulation {
                 py: positions[p*3+1],
                 pz: positions[p*3+2],
                 vx: 0.0, vy: 0.0, vz: 0.0,
+                j: 1.0, // volume ratio starts at 1 (undeformed)
                 f: Mat3::identity(),
                 c: Mat3::zero(),
                 mass,
@@ -352,13 +354,13 @@ impl MpmSimulation {
             let base_z = (gz - 0.5).floor() as i32;
 
             // Compute stress from constitutive model
-            // For fluids: pressure-based
-            let bulk_modulus = 50.0; // stiffness
-            let stress = fluid_stress(&p.f, bulk_modulus, 1.0);
+            // For fluids: use scalar J (much cheaper than full F)
+            let bulk_modulus = 80.0; // stiffness — tuned for stability
+            let j_p = p.j.clamp(0.1, 10.0);
 
-            // Compute force contribution: -volume * stress * dt
-            let vol = p.volume0 * p.f.det(); // current volume
-            let force_scale = -vol * dt;
+            // Fused stress term: -V0 * (4/dx²) * σ * dt
+            // For fluids: σ = K*(J-1)*I, so stress_scalar = -V0 * 4/dx² * K*(J-1) * dt
+            let stress_scalar = -p.volume0 * 4.0 * inv_dx * inv_dx * bulk_modulus * (j_p - 1.0) * dt;
 
             // Scatter to 3×3×3 grid neighborhood
             for di in 0..3i32 {
@@ -387,25 +389,25 @@ impl MpmSimulation {
                         // Distance in world space
                         let dpos = [fx * dx, fy * dx, fz * dx];
 
-                        // APIC momentum transfer
-                        // mv_i += w * (m_p * v_p + m_p * C_p * dpos)
-                        let apic_vx = p.vx + p.c.get(0,0)*dpos[0] + p.c.get(0,1)*dpos[1] + p.c.get(0,2)*dpos[2];
-                        let apic_vy = p.vy + p.c.get(1,0)*dpos[0] + p.c.get(1,1)*dpos[1] + p.c.get(1,2)*dpos[2];
-                        let apic_vz = p.vz + p.c.get(2,0)*dpos[0] + p.c.get(2,1)*dpos[1] + p.c.get(2,2)*dpos[2];
+                        // Fused MLS-MPM P2G (Eq. 29 from Hu et al. 2018)
+                        // affine = stress_term + m_p * C_p
+                        // (mv)_i += w * (m_p * v_p + affine * dpos)
+                        let ax = (stress_scalar + p.mass * p.c.get(0,0)) * dpos[0]
+                               + p.mass * p.c.get(0,1) * dpos[1]
+                               + p.mass * p.c.get(0,2) * dpos[2];
+                        let ay = p.mass * p.c.get(1,0) * dpos[0]
+                               + (stress_scalar + p.mass * p.c.get(1,1)) * dpos[1]
+                               + p.mass * p.c.get(1,2) * dpos[2];
+                        let az = p.mass * p.c.get(2,0) * dpos[0]
+                               + p.mass * p.c.get(2,1) * dpos[1]
+                               + (stress_scalar + p.mass * p.c.get(2,2)) * dpos[2];
 
                         let wm = w * p.mass;
-
-                        // Stress force contribution
-                        // force = stress * dpos (matrix × vector)
-                        let sfx = stress.get(0,0)*dpos[0] + stress.get(0,1)*dpos[1] + stress.get(0,2)*dpos[2];
-                        let sfy = stress.get(1,0)*dpos[0] + stress.get(1,1)*dpos[1] + stress.get(1,2)*dpos[2];
-                        let sfz = stress.get(2,0)*dpos[0] + stress.get(2,1)*dpos[1] + stress.get(2,2)*dpos[2];
-
                         let node = &mut self.grid[idx];
                         node.mass += wm;
-                        node.vx += wm * apic_vx + force_scale * w * sfx;
-                        node.vy += wm * apic_vy + force_scale * w * sfy;
-                        node.vz += wm * apic_vz + force_scale * w * sfz;
+                        node.vx += w * (p.mass * p.vx + ax);
+                        node.vy += w * (p.mass * p.vy + ay);
+                        node.vz += w * (p.mass * p.vz + az);
                     }
                 }
             }
@@ -505,18 +507,17 @@ impl MpmSimulation {
             p.py += dt * p.vy;
             p.pz += dt * p.vz;
 
-            // ── Step 4: Update deformation gradient ─────────────────────
-            // F_new = (I + dt * C) * F_old
-            let dt_c = p.c.scale(dt);
-            let update = Mat3::identity().add(&dt_c);
-            p.f = update.mul(&p.f);
-
-            // For fluids: reset F to preserve volume but remove shear
-            // F = J^(1/3) * I (keep volume, remove rotation/shear)
-            if p.phase == 0 { // liquid
-                let j = p.f.det().max(0.1).min(10.0);
-                let j_third = j.powf(1.0 / 3.0);
-                p.f = Mat3::identity().scale(j_third);
+            // ── Step 4: Update deformation ────────────────────────────
+            if p.phase == 0 { // Fluid: update J only (det(F)), skip full matrix
+                // J_new = (1 + dt * tr(C)) * J_old
+                let trace_c = p.c.get(0,0) + p.c.get(1,1) + p.c.get(2,2);
+                p.j *= 1.0 + dt * trace_c;
+                p.j = p.j.clamp(0.1, 10.0);
+            } else { // Solid: full deformation gradient
+                let dt_c = p.c.scale(dt);
+                let update = Mat3::identity().add(&dt_c);
+                p.f = update.mul(&p.f);
+                p.j = p.f.det();
             }
 
             // Clamp to bounds
