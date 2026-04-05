@@ -521,7 +521,10 @@ export function FluidTest() {
             const projMat = new Float32Array(16)
             sim.camera.matrixWorldInverse.toArray(viewMat)
             sim.camera.projectionMatrix.toArray(projMat)
-            sim.fluidRenderer.updateCamera(viewMat, projMat, SPACING * 1.2)
+            // Sphere size must be large enough for depth sprites to overlap
+            // At SPACING=0.02, adjacent particles are 0.02 apart.
+            // Sphere diameter should be >= spacing so sprites overlap: size >= 0.04
+            sim.fluidRenderer.updateCamera(viewMat, projMat, 0.06)
           }
 
           if (count > 0) sim.avgTemp = avgTemp / count

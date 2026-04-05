@@ -204,7 +204,7 @@ export class FluidRenderer {
       fragment: {
         module: bilateralMod, entryPoint: 'fs',
         targets: [{ format: 'r32float' }],
-        constants: { depth_threshold: 5.0, projected_particle_constant: 100.0, max_filter_size: 20.0 },
+        constants: { depth_threshold: 10.0, projected_particle_constant: 200.0, max_filter_size: 30.0 },
       },
       primitive: { topology: 'triangle-list' },
     })
