@@ -54,6 +54,7 @@ export class FluidRenderer {
   private compositeBGL!: GPUBindGroupLayout
 
   private sampler!: GPUSampler
+  private envCubemap!: GPUTexture
   private maxParticles = 10000
 
   /**
@@ -110,6 +111,24 @@ export class FluidRenderer {
     this.tmpThicknessTex = d.createTexture({ size: [w, h], format: 'r16float', usage: rt })
     this.depthTestTex = d.createTexture({ size: [w, h], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
     this.sceneTexture = d.createTexture({ size: [w, h], format: this.presentationFormat, usage: rt | GPUTextureUsage.COPY_DST })
+
+    // Simple dark cubemap for environment reflections
+    this.envCubemap = d.createTexture({
+      size: [4, 4, 6], format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: '2d',
+    })
+    // Fill with dark blue gradient
+    const faceData = new Uint8Array(4 * 4 * 4) // 4×4 pixels × 4 channels
+    for (let i = 0; i < 16; i++) {
+      faceData[i * 4] = 10; faceData[i * 4 + 1] = 20; faceData[i * 4 + 2] = 40; faceData[i * 4 + 3] = 255
+    }
+    for (let face = 0; face < 6; face++) {
+      d.queue.writeTexture(
+        { texture: this.envCubemap, origin: [0, 0, face] },
+        faceData, { bytesPerRow: 16 }, { width: 4, height: 4 },
+      )
+    }
   }
 
   private createBuffers() {
@@ -355,18 +374,42 @@ export class FluidRenderer {
     g2.draw(6)
     g2.end()
 
-    // ── Pass 5: Composite to screen ───────────────────────────────
-    // TODO: Need scene background texture and environment cubemap
-    // For now, output depth visualization directly
-    const outputView = this.context.getCurrentTexture().createView()
-    const p5 = encoder.beginRenderPass({
-      colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 } }],
+    // ── Pass 5: Composite ──────────────────────────────────────────
+    // Update composite uniforms
+    const compData = new Float32Array(32)
+    compData[0] = 1 / this.width; compData[1] = 1 / this.height // texel_size
+    // inv_projection_matrix: identity for now (TODO: pass from camera)
+    compData[4] = 1; compData[9] = 1; compData[14] = 1; compData[19] = 1
+    compData[20] = 0.5; compData[21] = 1.0; compData[22] = 0.3 // light_dir
+    compData[24] = 0.13; compData[25] = 0.4; compData[26] = 0.87 // fluid_color (water blue)
+    compData[27] = 3.0 // density
+    d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
+
+    const sceneView = this.sceneTexture.createView()
+    const envView = this.envCubemap.createView({ dimension: 'cube' })
+
+    const compositeBG = d.createBindGroup({
+      layout: this.compositeBGL,
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: depthView },
+        { binding: 2, resource: thickView },
+        { binding: 3, resource: sceneView },
+        { binding: 4, resource: envView },
+        { binding: 5, resource: { buffer: this.compositeUniformBuf } },
+      ],
     })
-    // When composite bind group is ready, use compositePipeline here
-    // p5.setPipeline(this.compositePipeline)
-    // p5.setBindGroup(0, compositeBG)
-    // p5.draw(6)
-    p5.end()
+
+    if (this.context) {
+      const outputView = this.context.getCurrentTexture().createView()
+      const p5 = encoder.beginRenderPass({
+        colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 } }],
+      })
+      p5.setPipeline(this.compositePipeline)
+      p5.setBindGroup(0, compositeBG)
+      p5.draw(6)
+      p5.end()
+    }
 
     d.queue.submit([encoder.finish()])
   }
