@@ -171,9 +171,9 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     // Emissive glow: lava and molten copper emit their own light
     // Glow intensity varies with thickness — thicker = brighter core, thin edges glow softly
     var glow_core = smoothstep(0.0, 0.5, thickness);
-    var emissive = diffuse_color * uniforms.emissive_intensity * (0.6 + 0.8 * glow_core);
-    // Add hot-white core for thick emissive regions (simulates incandescence)
-    emissive += vec3f(1.0, 0.9, 0.5) * uniforms.emissive_intensity * 0.3 * glow_core * glow_core;
+    var emissive = diffuse_color * uniforms.emissive_intensity * (0.7 + 0.5 * glow_core);
+    // Subtle hot core for thick emissive regions — keeps base color dominant
+    emissive += vec3f(1.0, 0.7, 0.3) * uniforms.emissive_intensity * 0.15 * glow_core * glow_core;
 
     // Mix: transparent fluid shows background through, opaque shows color
     var base_color = mix(refraction_color, fluid_contribution, opacity * 0.7);
@@ -197,6 +197,5 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var min_alpha = mix(0.15, 0.5, max(uniforms.metalness, uniforms.emissive_intensity * 0.3));
     var alpha = clamp(opacity * 2.0, min_alpha, 1.0);
 
-    // Premultiply: final_color is already pre-blended, just clamp output
     return vec4f(final_color, alpha);
 }
