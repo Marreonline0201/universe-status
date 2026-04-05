@@ -28,11 +28,12 @@ struct RenderUniforms {
     view_matrix: mat4x4f,
 }
 
-// Particle data from WASM simulation
+// Particle data — 32 bytes per particle (8 floats, 16-byte aligned)
 struct Particle {
     x: f32, y: f32, z: f32,
     vx: f32, vy: f32, vz: f32,
-    mat_id: u32,
+    mat_id: f32,  // stored as float for alignment
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;

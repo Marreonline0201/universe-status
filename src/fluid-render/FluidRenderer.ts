@@ -58,36 +58,42 @@ export class FluidRenderer {
   private maxParticles = 10000
 
   /**
-   * Initialize with an external GPUDevice (shared with Three.js WebGPU renderer)
-   * OR create a new device if none provided.
+   * Initialize with a SEPARATE overlay canvas for fluid rendering.
+   * This avoids conflicting with Three.js's WebGPU canvas context.
    */
-  async init(canvas: HTMLCanvasElement, externalDevice?: GPUDevice): Promise<boolean> {
+  async init(container: HTMLElement, width: number, height: number): Promise<boolean> {
     if (!navigator.gpu) {
       console.warn('FluidRenderer: WebGPU not available')
       return false
     }
 
-    if (externalDevice) {
-      this.device = externalDevice
-    } else {
-      const adapter = await navigator.gpu.requestAdapter()
-      if (!adapter) return false
-      this.device = await adapter.requestDevice()
-    }
+    const adapter = await navigator.gpu.requestAdapter()
+    if (!adapter) return false
+    this.device = await adapter.requestDevice()
 
-    this.width = canvas.width || 1280
-    this.height = canvas.height || 720
+    this.width = width
+    this.height = height
     this.presentationFormat = navigator.gpu.getPreferredCanvasFormat()
 
-    // Only configure context if we own the device (not sharing with Three.js)
-    if (!externalDevice) {
-      this.context = canvas.getContext('webgpu') as GPUCanvasContext
-      this.context.configure({
-        device: this.device,
-        format: this.presentationFormat,
-        alphaMode: 'premultiplied',
-      })
-    }
+    // Create overlay canvas on top of Three.js canvas
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    canvas.style.position = 'absolute'
+    canvas.style.top = '0'
+    canvas.style.left = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.style.pointerEvents = 'none' // clicks pass through to Three.js
+    container.style.position = 'relative'
+    container.appendChild(canvas)
+
+    this.context = canvas.getContext('webgpu') as GPUCanvasContext
+    this.context.configure({
+      device: this.device,
+      format: this.presentationFormat,
+      alphaMode: 'premultiplied',
+    })
 
     this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
 
@@ -112,18 +118,30 @@ export class FluidRenderer {
     this.depthTestTex = d.createTexture({ size: [w, h], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
     this.sceneTexture = d.createTexture({ size: [w, h], format: this.presentationFormat, usage: rt | GPUTextureUsage.COPY_DST })
 
-    // Simple dark cubemap for environment reflections
+    // Cubemap for environment reflections (6 faces, each 4×4)
     this.envCubemap = d.createTexture({
-      size: [4, 4, 6], format: 'rgba8unorm',
+      size: [4, 4, 6],
+      format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       dimension: '2d',
+      viewFormats: ['rgba8unorm'],
     })
-    // Fill with dark blue gradient
-    const faceData = new Uint8Array(4 * 4 * 4) // 4×4 pixels × 4 channels
-    for (let i = 0; i < 16; i++) {
-      faceData[i * 4] = 10; faceData[i * 4 + 1] = 20; faceData[i * 4 + 2] = 40; faceData[i * 4 + 3] = 255
-    }
+    const faceColors = [
+      [15, 25, 50], // +X dark blue
+      [10, 20, 45], // -X
+      [20, 35, 60], // +Y slightly lighter (sky)
+      [5, 10, 25],  // -Y dark (ground)
+      [12, 22, 48], // +Z
+      [12, 22, 48], // -Z
+    ]
     for (let face = 0; face < 6; face++) {
+      const faceData = new Uint8Array(4 * 4 * 4)
+      for (let i = 0; i < 16; i++) {
+        faceData[i*4] = faceColors[face][0]
+        faceData[i*4+1] = faceColors[face][1]
+        faceData[i*4+2] = faceColors[face][2]
+        faceData[i*4+3] = 255
+      }
       d.queue.writeTexture(
         { texture: this.envCubemap, origin: [0, 0, face] },
         faceData, { bytesPerRow: 16 }, { width: 4, height: 4 },
@@ -133,7 +151,7 @@ export class FluidRenderer {
 
   private createBuffers() {
     const d = this.device
-    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 28, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 8 floats × 4 bytes
     this.uniformBuffer = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterXBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterYBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
@@ -236,16 +254,17 @@ export class FluidRenderer {
     })
   }
 
-  updateParticles(positions: Float32Array, velocities: Float32Array, _matIds: Uint8Array, count: number) {
+  updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
     if (!this.initialized) return
-    const data = new Float32Array(count * 7)
+    const data = new Float32Array(count * 8) // 8 floats per particle (padded to 32 bytes)
     for (let i = 0; i < count; i++) {
-      const i3 = i * 3, i7 = i * 7
-      data[i7] = positions[i3]; data[i7+1] = positions[i3+1]; data[i7+2] = positions[i3+2]
-      data[i7+3] = velocities[i3]; data[i7+4] = velocities[i3+1]; data[i7+5] = velocities[i3+2]
-      data[i7+6] = 0
+      const i3 = i * 3, i8 = i * 8
+      data[i8] = positions[i3]; data[i8+1] = positions[i3+1]; data[i8+2] = positions[i3+2]
+      data[i8+3] = velocities[i3]; data[i8+4] = velocities[i3+1]; data[i8+5] = velocities[i3+2]
+      data[i8+6] = matIds[i]
+      data[i8+7] = 0 // padding
     }
-    this.device.queue.writeBuffer(this.particleBuffer, 0, data, 0, count * 7)
+    this.device.queue.writeBuffer(this.particleBuffer, 0, data, 0, count * 8)
   }
 
   updateCamera(viewMatrix: Float32Array, projMatrix: Float32Array, sphereSize: number) {
