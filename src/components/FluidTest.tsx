@@ -163,6 +163,10 @@ class SpatialHashGrid {
   private readonly PRIME3 = 83492791
   private readonly TABLE_SIZE = 10007
 
+  // Pre-allocated neighbor buffer to avoid GC pressure (BUG 3 fix)
+  private neighborBuffer: number[] = new Array(500)
+  private neighborCount: number = 0
+
   constructor(cellSize: number) {
     this.cellSize = cellSize
     this.cells = new Map()
@@ -189,11 +193,14 @@ class SpatialHashGrid {
     cell.push(index)
   }
 
-  getNeighbors(x: number, y: number, z: number): number[] {
+  getNeighborCount(): number { return this.neighborCount }
+  getNeighborAt(idx: number): number { return this.neighborBuffer[idx] }
+
+  fillNeighbors(x: number, y: number, z: number): void {
+    this.neighborCount = 0
     const ix = Math.floor(x / this.cellSize)
     const iy = Math.floor(y / this.cellSize)
     const iz = Math.floor(z / this.cellSize)
-    const result: number[] = []
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
@@ -201,13 +208,12 @@ class SpatialHashGrid {
           const cell = this.cells.get(h)
           if (cell) {
             for (let k = 0; k < cell.length; k++) {
-              result.push(cell[k])
+              this.neighborBuffer[this.neighborCount++] = cell[k]
             }
           }
         }
       }
     }
-    return result
   }
 }
 
@@ -262,7 +268,7 @@ function addParticles(
   const mat = MATERIALS[materialIndex]
   // Particle mass derived from rest density and kernel volume
   const volume = (4 / 3) * Math.PI * PARTICLE_RADIUS * PARTICLE_RADIUS * PARTICLE_RADIUS
-  const particleMass = mat.restDensity * volume * 8 // scale up for visual effect
+  const particleMass = mat.restDensity * volume // no arbitrary scaling — correct physics
 
   let added = 0
   for (const [x, y, z] of positions) {
@@ -307,9 +313,10 @@ function sphStep(
   // === 1. Compute density: rho_i = sum_j m_j * W(r_ij, h) ===
   for (let i = 0; i < n; i++) {
     let rho = 0
-    const neighbors = grid.getNeighbors(ps.px[i], ps.py[i], ps.pz[i])
-    for (let k = 0; k < neighbors.length; k++) {
-      const j = neighbors[k]
+    grid.fillNeighbors(ps.px[i], ps.py[i], ps.pz[i])
+    const nCount = grid.getNeighborCount()
+    for (let k = 0; k < nCount; k++) {
+      const j = grid.getNeighborAt(k)
       const dx = ps.px[i] - ps.px[j]
       const dy = ps.py[i] - ps.py[j]
       const dz = ps.pz[i] - ps.pz[j]
@@ -328,7 +335,7 @@ function sphStep(
     const mat = MATERIALS[ps.materialIdx[i]]
     const rho0 = mat.restDensity
     // B = rho0 * c_s^2 / gamma, where c_s ~ 10 * max_velocity (for stability)
-    const cs = 10.0  // speed of sound estimate for stability
+    const cs = Math.max(5.0, Math.sqrt(9.81 * BOX_H)) // minimum for stability
     const B = rho0 * cs * cs / GAMMA
     const ratio = ps.density[i] / rho0
     // (ratio)^gamma using pow
@@ -351,9 +358,10 @@ function sphStep(
     let fpx = 0, fpy = 0, fpz = 0 // pressure force
     let fvx = 0, fvy = 0, fvz = 0 // viscosity force
 
-    const neighbors = grid.getNeighbors(ps.px[i], ps.py[i], ps.pz[i])
-    for (let k = 0; k < neighbors.length; k++) {
-      const j = neighbors[k]
+    grid.fillNeighbors(ps.px[i], ps.py[i], ps.pz[i])
+    const nCount = grid.getNeighborCount()
+    for (let k = 0; k < nCount; k++) {
+      const j = grid.getNeighborAt(k)
       if (i === j) continue
 
       const dx = ps.px[i] - ps.px[j]
@@ -378,10 +386,8 @@ function sphStep(
       // Average viscosity for mixed materials
       const mat_j = MATERIALS[ps.materialIdx[j]]
       const mu = (mu_i + mat_j.viscosity) * 0.5
-      // Normalize viscosity for simulation scale (high viscosity fluids need clamping
-      // to keep simulation stable)
-      const muNorm = Math.min(mu, 10.0) // clamp for stability
-      const viscTerm = muNorm * m_j / rho_j * lap
+      // No clamp — sub-stepping handles stability for high-viscosity fluids (BUG 1 fix)
+      const viscTerm = mu * m_j / rho_j * lap
       fvx += viscTerm * (ps.vx[j] - ps.vx[i])
       fvy += viscTerm * (ps.vy[j] - ps.vy[i])
       fvz += viscTerm * (ps.vz[j] - ps.vz[i])
@@ -400,8 +406,11 @@ function sphStep(
     const sigma = mat_i.surfaceTension
     if (sigma > 0.01) {
       let cx = 0, cy = 0, cz = 0, cnt = 0
-      for (let k = 0; k < neighbors.length; k++) {
-        const j = neighbors[k]
+      // Re-use the same neighbor data (fillNeighbors already called above)
+      grid.fillNeighbors(ps.px[i], ps.py[i], ps.pz[i])
+      const nCount2 = grid.getNeighborCount()
+      for (let k = 0; k < nCount2; k++) {
+        const j = grid.getNeighborAt(k)
         if (i === j) continue
         const ddx = ps.px[i] - ps.px[j]
         const ddy = ps.py[i] - ps.py[j]
@@ -421,7 +430,7 @@ function sphStep(
         const toZ = cz - ps.pz[i]
         const dist = Math.sqrt(toX * toX + toY * toY + toZ * toZ)
         if (dist > 1e-6) {
-          const surfaceForce = sigma * 500 * rho_i // scaled for visual effect
+          const surfaceForce = sigma * 50 * rho_i // reduced from 500 — was pushing particles upward (BUG 1 fix)
           ps.fx[i] += surfaceForce * toX / dist
           ps.fy[i] += surfaceForce * toY / dist
           ps.fz[i] += surfaceForce * toZ / dist
@@ -439,16 +448,16 @@ function sphStep(
     ps.vy[i] += ps.fy[i] * invRho * dt
     ps.vz[i] += ps.fz[i] * invRho * dt
 
-    // Velocity damping for stability (especially high-viscosity fluids)
+    // Viscosity-dependent velocity damping (BUG 1 fix — replaces flat 0.98 threshold)
     const mat = MATERIALS[ps.materialIdx[i]]
-    const dampFactor = mat.viscosity > 1.0 ? 0.98 : 0.999
+    const dampFactor = 1.0 / (1.0 + mat.viscosity * dt * 10)
     ps.vx[i] *= dampFactor
     ps.vy[i] *= dampFactor
     ps.vz[i] *= dampFactor
 
     // Clamp velocity for stability
     const vMag = Math.sqrt(ps.vx[i] * ps.vx[i] + ps.vy[i] * ps.vy[i] + ps.vz[i] * ps.vz[i])
-    const maxV = 5.0
+    const maxV = 2.0 // reduced from 5.0 — prevents extreme bouncing (BUG 2 fix)
     if (vMag > maxV) {
       const scale = maxV / vMag
       ps.vx[i] *= scale
@@ -462,7 +471,7 @@ function sphStep(
     ps.pz[i] += ps.vz[i] * dt
 
     // === 5. Wall collision (penalty force / boundary enforcement) ===
-    const restitution = 0.3
+    const restitution = 0.05 // reduced from 0.3 — less bouncy walls (BUG 2 fix)
     const wallPad = PARTICLE_RADIUS
 
     if (ps.px[i] < -HALF_W + wallPad) {
@@ -769,8 +778,8 @@ export function FluidTest() {
 
       // Simulation timestep (clamped for stability)
       const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-      // Sub-step for stability
-      const subSteps = simDt > 0.008 ? 2 : 1
+      // 4× sub-stepping prevents tunneling and pressure explosions (BUG 2 fix)
+      const subSteps = 4
       const subDt = simDt / subSteps
       for (let s = 0; s < subSteps; s++) {
         sphStep(ps, grid, sim.gravity, subDt)
