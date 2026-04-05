@@ -659,6 +659,18 @@ export function FluidTest() {
             }
           }
           sim.mcubes.blur(1)
+
+          // Zero out boundary cells to prevent MC surface bleeding outside box
+          for (let z = 0; z < mcRes; z++) {
+            for (let y = 0; y < mcRes; y++) {
+              for (let x = 0; x < mcRes; x++) {
+                if (x < 2 || x >= mcRes - 2 || y < 2 || y >= mcRes - 2 || z < 2 || z >= mcRes - 2) {
+                  fieldArr[mcRes * mcRes * z + mcRes * y + x] = 0
+                }
+              }
+            }
+          }
+
           sim.mcubes.update()
 
           setParticleCount(count)
