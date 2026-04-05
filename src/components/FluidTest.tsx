@@ -305,13 +305,28 @@ export function FluidTest() {
       pointsGeo.setAttribute('color', colAttr)
       pointsGeo.setDrawRange(0, 0)
 
+      // Create a round circle texture for soft fluid particles
+      const circleCanvas = document.createElement('canvas')
+      circleCanvas.width = 64
+      circleCanvas.height = 64
+      const ctx2d = circleCanvas.getContext('2d')!
+      const grad = ctx2d.createRadialGradient(32, 32, 0, 32, 32, 32)
+      grad.addColorStop(0, 'rgba(255,255,255,1)')
+      grad.addColorStop(0.6, 'rgba(255,255,255,0.6)')
+      grad.addColorStop(1, 'rgba(255,255,255,0)')
+      ctx2d.fillStyle = grad
+      ctx2d.fillRect(0, 0, 64, 64)
+      const circleTexture = new THREE.CanvasTexture(circleCanvas)
+
       const pointsMat = new THREE.PointsMaterial({
-        size: 0.06,
+        size: 0.12,
         sizeAttenuation: true,
         vertexColors: true,
+        map: circleTexture,
         transparent: true,
         opacity: 0.95,
-        depthWrite: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
       })
       const points = new THREE.Points(pointsGeo, pointsMat)
       points.frustumCulled = false
