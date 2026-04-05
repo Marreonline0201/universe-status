@@ -236,16 +236,16 @@ Form: mu = A * exp(Ea / (R * T)), where R = 8.314 J/(mol*K)
 
 | Liquid | A (mPa*s) | Ea (kJ/mol) | Tm (K) | mu(Tm) (mPa*s) | Source |
 |--------|----------|------------|--------|----------------|--------|
-| Fe     | 0.3453   | 41.4       | 1811   | 6.0   | Iida & Guthrie / Smithells |
-| Cu     | 0.3009   | 30.5       | 1358   | 4.0   | Iida & Guthrie |
-| Al     | 0.1492   | 16.5       |  933   | 1.3   | Iida & Guthrie |
-| Sn     | 0.4523   | 7.1        |  505   | 1.85  | Iida & Guthrie |
-| Pb     | 0.4636   | 10.0       |  601   | 2.65  | Iida & Guthrie |
-| Zn     | 0.4200   | 12.7       |  693   | 3.5   | Iida & Guthrie |
-| Ag     | 0.4522   | 23.7       | 1235   | 3.88  | Iida & Guthrie |
-| Au     | 0.3400   | 28.4       | 1337   | 5.13  | Iida & Guthrie |
-| H2O    | 0.00179  | 17.0       |  273   | 1.79 (at 0C) | CRC Handbook |
-| Hg     | 0.5270   |  2.6       |  234   | 1.53  | CRC Handbook |
+| Fe     | 0.3837   | 41.4       | 1811   | 6.0   | Iida & Guthrie / Smithells |
+| Cu     | 0.2684   | 30.5       | 1358   | 4.0   | Iida & Guthrie |
+| Al     | 0.1549   | 16.5       |  933   | 1.3   | Iida & Guthrie |
+| Sn     | 0.3410   | 7.1        |  505   | 1.85  | Iida & Guthrie |
+| Pb     | 0.3582   | 10.0       |  601   | 2.65  | Iida & Guthrie |
+| Zn     | 0.3862   | 12.7       |  693   | 3.5   | Iida & Guthrie |
+| Ag     | 0.3858   | 23.7       | 1235   | 3.88  | Iida & Guthrie |
+| Au     | 0.3986   | 28.4       | 1337   | 5.13  | Iida & Guthrie |
+| H2O    | 0.0010   | 17.0       |  273   | 1.79 (at 0C) | CRC Handbook |
+| Hg     | 0.4021   |  2.6       |  234   | 1.53  | CRC Handbook |
 
 **Source:** T. Iida & R. Guthrie, "The Thermophysical Properties of Metallic Liquids" (2015). Parameters back-calculated from recommended viscosity-temperature curves. CRC Handbook for water and mercury.
 
@@ -386,7 +386,7 @@ Form: sigma_a = sigma_f' * (2*N_f)^b
 | Pure Al         | ~45   | Ductile: compressive ~ tensile    | ASM |
 | W (Tungsten)    | ~585  | Very high for a pure metal        | ASM |
 | Si (Silicon)    | ~700  | Brittle semiconductor             | MatWeb |
-| C (Diamond)     | ~5000 | Exceptionally high compressive    | CRC |
+| C (Diamond)     | ~10000-20000 | Exceptionally high compressive | CRC (corrected: 5000 was too low) |
 | C (Graphite)    | 20-200| Depends on grade/direction        | CRC |
 | Granite         | 100-250 | Building stone                  | USGS |
 | Limestone       | 20-170  | Wide range by type              | USGS |
