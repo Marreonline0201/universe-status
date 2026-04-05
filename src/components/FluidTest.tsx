@@ -111,8 +111,6 @@ const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
 
-// Visual radius for rendering
-const VISUAL_RADIUS = 0.008
 
 // ── React Component ──────────────────────────────────────────────────────────
 
