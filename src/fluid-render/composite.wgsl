@@ -45,9 +45,9 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var scene_color = textureSample(scene_texture, texture_sampler, input.uv);
     var depth = abs(textureLoad(depth_texture, vec2u(pixel), 0).r);
 
-    // No fluid — pass through scene
+    // No fluid — fully transparent, let Three.js canvas show through
     if (depth >= 1e4) {
-        return scene_color;
+        discard;
     }
 
     // §3.2 Pass 4: Normal reconstruction from smoothed depth
