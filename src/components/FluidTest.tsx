@@ -398,8 +398,8 @@ function sphStep(
     ps.fy[i] += (fpy + fvy) * rho_i
     ps.fz[i] += (fpz + fvz) * rho_i
 
-    // F_gravity = (0, -g * rho_i, 0)
-    ps.fy[i] += -gravity * rho_i
+    // F_gravity is applied SEPARATELY in integration (never damped by viscosity)
+    // Do NOT add it to the force accumulator here
 
     // F_surface_tension (simplified CSF model for surface particles)
     // We approximate by adding a force toward the centroid of nearby same-material particles
@@ -442,22 +442,28 @@ function sphStep(
   // === 4. Integrate: symplectic Euler ===
   for (let i = 0; i < n; i++) {
     const invRho = 1.0 / ps.density[i]
-
-    // v += (F / rho) * dt
-    ps.vx[i] += ps.fx[i] * invRho * dt
-    ps.vy[i] += ps.fy[i] * invRho * dt
-    ps.vz[i] += ps.fz[i] * invRho * dt
-
-    // Viscosity-dependent velocity damping (BUG 1 fix — replaces flat 0.98 threshold)
     const mat = MATERIALS[ps.materialIdx[i]]
-    const dampFactor = 1.0 / (1.0 + mat.viscosity * dt * 10)
-    ps.vx[i] *= dampFactor
-    ps.vy[i] *= dampFactor
-    ps.vz[i] *= dampFactor
+
+    // Apply non-gravity forces (pressure, viscosity, surface tension)
+    // Viscosity damps these — thick fluids respond slowly to pressure
+    // But gravity is NEVER damped — heavy things always fall
+    const viscDamp = 1.0 / (1.0 + mat.viscosity * 0.5)
+    ps.vx[i] += ps.fx[i] * invRho * dt * viscDamp
+    ps.vy[i] += ps.fy[i] * invRho * dt * viscDamp
+    ps.vz[i] += ps.fz[i] * invRho * dt * viscDamp
+
+    // Apply gravity DIRECTLY — never damped, never clamped
+    // This ensures everything falls regardless of viscosity
+    ps.vy[i] += -gravity * dt
+
+    // Gentle overall damping for stability (not viscosity-dependent)
+    ps.vx[i] *= 0.999
+    ps.vy[i] *= 0.999
+    ps.vz[i] *= 0.999
 
     // Clamp velocity for stability
     const vMag = Math.sqrt(ps.vx[i] * ps.vx[i] + ps.vy[i] * ps.vy[i] + ps.vz[i] * ps.vz[i])
-    const maxV = 2.0 // reduced from 5.0 — prevents extreme bouncing (BUG 2 fix)
+    const maxV = 3.0
     if (vMag > maxV) {
       const scale = maxV / vMag
       ps.vx[i] *= scale
