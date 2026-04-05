@@ -565,14 +565,13 @@ export function FluidTest() {
         // Render: Three.js scene first, then WebGPU fluid overlay
         sim.renderer.render(sim.scene, sim.camera)
 
-        // WebGPU SSFR fluid rendering
+        // WebGPU SSFR fluid rendering — every frame
         if (sim.fluidRenderer?.isInitialized) {
           const count = sim.simulation.get_count()
           if (count > 0) {
-            // Capture Three.js scene for refraction in composite pass
             sim.fluidRenderer.captureScene(sim.renderer.domElement as HTMLCanvasElement)
-            sim.fluidRenderer.render(count)
           }
+          sim.fluidRenderer.render(count) // always render (clears overlay when count=0)
         }
       }
 

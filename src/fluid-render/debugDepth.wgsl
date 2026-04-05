@@ -12,14 +12,14 @@ struct FragmentInput {
 fn fs(input: FragmentInput) -> @location(0) vec4f {
     var depth = abs(textureLoad(depth_texture, vec2u(input.iuv), 0).r);
 
-    // No fluid pixel
+    // No fluid pixel — fully transparent so Three.js shows through
     if (depth >= 1e4 || depth <= 0.0) {
-        return vec4f(0.0, 0.0, 0.0, 0.0); // transparent
+        discard;
     }
 
-    // Visualize depth: map [0.5, 5.0] range to [1.0, 0.0] brightness
-    var brightness = clamp(1.0 - (depth - 0.5) / 4.5, 0.0, 1.0);
+    // Visualize depth: map [0.1, 5.0] range to [1.0, 0.0] brightness
+    var brightness = clamp(1.0 - (depth - 0.1) / 4.9, 0.0, 1.0);
 
-    // Tint blue for water look
-    return vec4f(brightness * 0.3, brightness * 0.6, brightness * 1.0, 0.9);
+    // Solid blue where fluid exists
+    return vec4f(brightness * 0.2, brightness * 0.5, brightness * 1.0, 1.0);
 }

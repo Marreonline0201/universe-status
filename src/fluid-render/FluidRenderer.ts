@@ -314,7 +314,21 @@ export class FluidRenderer {
   }
 
   render(numParticles: number) {
-    if (!this.initialized || numParticles === 0) return
+    if (!this.initialized) return
+
+    // Always clear the overlay — even with 0 particles
+    if (numParticles === 0) {
+      if (this.context) {
+        const encoder = this.device.createCommandEncoder()
+        const outputView = this.context.getCurrentTexture().createView()
+        const p = encoder.beginRenderPass({
+          colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+        })
+        p.end()
+        this.device.queue.submit([encoder.finish()])
+      }
+      return
+    }
 
     const d = this.device
     const depthView = this.depthMapTex.createView()
@@ -467,7 +481,7 @@ export class FluidRenderer {
         colorAttachments: [{
           view: outputView,
           loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 0.96, g: 0.87, b: 0.7, a: 1 }, // sandy yellow background for debug visibility
+          clearValue: { r: 0, g: 0, b: 0, a: 0 }, // transparent — Three.js shows through
         }],
       })
       p5.setPipeline(this.debugPipeline)
