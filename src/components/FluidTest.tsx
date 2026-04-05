@@ -158,6 +158,9 @@ export function FluidTest() {
     if (!simRef.current) return
     simRef.current.simulation.reset()
     simRef.current.points.geometry.setDrawRange(0, 0)
+    simRef.current.sprayPoints.geometry.setDrawRange(0, 0)
+    simRef.current.mcubes.reset()
+    simRef.current.mcubes.update()
     setParticleCount(0)
     setFpsWarning(false)
   }, [])
@@ -329,7 +332,7 @@ export function FluidTest() {
       const circleTexture = new THREE.CanvasTexture(metaballCanvas)
 
       const pointsMat = new THREE.PointsMaterial({
-        size: 18,
+        size: 8,
         sizeAttenuation: false,
         vertexColors: true,
         map: circleTexture,
@@ -362,14 +365,15 @@ export function FluidTest() {
       // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
       // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
       const mcMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0x3399ff,
-        roughness: 0.1,
+        color: 0x88bbff,
+        roughness: 0.05,
         metalness: 0.0,
-        transmission: 0.6,
-        thickness: 0.5,
+        transmission: 0.7,
+        thickness: 0.3,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.6,
         side: THREE.DoubleSide,
+        depthWrite: false,
       })
       const mcubes = new MarchingCubes(28, mcMaterial, false, true, 50000)
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
@@ -547,8 +551,8 @@ export function FluidTest() {
 
           sim.posAttr.needsUpdate = true
           sim.colAttr.needsUpdate = true
-          // Hide raw points — marching cubes provides the surface
-          sim.points.geometry.setDrawRange(0, 0)
+          // Show both: MC surface for smooth shape + Points for per-material color
+          sim.points.geometry.setDrawRange(0, count)
 
           // §3.2 Tier 1: Marching Cubes surface extraction
           // Feed particle positions as metaballs into MC grid
@@ -589,21 +593,28 @@ export function FluidTest() {
           // Splat particle density directly onto MC grid using SPH-like kernel
           // Each particle contributes to a 5×5×5 neighborhood of grid cells
           const mcRes = 28
-          const splatR = 2 // cells of influence around each particle
+          const splatR = 2
           const fieldArr = (sim.mcubes as any).field as Float32Array
+          // Map particles slightly inward to prevent MC surface leaking outside box
+          const margin = 1.5 / mcRes  // keep 1.5 cells margin from edges
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-            const gx = ((positions[i3]     + HALF_W) / BOX_W) * mcRes
-            const gy = ((positions[i3 + 1] + HALF_H) / BOX_H) * mcRes
-            const gz = ((positions[i3 + 2] + HALF_D) / BOX_D) * mcRes
+            // Map world position to grid coordinates with margin
+            const nx = (positions[i3]     + HALF_W) / BOX_W
+            const ny = (positions[i3 + 1] + HALF_H) / BOX_H
+            const nz = (positions[i3 + 2] + HALF_D) / BOX_D
+            // Clamp to inner region to prevent edge bleed
+            const gx = (margin + nx * (1 - 2 * margin)) * mcRes
+            const gy = (margin + ny * (1 - 2 * margin)) * mcRes
+            const gz = (margin + nz * (1 - 2 * margin)) * mcRes
             const cx = Math.floor(gx), cy = Math.floor(gy), cz = Math.floor(gz)
 
             for (let dx = -splatR; dx <= splatR; dx++) {
               for (let dy = -splatR; dy <= splatR; dy++) {
                 for (let dz = -splatR; dz <= splatR; dz++) {
                   const ix = cx + dx, iy = cy + dy, iz = cz + dz
-                  if (ix < 0 || ix >= mcRes || iy < 0 || iy >= mcRes || iz < 0 || iz >= mcRes) continue
+                  if (ix < 1 || ix >= mcRes - 1 || iy < 1 || iy >= mcRes - 1 || iz < 1 || iz >= mcRes - 1) continue
                   const fx = gx - ix - 0.5, fy = gy - iy - 0.5, fz = gz - iz - 0.5
                   const r2 = fx * fx + fy * fy + fz * fz
                   if (r2 > splatR * splatR + 0.5) continue
