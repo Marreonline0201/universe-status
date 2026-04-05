@@ -930,9 +930,10 @@ impl Simulation {
                 self.sleep_counter[i] = 0;
             }
 
-            // Velocity clamp
+            // Velocity clamp — must exceed free-fall speed from box top
+            // v_freefall = sqrt(2*g*h) = sqrt(2*9.81*1.5) ≈ 5.4 m/s
             let vsq = self.vx[i]*self.vx[i] + self.vy[i]*self.vy[i] + self.vz[i]*self.vz[i];
-            let max_v: f32 = 2.0;
+            let max_v: f32 = 8.0;
             if vsq > max_v * max_v {
                 let s = max_v / vsq.sqrt();
                 self.vx[i] *= s; self.vy[i] *= s; self.vz[i] *= s;
