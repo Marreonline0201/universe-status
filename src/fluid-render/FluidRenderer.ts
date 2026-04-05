@@ -447,8 +447,8 @@ export class FluidRenderer {
     p1.draw(6, numParticles)
     p1.end()
 
-    // ── Pass 2: Bilateral blur × 3 — smooth surface, preserve curvature ──
-    for (let i = 0; i < 3; i++) {
+    // ── Pass 2: Bilateral blur × 2 — smooth surface, preserve curvature ──
+    for (let i = 0; i < 2; i++) {
       // H blur: depth → tmpDepth
       const bh = encoder.beginRenderPass({
         colorAttachments: [{ view: tmpDepthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],
@@ -477,8 +477,8 @@ export class FluidRenderer {
     p3.draw(6, numParticles)
     p3.end()
 
-    // ── Pass 4: Gaussian blur × 2 — smooth thickness for natural color gradient
-    for (let i = 0; i < 2; i++) {
+    // ── Pass 4: Gaussian blur × 1 — smooth thickness for color gradient
+    for (let i = 0; i < 1; i++) {
       const gh = encoder.beginRenderPass({
         colorAttachments: [{ view: tmpThickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
       })

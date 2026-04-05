@@ -500,7 +500,7 @@ export function FluidTest() {
         const count = sim.simulation.get_count()
         if (count > 0) {
           const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-          sim.simulation.step(sim.gravity, simDt, 4)
+          sim.simulation.step(sim.gravity, simDt, 3)
 
           // Get results from WASM (including temperature + phase)
           const positions = sim.simulation.get_positions()
