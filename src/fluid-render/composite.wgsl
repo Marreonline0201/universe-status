@@ -167,6 +167,10 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var spec_intensity = mix(1.2, 2.5, uniforms.metalness);
     var final_color = shaded + vec3f(specular * spec_intensity) + emissive;
 
+    // Edge darkening — subtle contact shadow where fluid meets container
+    var edge_ao = smoothstep(0.0, 0.3, thickness);
+    final_color *= mix(0.7, 1.0, edge_ao);
+
     // Alpha: fluid pixels are semi-transparent at thin edges, emissive fluids more opaque
     var alpha = clamp(opacity * 1.5 + uniforms.emissive_intensity * 0.3, 0.3, 1.0);
 

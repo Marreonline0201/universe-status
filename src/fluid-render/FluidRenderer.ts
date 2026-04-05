@@ -507,22 +507,24 @@ export class FluidRenderer {
     p3.draw(6, numParticles)
     p3.end()
 
-    // ── Pass 4: Gaussian blur × 1 ────────────────────────────────
-    const g1 = encoder.beginRenderPass({
-      colorAttachments: [{ view: tmpThickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-    })
-    g1.setPipeline(this.gaussianPipeline)
-    g1.setBindGroup(0, filterBG_thickX)
-    g1.draw(6)
-    g1.end()
+    // ── Pass 4: Gaussian blur × 2 — smooth thickness for natural color gradient
+    for (let i = 0; i < 2; i++) {
+      const gh = encoder.beginRenderPass({
+        colorAttachments: [{ view: tmpThickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      })
+      gh.setPipeline(this.gaussianPipeline)
+      gh.setBindGroup(0, filterBG_thickX)
+      gh.draw(6)
+      gh.end()
 
-    const g2 = encoder.beginRenderPass({
-      colorAttachments: [{ view: thickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-    })
-    g2.setPipeline(this.gaussianPipeline)
-    g2.setBindGroup(0, filterBG_thickY)
-    g2.draw(6)
-    g2.end()
+      const gv = encoder.beginRenderPass({
+        colorAttachments: [{ view: thickView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      })
+      gv.setPipeline(this.gaussianPipeline)
+      gv.setBindGroup(0, filterBG_thickY)
+      gv.draw(6)
+      gv.end()
+    }
 
     // ── Pass 5: Composite ──────────────────────────────────────────
     // Update composite uniforms
