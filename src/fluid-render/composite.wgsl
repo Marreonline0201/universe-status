@@ -201,5 +201,6 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var min_alpha = mix(0.15, 0.5, max(uniforms.metalness, uniforms.emissive_intensity * 0.3));
     var alpha = clamp(opacity * 2.0, min_alpha, 1.0);
 
-    return vec4f(final_color, alpha);
+    // Premultiply alpha for correct canvas compositing (alphaMode: premultiplied)
+    return vec4f(final_color * alpha, alpha);
 }
