@@ -506,10 +506,10 @@ export function FluidTest() {
           }
 
           // Mark instanced meshes for GPU upload
-          const ssfrActive = sim.fluidRenderer?.isInitialized ?? false
+          // Show both spheres AND SSFR overlay for position debugging
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
-            im.visible = !ssfrActive // hide when SSFR provides the surface
+            im.visible = true
           })
 
           // Upload particles to WebGPU fluid renderer
