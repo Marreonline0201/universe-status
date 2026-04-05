@@ -59,6 +59,8 @@ export class FluidRenderer {
   private sampler!: GPUSampler
   private envCubemap!: GPUTexture
   private maxParticles = 10000
+  private fluidColor = [0.13, 0.4, 0.87] // default water blue
+  private fluidDensity = 3.0
 
   /**
    * Initialize with a SEPARATE overlay canvas for fluid rendering.
@@ -279,6 +281,11 @@ export class FluidRenderer {
     })
   }
 
+  setFluidMaterial(r: number, g: number, b: number, density: number) {
+    this.fluidColor = [r, g, b]
+    this.fluidDensity = density
+  }
+
   updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
     if (!this.initialized) return
     const data = new Float32Array(count * 8) // 8 floats per particle (padded to 32 bytes)
@@ -479,8 +486,8 @@ export class FluidRenderer {
 
     compData[20] = 0.5; compData[21] = 1.0; compData[22] = 0.3 // light_dir
     compData[23] = 0 // _pad2
-    compData[24] = 0.13; compData[25] = 0.4; compData[26] = 0.87 // fluid_color (water blue)
-    compData[27] = 3.0 // density
+    compData[24] = this.fluidColor[0]; compData[25] = this.fluidColor[1]; compData[26] = this.fluidColor[2]
+    compData[27] = this.fluidDensity
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()

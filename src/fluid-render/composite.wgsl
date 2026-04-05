@@ -99,8 +99,11 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var H = normalize(light_dir - ray_dir);
     var specular = pow(max(0.0, dot(H, normal)), 250.0);
 
-    // Final composite: mix refraction and reflection based on Fresnel
-    var final_color = mix(refraction_color, reflection_color, fresnel) + vec3f(specular);
+    // Add fluid's own color (visible even without background)
+    var fluid_contribution = diffuse_color * (1.0 - exp(-uniforms.density * thickness * 2.0));
+
+    // Final composite
+    var final_color = mix(refraction_color + fluid_contribution, reflection_color, fresnel * 0.5) + vec3f(specular);
 
     return vec4f(final_color, 1.0);
 }

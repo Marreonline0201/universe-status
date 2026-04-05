@@ -233,7 +233,7 @@ export function FluidTest() {
 
       // Scene
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0xf5deb3) // sandy yellow for debug visibility
+      scene.background = new THREE.Color(0x060810)
 
       // Camera
       const camera = new THREE.PerspectiveCamera(
@@ -517,12 +517,19 @@ export function FluidTest() {
           if (sim.fluidRenderer?.isInitialized) {
             const vels = sim.simulation.get_velocities()
             sim.fluidRenderer.updateParticles(positions, vels, mats, count)
-            // View matrix from Three.js, projection built fresh for WebGPU
+
             const viewMat = new Float32Array(16)
             sim.camera.matrixWorldInverse.toArray(viewMat)
-            const fov = sim.camera.fov * Math.PI / 180 // degrees to radians
-            const aspect = sim.camera.aspect
-            sim.fluidRenderer.updateCamera(viewMat, fov, aspect, sim.camera.near, sim.camera.far, 0.08)
+            const fov = sim.camera.fov * Math.PI / 180
+            sim.fluidRenderer.updateCamera(viewMat, fov, sim.camera.aspect, sim.camera.near, sim.camera.far, 0.12)
+
+            // Set fluid appearance from dominant material
+            const domColor = new THREE.Color(MATERIALS[dominantMat].color)
+            const isEmissive = MATERIALS[dominantMat].emissive
+            sim.fluidRenderer.setFluidMaterial(
+              domColor.r, domColor.g, domColor.b,
+              isEmissive ? 1.0 : 3.0, // lava/copper: less absorption, water/oil: more
+            )
           }
 
           if (count > 0) sim.avgTemp = avgTemp / count
