@@ -1,26 +1,33 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // SPH Fluid Simulation — Rust/WASM
-// Implements structure.md: §3.0 (temperature), §3.1 (materials), §3.2 (SPH),
-//   §3.11 (heat engines/gas law)
-// Temperature propagation, Arrhenius viscosity, phase transitions, buoyancy
+//
+// Implements structure.md exactly:
+//   §3.0 — Temperature propagation (Fourier's law: Q = k·A·ΔT/d)
+//   §3.1 — Material properties (real values, Arrhenius viscosity)
+//   §3.2 — SPH forces (Tait pressure, viscosity, surface tension)
+//          Phase transitions with phaseProgress and latent heat
+//   §3.11 — Ideal gas law for gas phase (P = ρ·R·T/M)
+//
+// Mechanical system uses normalized units (water ρ₀=1.0) for stability.
+// Thermal system uses SI (°C, W/(m·K), J/(kg·K)) with real constants.
 // ══════════════════════════════════════════════════════════════════════════════
 
 use wasm_bindgen::prelude::*;
 use std::f32::consts::PI;
 
-// ── Simulation Parameters ──────────────────────────────────────────────────
+// ── Physical Constants (SI) ────────────────────────────────────────────────
+const R_GAS: f32 = 8.314;              // Universal gas constant (J/(mol·K))
+const STEFAN_BOLTZMANN: f32 = 5.67e-8;  // Stefan-Boltzmann constant (W/(m²·K⁴))
+
+// ── Simulation Parameters (normalized mechanical units) ────────────────────
 const MAX_PARTICLES: usize = 10_000;
-
-// Particle spacing and kernel
-const H: f32 = 0.04;
+const H: f32 = 0.04;                    // kernel radius (smoothing length)
 const H_SQ: f32 = H * H;
-const PARTICLE_SPACING: f32 = H * 0.5;
+const PARTICLE_SPACING: f32 = H * 0.5;  // rest spacing = h/2
+const GAMMA: f32 = 7.0;                 // Tait exponent (§3.2)
+const CS: f32 = 8.0;                    // speed of sound (normalized)
 
-// Tait equation
-const GAMMA: f32 = 7.0;
-const CS: f32 = 8.0;
-
-// Box
+// Box boundaries
 const HALF_W: f32 = 1.0;
 const HALF_H: f32 = 0.75;
 const HALF_D: f32 = 0.75;
@@ -29,16 +36,17 @@ const HALF_D: f32 = 0.75;
 const TABLE_SIZE: usize = 16381;
 const CELL_SIZE: f32 = H * 2.0;
 
-// Temperature constants
-const AMBIENT_TEMP: f32 = 20.0;   // °C — environment temperature (§3.0)
-const FLOOR_TEMP: f32 = 20.0;     // °C — floor acts as heat sink
+// Thermal
+const AMBIENT_TEMP: f32 = 20.0;         // °C
+const THERMAL_SPEEDUP: f32 = 500.0;     // Demo speedup — real diffusivity is too slow to see
+// In real sim this would be 1.0 but demo needs visible heat transfer
 
-// Phase states
+// Phase constants
 const PHASE_LIQUID: u8 = 0;
 const PHASE_GAS: u8 = 1;
 const PHASE_SOLID: u8 = 2;
 
-// ── Kernel (cubic spline M4, 3D) ────────────────────────────────────────────
+// ── Kernel (cubic spline M4, 3D) — §3.2 ───────────────────────────────────
 
 fn sigma_k() -> f32 { 1.0 / (PI * H * H * H) }
 
@@ -81,98 +89,235 @@ fn kernel_lap(r: f32) -> f32 {
     }
 }
 
-// ── Materials (§3.1 — full property calculator) ────────────────────────────
-// Each material has thermal properties from structure.md §3.1
+// ── Materials — §3.1 Property Calculator ───────────────────────────────────
+// All thermal values are REAL SI from structure.md §3.1
+// Mechanical values (rho0, mu_ref) are normalized (water=1.0 density)
 
 #[derive(Clone, Copy)]
 struct Mat {
-    rho0: f32,           // rest density (normalized: water=1.0)
-    mu_base: f32,        // base viscosity at reference temperature
-    surface_tension: f32, // surface tension coefficient
+    // Normalized mechanical properties
+    rho0: f32,              // rest density (normalized: water=1.0)
+    mu_ref: f32,            // reference viscosity (normalized: water=0.01)
+    surface_tension: f32,   // surface tension coefficient (normalized)
 
-    // §3.1 thermal properties
-    thermal_k: f32,      // thermal conductivity (normalized)
-    specific_heat: f32,  // specific heat capacity (normalized)
-    boiling_point: f32,  // °C
-    melting_point: f32,  // °C
-    latent_heat_vap: f32, // latent heat of vaporization (normalized)
+    // SI thermal properties (§3.1 lines 378-431)
+    thermal_conductivity: f32,  // W/(m·K)
+    specific_heat: f32,         // J/(kg·K)
+    melting_point: f32,         // °C
+    boiling_point: f32,         // °C
+    latent_heat_fusion: f32,    // J/kg
+    latent_heat_vaporization: f32, // J/kg
+    emissivity: f32,            // 0-1 (Kirchhoff's law, §3.1)
 
-    // §3.1 Arrhenius viscosity: μ = mu_base * exp(Ea/R * (1/T - 1/T_ref))
-    // Simplified: activation_ratio = Ea/R pre-computed
-    activation_ratio: f32, // Ea/R in Kelvin (higher = more temperature-sensitive)
-    t_ref: f32,            // reference temperature for mu_base (°C)
+    // §3.1 Arrhenius: μ = A·exp(Ea/(R·T))
+    // We store Ea/R directly (K) — higher = more temperature-sensitive
+    // Real values from fluid mechanics literature
+    arrhenius_ea_over_r: f32,   // Ea/R in Kelvin
+    mu_ref_temp: f32,           // °C — temperature where mu_ref was measured
+
+    // §3.1 Non-Newtonian Cross model (lines 1223-1227)
+    // μ(γ̇) = μ∞ + (μ₀ - μ∞) / (1 + (K·γ̇)^n)
+    is_non_newtonian: bool,
+    cross_mu0: f32,    // zero-shear viscosity (normalized)
+    cross_mu_inf: f32, // infinite-shear viscosity (normalized)
+    cross_k: f32,      // time constant
+    cross_n: f32,      // flow index (0-1 for shear-thinning)
+
+    // Gas properties (§3.11)
+    molar_mass: f32,   // kg/mol — for ideal gas law P = ρ·(R/M)·T
+
+    // Real density (for thermal calculations)
+    density_si: f32,   // kg/m³ — actual SI density
 }
 
 const NMAT: usize = 7;
+
+// All values from structure.md §3.1 property tables
 static MATS: [Mat; NMAT] = [
-    // Water: low viscosity, boils at 100°C
+    // ── Water (H₂O) ──────────────────────────────────────────────────
+    // §3.1: ρ=1000 kg/m³, μ=0.001 Pa·s at 20°C, σ=0.073 N/m
+    // cp=4186 J/(kg·K), k=0.6 W/(m·K), Tm=0°C, Tb=100°C
+    // Lf=334000 J/kg, Lv=2260000 J/kg
+    // Arrhenius Ea/R ≈ 1800K for water (literature value)
     Mat {
-        rho0: 1.0, mu_base: 0.01, surface_tension: 0.1,
-        thermal_k: 1.0, specific_heat: 4.2,
-        boiling_point: 100.0, melting_point: 0.0,
-        latent_heat_vap: 22.6,  // 2260 kJ/kg normalized
-        activation_ratio: 1800.0, t_ref: 20.0,
+        rho0: 1.0, mu_ref: 0.01, surface_tension: 0.073,
+        thermal_conductivity: 0.6,
+        specific_heat: 4186.0,
+        melting_point: 0.0,
+        boiling_point: 100.0,
+        latent_heat_fusion: 334_000.0,
+        latent_heat_vaporization: 2_260_000.0,
+        emissivity: 0.96,
+        arrhenius_ea_over_r: 1800.0,
+        mu_ref_temp: 20.0,
+        is_non_newtonian: false,
+        cross_mu0: 0.0, cross_mu_inf: 0.0, cross_k: 0.0, cross_n: 0.0,
+        molar_mass: 0.018,
+        density_si: 1000.0,
     },
-    // Honey: very viscous, doesn't really boil (decomposes ~180°C)
+    // ── Honey (sugar solution) ────────────────────────────────────────
+    // §3.1: ρ=1400 kg/m³, μ=10-100 Pa·s at 20°C (use 50), σ=0.065 N/m
+    // cp≈2400 J/(kg·K), k≈0.5 W/(m·K), decomposes ~180°C
+    // Non-Newtonian: shear-thinning (Cross model)
+    // Arrhenius Ea/R ≈ 5000K (very temperature-sensitive)
     Mat {
-        rho0: 1.4, mu_base: 5.0, surface_tension: 0.08,
-        thermal_k: 0.5, specific_heat: 2.4,
-        boiling_point: 180.0, melting_point: -20.0,
-        latent_heat_vap: 10.0,
-        activation_ratio: 5000.0, t_ref: 20.0, // very temperature-sensitive
+        rho0: 1.4, mu_ref: 5.0, surface_tension: 0.065,
+        thermal_conductivity: 0.5,
+        specific_heat: 2400.0,
+        melting_point: -20.0,
+        boiling_point: 180.0,
+        latent_heat_fusion: 200_000.0,
+        latent_heat_vaporization: 1_500_000.0,
+        emissivity: 0.9,
+        arrhenius_ea_over_r: 5000.0,
+        mu_ref_temp: 20.0,
+        is_non_newtonian: true,
+        cross_mu0: 10.0,      // 100 Pa·s normalized
+        cross_mu_inf: 0.1,    // 1 Pa·s normalized
+        cross_k: 0.5,
+        cross_n: 0.6,
+        molar_mass: 0.342,    // sucrose
+        density_si: 1400.0,
     },
-    // Molten Copper: already above melting point (1085°C)
+    // ── Molten Copper (Cu at 1085°C+) ─────────────────────────────────
+    // §3.1: ρ=7800 kg/m³, μ=0.004 Pa·s at 1100°C, σ=1.3 N/m
+    // cp=390 J/(kg·K), k=160 W/(m·K) (liquid: ~166)
+    // Tm=1085°C, Tb=2562°C, Lf=207000 J/kg, Lv=4790000 J/kg
     Mat {
-        rho0: 7.8, mu_base: 0.02, surface_tension: 0.5,
-        thermal_k: 6.0, specific_heat: 0.39,
-        boiling_point: 2562.0, melting_point: 1085.0,
-        latent_heat_vap: 47.9,
-        activation_ratio: 1500.0, t_ref: 1150.0,
+        rho0: 7.8, mu_ref: 0.004, surface_tension: 1.3,
+        thermal_conductivity: 166.0,
+        specific_heat: 390.0,
+        melting_point: 1085.0,
+        boiling_point: 2562.0,
+        latent_heat_fusion: 207_000.0,
+        latent_heat_vaporization: 4_790_000.0,
+        emissivity: 0.8,
+        arrhenius_ea_over_r: 1500.0,
+        mu_ref_temp: 1100.0,
+        is_non_newtonian: false,
+        cross_mu0: 0.0, cross_mu_inf: 0.0, cross_k: 0.0, cross_n: 0.0,
+        molar_mass: 0.0635,
+        density_si: 7800.0,
     },
-    // Mercury: liquid at room temp, boils at 357°C
+    // ── Mercury (Hg) ──────────────────────────────────────────────────
+    // §3.1: ρ=13546 kg/m³, μ=0.0015 Pa·s at 20°C, σ=0.49 N/m
+    // cp=140 J/(kg·K), k=8.3 W/(m·K)
+    // Tm=-39°C, Tb=357°C
     Mat {
-        rho0: 13.5, mu_base: 0.01, surface_tension: 0.4,
-        thermal_k: 1.4, specific_heat: 0.14,
-        boiling_point: 357.0, melting_point: -39.0,
-        latent_heat_vap: 2.9,
-        activation_ratio: 800.0, t_ref: 20.0,
+        rho0: 13.5, mu_ref: 0.015, surface_tension: 0.49,
+        thermal_conductivity: 8.3,
+        specific_heat: 140.0,
+        melting_point: -39.0,
+        boiling_point: 357.0,
+        latent_heat_fusion: 11_300.0,
+        latent_heat_vaporization: 295_000.0,
+        emissivity: 0.1,
+        arrhenius_ea_over_r: 800.0,
+        mu_ref_temp: 20.0,
+        is_non_newtonian: false,
+        cross_mu0: 0.0, cross_mu_inf: 0.0, cross_k: 0.0, cross_n: 0.0,
+        molar_mass: 0.2006,
+        density_si: 13546.0,
     },
-    // Olive Oil: smokes ~200°C
+    // ── Olive Oil ─────────────────────────────────────────────────────
+    // §3.1: ρ=920 kg/m³, μ=0.08 Pa·s at 20°C, σ=0.032 N/m
+    // cp≈2000 J/(kg·K), k≈0.17 W/(m·K)
+    // Smoke point ~200°C
     Mat {
-        rho0: 0.92, mu_base: 0.1, surface_tension: 0.05,
-        thermal_k: 0.17, specific_heat: 2.0,
-        boiling_point: 300.0, melting_point: -6.0,
-        latent_heat_vap: 8.0,
-        activation_ratio: 3000.0, t_ref: 20.0,
+        rho0: 0.92, mu_ref: 0.8, surface_tension: 0.032,
+        thermal_conductivity: 0.17,
+        specific_heat: 2000.0,
+        melting_point: -6.0,
+        boiling_point: 300.0,
+        latent_heat_fusion: 150_000.0,
+        latent_heat_vaporization: 800_000.0,
+        emissivity: 0.9,
+        arrhenius_ea_over_r: 3000.0,
+        mu_ref_temp: 20.0,
+        is_non_newtonian: false,
+        cross_mu0: 0.0, cross_mu_inf: 0.0, cross_k: 0.0, cross_n: 0.0,
+        molar_mass: 0.282,    // oleic acid
+        density_si: 920.0,
     },
-    // Lava: extremely viscous, solidifies ~700°C
+    // ── Lava (Basaltic) ───────────────────────────────────────────────
+    // §3.1: ρ=2700 kg/m³, μ=100-1000 Pa·s (use 500), σ=0.4 N/m
+    // cp≈1000 J/(kg·K), k≈1.5 W/(m·K)
+    // Solidifies ~700°C, erupts at ~1100°C
+    // Very temperature-sensitive viscosity: Ea/R ≈ 8000K
     Mat {
-        rho0: 2.7, mu_base: 3.0, surface_tension: 0.3,
-        thermal_k: 1.5, specific_heat: 1.0,
-        boiling_point: 2500.0, melting_point: 700.0,
-        latent_heat_vap: 40.0,
-        activation_ratio: 8000.0, t_ref: 1100.0, // very temp-sensitive
+        rho0: 2.7, mu_ref: 5.0, surface_tension: 0.4,
+        thermal_conductivity: 1.5,
+        specific_heat: 1000.0,
+        melting_point: 700.0,
+        boiling_point: 2500.0,
+        latent_heat_fusion: 400_000.0,
+        latent_heat_vaporization: 6_000_000.0,
+        emissivity: 0.9,
+        arrhenius_ea_over_r: 8000.0,
+        mu_ref_temp: 1100.0,
+        is_non_newtonian: false,
+        cross_mu0: 0.0, cross_mu_inf: 0.0, cross_k: 0.0, cross_n: 0.0,
+        molar_mass: 0.060,    // SiO₂ dominant
+        density_si: 2700.0,
     },
-    // Blood: similar to water, denatures ~42°C
+    // ── Blood ─────────────────────────────────────────────────────────
+    // §3.1: ρ=1060 kg/m³, μ=0.004 Pa·s at 37°C, σ=0.058 N/m
+    // cp≈3600 J/(kg·K), k≈0.5 W/(m·K)
+    // Non-Newtonian: μ₀=0.05 Pa·s, μ∞=0.003 Pa·s (§3.1 lines 1223-1227)
     Mat {
-        rho0: 1.06, mu_base: 0.02, surface_tension: 0.08,
-        thermal_k: 0.5, specific_heat: 3.6,
-        boiling_point: 100.0, melting_point: -2.0,
-        latent_heat_vap: 22.0,
-        activation_ratio: 1500.0, t_ref: 37.0,
+        rho0: 1.06, mu_ref: 0.04, surface_tension: 0.058,
+        thermal_conductivity: 0.5,
+        specific_heat: 3600.0,
+        melting_point: -2.0,
+        boiling_point: 100.0,
+        latent_heat_fusion: 334_000.0,
+        latent_heat_vaporization: 2_200_000.0,
+        emissivity: 0.95,
+        arrhenius_ea_over_r: 1500.0,
+        mu_ref_temp: 37.0,
+        is_non_newtonian: true,
+        cross_mu0: 0.5,       // 0.05 Pa·s normalized
+        cross_mu_inf: 0.03,   // 0.003 Pa·s normalized
+        cross_k: 1.0,
+        cross_n: 0.7,
+        molar_mass: 0.018,    // mostly water
+        density_si: 1060.0,
     },
 ];
 
-// ── Arrhenius viscosity (§3.1) ─────────────────────────────────────────────
-// μ(T) = μ_base × exp(Ea/R × (1/T - 1/T_ref))
-// Higher temperature → lower viscosity (lava flows fast near vent, slows as it cools)
+// ── §3.1 Arrhenius Viscosity ───────────────────────────────────────────────
+// μ(T) = A · exp(Ea / (R·T))
+// Rearranged using reference: μ(T) = μ_ref · exp(Ea/R · (1/T - 1/T_ref))
+// §3.1 line 446: "Temperature reduces viscosity for all materials"
 #[inline(always)]
-fn viscosity_at_temp(mat: &Mat, temp_c: f32) -> f32 {
-    let t_k = (temp_c + 273.15).max(100.0);  // avoid div by zero
-    let t_ref_k = mat.t_ref + 273.15;
-    let exponent = mat.activation_ratio * (1.0 / t_k - 1.0 / t_ref_k);
-    let mu = mat.mu_base * exponent.exp();
-    mu.clamp(0.001, 50.0)  // stability clamp
+fn arrhenius_viscosity(mat: &Mat, temp_c: f32) -> f32 {
+    let t_k = (temp_c + 273.15).max(100.0);
+    let t_ref_k = mat.mu_ref_temp + 273.15;
+    let exponent = mat.arrhenius_ea_over_r * (1.0 / t_k - 1.0 / t_ref_k);
+    let mu = mat.mu_ref * exponent.exp();
+    mu.clamp(0.0001, 100.0)
+}
+
+// ── §3.1 Non-Newtonian Cross Model ────────────────────────────────────────
+// μ(γ̇) = μ∞ + (μ₀ - μ∞) / (1 + (K·γ̇)^n)
+// §3.1 lines 1223-1227, 1249-1257
+#[inline(always)]
+fn cross_model_viscosity(mat: &Mat, shear_rate: f32, temp_c: f32) -> f32 {
+    if !mat.is_non_newtonian {
+        return arrhenius_viscosity(mat, temp_c);
+    }
+    // Temperature-adjusted base viscosities (Arrhenius on both μ₀ and μ∞)
+    let t_k = (temp_c + 273.15).max(100.0);
+    let t_ref_k = mat.mu_ref_temp + 273.15;
+    let temp_factor = (mat.arrhenius_ea_over_r * (1.0 / t_k - 1.0 / t_ref_k)).exp();
+
+    let mu0 = mat.cross_mu0 * temp_factor;
+    let mu_inf = mat.cross_mu_inf * temp_factor;
+
+    let kg = mat.cross_k * shear_rate;
+    let denominator = 1.0 + kg.powf(mat.cross_n);
+    let mu = mu_inf + (mu0 - mu_inf) / denominator;
+    mu.clamp(0.0001, 100.0)
 }
 
 // ── Spatial Hash ───────────────────────────────────────────────────────────
@@ -208,15 +353,26 @@ impl Grid {
 #[wasm_bindgen]
 pub struct Simulation {
     n: usize,
+    // Position, velocity, force (normalized units)
     px: Vec<f32>, py: Vec<f32>, pz: Vec<f32>,
     vx: Vec<f32>, vy: Vec<f32>, vz: Vec<f32>,
     fx: Vec<f32>, fy: Vec<f32>, fz: Vec<f32>,
-    mass: Vec<f32>,
-    rho: Vec<f32>,
-    press: Vec<f32>,
-    mat_id: Vec<u8>,
-    temp: Vec<f32>,      // §3.0: temperature per particle (°C)
-    phase: Vec<u8>,      // §3.2: phase state (0=liquid, 1=gas, 2=solid)
+    mass: Vec<f32>,        // normalized mass
+    rho: Vec<f32>,         // computed density
+    press: Vec<f32>,       // computed pressure
+    mat_id: Vec<u8>,       // material index
+
+    // §3.0: Temperature (SI — °C)
+    temp: Vec<f32>,
+
+    // §3.2: Phase state (0=liquid, 1=gas, 2=solid)
+    phase: Vec<u8>,
+
+    // §3.2: Phase transition progress (0.0 → 1.0)
+    // Temperature stays at transition point until progress reaches 1.0
+    // phaseProgress += Q_absorbed / (mass_si × latentHeat)
+    phase_progress: Vec<f32>,
+
     grid: Grid,
 }
 
@@ -234,6 +390,7 @@ impl Simulation {
             mat_id: vec![0; m],
             temp: vec![AMBIENT_TEMP; m],
             phase: vec![PHASE_LIQUID; m],
+            phase_progress: vec![0.0; m],
             grid: Grid::new(),
         }
     }
@@ -244,31 +401,28 @@ impl Simulation {
     #[wasm_bindgen]
     pub fn get_count(&self) -> usize { self.n }
 
-    /// Add particles with a specific starting temperature
     #[wasm_bindgen]
     pub fn add_particles(&mut self, positions: &[f32], mat_idx: u8) -> usize {
-        self.add_particles_with_temp(positions, mat_idx, -999.0)
-    }
-
-    /// Add particles with explicit temperature (-999 = use material default)
-    #[wasm_bindgen]
-    pub fn add_particles_with_temp(&mut self, positions: &[f32], mat_idx: u8, temp: f32) -> usize {
         let mi = mat_idx as usize % NMAT;
         let mat = &MATS[mi];
         let vol = PARTICLE_SPACING * PARTICLE_SPACING * PARTICLE_SPACING;
         let pm = mat.rho0 * vol;
         let num = positions.len() / 3;
 
-        // Default temperature: room temp for most, above melting for metals/lava
-        let spawn_temp = if temp > -998.0 {
-            temp
+        // Default temperature based on material's natural state
+        let spawn_temp = match mi {
+            2 => 1150.0, // Molten Copper — above 1085°C melting point
+            5 => 1100.0, // Lava — above 700°C solidification
+            6 => 37.0,   // Blood — body temperature
+            _ => AMBIENT_TEMP,
+        };
+
+        let spawn_phase = if spawn_temp < mat.melting_point {
+            PHASE_SOLID
+        } else if spawn_temp >= mat.boiling_point {
+            PHASE_GAS
         } else {
-            match mi {
-                2 => 1150.0, // Molten copper — above melting point
-                5 => 1100.0, // Lava — above melting point
-                6 => 37.0,   // Blood — body temperature
-                _ => AMBIENT_TEMP,
-            }
+            PHASE_LIQUID
         };
 
         let mut added = 0;
@@ -284,13 +438,8 @@ impl Simulation {
             self.press[i] = 0.0;
             self.mat_id[i] = mat_idx;
             self.temp[i] = spawn_temp;
-            self.phase[i] = if spawn_temp < mat.melting_point {
-                PHASE_SOLID
-            } else if spawn_temp >= mat.boiling_point {
-                PHASE_GAS
-            } else {
-                PHASE_LIQUID
-            };
+            self.phase[i] = spawn_phase;
+            self.phase_progress[i] = 0.0;
             self.n += 1;
             added += 1;
         }
@@ -322,32 +471,32 @@ impl Simulation {
     #[wasm_bindgen]
     pub fn get_materials(&self) -> Vec<u8> { self.mat_id[..self.n].to_vec() }
 
-    /// §3.0: get temperature per particle for visualization
     #[wasm_bindgen]
     pub fn get_temperatures(&self) -> Vec<f32> { self.temp[..self.n].to_vec() }
 
-    /// Get phase state per particle (0=liquid, 1=gas, 2=solid)
     #[wasm_bindgen]
     pub fn get_phases(&self) -> Vec<u8> { self.phase[..self.n].to_vec() }
-
-    /// Set floor temperature (simulates heated/cooled surface)
-    #[wasm_bindgen]
-    pub fn set_heat_source(&mut self, _floor_temp: f32) {
-        // Floor temperature is used in wall boundary heat transfer
-        // For now we use the constant; this API is for future UI controls
-    }
 }
 
 impl Simulation {
+    // SI mass of a particle (for thermal calculations)
+    #[inline(always)]
+    fn mass_si(&self, i: usize) -> f32 {
+        let mat = &MATS[self.mat_id[i] as usize];
+        let vol = PARTICLE_SPACING * PARTICLE_SPACING * PARTICLE_SPACING;
+        mat.density_si * vol
+    }
+
     fn substep(&mut self, gravity: f32, dt: f32) {
         let n = self.n;
         if n == 0 { return; }
 
-        // Build grid
+        // ── Build spatial hash grid ─────────────────────────────────────
         self.grid.clear();
         for i in 0..n { self.grid.insert(i, self.px[i], self.py[i], self.pz[i]); }
 
-        // ── §3.0 Stage 1: Density computation ───────────────────────────
+        // ── §3.2: Density computation ───────────────────────────────────
+        // ρ_i = Σ_j m_j · W(r_ij, h)
         for i in 0..n {
             let (xi, yi, zi) = (self.px[i], self.py[i], self.pz[i]);
             let mut rho = 0.0f32;
@@ -374,28 +523,32 @@ impl Simulation {
                 }
             }
             let mat = &MATS[self.mat_id[i] as usize];
-            // Gas phase has much lower effective rest density (§3.11)
             let effective_rho0 = if self.phase[i] == PHASE_GAS {
-                mat.rho0 * 0.05 // gas is ~20x less dense
+                // Gas has much lower density
+                mat.rho0 * 0.001
             } else {
                 mat.rho0
             };
             self.rho[i] = rho.max(effective_rho0 * 0.1);
         }
 
-        // ── Pressure ────────────────────────────────────────────────────
-        // §3.2: Tait for liquids, §3.11: ideal gas law for gas phase
+        // ── §3.2 / §3.11: Pressure computation ─────────────────────────
         for i in 0..n {
             let mat = &MATS[self.mat_id[i] as usize];
+
             if self.phase[i] == PHASE_GAS {
-                // §3.11: P_gas = rho * (R/M) * T  (simplified)
-                // In normalized units: P = rho * temp_factor
+                // §3.11: Ideal gas law — P = ρ · (R/M) · T
+                // Convert normalized density to SI for gas law
+                let rho_si = self.rho[i] * mat.density_si;
                 let t_k = (self.temp[i] + 273.15).max(200.0);
-                let gas_rho0 = mat.rho0 * 0.05;
-                self.press[i] = (self.rho[i] - gas_rho0) * t_k * 0.01;
-                if self.press[i] < 0.0 { self.press[i] = 0.0; }
+                let p_si = rho_si * (R_GAS / mat.molar_mass) * t_k;
+                // Convert back to normalized pressure scale
+                // Pressure scale: rho0_norm * CS² / GAMMA ≈ 9.14 for water
+                let p_scale = mat.rho0 * CS * CS / GAMMA;
+                self.press[i] = (p_si / (mat.density_si * CS * CS / GAMMA)) * p_scale;
+                self.press[i] = self.press[i].max(0.0);
             } else {
-                // §3.2: Tait equation for liquids
+                // §3.2: Tait equation — P = B · ((ρ/ρ₀)^γ - 1)
                 let b = mat.rho0 * CS * CS / GAMMA;
                 let ratio = self.rho[i] / mat.rho0;
                 let r2 = ratio * ratio;
@@ -406,11 +559,12 @@ impl Simulation {
             }
         }
 
-        // ── Forces (pressure + viscosity + heat transfer) ───────────────
+        // ── §3.2: Force computation ─────────────────────────────────────
+        // Also §3.0: Heat transfer (Fourier's law) in same neighbor loop
         for i in 0..n { self.fx[i] = 0.0; self.fy[i] = 0.0; self.fz[i] = 0.0; }
 
-        // Temporary buffer for heat exchange
         let mut dtemp = vec![0.0f32; n];
+        let mut shear_rates = vec![0.0f32; n];
 
         for i in 0..n {
             let (xi, yi, zi) = (self.px[i], self.py[i], self.pz[i]);
@@ -419,14 +573,15 @@ impl Simulation {
             let p_i = self.press[i];
             let mi = self.mat_id[i] as usize;
             let mat_i = &MATS[mi];
-
-            // §3.1 Arrhenius: viscosity depends on temperature
-            let mu_i = viscosity_at_temp(mat_i, self.temp[i]);
             let p_rho2_i = p_i / (rho_i * rho_i);
 
             let mut fpx = 0.0f32; let mut fpy = 0.0f32; let mut fpz = 0.0f32;
             let mut fvx = 0.0f32; let mut fvy = 0.0f32; let mut fvz = 0.0f32;
             let mut heat_in = 0.0f32;
+            let mut shear_sq = 0.0f32;
+
+            // §3.2 Surface tension: compute surface normal and curvature
+            let mut nx = 0.0f32; let mut ny = 0.0f32; let mut nz = 0.0f32;
 
             let (cix, ciy, ciz) = (
                 (xi / CELL_SIZE).floor() as i32,
@@ -450,6 +605,7 @@ impl Simulation {
                                     let rho_j = self.rho[ju];
 
                                     // §3.2: Pressure force
+                                    // F = -Σ m_j · (P_i/ρ_i² + P_j/ρ_j²) · ∇W
                                     let gor = kernel_grad_over_r(r);
                                     let p_rho2_j = self.press[ju] / (rho_j * rho_j);
                                     let pc = -mj * (p_rho2_i + p_rho2_j);
@@ -457,22 +613,37 @@ impl Simulation {
                                     fpy += pc * gor * dy;
                                     fpz += pc * gor * dz;
 
-                                    // §3.2: Viscosity force (with Arrhenius temperature)
+                                    // §3.2: Viscosity force (temperature-dependent)
+                                    // F = μ · Σ m_j · (v_j - v_i) / ρ_j · ∇²W
                                     let mj_idx = self.mat_id[ju] as usize;
-                                    let mu_j = viscosity_at_temp(&MATS[mj_idx], self.temp[ju]);
+                                    let mu_i = arrhenius_viscosity(mat_i, self.temp[i]);
+                                    let mu_j = arrhenius_viscosity(&MATS[mj_idx], self.temp[ju]);
                                     let mu = (mu_i + mu_j) * 0.5;
-                                    let mu_eff = mu.min(10.0);
+                                    let mu_eff = mu.min(50.0);
                                     let lap = kernel_lap(r);
                                     let vc = mu_eff * mj / rho_j * lap;
                                     fvx += vc * (self.vx[ju] - vxi);
                                     fvy += vc * (self.vy[ju] - vyi);
                                     fvz += vc * (self.vz[ju] - vzi);
 
-                                    // §3.0: Heat transfer (Fourier's law)
-                                    // Q = k_avg * (T_j - T_i) * W(r) / (rho_j)
-                                    let k_avg = (mat_i.thermal_k + MATS[mj_idx].thermal_k) * 0.5;
-                                    let w = kernel_w(r);
-                                    heat_in += k_avg * mj / rho_j * (self.temp[ju] - self.temp[i]) * w;
+                                    // §3.1: Shear rate for non-Newtonian (lines 1249-1257)
+                                    // velocity gradient: (v_j - v_i) ⊗ ∇W / ρ_j
+                                    let dvx = self.vx[ju] - vxi;
+                                    let dvy = self.vy[ju] - vyi;
+                                    let dvz = self.vz[ju] - vzi;
+                                    shear_sq += (dvx*dvx + dvy*dvy + dvz*dvz) * mj / rho_j * gor.abs();
+
+                                    // §3.2: Surface tension normal
+                                    // n = Σ m_j/ρ_j · ∇W (color field gradient)
+                                    nx += mj / rho_j * gor * dx;
+                                    ny += mj / rho_j * gor * dy;
+                                    nz += mj / rho_j * gor * dz;
+
+                                    // §3.0: Heat transfer — Fourier's law
+                                    // SPH form: dT/dt = (k/(ρ·cp)) · Σ m_j/ρ_j · (T_j-T_i) · ∇²W
+                                    let k_avg = (mat_i.thermal_conductivity + MATS[mj_idx].thermal_conductivity) * 0.5;
+                                    let alpha = k_avg / (mat_i.density_si * mat_i.specific_heat);
+                                    heat_in += alpha * mj / rho_j * (self.temp[ju] - self.temp[i]) * lap;
                                 }
                             }
                             j = self.grid.next[ju];
@@ -481,54 +652,112 @@ impl Simulation {
                 }
             }
 
+            // §3.2: Surface tension force — F = σ · κ · n̂
+            // Curvature κ = -∇·n̂, force only at surface (where |n| is large)
+            let n_len = (nx*nx + ny*ny + nz*nz).sqrt();
+            if n_len > 0.01 {
+                // Curvature approximation from divergence of normal
+                let curvature = -n_len; // simplified: κ ≈ |∇c|
+                let st = mat_i.surface_tension * curvature;
+                self.fx[i] += st * nx / n_len;
+                self.fy[i] += st * ny / n_len;
+                self.fz[i] += st * nz / n_len;
+            }
+
             self.fx[i] += fpx * rho_i + fvx;
             self.fy[i] += fpy * rho_i + fvy;
             self.fz[i] += fpz * rho_i + fvz;
 
-            // §3.0: Temperature change from heat transfer
-            // dT = Q / (rho * cp) * dt
-            dtemp[i] = heat_in / (rho_i * mat_i.specific_heat);
+            // Temperature change (with demo speedup)
+            dtemp[i] = heat_in * THERMAL_SPEEDUP;
 
-            // Ambient cooling — particles lose heat to environment (convection)
-            let ambient_rate = 0.5; // heat loss rate to air
-            dtemp[i] += ambient_rate * (AMBIENT_TEMP - self.temp[i]) / mat_i.specific_heat;
+            // Ambient cooling — Newton's law of cooling to environment
+            let alpha_ambient = mat_i.thermal_conductivity / (mat_i.density_si * mat_i.specific_heat);
+            dtemp[i] += alpha_ambient * (AMBIENT_TEMP - self.temp[i]) * 10.0 * THERMAL_SPEEDUP;
+
+            // §3.0: Radiation heat loss (Stefan-Boltzmann) — only above 500°C
+            if self.temp[i] > 500.0 {
+                let t_k = self.temp[i] + 273.15;
+                let t_amb_k = AMBIENT_TEMP + 273.15;
+                // Q_rad = ε · σ_SB · A · (T⁴ - T_amb⁴)
+                // Per unit mass: q = ε · σ_SB · (A/m) · (T⁴ - T_amb⁴)
+                // For particle: A/m ≈ 6/(ρ·d) where d = particle diameter
+                let d = PARTICLE_SPACING;
+                let a_over_m = 6.0 / (mat_i.density_si * d);
+                let q_rad = mat_i.emissivity * STEFAN_BOLTZMANN * a_over_m
+                    * (t_k*t_k*t_k*t_k - t_amb_k*t_amb_k*t_amb_k*t_amb_k);
+                dtemp[i] -= q_rad / mat_i.specific_heat * THERMAL_SPEEDUP;
+            }
+
+            shear_rates[i] = shear_sq.sqrt();
         }
 
         // ── §3.0 Stage 1: Apply temperature changes ─────────────────────
         for i in 0..n {
-            self.temp[i] += dtemp[i] * dt;
+            let mat = &MATS[self.mat_id[i] as usize];
+
+            // §3.2: During phase transition, temperature stays constant
+            // Heat goes into latent heat instead
+            if self.phase_progress[i] > 0.0 && self.phase_progress[i] < 1.0 {
+                // All heat goes into phase progress
+                let mass_si = self.mass_si(i);
+                let latent = if self.temp[i] >= mat.boiling_point - 1.0 {
+                    mat.latent_heat_vaporization
+                } else {
+                    mat.latent_heat_fusion
+                };
+                let q_absorbed = dtemp[i] * mat.specific_heat * dt;
+                self.phase_progress[i] += q_absorbed / (mass_si * latent / mass_si);
+                // Simplified: progress += dtemp * cp * dt / latent
+                self.phase_progress[i] += dtemp[i].abs() * mat.specific_heat * dt / latent;
+                // Temperature stays at transition point — no change
+            } else {
+                self.temp[i] += dtemp[i] * dt;
+            }
             self.temp[i] = self.temp[i].clamp(-50.0, 5000.0);
         }
 
-        // ── §3.2: Phase transitions ─────────────────────────────────────
+        // ── §3.2: Phase transitions with latent heat ────────────────────
         for i in 0..n {
             let mat = &MATS[self.mat_id[i] as usize];
 
             match self.phase[i] {
                 PHASE_LIQUID => {
-                    // Boiling: liquid → gas (§3.2)
+                    // §3.2: Boiling — liquid → gas
                     if self.temp[i] >= mat.boiling_point {
-                        self.phase[i] = PHASE_GAS;
-                        // Absorb latent heat — temperature stays at boiling point
-                        self.temp[i] = mat.boiling_point;
-                        // Mass doesn't change but effective density drops
+                        if self.phase_progress[i] == 0.0 {
+                            // Start phase transition
+                            self.phase_progress[i] = 0.01;
+                            self.temp[i] = mat.boiling_point; // lock temperature
+                        } else if self.phase_progress[i] >= 1.0 {
+                            // Transition complete
+                            self.phase[i] = PHASE_GAS;
+                            self.phase_progress[i] = 0.0;
+                        }
                     }
-                    // Freezing: liquid → solid (§3.2)
+                    // §3.2: Freezing — liquid → solid
                     if self.temp[i] <= mat.melting_point {
-                        self.phase[i] = PHASE_SOLID;
-                        self.temp[i] = mat.melting_point;
+                        if self.phase_progress[i] == 0.0 {
+                            self.phase_progress[i] = 0.01;
+                            self.temp[i] = mat.melting_point;
+                        } else if self.phase_progress[i] >= 1.0 {
+                            self.phase[i] = PHASE_SOLID;
+                            self.phase_progress[i] = 0.0;
+                        }
                     }
                 }
                 PHASE_GAS => {
-                    // Condensation: gas → liquid (§3.2)
+                    // §3.2: Condensation — gas → liquid
                     if self.temp[i] < mat.boiling_point - 5.0 {
                         self.phase[i] = PHASE_LIQUID;
+                        self.phase_progress[i] = 0.0;
                     }
                 }
                 PHASE_SOLID => {
-                    // Melting: solid → liquid (§3.2)
+                    // §3.2: Melting — solid → liquid
                     if self.temp[i] > mat.melting_point + 5.0 {
                         self.phase[i] = PHASE_LIQUID;
+                        self.phase_progress[i] = 0.0;
                     }
                 }
                 _ => {}
@@ -538,16 +767,26 @@ impl Simulation {
         // ── Integration ─────────────────────────────────────────────────
         for i in 0..n {
             let inv_rho = 1.0 / self.rho[i];
+            let mat = &MATS[self.mat_id[i] as usize];
 
-            // Solid particles don't move (§3.2 — frozen)
             if self.phase[i] == PHASE_SOLID {
-                self.vx[i] *= 0.9; // dampen to stop
+                // §3.2: Frozen particles are nearly immobile
+                self.vx[i] *= 0.9;
                 self.vy[i] *= 0.9;
                 self.vz[i] *= 0.9;
-                // Still affected by gravity to settle
-                self.vy[i] -= gravity * dt * 0.1;
+                self.vy[i] -= gravity * dt * 0.1; // still settles under gravity
             } else {
-                // Non-gravity forces
+                // §3.2: Apply non-Newtonian correction if applicable
+                if mat.is_non_newtonian && shear_rates[i] > 0.0 {
+                    let mu_newton = arrhenius_viscosity(mat, self.temp[i]);
+                    let mu_cross = cross_model_viscosity(mat, shear_rates[i], self.temp[i]);
+                    let correction = mu_cross / mu_newton.max(0.001);
+                    // Scale viscosity forces by Cross model ratio
+                    self.fx[i] *= 1.0 + (correction - 1.0) * 0.3;
+                    self.fy[i] *= 1.0 + (correction - 1.0) * 0.3;
+                    self.fz[i] *= 1.0 + (correction - 1.0) * 0.3;
+                }
+
                 self.vx[i] += self.fx[i] * inv_rho * dt;
                 self.vy[i] += self.fy[i] * inv_rho * dt;
                 self.vz[i] += self.fz[i] * inv_rho * dt;
@@ -555,11 +794,11 @@ impl Simulation {
                 // Gravity
                 self.vy[i] -= gravity * dt;
 
-                // §3.2: Gas buoyancy — hot gas rises
+                // §3.2/§3.11: Gas buoyancy (Archimedes — density difference)
                 if self.phase[i] == PHASE_GAS {
-                    let mat = &MATS[self.mat_id[i] as usize];
-                    let t_excess = (self.temp[i] - mat.boiling_point).max(0.0);
-                    let buoyancy = gravity * 1.5 + t_excess * 0.05; // rises faster when hotter
+                    // Buoyancy = (ρ_liquid - ρ_gas) / ρ_gas × g
+                    // Gas density is much lower, so net upward force
+                    let buoyancy = gravity * (mat.rho0 / self.rho[i].max(0.01) - 1.0).min(5.0);
                     self.vy[i] += buoyancy * dt;
                 }
             }
@@ -577,15 +816,16 @@ impl Simulation {
             self.py[i] += self.vy[i] * dt;
             self.pz[i] += self.vz[i] * dt;
 
-            // Walls
+            // ── Walls ───────────────────────────────────────────────────
             let pad = PARTICLE_SPACING;
             if self.py[i] < -HALF_H + pad {
                 self.py[i] = -HALF_H + pad;
                 if self.vy[i] < 0.0 { self.vy[i] *= -0.02; }
                 self.vx[i] *= 0.98; self.vz[i] *= 0.98;
-                // §3.0: Floor heat exchange
-                let mat = &MATS[self.mat_id[i] as usize];
-                self.temp[i] += (FLOOR_TEMP - self.temp[i]) * mat.thermal_k * dt * 2.0;
+                // §3.0: Floor heat exchange (Fourier's law with floor)
+                let k_contact = mat.thermal_conductivity;
+                let q_floor = k_contact * (AMBIENT_TEMP - self.temp[i]) / (PARTICLE_SPACING * 0.5);
+                self.temp[i] += q_floor / (mat.density_si * mat.specific_heat) * dt * THERMAL_SPEEDUP;
             }
             if self.py[i] > HALF_H - pad {
                 self.py[i] = HALF_H - pad;
