@@ -1,5 +1,94 @@
 /* @ts-self-types="./sph_wasm.d.ts" */
 
+export class MpmSimulation {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        MpmSimulationFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_mpmsimulation_free(ptr, 0);
+    }
+    /**
+     * Add particles at given positions
+     * @param {Float32Array} positions
+     * @param {number} mat_idx
+     * @returns {number}
+     */
+    add_particles(positions, mat_idx) {
+        const ptr0 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.mpmsimulation_add_particles(this.__wbg_ptr, ptr0, len0, mat_idx);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    get_count() {
+        const ret = wasm.mpmsimulation_get_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Get material IDs
+     * @returns {Uint8Array}
+     */
+    get_mat_ids() {
+        const ret = wasm.mpmsimulation_get_mat_ids(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Get particle positions as flat array [x0,y0,z0, x1,y1,z1, ...]
+     * @returns {Float32Array}
+     */
+    get_positions() {
+        const ret = wasm.mpmsimulation_get_positions(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get particle velocities
+     * @returns {Float32Array}
+     */
+    get_velocities() {
+        const ret = wasm.mpmsimulation_get_velocities(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    constructor() {
+        const ret = wasm.mpmsimulation_new();
+        this.__wbg_ptr = ret >>> 0;
+        MpmSimulationFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    reset() {
+        wasm.mpmsimulation_reset(this.__wbg_ptr);
+    }
+    /**
+     * @param {number} hw
+     * @param {number} hh
+     * @param {number} hd
+     */
+    set_bounds(hw, hh, hd) {
+        wasm.mpmsimulation_set_bounds(this.__wbg_ptr, hw, hh, hd);
+    }
+    /**
+     * Main simulation step: runs sub_steps substeps
+     * @param {number} gravity
+     * @param {number} dt
+     * @param {number} sub_steps
+     */
+    step(gravity, dt, sub_steps) {
+        wasm.mpmsimulation_step(this.__wbg_ptr, gravity, dt, sub_steps);
+    }
+}
+if (Symbol.dispose) MpmSimulation.prototype[Symbol.dispose] = MpmSimulation.prototype.free;
+
 export class Simulation {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
@@ -161,6 +250,9 @@ function __wbg_get_imports() {
     };
 }
 
+const MpmSimulationFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_mpmsimulation_free(ptr >>> 0, 1));
 const SimulationFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_simulation_free(ptr >>> 0, 1));

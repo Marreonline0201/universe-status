@@ -15,6 +15,8 @@
 use wasm_bindgen::prelude::*;
 use std::f32::consts::PI;
 
+pub mod mpm;
+
 // ── Physical Constants (SI) ────────────────────────────────────────────────
 const R_GAS: f32 = 8.314;              // Universal gas constant (J/(mol·K))
 const STEFAN_BOLTZMANN: f32 = 5.67e-8;  // Stefan-Boltzmann constant (W/(m²·K⁴))

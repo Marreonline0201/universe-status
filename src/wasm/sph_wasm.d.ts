@@ -1,6 +1,35 @@
 /* tslint:disable */
 /* eslint-disable */
 
+export class MpmSimulation {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Add particles at given positions
+     */
+    add_particles(positions: Float32Array, mat_idx: number): number;
+    get_count(): number;
+    /**
+     * Get material IDs
+     */
+    get_mat_ids(): Uint8Array;
+    /**
+     * Get particle positions as flat array [x0,y0,z0, x1,y1,z1, ...]
+     */
+    get_positions(): Float32Array;
+    /**
+     * Get particle velocities
+     */
+    get_velocities(): Float32Array;
+    constructor();
+    reset(): void;
+    set_bounds(hw: number, hh: number, hd: number): void;
+    /**
+     * Main simulation step: runs sub_steps substeps
+     */
+    step(gravity: number, dt: number, sub_steps: number): void;
+}
+
 export class Simulation {
     free(): void;
     [Symbol.dispose](): void;
@@ -56,6 +85,16 @@ export interface InitOutput {
     readonly simulation_reset: (a: number) => void;
     readonly simulation_set_bounds: (a: number, b: number, c: number, d: number) => void;
     readonly simulation_step: (a: number, b: number, c: number, d: number) => void;
+    readonly __wbg_mpmsimulation_free: (a: number, b: number) => void;
+    readonly mpmsimulation_add_particles: (a: number, b: number, c: number, d: number) => number;
+    readonly mpmsimulation_get_count: (a: number) => number;
+    readonly mpmsimulation_get_mat_ids: (a: number) => [number, number];
+    readonly mpmsimulation_get_positions: (a: number) => [number, number];
+    readonly mpmsimulation_get_velocities: (a: number) => [number, number];
+    readonly mpmsimulation_new: () => number;
+    readonly mpmsimulation_reset: (a: number) => void;
+    readonly mpmsimulation_set_bounds: (a: number, b: number, c: number, d: number) => void;
+    readonly mpmsimulation_step: (a: number, b: number, c: number, d: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
