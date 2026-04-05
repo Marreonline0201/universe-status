@@ -241,7 +241,7 @@ static MATS: [Mat; NMAT] = [
     // cp≈2000 J/(kg·K), k≈0.17 W/(m·K)
     // Smoke point ~200°C
     Mat {
-        rho0: 0.92, mu_ref: 0.8, surface_tension: 0.032,
+        rho0: 0.92, mu_ref: 0.06, surface_tension: 0.032, // demo-scaled: real 80x water → 6x
         thermal_conductivity: 0.17,
         specific_heat: 2000.0,
         melting_point: -6.0,
@@ -313,7 +313,10 @@ fn arrhenius_viscosity(mat: &Mat, temp_c: f32) -> f32 {
     let t_ref_k = mat.mu_ref_temp + 273.15;
     let exponent = mat.arrhenius_ea_over_r * (1.0 / t_k - 1.0 / t_ref_k);
     let mu = mat.mu_ref * exponent.exp();
-    mu.clamp(0.0001, 100.0)
+    // Cap viscosity to prevent freezing mid-fall — extremely high values
+    // make the SPH kernel Laplacian create forces >>gravity, stopping motion.
+    // At H=0.04, ∇²W ≈ 3e6, so mu > 0.5 → damping exceeds gravity.
+    mu.clamp(0.0001, 0.5)
 }
 
 // ── §3.1 Non-Newtonian Cross Model ────────────────────────────────────────
@@ -753,6 +756,10 @@ impl Simulation {
                 self.fz[i] += st * nz / n_len;
             }
 
+            // Pressure: fpx = -Σ m_j(P_i/ρ_i²+P_j/ρ_j²)∇W = acceleration
+            //   → multiply by ρ_i so fx/ρ_i = fpx (correct acceleration)
+            // Viscosity: fvx = μΣ m_j(v_j-v_i)/ρ_j ∇²W = acceleration × ρ_i
+            //   → store directly so fx/ρ_i = fvx/ρ_i (correct acceleration)
             self.fx[i] += fpx * rho_i + fvx;
             self.fy[i] += fpy * rho_i + fvy;
             self.fz[i] += fpz * rho_i + fvz;
@@ -864,11 +871,12 @@ impl Simulation {
             let mat = &MATS[self.mat_id[i] as usize];
 
             if self.phase[i] == PHASE_SOLID {
-                // §3.2: Frozen particles are nearly immobile
-                self.vx[i] *= 0.9;
-                self.vy[i] *= 0.9;
-                self.vz[i] *= 0.9;
-                self.vy[i] -= gravity * dt * 0.1;
+                // §3.2: Frozen particles — resist deformation but still fall at full gravity.
+                // Damp horizontal motion (no flow), keep vertical for free-fall.
+                self.vx[i] *= 0.95;
+                self.vz[i] *= 0.95;
+                // Full gravity — solids fall at the same rate as liquids
+                self.vy[i] -= gravity * dt;
             } else {
                 // §3.2: Apply non-Newtonian correction if applicable
                 if mat.is_non_newtonian && shear_rates[i] > 0.0 {
