@@ -312,23 +312,26 @@ export function FluidTest() {
       pointsGeo.setAttribute('color', colAttr)
       pointsGeo.setDrawRange(0, 0)
 
-      // Round circle texture for soft particle look
-      const circleCanvas = document.createElement('canvas')
-      circleCanvas.width = 32
-      circleCanvas.height = 32
-      const ctx2d = circleCanvas.getContext('2d')!
-      ctx2d.beginPath()
-      ctx2d.arc(16, 16, 14, 0, Math.PI * 2)
-      ctx2d.fillStyle = '#ffffff'
-      ctx2d.fill()
-      const circleTexture = new THREE.CanvasTexture(circleCanvas)
+      // §3.2 Tier 2: Soft fluid sprite — solid circle with soft edge
+      const metaballCanvas = document.createElement('canvas')
+      metaballCanvas.width = 64
+      metaballCanvas.height = 64
+      const ctx2d = metaballCanvas.getContext('2d')!
+      // Solid circle with slight soft edge for fluid blending
+      const grad = ctx2d.createRadialGradient(32, 32, 0, 32, 32, 30)
+      grad.addColorStop(0, '#ffffff')
+      grad.addColorStop(0.85, '#ffffff')
+      grad.addColorStop(1.0, 'rgba(255,255,255,0)')
+      ctx2d.fillStyle = grad
+      ctx2d.fillRect(0, 0, 64, 64)
+      const circleTexture = new THREE.CanvasTexture(metaballCanvas)
 
       const pointsMat = new THREE.PointsMaterial({
-        size: 6,
+        size: 18,
         sizeAttenuation: false,
         vertexColors: true,
         map: circleTexture,
-        alphaTest: 0.5,
+        alphaTest: 0.1,
       })
       const points = new THREE.Points(pointsGeo, pointsMat)
       points.frustumCulled = false
@@ -344,11 +347,11 @@ export function FluidTest() {
       sprayGeo.setAttribute('color', sprayColAttr)
       sprayGeo.setDrawRange(0, 0)
       const sprayMat = new THREE.PointsMaterial({
-        size: 3,
+        size: 5,
         sizeAttenuation: false,
         vertexColors: true,
         map: circleTexture,
-        alphaTest: 0.5,
+        alphaTest: 0.1,
       })
       const sprayPoints = new THREE.Points(sprayGeo, sprayMat)
       sprayPoints.frustumCulled = false
