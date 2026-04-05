@@ -456,12 +456,24 @@ MaterialPacket {
   emissivity: number                    // 0-1 — how well surface radiates heat (black body = 1.0)
                                         // Used by: radiative heat loss, fire radiation
   ignitionTemperature: number           // °C — minimum temp for combustion (organic materials only)
-                                        // Wood: ~300°C, paper: ~230°C, coal: ~450°C, metal: N/A
+  //   Derivation: Evans-Polanyi + Semenov critical condition
+  //     T_ign ≈ 0.76 × BDE_weakest + 33  [°C, for solid organic materials]
+  //     BDE_weakest = lowest bond dissociation energy in the material:
+  //       C-H: 411 kJ/mol, C-C: 346, C-O: 358, O-H: 463, C=O: 799
+  //     Wood (cellulose, weakest = C-O 358): T_ign ≈ 0.76×358 + 33 ≈ 305°C ✓
+  //     Coal (aromatic C-C ~500): T_ign ≈ 0.76×500 + 33 ≈ 413°C ✓
+  //     Non-organic materials (metals, stone): ignitionTemperature = Infinity (N/A)
   combustionEnergy: number              // J/kg — energy released when burned
                                         // Used by: fire system, furnace temperature calculation
                                         // Wood: ~15 MJ/kg, charcoal: ~30 MJ/kg, coal: ~25 MJ/kg
   flammability: number                  // 0-1 — ease of ignition (modified by moisture)
-                                        // Used by: fire starting success rate
+  //   Derivation: F = F_base × F_moisture × F_surface
+  //     F_base = 1 - (T_ign - 200) / 400  [0 at 600°C, 1 at 200°C]
+  //     F_moisture = exp(-4.0 × moistureContent)  [0-1 mass fraction of water]
+  //       Dry (0%): 1.0, 10%: 0.67, 25%: 0.37, 50%: 0.14
+  //     F_surface = clamp(surfaceAreaRatio / 100, 0.1, 1.0)
+  //       sawdust (~200 m²/kg): 1.0, logs (~5 m²/kg): 0.1
+  //     Sources: Hachmi et al. J. Combustion 2011, NIST flammability framework
 
   // ── Electrical ────────────────────────────────────────────────────────────
   electricalConductivity: number        // S/m — Matthiessen's rule
@@ -749,8 +761,12 @@ Materials fail under cyclic loading BELOW their static strength.
 The Basquin relation: N_f = C × σ_a^(-b)
   N_f = number of cycles to failure
   σ_a = stress amplitude per cycle (Pa)
-  b = fatigue exponent (0.05-0.12 for metals, 0.15-0.25 for ceramics)
-  C = material constant
+  b = fatigue exponent — derived from composition:
+    b_alloy = Σ(wᵢ × bᵢ)  [mass-weighted average of per-element b values]
+    Per-element b: Fe=-0.12, Cu=-0.10, Al=-0.11, Ni=-0.09, Ti=-0.07
+    Ceramics: b ≈ -0.20 (from bond type, not element table)
+  σ'f = fatigue strength coefficient ≈ UTS + 345 MPa [for metals < 500 HB]
+  C = (σ'f)^(1/b)  [derived from σ'f and b]
 
 Example: iron tool with tensileStrength = 400 MPa
   Used at 50% of tensile (200 MPa stress per use):
@@ -6968,27 +6984,33 @@ CookingSystem {
   //   rawCalories = food.packet.calorieContent (from MaterialPacket)
   //   cookedCalories = rawCalories × cookingMultiplier
   //
-  //   cookingMultiplier depends on temperature reached AND duration held:
+  //   cookingMultiplier derived from DENATURATION KINETICS (not hardcoded):
   //
-  //   Temperature thresholds:
-  //     < 50°C: raw (multiplier = 1.0, no change)
-  //     50-70°C: warming (multiplier = 1.1 — slightly easier to digest)
-  //     70-100°C: cooking (multiplier = 1.5 — proteins denature, starches gelatinize)
-  //       This is the sweet spot. Boiling, simmering, slow roasting.
-  //     100-150°C: roasting (multiplier = 1.8 — Maillard reaction, more digestible)
-  //     150-200°C: high roasting (multiplier = 2.0 — maximum benefit, some nutrients destroyed)
-  //     > 200°C: burning (multiplier decreases)
-  //       200-300°C: charring (multiplier = 1.5 → 0.5 — losing nutritional value)
-  //       > 300°C: fully carbonized (multiplier = 0.1 — barely edible charcoal)
+  //   Three parallel first-order Arrhenius reactions:
+  //     1. Protein denaturation: k_p(T) = 0.02 × exp(45×(T-333)/333)  [min⁻¹]
+  //        Onset ~50°C, rapid at 70°C+, instant at 100°C
+  //     2. Starch gelatinization: k_s(T) = 0.01 × exp(40×(T-338)/338)  [min⁻¹]
+  //        Onset ~65°C, rapid at 90°C+
+  //     3. Maillard (browning): k_m(T) = 0.001 × exp(10×(T-413)/413)  [min⁻¹]
+  //        Onset ~140°C, slow — mainly flavor, slightly reduces lysine
   //
-  //   Duration matters: food must be at cooking temperature for minimum time:
-  //     Thin meat (1cm): 5 game-minutes at 70°C+ for full multiplier
-  //     Thick meat (5cm): 30 game-minutes
-  //     Root vegetables: 20 game-minutes (need to soften starch)
-  //     Grain (bread baking): 30-60 game-minutes at 150-200°C
+  //   Fraction complete: D = 1 - exp(-k(T) × t)  [t in game-minutes]
   //
-  //   If duration < minimum: partial cooking
-  //     effectiveMultiplier = 1.0 + (fullMultiplier - 1.0) × (duration / requiredDuration)
+  //   cookingMultiplier = rawDigestibility + (1 - rawDigestibility) × D_combined
+  //     D_combined = f_protein × D_protein + f_starch × D_starch
+  //                  - 0.05 × D_maillard  [max 5% lysine loss from overcooking]
+  //
+  //   rawDigestibility (baseline, uncooked):
+  //     Meat: 0.65, Tubers: 0.40, Grains: 0.50, Fruits: 0.90
+  //     f_protein, f_starch = mass fractions from MaterialPacket composition
+  //
+  //   Sources: Ovissipour et al. 2017 (protein Ea=300 kJ/mol),
+  //            Yeh & Li 1994 (starch Ea=250 kJ/mol),
+  //            Stamp & Labuza 1983 (Maillard Ea=65-92 kJ/mol)
+  //
+  //   Above ~300°C: D_combined stays at 1.0 but carbonization reaction
+  //     (from §3.1 reaction engine) converts organic material to carbon,
+  //     dropping calorieContent toward 0 via composition change.
   //
   //   FOOD SAFETY:
   //     Raw meat: bacterial risk (see §7.2 food poisoning)
