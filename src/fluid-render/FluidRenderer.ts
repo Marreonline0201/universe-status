@@ -390,7 +390,7 @@ export class FluidRenderer {
     )
   }
 
-  render(numParticles: number) {
+  render(numParticles: number, time: number = 0) {
     if (!this.initialized) return
 
     // Always clear the overlay — even with 0 particles
@@ -523,8 +523,8 @@ export class FluidRenderer {
 
     // ── Pass 5: Composite ──────────────────────────────────────────
     // Update composite uniforms
-    // CompositeUniforms: texel(8) + pad(8) + invProj(64) + lightDir(12) + pad(4) + color(12) + density(4) + F0(4) + emissive(4) + specPow(4) + metalness(4) = 128 bytes
-    const compData = new Float32Array(32)
+    // CompositeUniforms: texel(8) + pad(8) + invProj(64) + lightDir(12) + pad(4) + color(12) + density(4) + F0(4) + emissive(4) + specPow(4) + metalness(4) + time(4) + pad(12) = 144 bytes
+    const compData = new Float32Array(36)
     compData[0] = 1 / this.width; compData[1] = 1 / this.height // texel_size
     compData[2] = 0; compData[3] = 0 // _pad
 
@@ -539,6 +539,8 @@ export class FluidRenderer {
     compData[29] = this.fluidEmissive
     compData[30] = this.fluidSpecPower
     compData[31] = this.fluidMetalness
+    compData[32] = time
+    // 33-35: padding
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()

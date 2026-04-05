@@ -605,7 +605,7 @@ export function FluidTest() {
           if (count > 0) {
             sim.fluidRenderer.captureScene(sim.renderer.domElement as HTMLCanvasElement)
           }
-          sim.fluidRenderer.render(count) // always render (clears overlay when count=0)
+          sim.fluidRenderer.render(count, now / 1000) // always render (clears overlay when count=0)
         }
       }
 

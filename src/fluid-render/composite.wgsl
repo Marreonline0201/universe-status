@@ -26,6 +26,10 @@ struct CompositeUniforms {
     emissive_intensity: f32,// Glow strength (0 = none, 1+ = glowing)
     specular_power: f32,    // Blinn-Phong exponent (250 water, 500 mercury)
     metalness: f32,         // 0 = dielectric, 1 = metallic (tints reflections)
+    time: f32,              // seconds since start — for animated ripples
+    _pad3: f32,
+    _pad4: f32,
+    _pad5: f32,
 }
 
 @group(0) @binding(0) var texture_sampler: sampler;
@@ -88,12 +92,15 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
 
     var normal = normalize(cross(ddy, ddx));
 
-    // Micro-surface wave perturbation — adds subtle specular variation
+    // Animated micro-surface wave perturbation — subtle ripples
     // Dielectrics (water) get more perturbation; metals (mercury) stay mirror-smooth
-    var wave_strength = 0.03 * (1.0 - uniforms.metalness * 0.8);
-    var noise_uv = pixel * 0.15; // frequency of micro waves
-    var nx = hash2(noise_uv) * 2.0 - 1.0;
-    var ny = hash2(noise_uv + vec2f(7.3, 13.7)) * 2.0 - 1.0;
+    var wave_strength = 0.04 * (1.0 - uniforms.metalness * 0.8);
+    var t = uniforms.time;
+    // Two octaves of animated waves at different frequencies/speeds
+    var wave_uv1 = pixel * 0.12 + vec2f(t * 8.0, t * 5.0);
+    var wave_uv2 = pixel * 0.07 + vec2f(-t * 3.0, t * 7.0);
+    var nx = (hash2(wave_uv1) - 0.5) + 0.5 * (hash2(wave_uv2) - 0.5);
+    var ny = (hash2(wave_uv1 + vec2f(7.3, 13.7)) - 0.5) + 0.5 * (hash2(wave_uv2 + vec2f(31.1, 17.3)) - 0.5);
     normal = normalize(normal + vec3f(nx, ny, 0.0) * wave_strength);
 
     // §3.2 Pass 5: Compositing — per-material Fresnel, refraction, absorption
@@ -153,11 +160,11 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
 
     // Metals: high Fresnel, tinted reflections, no transmission
     var metal_color = mix(base_color, reflection_color, fresnel);
-    var dielectric_color = mix(base_color, reflection_color, fresnel * 0.4);
+    var dielectric_color = mix(base_color, reflection_color, fresnel * 0.7);
     var shaded = mix(dielectric_color, metal_color, uniforms.metalness);
 
     // Add specular + emissive
-    var spec_intensity = mix(0.8, 2.0, uniforms.metalness);
+    var spec_intensity = mix(1.2, 2.5, uniforms.metalness);
     var final_color = shaded + vec3f(specular * spec_intensity) + emissive;
 
     // Alpha: fluid pixels are semi-transparent at thin edges, emissive fluids more opaque
