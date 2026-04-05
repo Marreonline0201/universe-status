@@ -5,9 +5,10 @@
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import * as THREE from 'three/webgpu'
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js'
+// Vite aliases 'three' → 'three/webgpu' so all imports use one unified module
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
@@ -149,7 +150,7 @@ export function FluidTest() {
     simulation: Simulation
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
-    renderer: THREE.WebGPURenderer
+    renderer: any /* WebGPURenderer */
     controls: OrbitControls
     points: THREE.Points
     posAttr: THREE.BufferAttribute
@@ -255,7 +256,7 @@ export function FluidTest() {
       camera.lookAt(0, 0, 0)
 
       // Renderer — WebGPU with WebGL fallback
-      const renderer = new THREE.WebGPURenderer({ antialias: true })
+      const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
       await renderer.init()
       renderer.setSize(container.clientWidth, container.clientHeight)
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -684,7 +685,7 @@ export function FluidTest() {
     const cleanupRef: {
       onResize?: () => void
       onPointerDown?: (e: PointerEvent) => void
-      renderer?: THREE.WebGPURenderer
+      renderer?: any /* WebGPURenderer */
       container?: HTMLDivElement
     } = {}
 
