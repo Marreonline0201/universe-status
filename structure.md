@@ -422,13 +422,16 @@ MaterialPacket {
   //   Typical: Steel: 50-150, glass: 0.7, wood: 1-10, cast iron: 10-30
   ductility: number                     // 0-1 — ability to deform plastically before fracture
                                         // Used by: §3.4 structural (brittle vs ductile failure mode)
-  //   Derivation: primarily from crystal structure
-  //     FCC metals (Cu, Au, Al, Ni): high ductility (0.3-0.95) — many slip systems
-  //     BCC metals (Fe, Cr, W): moderate (0.1-0.6) — fewer slip systems
-  //     HCP metals (Zn, Mg, Ti): low-moderate (0.05-0.3) — limited slip
-  //     Ceramics/glass: very low (0.0-0.02) — no dislocation mobility
-  //     Temperature effect (BCC only): below BDTT, ductility drops to ~0.02
-  //       BDTT ≈ 0.1-0.2 × T_melt(K) for BCC metals
+  //   Derivation: Pugh ratio criterion (quantitative) + crystal structure
+  //     Pugh ratio: G/B (shear modulus / bulk modulus)
+  //       G/B < 0.571 → ductile (equivalently: Poisson's ratio ν > 0.26)
+  //       G/B > 0.571 → brittle
+  //     G = E / (2×(1+ν)), B = E / (3×(1-2ν)) — both from E and ν
+  //     Crystal structure refines: FCC (many slip systems) → 0.3-0.95
+  //       BCC (fewer slips) → 0.1-0.6, HCP (limited) → 0.05-0.3
+  //     Ceramics/glass: ν < 0.25 → always brittle (0.0-0.02)
+  //     Temperature (BCC only): below BDTT, ductility drops to ~0.02
+  //       BDTT ≈ 0.1-0.2 × T_melt(K) — no BDTT for FCC metals
                                         // Gold: 0.95, glass: 0.01, mild steel: 0.6, cast iron: 0.05
 
   // ── Thermal ───────────────────────────────────────────────────────────────
@@ -1421,9 +1424,9 @@ When a solid material packet reaches temperature ≥ meltingPoint(composition):
 //   Copper: latentHeatFusion = 207 kJ/kg, latentHeatVaporization = 4790 kJ/kg
 //   Iron: latentHeatFusion = 247 kJ/kg, latentHeatVaporization = 6213 kJ/kg
 //   Gold: latentHeatFusion = 63 kJ/kg (low — melts easily once at temperature)
-//   Mercury: latentHeatFusion = 11.3 kJ/kg, latentHeatVaporization = 295 kJ/kg
+//   Mercury: latentHeatFusion = 11.4 kJ/kg, latentHeatVaporization = 295 kJ/kg
 //     Tm = -38.83°C (liquid at room temperature), Tb = 356.7°C
-//     ρ = 13,534 kg/m³, cp = 139 J/(kg·K), k = 8.3 W/(m·K)
+//     ρ = 13,546 kg/m³, cp = 139.5 J/(kg·K), k = 8.3 W/(m·K)
 //     μ = 0.00153 Pa·s at 20°C, σ = 0.49 N/m, emissivity ≈ 0.1
 //     M = 0.2006 kg/mol (molar mass for ideal gas law)
 //
