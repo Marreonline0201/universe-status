@@ -17,7 +17,7 @@ All values at 20-25 deg C and 1 atm unless noted. Where a property has a wide ra
 | Na | 11 |  22.990 |    968       | Solid |   97.72  |   883    |   2.60 |   113.1 |   97.7   |   4249.7 |  1228 |
 | Mg | 12 |  24.305 |   1738       | Solid |  650     |  1090    |   8.48 |   348.9 |  128.0   |   5266.0 |  1023 |
 | Al | 13 |  26.982 |   2700       | Solid |  660.32  |  2519    |  10.71 |   396.9 |  293.0   |  10859.1 |   897 |
-| Si | 14 |  28.085 |   2330       | Solid | 1414     |  2900    |  50.21 |  1788.0 |  359.0   |  12783.6 |   705 |
+| Si | 14 |  28.085 |   2330       | Solid | 1414     |  3265    |  50.21 |  1788.0 |  359.0   |  12783.6 |   705 |
 | P  | 15 |  30.974 |   1823       | Solid |   44.2   |   280.5  |   0.66 |    21.3 |   12.4   |    400.3 |   769 |
 | S  | 16 |  32.060 |   2080       | Solid |  115.21  |   444.72 |   1.73 |    54.0 |    9.8   |    305.7 |   710 |
 | Cl | 17 |  35.450 |   1563   (s) | Gas  | -101.5   |   -34.04 |   6.41 |   180.8 |   10.2   |    287.7 |   479 |
@@ -84,25 +84,25 @@ All values at 20-25 deg C and 1 atm unless noted. Where a property has a wide ra
 | Element | Young's Modulus (GPa) | Poisson's Ratio | Tensile Strength (MPa) | Mohs Hardness | Crystal Structure |
 |---------|----------------------|-----------------|----------------------|--------------|------------------|
 | H  |   --  |  --   |   --   | --   | HCP (solid)        |
-| C  |   33* | --    |   --   |  0.5 (graphite) / 10 (diamond) | Hexagonal (graphite) |
+| C  |   33* | 0.17  |   --   |  0.5 (graphite) / 10 (diamond) | Hexagonal (graphite) |
 | N  |   --  |  --   |   --   | --   | HCP (solid)        |
 | O  |   --  |  --   |   --   | --   | Cubic (solid)      |
-| Na |   10  |  --   |   --   |  0.5 | BCC                |
+| Na |   10  | 0.32  |   --   |  0.5 | BCC                |
 | Mg |   45  | 0.29  |  130   |  2.5 | HCP                |
 | Al |   70  | 0.35  |   45   |  2.75| FCC                |
-| Si |  130  |  --   |   --   |  6.5 | Diamond cubic      |
+| Si |  130  | 0.22  |  165   |  6.5 | Diamond cubic      |
 | P  |   --  |  --   |   --   | --   | Orthorhombic       |
 | S  |   --  |  --   |   --   | 2.0  | Orthorhombic       |
 | Cl |   --  |  --   |   --   | --   | Orthorhombic (solid)|
-| K  |   --  |  --   |   --   |  0.4 | BCC                |
+| K  |  3.5  | 0.31  |   --   |  0.4 | BCC                |
 | Ca |   20  | 0.31  |  110   |  1.75| FCC                |
 | Ti |  116  | 0.32  |  310   |  6.0 | HCP                |
 | Cr |  279  | 0.21  |  282   |  8.5 | BCC                |
-| Mn |  198  |  --   |  496   |  6.0 | BCC (alpha)        |
+| Mn |  198  | 0.24  |  496   |  6.0 | BCC (alpha)        |
 | Fe |  211  | 0.29  |  350   |  4.0 | BCC                |
-| Ni |  200  | 0.31  |  195   |  4.0 | FCC                |
+| Ni |  200  | 0.31  |  317   |  4.0 | FCC                |
 | Cu |  130  | 0.34  |  220   |  3.0 | FCC                |
-| Zn |  108  | 0.25  |  200   |  2.5 | HCP                |
+| Zn |  108  | 0.25  |   37   |  2.5 | HCP                |
 | Sn |   50  | 0.36  |   15   |  1.5 | BCT (beta)         |
 | Pb |   16  | 0.44  |   12   |  1.5 | FCC                |
 | Ag |   83  | 0.37  |  140   |  2.5 | FCC                |
@@ -124,7 +124,7 @@ All values at 20-25 deg C and 1 atm unless noted. Where a property has a wide ra
 | Element | Electrical Resistivity (nOhm*m) | Speed of Sound (m/s) | Standard Electrode Potential (V vs SHE) |
 |---------|-------------------------------|---------------------|---------------------------------------|
 | H  |    --         | 1310 (gas)  |  0.000  (2H+ + 2e- -> H2)         |
-| C  | ~3.5e10 *     | 18350       |  --                                 |
+| C  | ~3.5e10 *     | 12000       |  --                                 |
 | N  |    --         |  353 (gas)  |  --                                 |
 | O  |    --         |  330 (gas)  |  --                                 |
 | Na |  47.7         | 3200        | -2.710  (Na+ + e- -> Na)            |
@@ -207,7 +207,7 @@ All values at 20-25 deg C and 1 atm unless noted. Where a property has a wide ra
 | Na |  0.69 | 0.19 | Iida & Guthrie               |
 | K  |  0.54 | 0.11 | Iida & Guthrie               |
 | Ca |  1.4  | 0.36 | Estimated                    |
-| Si |  0.75 | 0.83 | PMC 6506516 (Si at Tm)       |
+| Si |  0.75 | 0.73 | Corrected: accepted 720-740 mN/m |
 | W  | 8.0   | 2.50 | Estimated from periodic trends|
 | Hg (ref) | 1.53 | 0.47 | CRC Handbook              |
 | H2O (ref)| 1.00 | 0.073| CRC Handbook (at 20C)      |
@@ -394,6 +394,50 @@ Form: sigma_a = sigma_f' * (2*N_f)^b
 | Concrete        | 20-40   | Normal grade                    | ACI |
 
 **Notes:** For ductile metals, compressive strength is approximately equal to tensile strength (they yield at the same stress in compression). Brittle materials (ceramics, rocks, glass) have compressive strengths 5-15x their tensile strengths.
+
+---
+
+## Table 15: Gruneisen Parameters
+
+Used in the thermal expansion derivation: alpha = gamma * Cv / (3 * B * V)
+
+Where alpha = linear thermal expansion coefficient, gamma = Gruneisen parameter, Cv = molar heat capacity at constant volume, B = bulk modulus, V = molar volume.
+
+| Element | gamma (Gruneisen) | Notes | Source |
+|---------|------------------|-------|--------|
+| H  | 0.6   | Solid hydrogen (cryogenic); limited data              | Estimated |
+| C  | 1.0   | Diamond; graphite gamma ~ 0.7-1.5 depending on axis  | NIST / Barron (1999) |
+| N  | 0.7   | Solid nitrogen (cryogenic)                            | Estimated |
+| O  | 0.7   | Solid oxygen (cryogenic)                              | Estimated |
+| Na | 1.25  | Soft alkali metal                                     | Barron (1999) / KnowledgeDoor |
+| Mg | 1.51  | HCP metal                                             | NIST / Barron (1999) |
+| Al | 2.35  | FCC metal; well-established value                     | NIST / Barron (1999) |
+| Si | 0.56  | Diamond cubic semiconductor; anomalously low          | NIST / Barron (1999) |
+| P  | 0.7   | Orthorhombic nonmetal                                 | Estimated |
+| S  | 0.8   | Orthorhombic nonmetal                                 | Estimated |
+| Cl | 0.7   | Solid (cryogenic); limited data                       | Estimated |
+| K  | 1.34  | Soft alkali metal                                     | Barron (1999) / KnowledgeDoor |
+| Ca | 1.50  | FCC alkaline earth                                    | Estimated from periodic trends |
+| Ti | 1.23  | HCP transition metal                                  | NIST / Barron (1999) |
+| Cr | 1.40  | BCC transition metal                                  | NIST / Barron (1999) |
+| Mn | 1.35  | BCC transition metal                                  | Estimated from periodic trends |
+| Fe | 1.70  | BCC transition metal; well-established value           | NIST / Barron (1999) |
+| Ni | 1.88  | FCC transition metal                                  | NIST / Barron (1999) |
+| Cu | 2.00  | FCC noble metal; well-established value                | NIST / Barron (1999) |
+| Zn | 2.25  | HCP metal; relatively high for its group               | NIST / Barron (1999) |
+| Sn | 2.14  | BCT (beta-Sn); post-transition metal                  | NIST / Barron (1999) |
+| Pb | 2.65  | FCC heavy metal; high gamma consistent with soft lattice | NIST / Barron (1999) |
+| Ag | 2.40  | FCC noble metal; well-established value                | NIST / Barron (1999) |
+| Au | 3.03  | FCC noble metal; highest among common metals           | NIST / Barron (1999) |
+| W  | 1.62  | BCC refractory metal; well-established value           | NIST / Barron (1999) |
+
+**Source:** T.H.K. Barron & G.K. White, "Heat Capacity and Thermal Expansion at Low Temperatures" (Kluwer, 1999). NIST thermophysical property tables. KnowledgeDoor Elements Handbook. Values marked "Estimated" are interpolated from periodic trends and the constraint that metals ~ 1.5-3.0, ceramics/nonmetals ~ 0.5-1.5.
+
+**Notes:**
+- The Gruneisen parameter is dimensionless and relates the phonon frequency shift to volume change: gamma = -d(ln omega)/d(ln V).
+- For most metals, gamma falls in the range 1.5-3.0. Noble metals (Cu, Ag, Au) tend to have higher values. Refractory metals (W, Ti, Cr) tend to have lower values.
+- Semiconductors and nonmetals (Si, C) have anomalously low gamma (0.5-1.0) because their bonding is more covalent and anharmonicity is lower.
+- Solid-phase values for gases (H, N, O, Cl) are rough estimates for the cryogenic solid form.
 
 ---
 
