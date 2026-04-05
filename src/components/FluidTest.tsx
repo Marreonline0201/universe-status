@@ -559,19 +559,38 @@ export function FluidTest() {
           let dominantMat = 0
           for (let m = 1; m < 7; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
 
-          // Set MC material color based on dominant fluid + temperature
+          // Set MC material properties based on dominant fluid + temperature
+          const mcMat = sim.mcubes.material as THREE.MeshPhysicalMaterial
           const mcColor = new THREE.Color(MATERIALS[dominantMat].color)
           if (sim.avgTemp > 200) {
             const t = Math.min(1.0, (sim.avgTemp - 200) / 1000)
             mcColor.lerp(new THREE.Color(0xff6600), t * 0.5)
+            mcMat.emissive.set(0xff3300)
+            mcMat.emissiveIntensity = t * 2.0
+            mcMat.transmission = 0.1
+          } else {
+            mcMat.emissive.set(0x000000)
+            mcMat.emissiveIntensity = 0
+            mcMat.transmission = 0.6
           }
-          ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.copy(mcColor)
+          mcMat.color.copy(mcColor)
+          // Mercury/metals: reflective but not fully metallic (no env map)
+          if (dominantMat === 2 || dominantMat === 3) {
+            mcMat.metalness = 0.3
+            mcMat.roughness = 0.15
+            mcMat.transmission = 0.0
+            mcMat.opacity = 1.0
+          } else {
+            mcMat.metalness = 0.0
+            mcMat.roughness = 0.1
+            mcMat.opacity = 0.85
+          }
 
           // Convert particle positions to MC normalized coords (0-1)
           // Each particle is a "ball" contributing to the density field.
           // ballStrength: smaller = tighter mesh around particles
           // subtract: higher = sharper falloff (smaller metaball radius)
-          const ballStrength = 0.6 / Math.max(1, Math.pow(count, 0.33))
+          const ballStrength = 0.4 / Math.max(1, Math.pow(count, 0.33))
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
             const bx = (positions[i3]     / BOX_W + 0.5)
