@@ -12,15 +12,14 @@ export class Simulation {
         wasm.__wbg_simulation_free(ptr, 0);
     }
     /**
-     * Add particles. positions is interleaved [x,y,z, x,y,z, ...]
      * @param {Float32Array} positions
-     * @param {number} material_index
+     * @param {number} mat_idx
      * @returns {number}
      */
-    add_particles(positions, material_index) {
+    add_particles(positions, mat_idx) {
         const ptr0 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.simulation_add_particles(this.__wbg_ptr, ptr0, len0, material_index);
+        const ret = wasm.simulation_add_particles(this.__wbg_ptr, ptr0, len0, mat_idx);
         return ret >>> 0;
     }
     /**
@@ -31,7 +30,6 @@ export class Simulation {
         return ret >>> 0;
     }
     /**
-     * Get material indices
      * @returns {Uint8Array}
      */
     get_materials() {
@@ -41,7 +39,6 @@ export class Simulation {
         return v1;
     }
     /**
-     * Get positions as interleaved Float32Array [x,y,z, x,y,z, ...]
      * @returns {Float32Array}
      */
     get_positions() {
@@ -51,7 +48,6 @@ export class Simulation {
         return v1;
     }
     /**
-     * Get velocities as interleaved Float32Array
      * @returns {Float32Array}
      */
     get_velocities() {
@@ -70,7 +66,6 @@ export class Simulation {
         wasm.simulation_reset(this.__wbg_ptr);
     }
     /**
-     * Run one full SPH step with sub-stepping
      * @param {number} gravity
      * @param {number} dt
      * @param {number} sub_steps

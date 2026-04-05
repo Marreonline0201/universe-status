@@ -4,28 +4,13 @@
 export class Simulation {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Add particles. positions is interleaved [x,y,z, x,y,z, ...]
-     */
-    add_particles(positions: Float32Array, material_index: number): number;
+    add_particles(positions: Float32Array, mat_idx: number): number;
     get_count(): number;
-    /**
-     * Get material indices
-     */
     get_materials(): Uint8Array;
-    /**
-     * Get positions as interleaved Float32Array [x,y,z, x,y,z, ...]
-     */
     get_positions(): Float32Array;
-    /**
-     * Get velocities as interleaved Float32Array
-     */
     get_velocities(): Float32Array;
     constructor();
     reset(): void;
-    /**
-     * Run one full SPH step with sub-stepping
-     */
     step(gravity: number, dt: number, sub_steps: number): void;
 }
 
