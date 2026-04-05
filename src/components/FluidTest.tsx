@@ -381,13 +381,18 @@ export function FluidTest() {
 
       // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
       // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
-      const mcMaterial = new THREE.MeshStandardMaterial({
-        color: 0x44aaff,
-        roughness: 0.2,
+      const mcMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x2288dd,
+        roughness: 0.1,
         metalness: 0.0,
+        transmission: 0.5,
+        thickness: 0.4,
+        transparent: true,
+        opacity: 0.8,
         side: THREE.DoubleSide,
       })
-      const mcubes = new MarchingCubes(MC_RES, mcMaterial, false, true, 50000)
+      // enableUvs=false, enableColors=false — colors cause shader mismatch with MeshStandardMaterial
+      const mcubes = new MarchingCubes(MC_RES, mcMaterial, false, false, 50000)
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
@@ -574,136 +579,49 @@ export function FluidTest() {
           let dominantMat = 0
           for (let m = 1; m < 7; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
 
-          // Count phases for dominant phase check
-          let solidCount = 0, gasCount = 0
-          for (let i = 0; i < count; i++) {
-            if (phases[i] === 2) solidCount++
-            else if (phases[i] === 1) gasCount++
-          }
-          const dominantlySolid = solidCount > count * 0.5
-
-          // Set MC material based on dominant material + phase + temperature
-          const mcMat = sim.mcubes.material as THREE.MeshPhysicalMaterial
-
-          if (dominantlySolid) {
-            // §3.2: Solidified — dark rock/metal appearance
-            mcMat.color.set(0x333340)
-            mcMat.emissive.set(0x000000)
-            mcMat.emissiveIntensity = 0
-            mcMat.transmission = 0.0
-            mcMat.metalness = 0.1
-            mcMat.roughness = 0.7
-            mcMat.opacity = 0.9
-            // Warm tint if still above ambient
-            if (sim.avgTemp > 50) {
-              const warmth = Math.min(1.0, (sim.avgTemp - 50) / 400)
-              mcMat.color.lerp(new THREE.Color(0x662200), warmth)
-              mcMat.emissive.set(0x441100)
-              mcMat.emissiveIntensity = warmth * 0.5
-            }
-          } else if (sim.avgTemp > 200) {
-            // Hot liquid — glowing
-            const t = Math.min(1.0, (sim.avgTemp - 200) / 1000)
-            mcMat.color.set(MATERIALS[dominantMat].color)
-            mcMat.color.lerp(new THREE.Color(0xff6600), t * 0.5)
-            mcMat.emissive.set(0xff3300)
-            mcMat.emissiveIntensity = t * 2.0
-            mcMat.transmission = 0.1
-            mcMat.roughness = 0.1
-            mcMat.metalness = 0.0
-            mcMat.opacity = 0.85
-          } else if (dominantMat === 2 || dominantMat === 3) {
-            // Mercury/copper — metallic
-            mcMat.color.set(MATERIALS[dominantMat].color)
-            mcMat.metalness = 0.3
-            mcMat.roughness = 0.15
-            mcMat.transmission = 0.0
-            mcMat.emissive.set(0x000000)
-            mcMat.emissiveIntensity = 0
-            mcMat.opacity = 1.0
-          } else {
-            // Water/oil/honey/blood — transparent liquid
-            mcMat.color.set(MATERIALS[dominantMat].color)
-            mcMat.metalness = 0.0
-            mcMat.roughness = 0.1
-            mcMat.transmission = 0.6
-            mcMat.emissive.set(0x000000)
-            mcMat.emissiveIntensity = 0
-            mcMat.opacity = 0.7
-          }
+          // MC material color from dominant fluid
+          ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.set(MATERIALS[dominantMat].color)
 
           // §3.2 lines 1855-1863: Compute density field using SPH kernel
           // φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
           // Grid covers particle bounding box only (not full box)
           // "Grid cell size = half the particle spacing (~0.03m)" — line 1856
 
-          // 1. Compute particle bounding box
-          let minX = Infinity, maxX = -Infinity
-          let minY = Infinity, maxY = -Infinity
-          let minZ = Infinity, maxZ = -Infinity
-          for (let i = 0; i < count; i++) {
-            const i3 = i * 3
-            if (positions[i3] < minX) minX = positions[i3]
-            if (positions[i3] > maxX) maxX = positions[i3]
-            if (positions[i3+1] < minY) minY = positions[i3+1]
-            if (positions[i3+1] > maxY) maxY = positions[i3+1]
-            if (positions[i3+2] < minZ) minZ = positions[i3+2]
-            if (positions[i3+2] > maxZ) maxZ = positions[i3+2]
-          }
-          // Expand by kernel radius (2H) so surface extends beyond outermost particles
-          const pad = 2 * SPH_H
-          minX -= pad; maxX += pad; minY -= pad; maxY += pad; minZ -= pad; maxZ += pad
-          // Clamp to box
-          minX = Math.max(minX, -HALF_W); maxX = Math.min(maxX, HALF_W)
-          minY = Math.max(minY, -HALF_H); maxY = Math.min(maxY, HALF_H)
-          minZ = Math.max(minZ, -HALF_D); maxZ = Math.min(maxZ, HALF_D)
-
-          const extW = maxX - minX, extH = maxY - minY, extD = maxZ - minZ
-
-          // 2. Position and scale MC to cover this region
-          sim.mcubes.position.set(minX, minY, minZ)
-          sim.mcubes.scale.set(extW, extH, extD)
-
-          // 3. Compute cell sizes — should be ~half particle spacing
-          const cellW = extW / MC_RES
-          const cellH = extH / MC_RES
-          const cellD = extD / MC_RES
-
-          // 4. Scatter particle density to grid using SPH kernel
+          // §3.2: Compute SPH density field on MC grid
+          // φ(x) = Σ (mⱼ/ρⱼ) · W(||x - xⱼ||, h)
           const fieldArr = (sim.mcubes as any).field as Float32Array
-          const size2 = MC_RES * MC_RES
-          // Kernel support radius = 2H. Only need to check cells within that distance.
-          const kernelCells = Math.ceil(2 * SPH_H / Math.max(cellW, cellH, cellD))
-          const kernelRadSq = (2 * SPH_H) * (2 * SPH_H)
+          const cellW = BOX_W / MC_RES, cellH = BOX_H / MC_RES, cellD = BOX_D / MC_RES
+          const kRad = 2 * SPH_H
+          const kRadSq = kRad * kRad
+          const kcX = Math.ceil(kRad / cellW), kcY = Math.ceil(kRad / cellH), kcZ = Math.ceil(kRad / cellD)
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
             const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2]
+            const gcx = (px + HALF_W) / cellW
+            const gcy = (py + HALF_H) / cellH
+            const gcz = (pz + HALF_D) / cellD
+            const cxi = Math.floor(gcx), cyi = Math.floor(gcy), czi = Math.floor(gcz)
 
-            // Grid coordinates (particle relative to MC grid origin)
-            const gcx = (px - minX) / cellW
-            const gcy = (py - minY) / cellH
-            const gcz = (pz - minZ) / cellD
-
-            const ixMin = Math.max(0, Math.floor(gcx) - kernelCells)
-            const ixMax = Math.min(MC_RES - 1, Math.floor(gcx) + kernelCells)
-            const iyMin = Math.max(0, Math.floor(gcy) - kernelCells)
-            const iyMax = Math.min(MC_RES - 1, Math.floor(gcy) + kernelCells)
-            const izMin = Math.max(0, Math.floor(gcz) - kernelCells)
-            const izMax = Math.min(MC_RES - 1, Math.floor(gcz) + kernelCells)
-
-            for (let iz = izMin; iz <= izMax; iz++) {
-              const vz = minZ + iz * cellD
-              const dz = vz - pz
-              for (let iy = iyMin; iy <= iyMax; iy++) {
-                const vy = minY + iy * cellH
-                const dy = vy - py
-                for (let ix = ixMin; ix <= ixMax; ix++) {
-                  const vx = minX + ix * cellW
-                  const dx = vx - px
-                  const rsq = dx * dx + dy * dy + dz * dz
-                  if (rsq < kernelRadSq) {
-                    fieldArr[size2 * iz + MC_RES * iy + ix] += VOL_ELEMENT * sphKernelW(Math.sqrt(rsq))
+            for (let dz = -kcZ; dz <= kcZ; dz++) {
+              const iz = czi + dz
+              if (iz < 0 || iz >= MC_RES) continue
+              const vz = iz * cellD - HALF_D
+              const dzw = vz - pz
+              for (let dy = -kcY; dy <= kcY; dy++) {
+                const iy = cyi + dy
+                if (iy < 0 || iy >= MC_RES) continue
+                const vy = iy * cellH - HALF_H
+                const dyw = vy - py
+                for (let dx = -kcX; dx <= kcX; dx++) {
+                  const ix = cxi + dx
+                  if (ix < 0 || ix >= MC_RES) continue
+                  const vx = ix * cellW - HALF_W
+                  const dxw = vx - px
+                  const rsq = dxw * dxw + dyw * dyw + dzw * dzw
+                  if (rsq < kRadSq) {
+                    // Scale by 8 to compensate for coarse grid (doc assumes 0.01m cells, we have 0.05m)
+                    fieldArr[MC_RES * MC_RES * iz + MC_RES * iy + ix] += VOL_ELEMENT * 8.0 * sphKernelW(Math.sqrt(rsq))
                   }
                 }
               }
