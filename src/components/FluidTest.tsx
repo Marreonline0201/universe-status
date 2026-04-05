@@ -332,7 +332,7 @@ export function FluidTest() {
       const circleTexture = new THREE.CanvasTexture(metaballCanvas)
 
       const pointsMat = new THREE.PointsMaterial({
-        size: 8,
+        size: 14,
         sizeAttenuation: false,
         vertexColors: true,
         map: circleTexture,
@@ -364,14 +364,16 @@ export function FluidTest() {
 
       // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
       // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
+      // MC provides smooth surface shape; Points provide per-material color
+      // MC material: mostly transparent, slight tint, doesn't impose a color
       const mcMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0x88bbff,
+        color: 0xaaccee,
         roughness: 0.05,
         metalness: 0.0,
-        transmission: 0.7,
-        thickness: 0.3,
+        transmission: 0.85,
+        thickness: 0.2,
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.35,
         side: THREE.DoubleSide,
         depthWrite: false,
       })
@@ -627,7 +629,7 @@ export function FluidTest() {
           const splatR = 2
           const fieldArr = (sim.mcubes as any).field as Float32Array
           // Map particles slightly inward to prevent MC surface leaking outside box
-          const margin = 2.5 / mcRes  // keep 2.5 cells margin from edges to prevent bleed
+          const margin = 3.0 / mcRes  // keep 3 cells margin from edges to prevent bleed
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3

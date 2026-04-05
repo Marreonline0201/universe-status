@@ -887,19 +887,13 @@ impl Simulation {
                 // Gravity
                 self.vy[i] -= gravity * dt;
 
-                // §3.9: Air drag — F_drag = -0.5 × ρ_air × |v|² × Cd × A × v̂
-                // Applies to all airborne particles (not submerged in dense fluid)
-                let speed_sq = self.vx[i]*self.vx[i] + self.vy[i]*self.vy[i] + self.vz[i]*self.vz[i];
-                if speed_sq > 0.01 {
-                    let speed = speed_sq.sqrt();
-                    // Normalized drag: scale by mass ratio (air density / particle density)
-                    let drag_accel = 0.5 * RHO_AIR * speed * CD_SPHERE * PARTICLE_CROSS_SECTION
-                        / (self.mass[i].max(1e-8));
-                    let drag_factor = (drag_accel * dt).min(0.5); // clamp to avoid sign flip
-                    self.vx[i] -= self.vx[i] * drag_factor;
-                    self.vy[i] -= self.vy[i] * drag_factor;
-                    self.vz[i] -= self.vz[i] * drag_factor;
-                }
+                // §3.9: Air drag — only for GAS/SPRAY particles traveling through air
+                // NOT for liquid SPH particles. Inside a fluid body, particles are
+                // surrounded by other fluid particles, not air. A blob of honey and
+                // a blob of water fall at the same rate (g=9.81) — drag is on the
+                // blob surface, not per-particle.
+                // Drag on the fluid BODY would come from fluid-structure interaction,
+                // not from applying F=0.5ρv²CdA to each particle.
 
                 // §3.2/§3.11: Gas buoyancy (Archimedes — density difference)
                 if self.phase[i] == PHASE_GAS {
