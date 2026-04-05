@@ -3,7 +3,7 @@
 // Implements real SPH from structure.md section 3.2:
 //   - Cubic spline kernel (M4) with proper normalization
 //   - Tait equation of state: P = B * ((rho/rho0)^7 - 1)
-//   - 5 forces: pressure, viscosity, gravity, surface tension, wall collision
+//   - 4 forces: pressure, viscosity, gravity, wall collision
 //   - Spatial hash grid for O(n) neighbor search
 //   - SoA layout for cache-friendly access
 
@@ -14,8 +14,8 @@ export {} // Make this a module so TS treats it as a worker scope
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const PARTICLE_RADIUS = 0.015
-const KERNEL_RADIUS = PARTICLE_RADIUS * 4 // h = 0.06
+const PARTICLE_RADIUS = 0.02        // slightly larger for fewer needed
+const KERNEL_RADIUS = 0.08          // h = 4 x radius (standard SPH)
 const KERNEL_RADIUS_SQ = KERNEL_RADIUS * KERNEL_RADIUS
 const KERNEL_RADIUS_INV = 1.0 / KERNEL_RADIUS
 const GAMMA = 7 // Tait equation exponent
@@ -37,17 +37,16 @@ const KERNEL_NORM = 1.0 / (Math.PI * KERNEL_RADIUS * KERNEL_RADIUS * KERNEL_RADI
 interface Material {
   restDensity: number
   viscosity: number
-  surfaceTension: number
 }
 
 const materials: Material[] = [
-  { restDensity: 1000, viscosity: 0.001, surfaceTension: 0.073 },   // Water
-  { restDensity: 1400, viscosity: 50, surfaceTension: 0.065 },      // Honey
-  { restDensity: 7800, viscosity: 0.004, surfaceTension: 1.3 },     // Molten Copper
-  { restDensity: 13546, viscosity: 0.0015, surfaceTension: 0.49 },  // Mercury
-  { restDensity: 920, viscosity: 0.08, surfaceTension: 0.032 },     // Olive Oil
-  { restDensity: 2700, viscosity: 500, surfaceTension: 0.4 },       // Lava
-  { restDensity: 1060, viscosity: 0.004, surfaceTension: 0.058 },   // Blood
+  { restDensity: 1000, viscosity: 0.001 },   // Water
+  { restDensity: 1400, viscosity: 50 },       // Honey
+  { restDensity: 7800, viscosity: 0.004 },    // Molten Copper
+  { restDensity: 13546, viscosity: 0.0015 },  // Mercury
+  { restDensity: 920, viscosity: 0.08 },      // Olive Oil
+  { restDensity: 2700, viscosity: 500 },      // Lava
+  { restDensity: 1060, viscosity: 0.004 },    // Blood
 ]
 
 // ── Kernel functions ─────────────────────────────────────────────────────────
@@ -92,9 +91,9 @@ function kernelLaplacian(r: number): number {
 }
 
 // ── Spatial Hash Grid ────────────────────────────────────────────────────────
-// Cell size = kernel diameter (2h), check 27 neighboring cells
+// Cell size = 2h (kernel diameter), check 3x3x3 = 27 neighboring cells
 
-// Cell size = 2*h (kernel support radius) so we only check 3x3x3 = 27 neighbors
+// Cell size = 2*h (kernel support diameter) so 3x3x3 = 27 neighbor cells covers full kernel
 const CELL_SIZE = KERNEL_RADIUS * 2.0
 const CELL_INV = 1.0 / CELL_SIZE
 const TABLE_SIZE = 16381 // prime
@@ -150,8 +149,9 @@ function addParticles(
   const mat = materials[materialIndex]
   if (!mat) return 0
 
-  const volume = (4.0 / 3.0) * Math.PI * PARTICLE_RADIUS * PARTICLE_RADIUS * PARTICLE_RADIUS
-  const particleMass = mat.restDensity * volume
+  // Mass = restDensity * spacing^3 so a grid at rest spacing reproduces restDensity
+  const spacing = PARTICLE_RADIUS * 2.0
+  const particleMass = mat.restDensity * spacing * spacing * spacing
 
   const numPositions = positions.length / 3
   let added = 0
@@ -198,7 +198,7 @@ function sphStep(gravity: number, dt: number): void {
     const ciy = Math.floor(yi * CELL_INV)
     const ciz = Math.floor(zi * CELL_INV)
 
-    // Check 5x5x5 neighborhood (since cell size = h and support = 2h, need +/-2)
+    // Check 3x3x3 neighborhood (cell size = 2h covers full kernel support)
     for (let dix = -1; dix <= 1; dix++) {
       for (let diy = -1; diy <= 1; diy++) {
         for (let diz = -1; diz <= 1; diz++) {
@@ -225,11 +225,11 @@ function sphStep(gravity: number, dt: number): void {
 
   // === 2. Compute pressure via Tait equation ===
   // P = B * ((rho/rho0)^gamma - 1)
-  // B = rho0 * cs^2 / gamma, with cs = 20 (high speed of sound for incompressibility)
+  // B = rho0 * cs^2 / gamma, with cs = 8 (softer, more compressible but stable)
   for (let i = 0; i < n; i++) {
     const mat = materials[matIdx[i]]
     const rho0 = mat.restDensity
-    const cs = 20.0
+    const cs = 8.0 // lower = softer, more compressible but more stable
     const B = rho0 * cs * cs / GAMMA
     const ratio = density[i] / rho0
 
@@ -256,12 +256,9 @@ function sphStep(gravity: number, dt: number): void {
     const P_i = pressure[i]
     const mi = matIdx[i]
     const mu_i = materials[mi].viscosity
-    const sigma_i = materials[mi].surfaceTension
 
     let fpx = 0.0, fpy = 0.0, fpz = 0.0 // pressure
     let fvx = 0.0, fvy = 0.0, fvz = 0.0 // viscosity
-    let stx = 0.0, sty = 0.0, stz = 0.0 // surface tension centroid
-    let stCount = 0
 
     const cix = Math.floor(xi * CELL_INV)
     const ciy = Math.floor(yi * CELL_INV)
@@ -297,22 +294,14 @@ function sphStep(gravity: number, dt: number): void {
 
                 // --- Viscosity force ---
                 // F_visc = mu * m_j * (v_j - v_i) / rho_j * lap_W
+                // No clamping — high viscosity (honey/lava) handled via more substeps
                 const mj = matIdx[j]
                 const mu = (mu_i + materials[mj].viscosity) * 0.5
-                // Clamp viscosity coefficient to prevent instability
-                // For very high viscosity (honey, lava), limit the per-step effect
-                const muClamped = Math.min(mu, 5.0)
                 const lap = kernelLaplacian(r)
-                const viscCoeff = muClamped * m_j / rho_j * lap
+                const viscCoeff = mu * m_j / rho_j * lap
                 fvx += viscCoeff * (vx[j] - vxi)
                 fvy += viscCoeff * (vy[j] - vyi)
                 fvz += viscCoeff * (vz[j] - vzi)
-
-                // --- Surface tension (centroid tracking) ---
-                stx += px[j]
-                sty += py[j]
-                stz += pz[j]
-                stCount++
               }
             }
             j = gridNext[j]
@@ -326,40 +315,26 @@ function sphStep(gravity: number, dt: number): void {
     fy[i] += (fpy + fvy) * rho_i
     fz[i] += (fpz + fvz) * rho_i
 
-    // Surface tension: simplified CSF — pull toward centroid if on surface
-    if (sigma_i > 0.005 && stCount > 0 && stCount < 40) {
-      stx /= stCount
-      sty /= stCount
-      stz /= stCount
-      const toX = stx - xi
-      const toY = sty - yi
-      const toZ = stz - zi
-      const dist = Math.sqrt(toX * toX + toY * toY + toZ * toZ)
-      if (dist > 1e-6) {
-        const surfaceForce = sigma_i * 30.0 * rho_i
-        fx[i] += surfaceForce * toX / dist
-        fy[i] += surfaceForce * toY / dist
-        fz[i] += surfaceForce * toZ / dist
-      }
-    }
+    // Surface tension removed — centroid-based approach clumps particles.
+    // Pressure force alone creates a flat pool surface.
+    // Can add proper CSF (Continuum Surface Force) model later.
   }
 
   // === 4. Integration: symplectic Euler ===
   for (let i = 0; i < n; i++) {
     const invRho = 1.0 / density[i]
 
-    // Apply SPH forces (pressure + viscosity + surface tension)
-    // NO artificial damping — the SPH viscosity IS the damping
+    // Apply SPH forces (pressure + viscosity)
     vx[i] += fx[i] * invRho * dt
     vy[i] += fy[i] * invRho * dt
     vz[i] += fz[i] * invRho * dt
 
-    // Apply gravity DIRECTLY — never damped by anything
+    // Gravity — applied DIRECTLY, never through forces
     vy[i] -= gravity * dt
 
-    // Velocity clamping for stability (generous limit)
+    // Velocity clamping for stability
     const vMag2 = vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]
-    const maxV = 5.0
+    const maxV = 2.0
     if (vMag2 > maxV * maxV) {
       const scale = maxV / Math.sqrt(vMag2)
       vx[i] *= scale
@@ -372,35 +347,38 @@ function sphStep(gravity: number, dt: number): void {
     py[i] += vy[i] * dt
     pz[i] += vz[i] * dt
 
-    // === 5. Wall collision ===
-    const wallPad = PARTICLE_RADIUS
+    // === 5. Wall collision — gentle settling, not bouncing ===
+    const floorPad = PARTICLE_RADIUS * 2
 
-    // Floor: zero velocity (no bounce — fluid settles)
-    if (py[i] < -HALF_H + wallPad) {
-      py[i] = -HALF_H + wallPad
-      vy[i] = 0.0
+    // Floor (y = -HALF_H): absorb 95% of impact + friction
+    if (py[i] < -HALF_H + floorPad) {
+      py[i] = -HALF_H + floorPad
+      if (vy[i] < 0) vy[i] *= -0.05  // absorb 95% of impact
+      // Friction on floor
+      vx[i] *= 0.98
+      vz[i] *= 0.98
     }
-    // Ceiling: slight bounce
-    if (py[i] > HALF_H - wallPad) {
-      py[i] = HALF_H - wallPad
-      vy[i] = -Math.abs(vy[i]) * 0.05
+    // Ceiling
+    if (py[i] > HALF_H - PARTICLE_RADIUS) {
+      py[i] = HALF_H - PARTICLE_RADIUS
+      if (vy[i] > 0) vy[i] *= -0.05
     }
     // Walls: slight bounce
-    if (px[i] < -HALF_W + wallPad) {
-      px[i] = -HALF_W + wallPad
-      vx[i] = Math.abs(vx[i]) * 0.1
+    if (px[i] < -HALF_W + PARTICLE_RADIUS) {
+      px[i] = -HALF_W + PARTICLE_RADIUS
+      if (vx[i] < 0) vx[i] *= -0.1
     }
-    if (px[i] > HALF_W - wallPad) {
-      px[i] = HALF_W - wallPad
-      vx[i] = -Math.abs(vx[i]) * 0.1
+    if (px[i] > HALF_W - PARTICLE_RADIUS) {
+      px[i] = HALF_W - PARTICLE_RADIUS
+      if (vx[i] > 0) vx[i] *= -0.1
     }
-    if (pz[i] < -HALF_D + wallPad) {
-      pz[i] = -HALF_D + wallPad
-      vz[i] = Math.abs(vz[i]) * 0.1
+    if (pz[i] < -HALF_D + PARTICLE_RADIUS) {
+      pz[i] = -HALF_D + PARTICLE_RADIUS
+      if (vz[i] < 0) vz[i] *= -0.1
     }
-    if (pz[i] > HALF_D - wallPad) {
-      pz[i] = HALF_D - wallPad
-      vz[i] = -Math.abs(vz[i]) * 0.1
+    if (pz[i] > HALF_D - PARTICLE_RADIUS) {
+      pz[i] = HALF_D - PARTICLE_RADIUS
+      if (vz[i] > 0) vz[i] *= -0.1
     }
   }
 }

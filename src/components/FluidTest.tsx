@@ -99,7 +99,7 @@ const MATERIALS: MaterialPacket[] = [
 
 // ── Simulation constants (must match worker) ─────────────────────────────────
 
-const PARTICLE_RADIUS = 0.015
+const PARTICLE_RADIUS = 0.02
 const MAX_PARTICLES = 5000
 
 // Box dimensions
@@ -110,8 +110,8 @@ const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
 
-// Visual radius for rendering (slightly larger than sim radius for visual appeal)
-const VISUAL_RADIUS = 0.015
+// Visual radius for rendering (smaller looks more natural)
+const VISUAL_RADIUS = 0.012
 
 // ── React Component ──────────────────────────────────────────────────────────
 
@@ -170,10 +170,9 @@ export function FluidTest() {
     if (!simRef.current || !simRef.current.workerReady) return
     const matIdx = simRef.current.selectedMaterial
 
-    // Spawn a cluster of particles in a small sphere
-    // With smaller particles, spawn more per click: 5x5x5 = 125
+    // Spawn a cluster of particles: 6x6x6 = 216 per click
     const spacing = PARTICLE_RADIUS * 2.2
-    const gridSize = 5
+    const gridSize = 6
     const positions: number[] = []
 
     for (let xi = 0; xi < gridSize; xi++) {
@@ -442,11 +441,14 @@ export function FluidTest() {
       if (!sim.workerBusy && sim.workerReady && sim.latestCount > 0) {
         sim.workerBusy = true
         const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
+        // More substeps for high-viscosity materials (honey, lava) to keep simulation stable
+        const matVisc = MATERIALS[sim.selectedMaterial].viscosity
+        const subSteps = matVisc > 1 ? 8 : 4
         sim.worker.postMessage({
           type: 'step',
           gravity: sim.gravity,
           dt: simDt,
-          subSteps: 4,
+          subSteps,
         })
       }
 
@@ -822,11 +824,11 @@ export function FluidTest() {
                     FORMULAS
                   </div>
                   <div>Pressure: P = B((\u03c1/\u03c1\u2080)^7 - 1)</div>
-                  <div>B = \u03c1\u2080 * cs\u00b2 / 7, cs=20</div>
+                  <div>B = \u03c1\u2080 * cs\u00b2 / 7, cs=8</div>
                   <div>F_p = -\u03a3 m_j(P_i/\u03c1_i\u00b2 + P_j/\u03c1_j\u00b2)\u2207W</div>
                   <div>F_v = \u03bc\u03a3 m_j(v_j-v_i)/\u03c1_j \u2207\u00b2W</div>
                   <div>Kernel: Cubic spline (M4)</div>
-                  <div>Solver: Web Worker, 4 substeps</div>
+                  <div>Solver: Web Worker, 4-8 substeps</div>
                   <div style={{ marginTop: 4, color: 'rgba(0,180,255,0.4)', letterSpacing: 1 }}>
                     From structure.md S3.2
                   </div>
