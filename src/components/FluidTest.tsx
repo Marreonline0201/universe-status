@@ -152,7 +152,7 @@ export function FluidTest() {
     camera: THREE.PerspectiveCamera
     renderer: any /* WebGPURenderer */
     controls: OrbitControls
-    instMesh: THREE.InstancedMesh
+    instMeshes: THREE.InstancedMesh[]
     dummy: THREE.Matrix4
     sprayPoints: THREE.Points
     sprayPosAttr: THREE.BufferAttribute
@@ -174,7 +174,7 @@ export function FluidTest() {
   const resetSim = useCallback(() => {
     if (!simRef.current) return
     simRef.current.simulation.reset()
-    simRef.current.instMesh.count = 0
+    simRef.current.instMeshes.forEach(im => { im.count = 0 })
     simRef.current.sprayPoints.geometry.setDrawRange(0, 0)
     simRef.current.mcubes.reset()
     simRef.current.mcubes.update()
@@ -325,18 +325,24 @@ export function FluidTest() {
       floorMesh.position.y = -HALF_H + 0.001
       scene.add(floorMesh)
 
-      // ── InstancedMesh for particles (works on both WebGL and WebGPU) ────
-      // Points have 1px limit in WebGPU. InstancedMesh with spheres works everywhere.
+      // ── InstancedMesh per material (works on WebGL and WebGPU) ────
+      // One InstancedMesh per material type with correct color baked in
       const sphereGeo = new THREE.SphereGeometry(SPACING * 0.5, 8, 6)
-      const sphereMat = new THREE.MeshStandardMaterial({
-        roughness: 0.3,
-        metalness: 0.0,
-        vertexColors: true,
+      const instMeshes: THREE.InstancedMesh[] = []
+      MATERIALS.forEach((mat) => {
+        const meshMat = new THREE.MeshStandardMaterial({
+          color: mat.color,
+          roughness: 0.3,
+          metalness: mat.name === 'Mercury' ? 0.8 : 0.0,
+          emissive: mat.emissive ? new THREE.Color(mat.color).multiplyScalar(0.3) : new THREE.Color(0),
+          emissiveIntensity: mat.emissive ? 1.0 : 0,
+        })
+        const im = new THREE.InstancedMesh(sphereGeo, meshMat, MAX_PARTICLES)
+        im.count = 0
+        im.frustumCulled = false
+        scene.add(im)
+        instMeshes.push(im)
       })
-      const instMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, MAX_PARTICLES)
-      instMesh.count = 0
-      instMesh.frustumCulled = false
-      scene.add(instMesh)
       const dummy = new THREE.Matrix4()
 
       // §3.2: Spray particles (secondary particles — smaller, brighter)
@@ -389,7 +395,7 @@ export function FluidTest() {
         camera,
         renderer,
         controls,
-        instMesh,
+        instMeshes,
         dummy,
         animId: 0,
         lastTime: performance.now(),
@@ -464,58 +470,45 @@ export function FluidTest() {
 
           // Get results from WASM (including temperature + phase)
           const positions = sim.simulation.get_positions()
-          const velocities = sim.simulation.get_velocities()
+          void sim.simulation.get_velocities() // velocities available for future use
           const mats = sim.simulation.get_materials()
           const temps = sim.simulation.get_temperatures()
-          const phases = sim.simulation.get_phases()
+          void sim.simulation.get_phases() // phases used by MC material adaptation
 
-          // Update InstancedMesh — set position and color per particle
+          // Update per-material InstancedMeshes
           let avgTemp = 0
-          sim.instMesh.count = count
+          const matOffsets = new Array(MATERIALS.length).fill(0)
 
+          // Count particles per material
+          const matCounts = new Array(MATERIALS.length).fill(0)
+          for (let i = 0; i < count; i++) {
+            matCounts[mats[i]]++
+            avgTemp += temps[i]
+          }
+          sim.instMeshes.forEach((im, idx) => { im.count = matCounts[idx] })
+
+          // Set matrices per material
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-
-            // Position
+            const m = mats[i]
+            const localIdx = matOffsets[m]++
             sim.dummy.makeTranslation(positions[i3], positions[i3 + 1], positions[i3 + 2])
-            sim.instMesh.setMatrixAt(i, sim.dummy)
-
-            // Color from material + temperature + phase
-            const mat = MATERIALS[mats[i]]
-            const temp = temps[i]
-            const phase = phases[i]
-            avgTemp += temp
-
-            tempColor.setHex(mat.color)
-            if (phase === 1) {
-              tempColor.set(0xccddff).multiplyScalar(0.5)
-            } else if (phase === 2) {
-              tempColor.lerp(new THREE.Color(0x222233), 0.8)
-            } else {
-              const svx = velocities[i3], svy = velocities[i3+1], svz = velocities[i3+2]
-              const speed = Math.sqrt(svx*svx + svy*svy + svz*svz)
-              tempColor.multiplyScalar(Math.min(1.0, 0.6 + speed * 0.15))
-              if (temp > 200) {
-                const t = Math.min(1.0, (temp - 200) / 1200)
-                tempColor.lerp(new THREE.Color(Math.min(1,t*2.5), Math.max(0,(t-0.3)*2), Math.max(0,(t-0.7)*3)), t * 0.9)
-              }
-            }
-            sim.instMesh.setColorAt(i, tempColor)
+            sim.instMeshes[m].setMatrixAt(localIdx, sim.dummy)
           }
 
-          sim.instMesh.instanceMatrix.needsUpdate = true
-          if (sim.instMesh.instanceColor) sim.instMesh.instanceColor.needsUpdate = true
+          // Mark for GPU upload
+          sim.instMeshes.forEach((im) => {
+            if (im.count > 0) im.instanceMatrix.needsUpdate = true
+          })
 
           if (count > 0) sim.avgTemp = avgTemp / count
 
           // §3.2 Tier 1: Marching Cubes surface extraction
           // Feed particle positions as metaballs into MC grid
           sim.mcubes.reset()
-          // Find dominant material for MC color
-          const matCounts = new Array(7).fill(0)
-          for (let i = 0; i < count; i++) matCounts[mats[i]]++
+          // Find dominant material for MC color (reuse matCounts from above)
           let dominantMat = 0
-          for (let m = 1; m < 7; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
+          for (let m = 1; m < 7; m++) if (matCounts[m] > (matCounts[dominantMat] || 0)) dominantMat = m
 
           // MC material color from dominant fluid
           ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.set(MATERIALS[dominantMat].color)
