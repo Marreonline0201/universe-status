@@ -155,6 +155,8 @@ For understanding the physics engine, read them in this dependency order:
 13. §3.6 Cross-System Connections — data flow reference (99 connections).
 14. §3.7 Optimization — tick scheduling, caching, degradation.
 
+### 3.0 Physics Tick Architecture
+
 #### The Unified Physics Tick (Rust Core)
 
 Every server tick (60 Hz for crafting, 30 Hz for environment), the physics engine runs one pipeline:
@@ -446,7 +448,7 @@ MaterialPacket {
                                         // Temperature-dependent: Arrhenius model μ = A·e^(Ea/RT)
   surfaceTension: number                // N/m — surface cohesion
                                         // Used by: §3.2 SPH (surface tension force, droplet formation)
-                                        // Water: 0.072, mercury: 0.49
+                                        // Water: 0.073, mercury: 0.49
   //   Molten iron: σ ≈ 1.87 - 0.0003 × (T - 1538) N/m (decreases with temperature)
   //     At melting point (1538°C): σ ≈ 1.87 N/m  
   //     At 1600°C: σ ≈ 1.85 N/m
@@ -1301,8 +1303,8 @@ Formula: `F_surface = σ · κ · n̂` where σ is surface tension coefficient, 
 
 Surface tension is computed from composition:
 - Water: σ ≈ 0.073 N/m (hydrogen bonds pull surface inward)
-- Molten iron: σ ≈ 1.8 N/m (strong metallic bonds)
-- Mercury: σ ≈ 0.5 N/m (why mercury forms perfect spherical droplets)
+- Molten iron: σ ≈ 1.87 N/m (Keene 1993; strong metallic bonds)
+- Mercury: σ ≈ 0.49 N/m (why mercury forms perfect spherical droplets)
 - Ethanol: σ ≈ 0.022 N/m (weak intermolecular forces)
 
 When two different liquids meet, the difference in surface tension drives **Marangoni flow** — liquid flows from low surface tension to high. This is why soap breaks water tension (soap has lower σ, water flows away from it, creating the spreading pattern).
@@ -2864,9 +2866,9 @@ SoundEngine {
 
   // What modal synthesis produces:
   //   Iron anvil (L=0.5m, E=200GPa, ρ=7800): f₁=312Hz, decay 3.2s → deep resonant clang
-  //   Ceramic cup (R=0.04m, E=70GPa, ρ=2400): f₁=2800Hz, decay 0.3s → sharp high clink
+  //   Ceramic cup (R=0.04m, E=50GPa, ρ=2400): f₁=2800Hz, decay 0.3s → sharp high clink
   //   Oak log (L=1.0m, E=12GPa, ρ=600): f₁=68Hz, decay 0.05s → short dull thud
-  //   Glass pane (0.5×0.5m, h=3mm, E=70GPa): f₁=850Hz, decay 0.5s → bright ring, shatters into many high-freq fragments
+  //   Glass pane (0.5×0.5m, h=3mm, E=50GPa): f₁=850Hz, decay 0.5s → bright ring, shatters into many high-freq fragments
 
   // ═══════════════════════════════════════════════════════════════════════════
   // METHOD 2: Noise Synthesis — Continuous/Turbulent Sounds
@@ -2963,7 +2965,7 @@ Step 2: SoundComputer selects synthesis method:
 Step 3: Synthesizer creates WebAudio nodes and produces waveform
 
 Step 4: Environment filter (client-side):
-  Underwater: low-pass 800 Hz + speed of sound 1500 m/s
+  Underwater: low-pass 800 Hz + speed of sound 1480 m/s
   Cave: reverb proportional to estimated cave volume
   Forest: multi-tap delay (tree reflections) + high-freq absorption
   Open field: dry (no reverb)
@@ -3220,7 +3222,7 @@ StructuralBlock {
   //   Mud brick (clay + straw + water, dried):
   //     compressive: ~2 MPa, tensile: ~0.2 MPa, shear: ~0.5 MPa
   //   Oak wood (cellulose + lignin):
-  //     compressive: ~50 MPa (along grain), tensile: ~100 MPa (along grain!)
+  //     compressive: ~50 MPa (along grain), tensile: ~50 MPa (structural timber with defects; clear wood up to 100 MPa)
   //     Wood is STRONGER in tension than compression — opposite of stone
   //     This is why wood beams span gaps but stone beams don't
   //   Copper:
@@ -3726,7 +3728,7 @@ ForceSystem {
   //
   //   | Material          | Density  | Tensile   | Max self-weight span | With 5× load |
   //   |-------------------|----------|-----------|---------------------|--------------|
-  //   | Oak wood          | 600      | 40 MPa   | ~95 m (extraordinary)| ~42 m        |
+  //   | Oak wood          | 600      | 50 MPa   | ~106 m (extraordinary — 1m block artifact)| ~47 m |
   //   | Granite           | 2700     | 10 MPa   | ~22 m               | ~10 m        |
   //   | Limestone         | 2400     | 3 MPa    | ~13 m               | ~6 m         |
   //   | Mud brick         | 1800     | 0.2 MPa  | ~3.5 m              | ~1.5 m       |
@@ -4199,7 +4201,7 @@ StructuralDecay {
   //     α = thermal expansion coefficient (1/°C)
   //     ΔT = temperature difference across the block (°C)
   //
-  //   Granite (E=40 GPa, α=8×10⁻⁶): σ = 40×10⁹ × 8×10⁻⁶ × ΔT = 320,000 × ΔT Pa
+  //   Granite (E=50 GPa, α=8×10⁻⁶): σ = 50×10⁹ × 8×10⁻⁶ × ΔT = 400,000 × ΔT Pa
   //     At ΔT = 50°C: σ = 16 MPa > tensile strength 15 MPa → surface cracks
   //     This happens when: fire on one side of a stone wall, sun on south face
   //
@@ -4839,7 +4841,7 @@ ModalTriggers {
   //   Pickaxe (1.5kg iron) hits granite rock at 4 m/s:
   //     reducedMass ≈ 1.5 (rock is effectively infinite mass)
   //     energy = 0.5 × 1.5 × 16 = 12 J
-  //     materialA = granite (E=70GPa, ρ=2700) → modes at ~2700 Hz → sharp crack
+  //     materialA = granite (E=50GPa, ρ=2700) → modes at ~2700 Hz → sharp crack
   //     materialB = iron (E=200GPa) → tool rings at ~320 Hz → metallic overtone
   //     Both sounds play simultaneously (layered)
   //
@@ -4854,7 +4856,7 @@ ModalTriggers {
   //     velocity = √(2×9.81×0.01) = 0.44 m/s
   //     energy = 0.5 × 70 × 0.194 = 6.8 J (distributed over foot area)
   //     materialA = terrain at foot position
-  //       Stone (E=70GPa): high modes, short decay → hard tap
+  //       Stone (E=50GPa): high modes, short decay → hard tap
   //       Wood (E=12GPa): lower modes, very short decay → hollow knock
   //       Sand (E=0.05GPa): near-zero modes, instant decay → soft crunch
   //     Running: energy ×4 (higher step force) → louder
@@ -5867,7 +5869,7 @@ CombatDurabilitySystem {
   //       durabilityLoss = 20 / (200e9 × 0.0003) = 0.00000033 per hit
   //       ~3,000,000 hits to break from accumulated damage. Effectively lasts forever for combat.
   //       But against HARD targets (mining rock): energy is higher, accumulates faster.
-  //     Stone axe (E=70GPa, volume=0.0005m³) with 12J impacts on rock:
+  //     Stone axe (E=50GPa, volume=0.0005m³) with 12J impacts on rock:
   //       durabilityLoss = 12 / (70e9 × 0.0005) = 0.00000034 per hit
   //       Similar — the tool itself is durable. What degrades is the EDGE (Connection 11).
 
@@ -7071,7 +7073,7 @@ Trigger: each hammer strike during precision craft mode
 Steel quenched in liquid forms martensite (extremely hard, brittle).
 The cooling rate depends on the quenching fluid's heat extraction rate:
   Water: ~200°C/s (fastest — martensite guaranteed for plain carbon steel)
-  Oil: ~40°C/s (intermediate — martensite for alloy steels only)
+  Oil: ~50°C/s (intermediate — martensite for alloy steels only)
   Air: ~5°C/s (slowest — pearlite for most steels)
 
 The fluid simulation (§3.2) determines the cooling rate through heat transfer
@@ -19698,7 +19700,7 @@ SwimmingSystem {
   //   Murky/swamp: 1-3m
   //   At depth > 20m: light dims (exponential absorption by water)
 
-  // Underwater sound: §3.3 applies — low-pass filter at 800 Hz, speed 1500 m/s
+  // Underwater sound: §3.3 applies — low-pass filter at 800 Hz, speed 1480 m/s
 
   // ── Carried items while swimming ──────────────────────────────────────────
   // All items are still in inventory. But:
