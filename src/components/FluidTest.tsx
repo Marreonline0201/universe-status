@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
@@ -139,6 +140,7 @@ export function FluidTest() {
     sprayPoints: THREE.Points
     sprayPosAttr: THREE.BufferAttribute
     sprayColAttr: THREE.BufferAttribute
+    mcubes: MarchingCubes
     animId: number
     lastTime: number
     fpsAccum: number
@@ -357,6 +359,26 @@ export function FluidTest() {
       sprayPoints.frustumCulled = false
       scene.add(sprayPoints)
 
+      // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
+      // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
+      const mcMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x3399ff,
+        roughness: 0.1,
+        metalness: 0.0,
+        transmission: 0.6,
+        thickness: 0.5,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+      })
+      const mcubes = new MarchingCubes(28, mcMaterial, false, true, 50000)
+      // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
+      mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
+      mcubes.scale.set(BOX_W, BOX_H, BOX_D)
+      mcubes.isolation = 150
+      mcubes.visible = true
+      scene.add(mcubes)
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -385,6 +407,7 @@ export function FluidTest() {
         sprayPoints,
         sprayPosAttr,
         sprayColAttr,
+        mcubes,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -524,7 +547,42 @@ export function FluidTest() {
 
           sim.posAttr.needsUpdate = true
           sim.colAttr.needsUpdate = true
-          sim.points.geometry.setDrawRange(0, count)
+          // Hide raw points — marching cubes provides the surface
+          sim.points.geometry.setDrawRange(0, 0)
+
+          // §3.2 Tier 1: Marching Cubes surface extraction
+          // Feed particle positions as metaballs into MC grid
+          sim.mcubes.reset()
+          // Find dominant material for MC color
+          const matCounts = new Array(7).fill(0)
+          for (let i = 0; i < count; i++) matCounts[mats[i]]++
+          let dominantMat = 0
+          for (let m = 1; m < 7; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
+
+          // Set MC material color based on dominant fluid + temperature
+          const mcColor = new THREE.Color(MATERIALS[dominantMat].color)
+          if (sim.avgTemp > 200) {
+            const t = Math.min(1.0, (sim.avgTemp - 200) / 1000)
+            mcColor.lerp(new THREE.Color(0xff6600), t * 0.5)
+          }
+          ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.copy(mcColor)
+
+          // Convert particle positions to MC normalized coords (0-1)
+          // Each particle is a "ball" contributing to the density field.
+          // ballStrength: smaller = tighter mesh around particles
+          // subtract: higher = sharper falloff (smaller metaball radius)
+          const ballStrength = 0.6 / Math.max(1, Math.pow(count, 0.33))
+          for (let i = 0; i < count; i++) {
+            const i3 = i * 3
+            const bx = (positions[i3]     / BOX_W + 0.5)
+            const by = (positions[i3 + 1] / BOX_H + 0.5)
+            const bz = (positions[i3 + 2] / BOX_D + 0.5)
+            if (bx > 0.001 && bx < 0.999 && by > 0.001 && by < 0.999 && bz > 0.001 && bz < 0.999) {
+              const matColor = new THREE.Color(MATERIALS[mats[i]].color)
+              sim.mcubes.addBall(bx, by, bz, ballStrength, 25, matColor)
+            }
+          }
+          sim.mcubes.update()
 
           setParticleCount(count)
 
