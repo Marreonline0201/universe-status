@@ -375,7 +375,7 @@ export function FluidTest() {
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = 150
+      mcubes.isolation = 3.0
       mcubes.visible = true
       scene.add(mcubes)
 
@@ -586,22 +586,34 @@ export function FluidTest() {
             mcMat.opacity = 0.85
           }
 
-          // Convert particle positions to MC normalized coords (0-1)
-          // Each particle is a "ball" contributing to the density field.
-          // ballStrength: smaller = tighter mesh around particles
-          // subtract: higher = sharper falloff (smaller metaball radius)
-          const ballStrength = 0.4 / Math.max(1, Math.pow(count, 0.33))
+          // Splat particle density directly onto MC grid using SPH-like kernel
+          // Each particle contributes to a 5×5×5 neighborhood of grid cells
+          const mcRes = 28
+          const splatR = 2 // cells of influence around each particle
+          const fieldArr = (sim.mcubes as any).field as Float32Array
+
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
-            const bx = (positions[i3]     / BOX_W + 0.5)
-            const by = (positions[i3 + 1] / BOX_H + 0.5)
-            const bz = (positions[i3 + 2] / BOX_D + 0.5)
-            if (bx > 0.001 && bx < 0.999 && by > 0.001 && by < 0.999 && bz > 0.001 && bz < 0.999) {
-              const matColor = new THREE.Color(MATERIALS[mats[i]].color)
-              sim.mcubes.addBall(bx, by, bz, ballStrength, 25, matColor)
+            const gx = ((positions[i3]     + HALF_W) / BOX_W) * mcRes
+            const gy = ((positions[i3 + 1] + HALF_H) / BOX_H) * mcRes
+            const gz = ((positions[i3 + 2] + HALF_D) / BOX_D) * mcRes
+            const cx = Math.floor(gx), cy = Math.floor(gy), cz = Math.floor(gz)
+
+            for (let dx = -splatR; dx <= splatR; dx++) {
+              for (let dy = -splatR; dy <= splatR; dy++) {
+                for (let dz = -splatR; dz <= splatR; dz++) {
+                  const ix = cx + dx, iy = cy + dy, iz = cz + dz
+                  if (ix < 0 || ix >= mcRes || iy < 0 || iy >= mcRes || iz < 0 || iz >= mcRes) continue
+                  const fx = gx - ix - 0.5, fy = gy - iy - 0.5, fz = gz - iz - 0.5
+                  const r2 = fx * fx + fy * fy + fz * fz
+                  if (r2 > splatR * splatR + 0.5) continue
+                  const w = Math.max(0, 1.0 - r2 / (splatR * splatR + 0.5))
+                  const idx = mcRes * mcRes * iz + mcRes * iy + ix
+                  fieldArr[idx] += w * 1.5
+                }
+              }
             }
           }
-          // Blur pass smooths the density field for less jagged surface
           sim.mcubes.blur(1)
           sim.mcubes.update()
 
