@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
+import { SSFRPipeline } from './FluidSSFR'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
 
 // ── Material definitions (section 3.1 property calculator) ───────────────────
@@ -158,6 +159,9 @@ export function FluidTest() {
     sprayPosAttr: THREE.BufferAttribute
     sprayColAttr: THREE.BufferAttribute
     mcubes: MarchingCubes
+    ssfr: SSFRPipeline
+    ssfrGeo: THREE.BufferGeometry
+    ssfrPosAttr: THREE.BufferAttribute
     animId: number
     lastTime: number
     fpsAccum: number
@@ -384,6 +388,25 @@ export function FluidTest() {
       mcubes.visible = true
       scene.add(mcubes)
 
+      // §3.2 Tier 2: SSFR — Screen-Space Fluid Rendering
+      const ssfrGeo = new THREE.BufferGeometry()
+      const ssfrPosAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3)
+      ssfrPosAttr.setUsage(THREE.DynamicDrawUsage)
+      ssfrGeo.setAttribute('position', ssfrPosAttr)
+      ssfrGeo.setDrawRange(0, 0)
+
+      const ssfr = new SSFRPipeline(
+        container.clientWidth,
+        container.clientHeight,
+        camera,
+        {
+          particleRadius: SPACING * 0.6,
+          fluidColor: new THREE.Color(0x2299dd),
+          absorption: new THREE.Vector3(0.5, 0.1, 0.02),
+        },
+      )
+      ssfr.setParticleGeometry(ssfrGeo)
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -412,6 +435,9 @@ export function FluidTest() {
         sprayPosAttr,
         sprayColAttr,
         mcubes,
+        ssfr,
+        ssfrGeo,
+        ssfrPosAttr,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -486,6 +512,8 @@ export function FluidTest() {
             avgTemp += temps[i]
           }
           sim.instMeshes.forEach((im, idx) => { im.count = matCounts[idx] })
+          let dominantMat = 0
+          for (let m = 1; m < MATERIALS.length; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
 
           // Set matrices per material
           for (let i = 0; i < count; i++) {
@@ -496,21 +524,36 @@ export function FluidTest() {
             sim.instMeshes[m].setMatrixAt(localIdx, sim.dummy)
           }
 
-          // Mark for GPU upload — show both particles and MC surface
+          // Mark instanced meshes for GPU upload
+          // Hide instanced spheres — SSFR provides the smooth surface
           sim.instMeshes.forEach((im) => {
             if (im.count > 0) im.instanceMatrix.needsUpdate = true
+            im.visible = false // SSFR replaces individual spheres
           })
+
+          // Update SSFR particle positions
+          const ssfrArr = sim.ssfrPosAttr.array as Float32Array
+          for (let i = 0; i < count * 3; i++) ssfrArr[i] = positions[i]
+          sim.ssfrPosAttr.needsUpdate = true
+          sim.ssfrGeo.setDrawRange(0, count)
+
+          // Set SSFR color based on dominant material
+          const domMat = MATERIALS[dominantMat]
+          sim.ssfr.setFluidAppearance(
+            new THREE.Color(domMat.color),
+            new THREE.Vector3(
+              domMat.color === 0x3399ff ? 0.5 : 0.1, // water absorbs red
+              0.1,
+              domMat.color === 0xff3300 ? 0.5 : 0.02, // lava absorbs blue
+            ),
+          )
 
           if (count > 0) sim.avgTemp = avgTemp / count
 
           // §3.2 Tier 1: Marching Cubes surface extraction
           // Feed particle positions as metaballs into MC grid
           sim.mcubes.reset()
-          // Find dominant material for MC color (reuse matCounts from above)
-          let dominantMat = 0
-          for (let m = 1; m < 7; m++) if (matCounts[m] > (matCounts[dominantMat] || 0)) dominantMat = m
-
-          // MC material color from dominant fluid
+          // MC material color from dominant fluid (dominantMat computed above)
           ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.set(MATERIALS[dominantMat].color)
 
           // §3.2 lines 1855-1863: Compute density field using SPH kernel
@@ -594,9 +637,15 @@ export function FluidTest() {
           sim.sprayPoints.geometry.setDrawRange(0, sprayCount)
         }
 
-        // Update controls and render
+        // Update controls and render via SSFR pipeline
         sim.controls.update()
-        sim.renderer.render(sim.scene, sim.camera)
+        if (sim.ssfrGeo.drawRange.count > 0) {
+          // Use SSFR for smooth fluid surface
+          sim.ssfr.render(sim.renderer, sim.scene, sim.camera)
+        } else {
+          // No particles — normal render
+          sim.renderer.render(sim.scene, sim.camera)
+        }
       }
 
       animate()
