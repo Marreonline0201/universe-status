@@ -217,7 +217,7 @@ export class FluidRenderer {
       fragment: {
         module: bilateralMod, entryPoint: 'fs',
         targets: [{ format: 'r32float' }],
-        constants: { depth_threshold: 20.0, projected_particle_constant: 400.0, max_filter_size: 40.0 },
+        constants: { depth_threshold: 5.0, projected_particle_constant: 200.0, max_filter_size: 25.0 },
       },
       primitive: { topology: 'triangle-list' },
     })
@@ -474,8 +474,8 @@ export class FluidRenderer {
     p1.draw(6, numParticles)
     p1.end()
 
-    // ── Pass 2: Bilateral blur × 6 — smoother flat surface ──────
-    for (let i = 0; i < 6; i++) {
+    // ── Pass 2: Bilateral blur × 4 — smooth but preserve surface curvature ──
+    for (let i = 0; i < 4; i++) {
       // H blur: depth → tmpDepth
       const bh = encoder.beginRenderPass({
         colorAttachments: [{ view: tmpDepthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1e6, g: 0, b: 0, a: 1 } }],

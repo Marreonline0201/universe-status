@@ -93,7 +93,7 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     // Refraction: offset background UV — IOR varies (water=1.333, mercury≈infinite, honey=1.5)
     var ior = mix(1.333, 1.0, uniforms.metalness); // metals: no refraction
     var refract_dir = refract(ray_dir, normal, 1.0 / max(ior, 1.001));
-    var refract_strength = mix(30.0, 0.0, uniforms.metalness); // metals don't refract
+    var refract_strength = mix(50.0, 0.0, uniforms.metalness); // metals don't refract
     var refract_uv = pixel + refract_dir.xy * thickness * refract_strength;
     var scene_dims = vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u));
     var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), scene_dims)), 0);
