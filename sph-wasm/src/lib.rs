@@ -178,7 +178,7 @@ static MATS: [Mat; NMAT] = [
     // but at H=0.04 spacing, ∇²W amplifies viscosity ~300000×, so we use
     // a demo-scaled value that preserves visible flow while being clearly viscous.
     Mat {
-        rho0: 1.4, mu_ref: 0.15, surface_tension: 0.065,
+        rho0: 1.4, mu_ref: 0.04, surface_tension: 0.065,
         thermal_conductivity: 0.5,
         specific_heat: 2400.0,
         melting_point: -20.0,
@@ -189,8 +189,8 @@ static MATS: [Mat; NMAT] = [
         arrhenius_ea_over_r: 5000.0,
         mu_ref_temp: 20.0,
         is_non_newtonian: true,
-        cross_mu0: 0.3,       // demo-scaled zero-shear
-        cross_mu_inf: 0.02,   // demo-scaled inf-shear
+        cross_mu0: 0.08,      // demo-scaled zero-shear
+        cross_mu_inf: 0.01,   // demo-scaled inf-shear
         cross_k: 0.5,
         cross_n: 0.6,
         molar_mass: 0.342,    // sucrose
@@ -263,7 +263,7 @@ static MATS: [Mat; NMAT] = [
     // Very temperature-sensitive viscosity: Ea/R ≈ 8000K
     // Demo-scaled: real μ=500 Pa·s would freeze particles at H=0.04 spacing
     Mat {
-        rho0: 2.7, mu_ref: 0.12, surface_tension: 0.4,
+        rho0: 2.7, mu_ref: 0.04, surface_tension: 0.4,
         thermal_conductivity: 1.5,
         specific_heat: 1000.0,
         melting_point: 700.0,
