@@ -379,7 +379,7 @@ export function FluidTest() {
       // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
       mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
       mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = 3.0
+      mcubes.isolation = 8.0
       mcubes.visible = true
       scene.add(mcubes)
 
@@ -563,31 +563,62 @@ export function FluidTest() {
           let dominantMat = 0
           for (let m = 1; m < 7; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
 
-          // Set MC material properties based on dominant fluid + temperature
+          // Count phases for dominant phase check
+          let solidCount = 0, gasCount = 0
+          for (let i = 0; i < count; i++) {
+            if (phases[i] === 2) solidCount++
+            else if (phases[i] === 1) gasCount++
+          }
+          const dominantlySolid = solidCount > count * 0.5
+
+          // Set MC material based on dominant material + phase + temperature
           const mcMat = sim.mcubes.material as THREE.MeshPhysicalMaterial
-          const mcColor = new THREE.Color(MATERIALS[dominantMat].color)
-          if (sim.avgTemp > 200) {
+
+          if (dominantlySolid) {
+            // §3.2: Solidified — dark rock/metal appearance
+            mcMat.color.set(0x333340)
+            mcMat.emissive.set(0x000000)
+            mcMat.emissiveIntensity = 0
+            mcMat.transmission = 0.0
+            mcMat.metalness = 0.1
+            mcMat.roughness = 0.7
+            mcMat.opacity = 0.9
+            // Warm tint if still above ambient
+            if (sim.avgTemp > 50) {
+              const warmth = Math.min(1.0, (sim.avgTemp - 50) / 400)
+              mcMat.color.lerp(new THREE.Color(0x662200), warmth)
+              mcMat.emissive.set(0x441100)
+              mcMat.emissiveIntensity = warmth * 0.5
+            }
+          } else if (sim.avgTemp > 200) {
+            // Hot liquid — glowing
             const t = Math.min(1.0, (sim.avgTemp - 200) / 1000)
-            mcColor.lerp(new THREE.Color(0xff6600), t * 0.5)
+            mcMat.color.set(MATERIALS[dominantMat].color)
+            mcMat.color.lerp(new THREE.Color(0xff6600), t * 0.5)
             mcMat.emissive.set(0xff3300)
             mcMat.emissiveIntensity = t * 2.0
             mcMat.transmission = 0.1
-          } else {
-            mcMat.emissive.set(0x000000)
-            mcMat.emissiveIntensity = 0
-            mcMat.transmission = 0.6
-          }
-          mcMat.color.copy(mcColor)
-          // Mercury/metals: reflective but not fully metallic (no env map)
-          if (dominantMat === 2 || dominantMat === 3) {
+            mcMat.roughness = 0.1
+            mcMat.metalness = 0.0
+            mcMat.opacity = 0.85
+          } else if (dominantMat === 2 || dominantMat === 3) {
+            // Mercury/copper — metallic
+            mcMat.color.set(MATERIALS[dominantMat].color)
             mcMat.metalness = 0.3
             mcMat.roughness = 0.15
             mcMat.transmission = 0.0
+            mcMat.emissive.set(0x000000)
+            mcMat.emissiveIntensity = 0
             mcMat.opacity = 1.0
           } else {
+            // Water/oil/honey/blood — transparent liquid
+            mcMat.color.set(MATERIALS[dominantMat].color)
             mcMat.metalness = 0.0
             mcMat.roughness = 0.1
-            mcMat.opacity = 0.85
+            mcMat.transmission = 0.6
+            mcMat.emissive.set(0x000000)
+            mcMat.emissiveIntensity = 0
+            mcMat.opacity = 0.7
           }
 
           // Splat particle density directly onto MC grid using SPH-like kernel
@@ -596,7 +627,7 @@ export function FluidTest() {
           const splatR = 2
           const fieldArr = (sim.mcubes as any).field as Float32Array
           // Map particles slightly inward to prevent MC surface leaking outside box
-          const margin = 1.5 / mcRes  // keep 1.5 cells margin from edges
+          const margin = 2.5 / mcRes  // keep 2.5 cells margin from edges to prevent bleed
 
           for (let i = 0; i < count; i++) {
             const i3 = i * 3
@@ -620,7 +651,7 @@ export function FluidTest() {
                   if (r2 > splatR * splatR + 0.5) continue
                   const w = Math.max(0, 1.0 - r2 / (splatR * splatR + 0.5))
                   const idx = mcRes * mcRes * iz + mcRes * iy + ix
-                  fieldArr[idx] += w * 1.5
+                  fieldArr[idx] += w * 0.8
                 }
               }
             }
