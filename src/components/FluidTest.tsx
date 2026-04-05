@@ -119,17 +119,7 @@ const SPH_H = 0.04              // kernel radius (same as WASM)
 const SPACING = SPH_H * 0.5     // particle rest spacing = 0.02
 const MC_RES = 32               // 32³ grid (line 1855)
 const MC_THRESHOLD = 0.3        // ~0.6 for thick 3D fluid, lower for thin pools in demo
-const VOL_ELEMENT = SPACING * SPACING * SPACING  // m/ρ ≈ spacing³ for well-sampled SPH
-
-// §3.2: Cubic spline kernel W (same as WASM lib.rs)
-function sphKernelW(r: number): number {
-  const q = r / SPH_H
-  if (q >= 2.0) return 0
-  const sigma = 1.0 / (Math.PI * SPH_H * SPH_H * SPH_H)
-  if (q <= 1.0) return sigma * (1 - 1.5 * q * q + 0.75 * q * q * q)
-  const t = 2.0 - q
-  return sigma * 0.25 * t * t * t
-}
+void SPACING // used by sphere geometry above
 
 
 // ── React Component ──────────────────────────────────────────────────────────
@@ -330,7 +320,9 @@ export function FluidTest() {
 
       // ── InstancedMesh per material (works on WebGL and WebGPU) ────
       // One InstancedMesh per material type with correct color baked in
-      const sphereGeo = new THREE.SphereGeometry(SPACING * 0.5, 8, 6)
+      // Larger spheres so they overlap at rest spacing — creates continuous surface
+      // SPACING = 0.02, so radius 0.012 makes adjacent spheres overlap slightly
+      const sphereGeo = new THREE.SphereGeometry(SPACING * 0.6, 8, 6)
       const instMeshes: THREE.InstancedMesh[] = []
       MATERIALS.forEach((mat) => {
         const meshMat = new THREE.MeshStandardMaterial({
@@ -549,65 +541,9 @@ export function FluidTest() {
 
           if (count > 0) sim.avgTemp = avgTemp / count
 
-          // §3.2 Tier 1: Marching Cubes surface extraction
-          // Feed particle positions as metaballs into MC grid
-          sim.mcubes.reset()
-          // MC material color from dominant fluid (dominantMat computed above)
-          ;(sim.mcubes.material as THREE.MeshPhysicalMaterial).color.set(MATERIALS[dominantMat].color)
-
-          // §3.2 lines 1855-1863: Compute density field using SPH kernel
-          // φ(x) = Σ (mⱼ / ρⱼ) · W(||x - xⱼ||, h)
-          // Grid covers particle bounding box only (not full box)
-          // "Grid cell size = half the particle spacing (~0.03m)" — line 1856
-
-          // §3.2: Compute SPH density field on MC grid
-          // φ(x) = Σ (mⱼ/ρⱼ) · W(||x - xⱼ||, h)
-          const fieldArr = (sim.mcubes as any).field as Float32Array
-          const cellW = BOX_W / MC_RES, cellH = BOX_H / MC_RES, cellD = BOX_D / MC_RES
-          const kRad = 2 * SPH_H
-          const kRadSq = kRad * kRad
-          const kcX = Math.ceil(kRad / cellW), kcY = Math.ceil(kRad / cellH), kcZ = Math.ceil(kRad / cellD)
-
-          for (let i = 0; i < count; i++) {
-            const i3 = i * 3
-            const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2]
-            const gcx = (px + HALF_W) / cellW
-            const gcy = (py + HALF_H) / cellH
-            const gcz = (pz + HALF_D) / cellD
-            const cxi = Math.floor(gcx), cyi = Math.floor(gcy), czi = Math.floor(gcz)
-
-            for (let dz = -kcZ; dz <= kcZ; dz++) {
-              const iz = czi + dz
-              if (iz < 0 || iz >= MC_RES) continue
-              const vz = iz * cellD - HALF_D
-              const dzw = vz - pz
-              for (let dy = -kcY; dy <= kcY; dy++) {
-                const iy = cyi + dy
-                if (iy < 0 || iy >= MC_RES) continue
-                const vy = iy * cellH - HALF_H
-                const dyw = vy - py
-                for (let dx = -kcX; dx <= kcX; dx++) {
-                  const ix = cxi + dx
-                  if (ix < 0 || ix >= MC_RES) continue
-                  const vx = ix * cellW - HALF_W
-                  const dxw = vx - px
-                  const rsq = dxw * dxw + dyw * dyw + dzw * dzw
-                  if (rsq < kRadSq) {
-                    // Scale by 8 to compensate for coarse grid (doc assumes 0.01m cells, we have 0.05m)
-                    fieldArr[MC_RES * MC_RES * iz + MC_RES * iy + ix] += VOL_ELEMENT * 8.0 * sphKernelW(Math.sqrt(rsq))
-                  }
-                }
-              }
-            }
-          }
-          // Check field values
-          let maxF = 0, nzCount = 0
-          for (let fi = 0; fi < MC_RES*MC_RES*MC_RES; fi++) {
-            if (fieldArr[fi] > 0) nzCount++
-            if (fieldArr[fi] > maxF) maxF = fieldArr[fi]
-          }
-          ;(window as any).__mcDebug = { maxField: maxF, nonZero: nzCount, threshold: MC_THRESHOLD, particles: count, mcCount: (sim.mcubes as any).count }
-          sim.mcubes.update()
+          // MC disabled — too coarse (32³ grid, 0.05m cells) and expensive.
+          // Will re-enable when moved to WebGPU compute shader for finer grid.
+          sim.mcubes.visible = false
 
           setParticleCount(count)
 
@@ -636,15 +572,10 @@ export function FluidTest() {
           sim.sprayPoints.geometry.setDrawRange(0, sprayCount)
         }
 
-        // Update controls and render via SSFR pipeline
+        // Render directly — SSFR bilateral blur disabled until depth-only
+        // pipeline is implemented (current blur processes ALL pixels = lag)
         sim.controls.update()
-        if (sim.ssfrGeo.drawRange.count > 0) {
-          // Use SSFR for smooth fluid surface
-          sim.ssfr.render(sim.renderer, sim.scene, sim.camera)
-        } else {
-          // No particles — normal render
-          sim.renderer.render(sim.scene, sim.camera)
-        }
+        sim.renderer.render(sim.scene, sim.camera)
       }
 
       animate()
