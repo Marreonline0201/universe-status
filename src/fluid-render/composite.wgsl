@@ -22,6 +22,10 @@ struct CompositeUniforms {
     _pad2: f32,
     fluid_color: vec3f,
     density: f32,
+    F0: f32,                // Fresnel base reflectance (0.02 water, 0.8 mercury)
+    emissive_intensity: f32,// Glow strength (0 = none, 1+ = glowing)
+    specular_power: f32,    // Blinn-Phong exponent (250 water, 500 mercury)
+    metalness: f32,         // 0 = dielectric, 1 = metallic (tints reflections)
 }
 
 @group(0) @binding(0) var texture_sampler: sampler;
@@ -31,11 +35,18 @@ struct CompositeUniforms {
 @group(0) @binding(4) var<uniform> uniforms: CompositeUniforms;
 
 fn computeViewPos(coord: vec2f, depth: f32) -> vec3f {
-    var ndc = vec4f(coord * 2.0 - 1.0, 0.0, 1.0);
-    ndc.z = uniforms.inv_projection_matrix[2].z + uniforms.inv_projection_matrix[3].z / depth;
-    var eye_pos = uniforms.inv_projection_matrix * ndc;
-    eye_pos /= eye_pos.w;
-    return eye_pos.xyz;
+    // Reconstruct view-space position from screen UV and eye-space depth.
+    // depth = |view.z|, stored by the depth sprite pass.
+    // invProj[0].x = aspect/f, invProj[1].y = 1/f
+    // view.x = ndc.x * depth * (aspect/f)
+    // view.y = ndc.y * depth * (1/f)
+    // view.z = -depth
+    var ndc = coord * 2.0 - 1.0;
+    return vec3f(
+        ndc.x * depth * uniforms.inv_projection_matrix[0].x,
+        ndc.y * depth * uniforms.inv_projection_matrix[1].y,
+        -depth
+    );
 }
 
 @fragment
@@ -70,47 +81,63 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
 
     var normal = normalize(cross(ddy, ddx));
 
-    // §3.2 Pass 5: Compositing
+    // §3.2 Pass 5: Compositing — per-material Fresnel, refraction, absorption
     var thickness = textureLoad(thickness_texture, vec2u(pixel), 0).r;
     var ray_dir = normalize(view_pos);
+    var NdotV = max(dot(normal, -ray_dir), 0.0);
 
-    // Fresnel: F = F0 + (1-F0)(1 - N·V)^5
-    let F0: f32 = 0.02;
-    var fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - dot(normal, -ray_dir), 5.0), 0.0, 1.0);
+    // Fresnel: F = F0 + (1-F0)(1 - N·V)^5 — metallic materials use colored F0
+    var f0 = uniforms.F0;
+    var fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0), 0.0, 1.0);
 
-    // Refraction: offset background UV (use textureLoad to avoid uniform control flow issue)
-    var refract_dir = refract(ray_dir, normal, 1.0 / 1.333);
-    var refract_uv = pixel + refract_dir.xy * thickness * 30.0;
-    var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u)))), 0);
+    // Refraction: offset background UV — IOR varies (water=1.333, mercury≈infinite, honey=1.5)
+    var ior = mix(1.333, 1.0, uniforms.metalness); // metals: no refraction
+    var refract_dir = refract(ray_dir, normal, 1.0 / max(ior, 1.001));
+    var refract_strength = mix(30.0, 0.0, uniforms.metalness); // metals don't refract
+    var refract_uv = pixel + refract_dir.xy * thickness * refract_strength;
+    var scene_dims = vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u));
+    var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), scene_dims)), 0);
 
     // Beer's law absorption: color = exp(-absorption × thickness)
     var diffuse_color = uniforms.fluid_color;
     var transmittance = exp(-uniforms.density * thickness * (1.0 - diffuse_color));
     var refraction_color = background.rgb * transmittance;
 
-    // Reflection: use simple environment color (avoid textureSample in non-uniform flow)
+    // Reflection: environment color — metals tint reflections with their own color
     var reflect_dir = reflect(ray_dir, normal);
-    // Simple sky color based on reflection direction instead of cubemap sample
-    var sky_color = vec3f(0.05, 0.1, 0.2) + reflect_dir.y * vec3f(0.02, 0.05, 0.1);
-    var reflection_color = sky_color;
+    var sky_color = vec3f(0.1, 0.15, 0.25) + reflect_dir.y * vec3f(0.05, 0.08, 0.15);
+    var reflection_color = mix(sky_color, sky_color * diffuse_color, uniforms.metalness);
 
-    // Specular highlight (Blinn-Phong)
+    // Specular highlight (Blinn-Phong) — power varies per material
     var light_dir = normalize(uniforms.light_dir);
     var H = normalize(light_dir - ray_dir);
-    var specular = pow(max(0.0, dot(H, normal)), 250.0);
+    var specular = pow(max(0.0, dot(H, normal)), uniforms.specular_power);
+
+    // Diffuse lighting for non-metals (Lambertian)
+    var NdotL = max(dot(normal, light_dir), 0.0);
+    var diffuse_light = 0.3 + 0.7 * NdotL; // ambient + directional
 
     // Fluid color contribution — thicker = more opaque, thinner = more transparent
     var opacity = 1.0 - exp(-uniforms.density * thickness * 3.0);
-    var fluid_contribution = diffuse_color * opacity;
+    var fluid_contribution = diffuse_color * diffuse_light * opacity;
+
+    // Emissive glow: lava and molten copper emit their own light
+    var emissive = diffuse_color * uniforms.emissive_intensity;
 
     // Mix: transparent fluid shows background through, opaque shows color
     var base_color = mix(refraction_color, fluid_contribution, opacity * 0.7);
 
-    // Add Fresnel reflection and specular
-    var final_color = mix(base_color, reflection_color, fresnel * 0.4) + vec3f(specular * 0.8);
+    // Metals: high Fresnel, tinted reflections, no transmission
+    var metal_color = mix(base_color, reflection_color, fresnel);
+    var dielectric_color = mix(base_color, reflection_color, fresnel * 0.4);
+    var shaded = mix(dielectric_color, metal_color, uniforms.metalness);
 
-    // Alpha: fluid pixels are semi-transparent at thin edges
-    var alpha = clamp(opacity * 1.5, 0.3, 1.0);
+    // Add specular + emissive
+    var spec_intensity = mix(0.8, 2.0, uniforms.metalness);
+    var final_color = shaded + vec3f(specular * spec_intensity) + emissive;
+
+    // Alpha: fluid pixels are semi-transparent at thin edges, emissive fluids more opaque
+    var alpha = clamp(opacity * 1.5 + uniforms.emissive_intensity * 0.3, 0.3, 1.0);
 
     return vec4f(final_color, alpha);
 }

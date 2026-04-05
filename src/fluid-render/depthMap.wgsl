@@ -8,12 +8,19 @@ struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
     @location(1) view_position: vec3f,
+    @location(2) world_position: vec3f,
 }
 
 struct FragmentInput {
     @location(0) uv: vec2f,
     @location(1) view_position: vec3f,
+    @location(2) world_position: vec3f,
 }
+
+// Box half-extents for clipping (configurable via pipeline constants)
+override box_half_w: f32 = 1.0;
+override box_half_h: f32 = 0.75;
+override box_half_d: f32 = 0.75;
 
 struct FragmentOutput {
     @location(0) frag_color: vec4f,
@@ -64,12 +71,20 @@ fn vs(
     // Billboard: offset in view space so quad always faces camera
     let out_position = uniforms.projection_matrix * vec4f(view_position + corner, 1.0);
 
-    return VertexOutput(out_position, uv, view_position);
+    return VertexOutput(out_position, uv, view_position, world_pos);
 }
 
 @fragment
 fn fs(input: FragmentInput) -> FragmentOutput {
     var out: FragmentOutput;
+
+    // Clip to box bounds (world space) — discard fragments outside the glass box
+    let wp = input.world_position;
+    if (wp.x < -box_half_w || wp.x > box_half_w ||
+        wp.y < -box_half_h || wp.y > box_half_h ||
+        wp.z < -box_half_d || wp.z > box_half_d) {
+        discard;
+    }
 
     // Map UV to [-1, 1], compute sphere surface
     var normalxy = input.uv * 2.0 - 1.0;

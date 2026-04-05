@@ -59,8 +59,14 @@ export class FluidRenderer {
   private sampler!: GPUSampler
   private envCubemap!: GPUTexture
   private maxParticles = 10000
-  private fluidColor = [0.13, 0.4, 0.87] // default water blue
+  private boxHalf = [1.0, 0.75, 0.75] // half-extents for clipping
+  private fluidColor = [0.13, 0.4, 0.87]
   private fluidDensity = 3.0
+  private fluidF0 = 0.02
+  private fluidEmissive = 0.0
+  private fluidSpecPower = 250.0
+  private fluidMetalness = 0.0
+  private invProj = new Float32Array(16) // cached inverse projection for composite
 
   /**
    * Initialize with a SEPARATE overlay canvas for fluid rendering.
@@ -186,10 +192,12 @@ export class FluidRenderer {
       ],
     })
 
+    const boxConst = { box_half_w: this.boxHalf[0], box_half_h: this.boxHalf[1], box_half_d: this.boxHalf[2] }
+
     this.depthPipeline = d.createRenderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthBGL] }),
       vertex: { module: depthMod, entryPoint: 'vs' },
-      fragment: { module: depthMod, entryPoint: 'fs', targets: [{ format: 'r32float' }] },
+      fragment: { module: depthMod, entryPoint: 'fs', targets: [{ format: 'r32float' }], constants: boxConst },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
       primitive: { topology: 'triangle-list' },
     })
@@ -220,6 +228,7 @@ export class FluidRenderer {
       vertex: { module: depthMod, entryPoint: 'vs' },
       fragment: {
         module: thicknessMod, entryPoint: 'fs',
+        constants: boxConst,
         targets: [{
           format: 'r16float',
           blend: {
@@ -290,9 +299,20 @@ export class FluidRenderer {
     })
   }
 
-  setFluidMaterial(r: number, g: number, b: number, density: number) {
-    this.fluidColor = [r, g, b]
-    this.fluidDensity = density
+  setFluidMaterial(opts: {
+    r: number, g: number, b: number,
+    density: number,
+    F0?: number,
+    emissive?: number,
+    specularPower?: number,
+    metalness?: number,
+  }) {
+    this.fluidColor = [opts.r, opts.g, opts.b]
+    this.fluidDensity = opts.density
+    this.fluidF0 = opts.F0 ?? 0.02
+    this.fluidEmissive = opts.emissive ?? 0.0
+    this.fluidSpecPower = opts.specularPower ?? 250.0
+    this.fluidMetalness = opts.metalness ?? 0.0
   }
 
   updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
@@ -329,6 +349,27 @@ export class FluidRenderer {
     proj[11] = -1
     proj[14] = near * far * nf
     // All other elements are 0
+
+    // Compute inverse projection matrix for composite shader normal reconstruction
+    // For a perspective matrix P, the inverse has a known closed-form:
+    //   P = | f/a  0    0           0          |
+    //       | 0    f    0           0          |
+    //       | 0    0    far*nf      near*far*nf|
+    //       | 0    0   -1           0          |
+    //
+    //   P^-1 = | a/f  0    0           0       |
+    //          | 0    1/f  0           0       |
+    //          | 0    0    0          -1       |
+    //          | 0    0    1/(n*f*nf)  far*nf/(n*f*nf) |
+    //          where nf = 1/(near-far)
+    const ip = this.invProj
+    ip.fill(0)
+    // Column-major: index = col*4 + row
+    ip[0]  = aspect / f                         // (row=0, col=0)
+    ip[5]  = 1.0 / f                            // (row=1, col=1)
+    ip[11] = 1.0 / (near * far * nf)            // (row=3, col=2) = (near-far)/(near*far)
+    ip[14] = -1.0                               // (row=2, col=3)
+    ip[15] = 1.0 / near                         // (row=3, col=3)
 
     const buf = new Float32Array(36)
     buf[0] = 1 / this.width; buf[1] = 1 / this.height; buf[2] = sphereSize; buf[3] = 0
@@ -482,21 +523,22 @@ export class FluidRenderer {
 
     // ── Pass 5: Composite ──────────────────────────────────────────
     // Update composite uniforms
-    // CompositeUniforms: texel(8) + pad(8) + invProj(64) + lightDir(12) + pad(4) + color(12) + density(4) = 112 bytes
-    const compData = new Float32Array(28)
+    // CompositeUniforms: texel(8) + pad(8) + invProj(64) + lightDir(12) + pad(4) + color(12) + density(4) + F0(4) + emissive(4) + specPow(4) + metalness(4) = 128 bytes
+    const compData = new Float32Array(32)
     compData[0] = 1 / this.width; compData[1] = 1 / this.height // texel_size
     compData[2] = 0; compData[3] = 0 // _pad
 
-    // Build inverse projection from the same parameters used for forward proj
-    // (stored from last updateCamera call)
-    const invProj = new Float32Array(16)
-    invProj[0] = 1; invProj[5] = 1; invProj[10] = 1; invProj[15] = 1 // identity fallback
-    compData.set(invProj, 4) // offset 4 = byte 16
+    // Use cached inverse projection from last updateCamera call
+    compData.set(this.invProj, 4) // offset 4 = byte 16
 
     compData[20] = 0.5; compData[21] = 1.0; compData[22] = 0.3 // light_dir
     compData[23] = 0 // _pad2
     compData[24] = this.fluidColor[0]; compData[25] = this.fluidColor[1]; compData[26] = this.fluidColor[2]
     compData[27] = this.fluidDensity
+    compData[28] = this.fluidF0
+    compData[29] = this.fluidEmissive
+    compData[30] = this.fluidSpecPower
+    compData[31] = this.fluidMetalness
     d.queue.writeBuffer(this.compositeUniformBuf, 0, compData)
 
     const sceneView = this.sceneTexture.createView()
