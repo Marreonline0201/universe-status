@@ -601,6 +601,8 @@ export function FluidTest() {
               sim.mcubes.addBall(bx, by, bz, ballStrength, 25, matColor)
             }
           }
+          // Blur pass smooths the density field for less jagged surface
+          sim.mcubes.blur(1)
           sim.mcubes.update()
 
           setParticleCount(count)
