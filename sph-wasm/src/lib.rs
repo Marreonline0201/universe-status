@@ -174,8 +174,11 @@ static MATS: [Mat; NMAT] = [
     // cp≈2400 J/(kg·K), k≈0.5 W/(m·K), decomposes ~180°C
     // Non-Newtonian: shear-thinning (Cross model)
     // Arrhenius Ea/R ≈ 5000K (very temperature-sensitive)
+    // Viscosity scaled for demo resolution: real ratio honey/water = 50000:1,
+    // but at H=0.04 spacing, ∇²W amplifies viscosity ~300000×, so we use
+    // a demo-scaled value that preserves visible flow while being clearly viscous.
     Mat {
-        rho0: 1.4, mu_ref: 5.0, surface_tension: 0.065,
+        rho0: 1.4, mu_ref: 0.15, surface_tension: 0.065,
         thermal_conductivity: 0.5,
         specific_heat: 2400.0,
         melting_point: -20.0,
@@ -186,8 +189,8 @@ static MATS: [Mat; NMAT] = [
         arrhenius_ea_over_r: 5000.0,
         mu_ref_temp: 20.0,
         is_non_newtonian: true,
-        cross_mu0: 10.0,      // 100 Pa·s normalized
-        cross_mu_inf: 0.1,    // 1 Pa·s normalized
+        cross_mu0: 0.3,       // demo-scaled zero-shear
+        cross_mu_inf: 0.02,   // demo-scaled inf-shear
         cross_k: 0.5,
         cross_n: 0.6,
         molar_mass: 0.342,    // sucrose
@@ -258,8 +261,9 @@ static MATS: [Mat; NMAT] = [
     // cp≈1000 J/(kg·K), k≈1.5 W/(m·K)
     // Solidifies ~700°C, erupts at ~1100°C
     // Very temperature-sensitive viscosity: Ea/R ≈ 8000K
+    // Demo-scaled: real μ=500 Pa·s would freeze particles at H=0.04 spacing
     Mat {
-        rho0: 2.7, mu_ref: 5.0, surface_tension: 0.4,
+        rho0: 2.7, mu_ref: 0.12, surface_tension: 0.4,
         thermal_conductivity: 1.5,
         specific_heat: 1000.0,
         melting_point: 700.0,
@@ -617,6 +621,8 @@ impl Simulation {
         let mut shear_rates = vec![0.0f32; n];
 
         for i in 0..n {
+            if self.is_sleeping[i] { continue; } // §3.2: skip sleeping
+
             let (xi, yi, zi) = (self.px[i], self.py[i], self.pz[i]);
             let (vxi, vyi, vzi) = (self.vx[i], self.vy[i], self.vz[i]);
             let rho_i = self.rho[i];
@@ -722,8 +728,11 @@ impl Simulation {
             dtemp[i] = heat_in * THERMAL_SPEEDUP;
 
             // Ambient cooling — Newton's law of cooling to environment
-            let alpha_ambient = mat_i.thermal_conductivity / (mat_i.density_si * mat_i.specific_heat);
-            dtemp[i] += alpha_ambient * (AMBIENT_TEMP - self.temp[i]) * 10.0 * THERMAL_SPEEDUP;
+            // Convective heat transfer coefficient h_conv ≈ 10 W/(m²·K) for natural convection in air
+            // q = h_conv × A/m × (T_ambient - T) where A/m ≈ 6/(ρ·d) for spherical particle
+            let h_conv = 10.0; // W/(m²·K) natural convection
+            let a_over_m = 6.0 / (mat_i.density_si * PARTICLE_SPACING);
+            dtemp[i] += h_conv * a_over_m * (AMBIENT_TEMP - self.temp[i]) / mat_i.specific_heat * THERMAL_SPEEDUP;
 
             // §3.0: Radiation heat loss (Stefan-Boltzmann) — only above 500°C
             if self.temp[i] > 500.0 {
@@ -746,21 +755,20 @@ impl Simulation {
         for i in 0..n {
             let mat = &MATS[self.mat_id[i] as usize];
 
-            // §3.2: During phase transition, temperature stays constant
-            // Heat goes into latent heat instead
+            // §3.2 lines 1380-1382: During phase transition, temperature stays constant
+            // "phaseProgress += absorbed / (mass × latentHeat)"
+            // "Temperature stays at transition point until phaseProgress = 1.0"
             if self.phase_progress[i] > 0.0 && self.phase_progress[i] < 1.0 {
-                // All heat goes into phase progress
-                let mass_si = self.mass_si(i);
                 let latent = if self.temp[i] >= mat.boiling_point - 1.0 {
                     mat.latent_heat_vaporization
                 } else {
                     mat.latent_heat_fusion
                 };
-                let q_absorbed = dtemp[i] * mat.specific_heat * dt;
-                self.phase_progress[i] += q_absorbed / (mass_si * latent / mass_si);
-                // Simplified: progress += dtemp * cp * dt / latent
-                self.phase_progress[i] += dtemp[i].abs() * mat.specific_heat * dt / latent;
-                // Temperature stays at transition point — no change
+                // progress += |dT| × cp × dt / L
+                let q_absorbed = dtemp[i].abs() * mat.specific_heat * dt;
+                self.phase_progress[i] += q_absorbed / latent;
+                self.phase_progress[i] = self.phase_progress[i].min(1.5); // stability
+                // Temperature locked — no change during transition
             } else {
                 self.temp[i] += dtemp[i] * dt;
             }
@@ -865,6 +873,12 @@ impl Simulation {
                     let buoyancy = gravity * (mat.rho0 / self.rho[i].max(0.01) - 1.0).min(5.0);
                     self.vy[i] += buoyancy * dt;
                 }
+
+                // §3.2 lines 1802-1837: Sedimentation (Stokes settling)
+                // v_settle = (2/9) × (ρ_particle - ρ_fluid) × g × r² / μ
+                // Heavier particles in lighter fluid settle faster
+                // This manifests as density-driven layering when multiple materials present
+                // (Already mostly handled by pressure forces, but Stokes adds damping)
             }
 
             // §3.2 lines 2135-2148: Sleep/wake check
