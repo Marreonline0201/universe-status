@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
+import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import initWasm, { Simulation } from '../wasm/sph_wasm'
@@ -149,7 +150,7 @@ export function FluidTest() {
     simulation: Simulation
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
-    renderer: THREE.WebGLRenderer
+    renderer: WebGPURenderer
     controls: OrbitControls
     points: THREE.Points
     posAttr: THREE.BufferAttribute
@@ -254,8 +255,9 @@ export function FluidTest() {
       camera.position.set(2.5, 1.8, 2.5)
       camera.lookAt(0, 0, 0)
 
-      // Renderer
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+      // Renderer — WebGPU with WebGL fallback
+      const renderer = new WebGPURenderer({ antialias: true })
+      await renderer.init()
       renderer.setSize(container.clientWidth, container.clientHeight)
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
       renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -685,7 +687,7 @@ export function FluidTest() {
     const cleanupRef: {
       onResize?: () => void
       onPointerDown?: (e: PointerEvent) => void
-      renderer?: THREE.WebGLRenderer
+      renderer?: WebGPURenderer
       container?: HTMLDivElement
     } = {}
 
