@@ -56,26 +56,37 @@ export class FluidRenderer {
   private sampler!: GPUSampler
   private maxParticles = 10000
 
-  async init(canvas: HTMLCanvasElement): Promise<boolean> {
+  /**
+   * Initialize with an external GPUDevice (shared with Three.js WebGPU renderer)
+   * OR create a new device if none provided.
+   */
+  async init(canvas: HTMLCanvasElement, externalDevice?: GPUDevice): Promise<boolean> {
     if (!navigator.gpu) {
       console.warn('FluidRenderer: WebGPU not available')
       return false
     }
 
-    const adapter = await navigator.gpu.requestAdapter()
-    if (!adapter) return false
+    if (externalDevice) {
+      this.device = externalDevice
+    } else {
+      const adapter = await navigator.gpu.requestAdapter()
+      if (!adapter) return false
+      this.device = await adapter.requestDevice()
+    }
 
-    this.device = await adapter.requestDevice()
     this.width = canvas.width || 1280
     this.height = canvas.height || 720
     this.presentationFormat = navigator.gpu.getPreferredCanvasFormat()
 
-    this.context = canvas.getContext('webgpu') as GPUCanvasContext
-    this.context.configure({
-      device: this.device,
-      format: this.presentationFormat,
-      alphaMode: 'premultiplied',
-    })
+    // Only configure context if we own the device (not sharing with Three.js)
+    if (!externalDevice) {
+      this.context = canvas.getContext('webgpu') as GPUCanvasContext
+      this.context.configure({
+        device: this.device,
+        format: this.presentationFormat,
+        alphaMode: 'premultiplied',
+      })
+    }
 
     this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
 

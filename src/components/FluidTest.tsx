@@ -379,18 +379,18 @@ export function FluidTest() {
 
       // §3.2 Tier 2: SSFR — Screen-Space Fluid Rendering
       // Raw WebGPU fluid renderer — proper SSFR pipeline
-      // Will be initialized after first render when WebGPU device is available
       let fluidRenderer: FluidRenderer | null = null
       const initFluidRenderer = async () => {
         const fr = new FluidRenderer()
         const canvas = renderer.domElement as HTMLCanvasElement
-        if (canvas && await fr.init(canvas)) {
+        // Try to get GPU device from Three.js WebGPU renderer
+        const threeDevice = (renderer as any).backend?.device as GPUDevice | undefined
+        if (canvas && await fr.init(canvas, threeDevice)) {
           fluidRenderer = fr
-          console.log('FluidRenderer: WebGPU SSFR ready')
+          console.log('FluidRenderer: SSFR ready' + (threeDevice ? ' (shared device)' : ' (own device)'))
         }
       }
-      // Don't block — init in background
-      initFluidRenderer().catch(() => console.warn('FluidRenderer: init failed, using fallback'))
+      initFluidRenderer().catch(() => console.warn('FluidRenderer: init failed'))
 
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
