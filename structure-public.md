@@ -402,10 +402,10 @@ MaterialPacket {
   specificHeatCapacity: number          // J/(kg·K) — energy needed to raise 1kg by 1°C
                                         // Used by: temperature propagation, cooling rate
                                         // Water: 4186, iron: 449, granite: 790
-  //   Wood: C_p ≈ 1100 + 4.5 × T (J/(kg·K)) for dry wood, where T in °C
-  //     At 20°C: C_p ≈ 1190 J/(kg·K)
+  //   Wood: C_p ≈ 1160 + 3.9 × T (J/(kg·K)) for oven-dry wood, where T in °C (per USDA FPL)
+  //     At 20°C: C_p ≈ 1238 J/(kg·K)
   //     At 100°C: C_p ≈ 1550 J/(kg·K)
-  //     At 200°C: C_p ≈ 2000 J/(kg·K)
+  //     At 200°C: C_p ≈ 1940 J/(kg·K)
   //     Moisture increases C_p significantly (wet wood → C_p approaches water's 4186)
   thermalExpansion: number              // 1/K — how much material expands when heated
                                         // Used by: structural stress from temperature changes
@@ -522,12 +522,12 @@ MaterialPacket {
 }
 ```
 
-**Total: 44 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
+**Total: 51 derived properties**, all computed from composition using real formulas. Every physics equation in the document can find the variable it needs in this struct. No property is hardcoded per material — they all emerge from what elements the material is made of.
 
-  // NOTE: "44 properties" counts each named property as one, regardless of components.
+  // NOTE: "51 properties" counts each named property as one, regardless of components.
   // color (RGB), absorptionRGB, scatteringRGB, permanentMagnetization (Vec3), and
   // nutrientContent (N,P,K) each count as one property but store multiple scalars.
-  // The SoA binary format uses ~53 Float32Arrays (splitting vectors into components)
+  // The SoA binary format uses ~60 Float32Arrays (splitting vectors into components)
   // plus ~5 Uint8Arrays for flags. The "44" count is the logical property count.
 
   // ── Element Property Reference Table ───────────────────────────────────
@@ -1137,7 +1137,7 @@ SPH handles all of these because the particles move with the fluid — they go w
 
 ```
 SPHParticle {
-  // An SPH particle IS a MaterialPacket fragment. It inherits all 44 properties.
+  // An SPH particle IS a MaterialPacket fragment. It inherits all 51 properties.
   packet: MaterialPacket               // composition, mass, temperature, and ALL derived properties
                                         // viscosity, surfaceTension, density etc. come from packet
 
@@ -1181,7 +1181,9 @@ Formula: `F_viscosity = μ · ∇²v` (Laplacian of velocity field, scaled by dy
 **The viscosity comes from the material's composition** via the Andrade/Arrhenius equation in the property calculator (§3.1). These are **expected computed results**, not hardcoded values — the property calculator should produce these when given the correct composition:
 - Water (H₂O): expected μ ≈ 0.001 Pa·s at 20°C — hydrogen bonds are weak
 - Molten copper: expected μ ≈ 0.004 Pa·s at 1100°C — metallic bonds broken by heat
-- Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at 1000°C — silicon-oxygen network barely broken
+- Molten glass (SiO₂): expected μ ≈ 10⁶ Pa·s at ~2000°C — silicon-oxygen network partially broken
+  //     At 1000°C: μ ≈ 10¹⁵-10¹⁷ Pa·s (effectively rigid solid — network intact)
+  //     Soda-lime glass (SiO₂ + Na₂O + CaO): μ ≈ 10²-10³ Pa·s at 1000°C (workable)
 - Honey: μ varies enormously with temperature and water content
   //     At 20°C (room temp): μ ≈ 10-100 Pa·s (thick paste — barely flows)
   //     At 30°C: μ ≈ 5-30 Pa·s (flows slowly)
@@ -3259,7 +3261,7 @@ StructuralBlock {
   // Additional per-block state (NOT from the property calculator):
   //
   //   StructuralBlock {
-  //     packet: MaterialPacket          // composition + all 44 derived properties
+  //     packet: MaterialPacket          // composition + all 51 derived properties
   //     position: Vec3                  // grid position (integer coordinates)
   //     connections: Connection[]       // bonds to adjacent blocks (up to 6 faces)
   //     load: number                    // accumulated gravity load from above (N)
@@ -4831,7 +4833,7 @@ PropertyCache {
   //   if compositionHash == lastComputedHash AND temperature == lastComputedTemp:
   //     return cached properties (0 cost)
   //   else:
-  //     recompute all 44 properties (~0.005ms per packet)
+  //     recompute all 51 properties (~0.005ms per packet)
   //     store in cache, update hash
   //
   // In practice: 95%+ of packets have stable composition.
@@ -4861,7 +4863,7 @@ PropertyCache {
   //   | Trigger                         | Threshold          | Properties affected |
   //   |--------------------------------|-------------------|-------------------|
   //   | Temperature change              | > 5C since last   | Viscosity, ductility, specific heat, thermal conductivity |
-  //   | Composition change              | Any change at all  | ALL 44 properties |
+  //   | Composition change              | Any change at all  | ALL 51 properties |
   //   | workHardeningState change        | > 0.01 since last | Tensile/compressive strength, hardness |
   //   | fatigueAccumulation change       | > 0.01 since last | Effective strength (reduced by damage) |
   //   | crackLength change               | Any change        | Effective strength (fracture toughness) |
@@ -10598,7 +10600,7 @@ These are addressed with their minerals above (salt, gypsum, potash). See entrie
   // | Horn/antler| keratin 0.60, calcium_phosphate 0.30, water 0.10 | 80-120 | 1800 | 0.40 | Hard, workable. Tool handles, vessels |
   //
   // These compositions are set when the animal dies (§3.6 Connection 3: Death → MaterialPacket).
-  // The property calculator (§3.1) computes all 44 properties from these compositions.
+  // The property calculator (§3.1) computes all 51 properties from these compositions.
   // A player who skins a deer gets a MaterialPacket with the cowhide composition,
   // and the physics determines its behavior — not a lookup table.
 ```
