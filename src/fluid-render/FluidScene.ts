@@ -72,7 +72,7 @@ export class FluidScene {
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.5,
       depthWrite: true,
       depthTest: true,
       blending: THREE.NormalBlending,
@@ -177,8 +177,11 @@ export class FluidScene {
         positions[dst + 1] = data[src + 1]
         positions[dst + 2] = data[src + 2]
 
-        colors[dst] = 0.15
-        colors[dst + 1] = 0.50
+        // Water is transparent — color comes from physics, not paint.
+        // Near-white with very slight blue tint from Rayleigh scattering.
+        // Actual blue comes from Beer's law in the composite (thick water absorbs red).
+        colors[dst] = 0.85
+        colors[dst + 1] = 0.90
         colors[dst + 2] = 0.95
       }
 
