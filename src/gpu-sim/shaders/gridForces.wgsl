@@ -84,9 +84,19 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (sphere.is_active > 0u) {
         // Cell center in MLS-MPM normalized coords [0,1]
         let cell_pos = (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) / f32(GRID_RES);
-        let dist = length(cell_pos - sphere.center);
+        let to_cell = cell_pos - sphere.center;
+        let dist = length(to_cell);
         if (dist < sphere.radius) {
-            vel = sphere.velocity;
+            // Sphere velocity is in [0,1] space; grid velocity is in grid-space (×GRID_RES)
+            let sphere_vel_grid = sphere.velocity * f32(GRID_RES);
+
+            // Push cells outward from sphere center + match sphere velocity
+            // This creates the splash: cells near the surface get radial push
+            let push_dir = select(normalize(to_cell), vec3<f32>(0.0, 1.0, 0.0), dist < 0.001);
+            let penetration = (sphere.radius - dist) / sphere.radius; // 0 at surface, 1 at center
+            let push_speed = length(sphere_vel_grid) * 0.5 * penetration;
+
+            vel = sphere_vel_grid + push_dir * push_speed;
         }
     }
 
