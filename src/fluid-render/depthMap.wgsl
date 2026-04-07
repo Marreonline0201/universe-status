@@ -73,7 +73,13 @@ fn vs(
     let uv = corner_positions[vertex_index] + 0.5;
 
     let p = particles[instance_index];
-    let world_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
+    // Map MLS-MPM [0,1] coords to Three.js world space: (mpm - 0.5) * box_size
+    let mpm_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
+    let world_pos = vec3f(
+        (mpm_pos.x - 0.5) * box_half_w * 2.0,
+        (mpm_pos.y - 0.5) * box_half_h * 2.0,
+        (mpm_pos.z - 0.5) * box_half_d * 2.0,
+    );
     let view_position = (uniforms.view_matrix * vec4f(world_pos, 1.0)).xyz;
 
     // Billboard: offset in view space so quad always faces camera
