@@ -50,6 +50,18 @@ function worldToMpm(x: number, y: number, z: number): [number, number, number] {
   ]
 }
 
+function mpmToWorld(mx: number, my: number, mz: number): [number, number, number] {
+  return [
+    ((mx - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_W,
+    ((my - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_H,
+    ((mz - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_D,
+  ]
+}
+
+// Sphere obstacle constants
+const SPHERE_RADIUS_MPM = 0.06    // ~4 grid cells in MLS-MPM space
+const SPHERE_GRAVITY_MPM = 0.3    // grid-space gravity (matches GRAVITY in gridForces.wgsl)
+
 // ── Build composition render props for FluidRenderer ─────────────────────────
 // FluidRenderer expects 12 floats per composition (48 bytes):
 // [color_r, color_g, color_b, density, F0, metalness, emissive, IOR, specular_power, opacity_density, pad, pad]
@@ -86,6 +98,15 @@ export function FluidTest() {
   const [fpsWarning, setFpsWarning] = useState(false)
   const [gpuReady, setGpuReady] = useState(false)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
+  const [ballActive, setBallActive] = useState(false)
+
+  // Sphere obstacle physics state (in MLS-MPM coords)
+  const ballRef = useRef<{
+    active: boolean
+    center: [number, number, number]
+    velocity: [number, number, number]
+    mesh: THREE.Mesh | null
+  }>({ active: false, center: [0, 0, 0], velocity: [0, 0, 0], mesh: null })
 
   // AI state
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('anthropic-api-key') || '')
@@ -117,6 +138,7 @@ export function FluidTest() {
     mouse: THREE.Vector2
     boxMesh: THREE.LineSegments
     glassBox: THREE.Mesh
+    sphereMesh: THREE.Mesh
     floorMesh: THREE.Mesh
     wallMesh: THREE.Mesh
     leftWall: THREE.Mesh
@@ -200,6 +222,32 @@ export function FluidTest() {
     }
     gpuSim.addParticles(particles)
     setParticleCount(gpuSim.particleCount)
+  }, [])
+
+  const dropBall = useCallback(() => {
+    if (!simRef.current) return
+    const ball = ballRef.current
+    ball.active = true
+    ball.center = [0.5, 0.9, 0.5]  // top-center of MLS-MPM domain
+    ball.velocity = [0, 0, 0]
+    setBallActive(true)
+    // Make Three.js mesh visible
+    if (ball.mesh) {
+      ball.mesh.visible = true
+      const [wx, wy, wz] = mpmToWorld(...ball.center)
+      ball.mesh.position.set(wx, wy, wz)
+    }
+    // Set obstacle in simulator
+    simRef.current.gpuSim.setSphereObstacle(ball.center, SPHERE_RADIUS_MPM, ball.velocity)
+  }, [])
+
+  const removeBall = useCallback(() => {
+    if (!simRef.current) return
+    const ball = ballRef.current
+    ball.active = false
+    setBallActive(false)
+    if (ball.mesh) ball.mesh.visible = false
+    simRef.current.gpuSim.clearSphereObstacle()
   }, [])
 
   // Keep refs in sync with state
@@ -482,6 +530,19 @@ export function FluidTest() {
       rightWall.position.x = HALF_W - 0.001
       scene.add(rightWall)
 
+      // Droppable metal sphere
+      const sphereWorldRadius = (SPHERE_RADIUS_MPM / DOMAIN_SIZE) * BOX_SIZE
+      const sphereGeo = new THREE.SphereGeometry(sphereWorldRadius, 32, 32)
+      const sphereMat = new THREE.MeshStandardMaterial({
+        color: 0x888888,
+        metalness: 0.95,
+        roughness: 0.15,
+      })
+      const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat)
+      sphereMesh.visible = false  // hidden until dropped
+      scene.add(sphereMesh)
+      ballRef.current.mesh = sphereMesh
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -509,6 +570,7 @@ export function FluidTest() {
         mouse,
         boxMesh,
         glassBox,
+        sphereMesh,
         floorMesh,
         wallMesh,
         leftWall,
@@ -561,6 +623,41 @@ export function FluidTest() {
 
         sim.frameCount++
         const count = sim.gpuSim.particleCount
+
+        // Update sphere obstacle physics (Euler integration in MLS-MPM space)
+        const ball = ballRef.current
+        if (ball.active) {
+          const simDt = 0.2  // match MLS-MPM dt
+          // Gravity in grid-space (same as shader GRAVITY constant)
+          ball.velocity[1] -= SPHERE_GRAVITY_MPM * simDt
+          // Euler position update
+          ball.center[0] += ball.velocity[0] * simDt
+          ball.center[1] += ball.velocity[1] * simDt
+          ball.center[2] += ball.velocity[2] * simDt
+
+          // Bounce off domain boundaries (with margin)
+          const lo = DOMAIN_MIN + SPHERE_RADIUS_MPM
+          const hi = DOMAIN_MAX - SPHERE_RADIUS_MPM
+          for (let axis = 0; axis < 3; axis++) {
+            if (ball.center[axis] < lo) {
+              ball.center[axis] = lo
+              ball.velocity[axis] = Math.abs(ball.velocity[axis]) * 0.3  // damped bounce
+            }
+            if (ball.center[axis] > hi) {
+              ball.center[axis] = hi
+              ball.velocity[axis] = -Math.abs(ball.velocity[axis]) * 0.3
+            }
+          }
+
+          // Update GPU obstacle
+          sim.gpuSim.setSphereObstacle(ball.center, SPHERE_RADIUS_MPM, ball.velocity)
+
+          // Update Three.js mesh position
+          if (ball.mesh) {
+            const [wx, wy, wz] = mpmToWorld(ball.center[0], ball.center[1], ball.center[2])
+            ball.mesh.position.set(wx, wy, wz)
+          }
+        }
 
         if (count > 0) {
           // GPU compute: MLS-MPM step (clearGrid -> P2G -> forces -> G2P x2 substeps)
@@ -867,6 +964,39 @@ export function FluidTest() {
             }}
           >
             SPAWN 3K {selectedComp ? selectedComp.name.toUpperCase() : ''}
+          </button>
+
+          {/* Drop ball button */}
+          <button
+            onClick={ballActive ? removeBall : dropBall}
+            disabled={!gpuReady}
+            style={{
+              padding: '7px 0',
+              background: gpuReady
+                ? ballActive ? 'rgba(255,160,0,0.15)' : 'rgba(180,180,180,0.1)'
+                : 'rgba(180,180,180,0.03)',
+              border: `1px solid ${ballActive ? 'rgba(255,160,0,0.4)' : 'rgba(180,180,180,0.3)'}`,
+              borderRadius: 3,
+              color: gpuReady
+                ? ballActive ? '#ffaa00' : '#aaaaaa'
+                : 'rgba(100,150,200,0.3)',
+              fontSize: 10,
+              fontFamily: 'inherit',
+              letterSpacing: 2,
+              cursor: gpuReady ? 'pointer' : 'default',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              if (gpuReady) (e.target as HTMLButtonElement).style.background =
+                ballActive ? 'rgba(255,160,0,0.25)' : 'rgba(180,180,180,0.2)'
+            }}
+            onMouseLeave={(e) => {
+              (e.target as HTMLButtonElement).style.background = gpuReady
+                ? ballActive ? 'rgba(255,160,0,0.15)' : 'rgba(180,180,180,0.1)'
+                : 'rgba(180,180,180,0.03)'
+            }}
+          >
+            {ballActive ? 'REMOVE BALL' : 'DROP BALL'}
           </button>
 
           {/* Temperature slider */}

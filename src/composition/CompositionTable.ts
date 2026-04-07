@@ -2,6 +2,16 @@
 
 import { computeProperties, type Composition, type DerivedProps, type ElementName } from './PropertyCalculator'
 
+/** Partial render property overrides — physically correct values per material */
+export interface RenderOverride {
+  color?: [number, number, number]
+  opacityDensity?: number
+  F0?: number
+  metalness?: number
+  emissive?: number
+  IOR?: number
+}
+
 export interface NamedComposition {
   id: number
   name: string
@@ -18,8 +28,9 @@ export class CompositionTable {
   /** Add a composition. Returns its ID.
    *  densityOverride: use this for molecular compounds where Vegard's law doesn't apply
    *  (e.g., water = 1000 kg/m³, not the 1.28 kg/m³ that element interpolation gives)
+   *  renderOverride: physically correct render properties that override PropertyCalculator values
    */
-  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number): number {
+  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number, renderOverride?: RenderOverride): number {
     // Normalize fractions to sum to 1
     const total = Object.values(elements).reduce((s, v) => s + v, 0)
     const normalized: Partial<Record<ElementName, number>> = {}
@@ -31,6 +42,15 @@ export class CompositionTable {
     const props = computeProperties(composition, temperature)
     if (densityOverride !== undefined) {
       props.density = densityOverride
+    }
+    // Apply render overrides — physically correct values per material
+    if (renderOverride) {
+      if (renderOverride.color !== undefined) props.color = renderOverride.color
+      if (renderOverride.opacityDensity !== undefined) props.opacityDensity = renderOverride.opacityDensity
+      if (renderOverride.F0 !== undefined) props.F0 = renderOverride.F0
+      if (renderOverride.metalness !== undefined) props.metalness = renderOverride.metalness
+      if (renderOverride.emissive !== undefined) props.emissive = renderOverride.emissive
+      if (renderOverride.IOR !== undefined) props.IOR = renderOverride.IOR
     }
     const id = this.compositions.length
 
@@ -100,15 +120,23 @@ export class CompositionTable {
     )
   }
 
-  /** Add common starting materials */
+  /** Add common starting materials with physically correct render properties */
   addDefaults(): void {
     // densityOverride is required for molecular compounds — Vegard's law only works for solid alloys
-    this.add('Water', 'H₂O', { H: 0.111, O: 0.889 }, 20, 1000)
-    this.add('Salt', 'NaCl', { Na: 0.393, Cl: 0.607 }, 20, 2170)
-    this.add('Iron', 'Fe', { Fe: 1.0 }, 20, 7874)
-    this.add('Copper', 'Cu', { Cu: 1.0 }, 1100, 8960)
-    this.add('Mercury', 'Hg', { Pb: 1.0 }, 20, 13534)
-    this.add('Olive Oil', 'C₅₅H₁₀₄O₆', { C: 0.77, H: 0.12, O: 0.11 }, 20, 920)
-    this.add('Lava', 'Basalt', { Si: 0.25, O: 0.44, Fe: 0.08, Al: 0.08, Ca: 0.07, Mg: 0.04, Na: 0.02, K: 0.02 }, 1200, 2700)
+    // renderOverride provides physically correct optical properties per material
+    this.add('Water', 'H₂O', { H: 0.111, O: 0.889 }, 20, 1000,
+      { color: [0.8, 0.9, 1.0], opacityDensity: 0.15, F0: 0.02, metalness: 0.0, emissive: 0.0, IOR: 1.333 })
+    this.add('Salt', 'NaCl', { Na: 0.393, Cl: 0.607 }, 20, 2170,
+      { color: [0.95, 0.95, 0.95], opacityDensity: 3.0, F0: 0.04, metalness: 0.0, emissive: 0.0, IOR: 1.544 })
+    this.add('Iron', 'Fe', { Fe: 1.0 }, 20, 7874,
+      { color: [0.55, 0.55, 0.55], opacityDensity: 8.0, F0: 0.56, metalness: 0.95, emissive: 0.0, IOR: 2.95 })
+    this.add('Copper', 'Cu', { Cu: 1.0 }, 1100, 8960,
+      { color: [0.85, 0.5, 0.2], opacityDensity: 6.0, F0: 0.6, metalness: 0.9, emissive: 1.2, IOR: 1.0 })
+    this.add('Mercury', 'Hg', { Pb: 1.0 }, 20, 13534,
+      { color: [0.75, 0.75, 0.78], opacityDensity: 10.0, F0: 0.9, metalness: 0.98, emissive: 0.0, IOR: 1.0 })
+    this.add('Olive Oil', 'C₅₅H₁₀₄O₆', { C: 0.77, H: 0.12, O: 0.11 }, 20, 920,
+      { color: [0.7, 0.65, 0.3], opacityDensity: 1.0, F0: 0.03, metalness: 0.0, emissive: 0.0, IOR: 1.473 })
+    this.add('Lava', 'Basalt', { Si: 0.25, O: 0.44, Fe: 0.08, Al: 0.08, Ca: 0.07, Mg: 0.04, Na: 0.02, K: 0.02 }, 1200, 2700,
+      { color: [0.9, 0.3, 0.05], opacityDensity: 3.0, F0: 0.04, metalness: 0.0, emissive: 1.5, IOR: 1.6 })
   }
 }

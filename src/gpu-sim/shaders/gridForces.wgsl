@@ -28,9 +28,17 @@ struct SimParams {
     _pad:           u32,
 };
 
+struct SphereObstacle {
+    center:   vec3<f32>,
+    radius:   f32,
+    velocity: vec3<f32>,
+    active:   u32,       // 0 = no sphere, 1 = sphere present
+};
+
 // ── Bindings ─────────────────────────────────────────────────────────────────
 @group(0) @binding(0) var<storage, read_write> grid:   array<atomic<i32>>;
 @group(0) @binding(1) var<uniform>             params: SimParams;
+@group(0) @binding(2) var<uniform>             sphere: SphereObstacle;
 
 fn encodeFixedPoint(v: f32) -> i32 {
     return i32(v * FIXED_SCALE);
@@ -71,6 +79,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let x = cell_idx / (GRID_RES * GRID_RES);
     let y = (cell_idx / GRID_RES) % GRID_RES;
     let z = cell_idx % GRID_RES;
+
+    // ── Sphere obstacle: cells inside sphere move with sphere ────────────
+    if (sphere.active > 0u) {
+        // Cell center in MLS-MPM normalized coords [0,1]
+        let cell_pos = (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) / f32(GRID_RES);
+        let dist = length(cell_pos - sphere.center);
+        if (dist < sphere.radius) {
+            vel = sphere.velocity;
+        }
+    }
 
     // ── Boundary conditions: zero velocity near walls ────────────────────
     // (WebGPU-Ocean uses < 2 and > ceil(boxSize) - 3)

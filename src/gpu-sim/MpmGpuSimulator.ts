@@ -49,6 +49,7 @@ export class MpmGpuSimulator {
   private gridBuf!: GPUBuffer
   private simParamsBuf!: GPUBuffer
   private compPropsBuf!: GPUBuffer
+  private sphereBuf!: GPUBuffer        // SphereObstacle uniform (32 bytes)
   private contactBuf!: GPUBuffer
   private contactCounterBuf!: GPUBuffer
   private contactReadBuf!: GPUBuffer   // MAP_READ for CPU readback
@@ -75,6 +76,12 @@ export class MpmGpuSimulator {
   private gravity = 0.3    // grid-space gravity (WebGPU-Ocean uses 0.3)
   private dt = 0.2         // WebGPU-Ocean uses 0.20
   private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
+
+  // Sphere obstacle state
+  private sphereActive = false
+  private sphereCenter: [number, number, number] = [0, 0, 0]
+  private sphereRadius = 0
+  private sphereVelocity: [number, number, number] = [0, 0, 0]
 
   get particleBuffer(): GPUBuffer { return this.particleBuf }
   get particleCount(): number { return this.numParticles }
@@ -107,6 +114,14 @@ export class MpmGpuSimulator {
       size: 256 * 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     })
+
+    // Sphere obstacle uniform: { center: vec3<f32>, radius: f32, velocity: vec3<f32>, active: u32 } = 32 bytes
+    this.sphereBuf = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+    // Initialize sphere as inactive
+    this.device.queue.writeBuffer(this.sphereBuf, 0, new Float32Array([0, 0, 0, 0, 0, 0, 0, 0]))
 
     // Contact buffers
     this.contactBuf = device.createBuffer({
@@ -187,12 +202,13 @@ export class MpmGpuSimulator {
       ],
     })
 
-    // gridForces: binding 0 = grid, 1 = params
+    // gridForces: binding 0 = grid, 1 = params, 2 = sphere obstacle
     this.gridForcesBG = device.createBindGroup({
       layout: this.gridForcesPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.gridBuf } },
         { binding: 1, resource: { buffer: this.simParamsBuf } },
+        { binding: 2, resource: { buffer: this.sphereBuf } },
       ],
     })
 
@@ -291,6 +307,18 @@ export class MpmGpuSimulator {
     new Uint32Array(params.buffer, 8, 1)[0] = this.numParticles
     this.device.queue.writeBuffer(this.simParamsBuf, 0, params)
 
+    // Upload sphere obstacle state
+    const sphereData = new Float32Array(8)
+    sphereData[0] = this.sphereCenter[0]
+    sphereData[1] = this.sphereCenter[1]
+    sphereData[2] = this.sphereCenter[2]
+    sphereData[3] = this.sphereRadius
+    sphereData[4] = this.sphereVelocity[0]
+    sphereData[5] = this.sphereVelocity[1]
+    sphereData[6] = this.sphereVelocity[2]
+    new Uint32Array(sphereData.buffer, 28, 1)[0] = this.sphereActive ? 1 : 0
+    this.device.queue.writeBuffer(this.sphereBuf, 0, sphereData)
+
     // Workgroup counts
     const particleGroups = Math.ceil(this.numParticles / 64)  // workgroup_size=64 in shaders
     const gridCellGroups = Math.ceil(GRID_CELLS / 256)
@@ -384,11 +412,38 @@ export class MpmGpuSimulator {
   setTimestep(dt: number) { this.dt = dt }
   enableContactDetection(enabled: boolean) { this.contactDetectionEnabled = enabled }
 
+  /** Set a sphere obstacle that pushes fluid. Center/radius in MLS-MPM [0,1] coords. */
+  setSphereObstacle(center: [number, number, number], radius: number, velocity: [number, number, number]) {
+    this.sphereActive = true
+    this.sphereCenter = center
+    this.sphereRadius = radius
+    this.sphereVelocity = velocity
+  }
+
+  /** Remove the sphere obstacle */
+  clearSphereObstacle() {
+    this.sphereActive = false
+    this.sphereCenter = [0, 0, 0]
+    this.sphereRadius = 0
+    this.sphereVelocity = [0, 0, 0]
+  }
+
+  /** Get current sphere state for external sync (e.g., Three.js mesh) */
+  getSphereState(): { active: boolean; center: [number, number, number]; radius: number; velocity: [number, number, number] } {
+    return {
+      active: this.sphereActive,
+      center: [...this.sphereCenter],
+      radius: this.sphereRadius,
+      velocity: [...this.sphereVelocity],
+    }
+  }
+
   destroy() {
     this.particleBuf?.destroy()
     this.gridBuf?.destroy()
     this.simParamsBuf?.destroy()
     this.compPropsBuf?.destroy()
+    this.sphereBuf?.destroy()
     this.contactBuf?.destroy()
     this.contactCounterBuf?.destroy()
     this.contactReadBuf?.destroy()
