@@ -126,7 +126,7 @@ export function FluidTest() {
     const { gpuSim, compositionTable } = simRef.current
     const particles: GpuParticle[] = []
     const waterId = 0
-    for (let i = 0; i < 15000; i++) {
+    for (let i = 0; i < 10000; i++) {
       particles.push({
         pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
         vel: [0, 0, 0],
@@ -356,7 +356,7 @@ export function FluidTest() {
 
       // ── Spawn initial water particles ──────────────────────────────────
       const initParticles: GpuParticle[] = []
-      for (let i = 0; i < 15000; i++) {
+      for (let i = 0; i < 10000; i++) {
         initParticles.push({
           pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
           vel: [0, 0, 0],
@@ -588,18 +588,9 @@ export function FluidTest() {
           sim.fluidRenderer.render(count, now / 1000)
         }
 
-        // Contact processing every 10 frames (async readback)
-        if (sim.frameCount % 10 === 0 && count > 0) {
-          sim.gpuSim.readContacts().then(contacts => {
-            if (contacts.length > 0) {
-              // For now, log contacts — full composition update requires
-              // reading particle comp IDs back from GPU (future: batch update buffer)
-              console.debug(`Contacts detected: ${contacts.length} pairs`)
-            }
-          }).catch(() => {
-            // Readback may fail if buffers are still in use — non-fatal
-          })
-        }
+        // Contact processing — DISABLED until multiple compositions are spawned.
+        // The O(n²) contact detection shader kills FPS with >5k single-material particles.
+        // TODO: Enable when user spawns a second material, and use spatial hashing.
       }
 
       animate()

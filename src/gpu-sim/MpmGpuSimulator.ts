@@ -70,6 +70,7 @@ export class MpmGpuSimulator {
   private frameCount = 0
   private gravity = 9.81
   private dt = 0.2
+  private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
 
   get particleBuffer(): GPUBuffer { return this.particleBuf }
   get particleCount(): number { return this.numParticles }
@@ -320,9 +321,9 @@ export class MpmGpuSimulator {
       g2pPass.end()
     }
 
-    // Contact detection every 10 frames
+    // Contact detection every 10 frames (only when enabled — O(n²) is expensive)
     this.frameCount++
-    if (this.frameCount % 10 === 0) {
+    if (this.contactDetectionEnabled && this.frameCount % 10 === 0) {
       // Reset counter to zero before detection pass
       this.device.queue.writeBuffer(this.contactCounterBuf, 0, new Uint32Array([0]))
 
@@ -369,6 +370,7 @@ export class MpmGpuSimulator {
 
   setGravity(g: number) { this.gravity = g }
   setTimestep(dt: number) { this.dt = dt }
+  enableContactDetection(enabled: boolean) { this.contactDetectionEnabled = enabled }
 
   destroy() {
     this.particleBuf?.destroy()
