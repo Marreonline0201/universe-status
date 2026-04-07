@@ -1,14 +1,14 @@
 // ── FluidTest ────────────────────────────────────────────────────────────────
 // GPU MLS-MPM Fluid Simulation with multi-material composition system
-// Replaces WASM CPU solver with WebGPU compute (MpmGpuSimulator)
-// SSFR rendering via FluidRenderer — shares GPU device + particle buffer
+// WebGPU compute (MpmGpuSimulator) + Three.js scene rendering
+// Particles render as InstancedMesh in Three.js scene — shared depth buffer
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { FluidRenderer } from '../fluid-render/FluidRenderer'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
+import { FluidScene } from '../fluid-render/FluidScene'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { ContactProcessor } from '../composition/ContactProcessor'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
@@ -30,28 +30,7 @@ const SPHERE_RADIUS_MPM = 0.1     // ~6 grid cells in MLS-MPM space (visible)
 // Ball runs in [0,1] space, so divide by grid resolution.
 const SPHERE_GRAVITY_MPM = 0.3 / 64
 
-// ── Build composition render props for FluidRenderer ─────────────────────────
-// FluidRenderer expects 12 floats per composition (48 bytes):
-// [color_r, color_g, color_b, density, F0, metalness, emissive, IOR, specular_power, opacity_density, pad, pad]
-function buildCompositionRenderProps(table: CompositionTable): Float32Array {
-  const all = table.getAll()
-  const data = new Float32Array(256 * 12) // 256 max compositions * 12 floats
-  for (const comp of all) {
-    const base = comp.id * 12
-    data[base + 0] = comp.props.color[0]
-    data[base + 1] = comp.props.color[1]
-    data[base + 2] = comp.props.color[2]
-    data[base + 3] = comp.props.opacityDensity
-    data[base + 4] = comp.props.F0
-    data[base + 5] = comp.props.metalness
-    data[base + 6] = comp.props.emissive
-    data[base + 7] = comp.props.IOR
-    data[base + 8] = comp.props.specularPower
-    data[base + 9] = comp.props.opacityDensity
-    // 10-11: padding
-  }
-  return data
-}
+// ── Composition render props will be handled by FluidScene in a later task ──
 
 // ── React Component ──────────────────────────────────────────────────────────
 
@@ -93,7 +72,7 @@ export function FluidTest() {
     camera: THREE.PerspectiveCamera
     renderer: any /* WebGPURenderer */
     controls: OrbitControls
-    fluidRenderer: FluidRenderer
+    fluidScene: FluidScene
     animId: number
     lastTime: number
     fpsAccum: number
@@ -249,14 +228,13 @@ export function FluidTest() {
     const result = await materialGenRef.current.generate(description)
     if (!result) return 'Could not generate material. Try a different description.'
 
-    const { compositionTable, gpuSim, fluidRenderer } = simRef.current
+    const { compositionTable, gpuSim } = simRef.current
 
     // Add to composition table
     const compId = compositionTable.add(result.name, result.formula, result.elements, result.temperature)
 
     // Update GPU composition data
     gpuSim.updateCompositionProps(compositionTable.getGpuData())
-    fluidRenderer.updateCompositionRenderProps(buildCompositionRenderProps(compositionTable))
 
     // Spawn 3000 particles of the new material
     const particles: GpuParticle[] = []
@@ -313,24 +291,42 @@ export function FluidTest() {
     let cancelled = false
 
     const setup = async () => {
-      // ── Initialize WebGPU ────────────────────────────────────────────
+      // ── Initialize Three.js WebGPU renderer first ─────────────────────
       if (!navigator.gpu) {
         console.error('WebGPU not available')
         return
       }
 
-      // Init FluidRenderer first — it creates the device + overlay canvas
-      const fluidRenderer = new FluidRenderer()
-      const frOk = await fluidRenderer.init(container, container.clientWidth, container.clientHeight)
-      if (!frOk || cancelled) {
-        console.error('FluidRenderer init failed')
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0x060810)
+
+      const camera = new THREE.PerspectiveCamera(
+        50,
+        container.clientWidth / container.clientHeight,
+        0.1,
+        50,
+      )
+      camera.position.set(2.0, 1.5, 2.0)
+      camera.lookAt(0.5, 0.5, 0.5)
+
+      // Three.js WebGPU renderer — creates the GPUDevice
+      const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
+      await renderer.init()
+      renderer.setSize(container.clientWidth, container.clientHeight)
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+      renderer.toneMapping = THREE.ACESFilmicToneMapping
+      renderer.toneMappingExposure = 1.2
+      container.appendChild(renderer.domElement)
+
+      // Extract the raw GPUDevice from Three.js's WebGPU backend
+      const device: GPUDevice = renderer.backend.device
+      if (!device) {
+        console.error('Failed to get GPUDevice from Three.js WebGPU renderer')
         return
       }
+      console.log('GPUDevice extracted from Three.js WebGPU backend')
 
-      // Share the FluidRenderer's device with the simulator
-      const device = fluidRenderer.gpuDevice
-
-      // Init GPU MLS-MPM simulator
+      // ── Init GPU MLS-MPM simulator with the shared device ─────────────
       const gpuSim = new MpmGpuSimulator()
       const simOk = await gpuSim.init(device)
       if (!simOk || cancelled) {
@@ -345,28 +341,6 @@ export function FluidTest() {
 
       // Upload composition simulation props to GPU simulator
       gpuSim.updateCompositionProps(compositionTable.getGpuData())
-
-      // Upload composition render props to FluidRenderer
-      fluidRenderer.updateCompositionRenderProps(buildCompositionRenderProps(compositionTable))
-
-      // Connect simulator particle buffer to renderer
-      fluidRenderer.setParticleBuffer(gpuSim.getParticleBuffer())
-
-      // Set initial fluid material from water (composition 0)
-      const waterComp = compositionTable.get(0)
-      if (waterComp) {
-        fluidRenderer.setFluidMaterial({
-          r: waterComp.props.color[0],
-          g: waterComp.props.color[1],
-          b: waterComp.props.color[2],
-          density: waterComp.props.opacityDensity,
-          F0: waterComp.props.F0,
-          emissive: waterComp.props.emissive,
-          specularPower: waterComp.props.specularPower,
-          metalness: waterComp.props.metalness,
-          ior: waterComp.props.IOR,
-        })
-      }
 
       if (cancelled) return
       setGpuReady(true)
@@ -386,28 +360,6 @@ export function FluidTest() {
       gpuSim.spawnParticles(initParticles)
       console.log(`Spawned ${initParticles.length} initial particles`)
       setParticleCount(initParticles.length)
-
-      // ── Three.js Scene ─────────────────────────────────────────────────
-      const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0x060810)
-
-      const camera = new THREE.PerspectiveCamera(
-        50,
-        container.clientWidth / container.clientHeight,
-        0.1,
-        50,
-      )
-      camera.position.set(2.0, 1.5, 2.0)
-      camera.lookAt(0.5, 0.5, 0.5)
-
-      // Renderer — WebGPU with WebGL fallback
-      const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
-      await renderer.init()
-      renderer.setSize(container.clientWidth, container.clientHeight)
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-      renderer.toneMapping = THREE.ACESFilmicToneMapping
-      renderer.toneMappingExposure = 1.2
-      container.appendChild(renderer.domElement)
 
       // Controls
       const controls = new OrbitControls(camera, renderer.domElement)
@@ -513,6 +465,10 @@ export function FluidTest() {
       scene.add(sphereMesh)
       ballRef.current.mesh = sphereMesh
 
+      // ── Fluid particle rendering ──────────────────────────────────────
+      const fluidScene = new FluidScene(scene)
+      fluidScene.init(device)
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -527,7 +483,7 @@ export function FluidTest() {
         camera,
         renderer,
         controls,
-        fluidRenderer,
+        fluidScene,
         animId: 0,
         lastTime: performance.now(),
         fpsAccum: 0,
@@ -634,13 +590,13 @@ export function FluidTest() {
           // GPU compute: MLS-MPM step (clearGrid -> P2G -> forces -> G2P x2 substeps)
           const encoder = sim.device.createCommandEncoder()
           sim.gpuSim.step(encoder)
+
+          // Schedule particle position readback for rendering
+          sim.fluidScene.scheduleReadback(encoder, sim.gpuSim.particleBuffer, count)
           sim.device.queue.submit([encoder.finish()])
 
-          // Update camera for SSFR rendering
-          const viewMat = new Float32Array(16)
-          sim.camera.matrixWorldInverse.toArray(viewMat)
-          const fov = sim.camera.fov * Math.PI / 180
-          sim.fluidRenderer.updateCamera(viewMat, fov, sim.camera.aspect, sim.camera.near, sim.camera.far, 0.12)
+          // Start async readback — updates instance matrices one frame behind
+          sim.fluidScene.startReadback(count)
 
           setParticleCount(count)
         }
@@ -648,20 +604,8 @@ export function FluidTest() {
         // Update orbit controls
         sim.controls.update()
 
-        // Render: Three.js scene first
+        // Render: Three.js scene (ball, box, fluid particles — shared depth buffer)
         sim.renderer.render(sim.scene, sim.camera)
-
-        // SSFR fluid rendering — every frame
-        if (sim.fluidRenderer.isInitialized) {
-          if (count > 0) {
-            sim.fluidRenderer.captureScene(sim.renderer.domElement as HTMLCanvasElement)
-          }
-          sim.fluidRenderer.render(count, now / 1000)
-        }
-
-        // Contact processing — DISABLED until multiple compositions are spawned.
-        // The O(n²) contact detection shader kills FPS with >5k single-material particles.
-        // TODO: Enable when user spawns a second material, and use spatial hashing.
       }
 
       animate()
@@ -706,7 +650,7 @@ export function FluidTest() {
       if (simRef.current) {
         cancelAnimationFrame(simRef.current.animId)
         simRef.current.gpuSim.destroy()
-        simRef.current.fluidRenderer.dispose()
+        simRef.current.fluidScene.dispose()
       }
       if (cleanupRef.renderer) {
         cleanupRef.renderer.dispose()
