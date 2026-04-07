@@ -25,7 +25,10 @@ const MAX_PARTICLES = 40_000
 
 // Sphere obstacle constants
 const SPHERE_RADIUS_MPM = 0.1     // ~6 grid cells in MLS-MPM space (visible)
-const SPHERE_GRAVITY_MPM = 0.3    // grid-space gravity (matches GRAVITY in gridForces.wgsl)
+// Ball gravity must match effective fluid gravity in [0,1] space.
+// Shader applies GRAVITY=-0.3 in grid-space [0,64]. In [0,1] space that's 0.3/64.
+// Ball runs in [0,1] space, so divide by grid resolution.
+const SPHERE_GRAVITY_MPM = 0.3 / 64
 
 // ── Build composition render props for FluidRenderer ─────────────────────────
 // FluidRenderer expects 12 floats per composition (48 bytes):
@@ -591,16 +594,18 @@ export function FluidTest() {
         sim.frameCount++
         const count = sim.gpuSim.particleCount
 
-        // Update sphere obstacle physics (Euler integration in MLS-MPM space)
+        // Update sphere obstacle physics (Euler integration matching MLS-MPM)
+        // Ball runs in [0,1] space. Fluid sim runs 2 substeps × dt=0.2 per frame.
+        // Ball must match: 2 substeps, same dt, gravity scaled from grid-space to [0,1].
         const ball = ballRef.current
         if (ball.active) {
-          const simDt = 0.2  // match MLS-MPM dt
-          // Gravity in grid-space (same as shader GRAVITY constant)
-          ball.velocity[1] -= SPHERE_GRAVITY_MPM * simDt
-          // Euler position update
-          ball.center[0] += ball.velocity[0] * simDt
-          ball.center[1] += ball.velocity[1] * simDt
-          ball.center[2] += ball.velocity[2] * simDt
+          const simDt = 0.2  // match MLS-MPM substep dt
+          for (let sub = 0; sub < 2; sub++) {
+            ball.velocity[1] -= SPHERE_GRAVITY_MPM * simDt
+            ball.center[0] += ball.velocity[0] * simDt
+            ball.center[1] += ball.velocity[1] * simDt
+            ball.center[2] += ball.velocity[2] * simDt
+          }
 
           // Bounce off domain boundaries (with margin for sphere radius)
           const lo = SPHERE_RADIUS_MPM
