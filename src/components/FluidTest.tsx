@@ -563,7 +563,21 @@ export function FluidTest() {
           // GPU compute: MLS-MPM step (clearGrid -> P2G -> forces -> G2P x2 substeps)
           const encoder = sim.device.createCommandEncoder()
           sim.gpuSim.step(encoder)
-          sim.device.queue.submit([encoder.finish()])
+
+          // DEBUG: readback first particle position every 60 frames
+          if (sim.frameCount % 60 === 1) {
+            const readBuf = sim.device.createBuffer({ size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+            encoder.copyBufferToBuffer(sim.gpuSim.getParticleBuffer(), 0, readBuf, 0, 64)
+            sim.device.queue.submit([encoder.finish()])
+            readBuf.mapAsync(GPUMapMode.READ).then(() => {
+              const data = new Float32Array(readBuf.getMappedRange())
+              console.log(`[DEBUG] Particle 0: pos=(${data[0].toFixed(4)}, ${data[1].toFixed(4)}, ${data[2].toFixed(4)}) vel=(${data[4].toFixed(4)}, ${data[5].toFixed(4)}, ${data[6].toFixed(4)})`)
+              readBuf.unmap()
+              readBuf.destroy()
+            }).catch(() => { readBuf.destroy() })
+          } else {
+            sim.device.queue.submit([encoder.finish()])
+          }
 
           // Update camera for SSFR rendering
           const viewMat = new Float32Array(16)

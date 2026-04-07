@@ -15,8 +15,11 @@ export class CompositionTable {
   private compositions: NamedComposition[] = []
   private gpuData = new Float32Array(256 * 4)  // vec4 per composition for GPU
 
-  /** Add a composition. Returns its ID. */
-  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20): number {
+  /** Add a composition. Returns its ID.
+   *  densityOverride: use this for molecular compounds where Vegard's law doesn't apply
+   *  (e.g., water = 1000 kg/m³, not the 1.28 kg/m³ that element interpolation gives)
+   */
+  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number): number {
     // Normalize fractions to sum to 1
     const total = Object.values(elements).reduce((s, v) => s + v, 0)
     const normalized: Partial<Record<ElementName, number>> = {}
@@ -26,11 +29,14 @@ export class CompositionTable {
 
     const composition: Composition = { elements: normalized }
     const props = computeProperties(composition, temperature)
+    if (densityOverride !== undefined) {
+      props.density = densityOverride
+    }
     const id = this.compositions.length
 
     this.compositions.push({ id, name, formula, composition, props, temperature })
 
-    // Update GPU data
+    // Update GPU data — density is critical for MLS-MPM mass calculation
     this.gpuData[id * 4 + 0] = props.density
     this.gpuData[id * 4 + 1] = props.viscosity
     this.gpuData[id * 4 + 2] = props.surfaceTension
@@ -92,12 +98,13 @@ export class CompositionTable {
 
   /** Add common starting materials */
   addDefaults(): void {
-    this.add('Water', 'H₂O', { H: 0.111, O: 0.889 }, 20)
-    this.add('Salt', 'NaCl', { Na: 0.393, Cl: 0.607 }, 20)
-    this.add('Iron', 'Fe', { Fe: 1.0 }, 20)
-    this.add('Copper', 'Cu', { Cu: 1.0 }, 1100)
-    this.add('Mercury', 'Hg', { Pb: 1.0 }, 20)  // Using Pb as proxy (Hg not in element list)
-    this.add('Olive Oil', 'C₅₅H₁₀₄O₆', { C: 0.77, H: 0.12, O: 0.11 }, 20)
-    this.add('Lava', 'Basalt', { Si: 0.25, O: 0.44, Fe: 0.08, Al: 0.08, Ca: 0.07, Mg: 0.04, Na: 0.02, K: 0.02 }, 1200)
+    // densityOverride is required for molecular compounds — Vegard's law only works for solid alloys
+    this.add('Water', 'H₂O', { H: 0.111, O: 0.889 }, 20, 1000)
+    this.add('Salt', 'NaCl', { Na: 0.393, Cl: 0.607 }, 20, 2170)
+    this.add('Iron', 'Fe', { Fe: 1.0 }, 20, 7874)
+    this.add('Copper', 'Cu', { Cu: 1.0 }, 1100, 8960)
+    this.add('Mercury', 'Hg', { Pb: 1.0 }, 20, 13534)
+    this.add('Olive Oil', 'C₅₅H₁₀₄O₆', { C: 0.77, H: 0.12, O: 0.11 }, 20, 920)
+    this.add('Lava', 'Basalt', { Si: 0.25, O: 0.44, Fe: 0.08, Al: 0.08, Ca: 0.07, Mg: 0.04, Na: 0.02, K: 0.02 }, 1200, 2700)
   }
 }
