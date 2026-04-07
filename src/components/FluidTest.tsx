@@ -31,13 +31,6 @@ const HALF_D = BOX_D / 2
 // MLS-MPM (0.5, 0.5, 0.5) maps to Three.js (0, 0, 0)
 // MLS-MPM (0, 0, 0) maps to Three.js (-1.0, -0.75, -0.75)
 // MLS-MPM (1, 1, 1) maps to Three.js (1.0, 0.75, 0.75)
-function mpmToWorld(x: number, y: number, z: number): [number, number, number] {
-  return [
-    (x - 0.5) * BOX_W,
-    (y - 0.5) * BOX_H,
-    (z - 0.5) * BOX_D,
-  ]
-}
 
 function worldToMpm(x: number, y: number, z: number): [number, number, number] {
   return [

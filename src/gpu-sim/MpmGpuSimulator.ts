@@ -239,7 +239,7 @@ export class MpmGpuSimulator {
       // padding (J field removed — pressure now computed from grid density)
       data[offset + 13] = 0; data[offset + 14] = 0; data[offset + 15] = 0
     }
-    this.device.queue.writeBuffer(this.particleBuf, 0, data, 0, particles.length * FLOATS_PER_PARTICLE)
+    this.device.queue.writeBuffer(this.particleBuf, 0, data.buffer, 0, particles.length * FLOATS_PER_PARTICLE * 4)
     this.numParticles = particles.length
   }
 
@@ -268,14 +268,14 @@ export class MpmGpuSimulator {
       data[offset + 13] = 0; data[offset + 14] = 0; data[offset + 15] = 0
     }
     const byteOffset = this.numParticles * PARTICLE_STRIDE
-    this.device.queue.writeBuffer(this.particleBuf, byteOffset, data)
+    this.device.queue.writeBuffer(this.particleBuf, byteOffset, data.buffer, data.byteOffset, data.byteLength)
     this.numParticles += particles.length
   }
 
   /** Upload composition properties to GPU */
   updateCompositionProps(props: Float32Array) {
     // props: up to 256 * 4 floats (density, viscosity, surfaceTension, stiffness per composition)
-    this.device.queue.writeBuffer(this.compPropsBuf, 0, props)
+    this.device.queue.writeBuffer(this.compPropsBuf, 0, props.buffer, props.byteOffset, props.byteLength)
   }
 
   /** Run one simulation step (2 substeps of clearGrid -> P2G -> gridForces -> G2P) */

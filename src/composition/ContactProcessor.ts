@@ -9,7 +9,10 @@ export interface ContactResult {
 }
 
 export class ContactProcessor {
-  constructor(private table: CompositionTable) {}
+  private table: CompositionTable
+  constructor(table: CompositionTable) {
+    this.table = table
+  }
 
   /**
    * Process contact pairs from GPU readback.

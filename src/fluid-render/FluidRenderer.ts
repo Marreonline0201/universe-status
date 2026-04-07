@@ -361,7 +361,7 @@ export class FluidRenderer {
    */
   updateCompositionRenderProps(data: Float32Array) {
     if (!this.initialized) return
-    this.device.queue.writeBuffer(this.compRenderPropsBuf, 0, data)
+    this.device.queue.writeBuffer(this.compRenderPropsBuf, 0, data.buffer, data.byteOffset, data.byteLength)
   }
 
   /**
