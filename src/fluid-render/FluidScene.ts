@@ -1,13 +1,13 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// FluidScene — Renders MLS-MPM particles in the Three.js scene with SSFR
+// FluidScene — Renders MLS-MPM particles as a smooth fluid surface
 //
 // Particles share the scene's depth buffer with all other objects (ball, box,
 // terrain, organisms). Depth ordering is automatic — no overlay canvas needed.
 //
 // Rendering approach:
-//   1. Particles as THREE.Points in the scene (shared depth buffer)
+//   1. Particles as large, overlapping soft circles (THREE.Points + alphaMap)
 //   2. Scene rendered via pass() into a render target
-//   3. Bilateral blur smooths particle boundaries into a continuous surface
+//   3. Strong bilateral blur merges particles into a continuous surface
 //   4. Final output via RenderPipeline
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
@@ -15,10 +15,38 @@
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types not in @types/three
-import { pass, renderOutput } from 'three/tsl'
+import { pass } from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
+
+/**
+ * Create a circular soft-edge texture for particle sprites.
+ * Smooth radial falloff from center (opaque) to edge (transparent).
+ */
+function createSoftCircleTexture(size = 64): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  const half = size / 2
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x - half + 0.5) / half
+      const dy = (y - half + 0.5) / half
+      const r = Math.sqrt(dx * dx + dy * dy)
+      // Smooth falloff: 1 at center, 0 at edge, with soft transition
+      const alpha = Math.max(0, 1.0 - r)
+      const smoothAlpha = alpha * alpha * (3 - 2 * alpha) // smoothstep
+      const byte = Math.round(smoothAlpha * 255)
+      const i = (y * size + x) * 4
+      data[i] = 255     // R
+      data[i + 1] = 255 // G
+      data[i + 2] = 255 // B
+      data[i + 3] = byte // A
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  tex.needsUpdate = true
+  return tex
+}
 
 export class FluidScene {
   private points: THREE.Points | null = null
@@ -29,6 +57,7 @@ export class FluidScene {
   private readbackBuffer: GPUBuffer | null = null
   private readbackPending = false
   private currentCount = 0
+  private softCircleTex: THREE.DataTexture | null = null
 
   // SSFR post-processing
   renderPipeline: any = null // THREE.RenderPipeline
@@ -51,6 +80,9 @@ export class FluidScene {
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     })
 
+    // Soft circle texture for smooth particle edges
+    this.softCircleTex = createSoftCircleTexture(64)
+
     // Buffer geometry with pre-allocated position + color arrays
     const geo = new THREE.BufferGeometry()
     const positions = new Float32Array(MAX_PARTICLES * 3)
@@ -64,18 +96,20 @@ export class FluidScene {
     this.colorAttr.setUsage(THREE.DynamicDrawUsage)
     geo.setAttribute('color', this.colorAttr)
 
-    // Draw range starts at 0
     geo.setDrawRange(0, 0)
 
-    // Point material with size attenuation — spherical sprites
+    // Large overlapping soft circles — bilateral blur merges them into a surface
     const mat = new THREE.PointsMaterial({
-      size: 0.025,
+      size: 0.06,               // large enough to overlap heavily
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.85,
       depthWrite: true,
+      depthTest: true,
       blending: THREE.NormalBlending,
+      map: this.softCircleTex,  // circular soft-edge shape
+      alphaTest: 0.01,          // discard nearly invisible fragments
     })
 
     this.points = new THREE.Points(geo, mat)
@@ -85,7 +119,7 @@ export class FluidScene {
 
   /**
    * Initialize the SSFR post-processing pipeline.
-   * Must be called after renderer.init() and scene setup.
+   * Strong bilateral blur smooths overlapping particles into a continuous surface.
    */
   async initPostProcessing(renderer: any, camera: THREE.PerspectiveCamera) {
     if (this.pipelineInitialized) return
@@ -96,15 +130,14 @@ export class FluidScene {
       const sceneColor = scenePass.getTextureNode()
       const sceneDepth = scenePass.getLinearDepthNode()
 
-      // Bilateral blur: smooths particle boundaries while preserving depth edges
-      // sigma=4 spatial, sigmaColor=0.1 for edge preservation
+      // Strong bilateral blur: sigma=10 spatial to merge particles,
+      // sigmaColor=0.05 to preserve edges between fluid and background
       const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
-      const blurred = bilateralBlur(sceneColor, sceneDepth, 4, 0.1)
+      const blurred = bilateralBlur(sceneColor, sceneDepth, 10, 0.05)
 
-      // Create the render pipeline with blurred output
       this.renderPipeline = new (THREE as any).RenderPipeline(renderer, blurred)
       this.pipelineInitialized = true
-      console.log('SSFR post-processing pipeline initialized')
+      console.log('SSFR post-processing pipeline initialized (sigma=10)')
     } catch (e) {
       console.warn('SSFR pipeline init failed, falling back to direct render:', e)
       this.renderPipeline = null
@@ -113,11 +146,10 @@ export class FluidScene {
 
   /**
    * Copy particle buffer from GPU and schedule async readback.
-   * Call this after gpuSim.step() with the same command encoder.
    */
   scheduleReadback(encoder: GPUCommandEncoder, particleBuffer: GPUBuffer, count: number) {
     if (!this.readbackBuffer || !this.device) return
-    if (this.readbackPending) return // previous readback still in flight
+    if (this.readbackPending) return
 
     this.currentCount = Math.min(count, MAX_PARTICLES)
     const byteSize = this.currentCount * 80
@@ -126,7 +158,7 @@ export class FluidScene {
 
   /**
    * After command buffer submission, start the async readback.
-   * Updates point positions when data arrives (one frame behind — acceptable).
+   * Updates point positions when data arrives (one frame behind).
    */
   startReadback(count: number) {
     if (!this.readbackBuffer || !this.points || !this.positionAttr || !this.colorAttr) return
@@ -148,15 +180,14 @@ export class FluidScene {
         const src = i * FLOATS_PER_PARTICLE
         const dst = i * 3
 
-        // Position: first 3 floats of particle struct
         positions[dst] = data[src]
         positions[dst + 1] = data[src + 1]
         positions[dst + 2] = data[src + 2]
 
-        // Default water color — per-composition coloring comes in Task 6
-        colors[dst] = 0.13
-        colors[dst + 1] = 0.4
-        colors[dst + 2] = 0.87
+        // Water blue — per-composition coloring comes later
+        colors[dst] = 0.15
+        colors[dst + 1] = 0.45
+        colors[dst + 2] = 0.9
       }
 
       posAttr.needsUpdate = true
@@ -177,6 +208,8 @@ export class FluidScene {
       ;(this.points.material as THREE.Material).dispose()
       this.points = null
     }
+    this.softCircleTex?.dispose()
+    this.softCircleTex = null
     this.renderPipeline?.dispose()
     this.renderPipeline = null
     this.readbackBuffer?.destroy()
