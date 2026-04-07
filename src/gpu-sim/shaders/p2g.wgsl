@@ -31,7 +31,7 @@ struct Particle {
     C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
     C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
     phase:           u32,                   // bytes 48-51
-    J: f32,                                // bytes 52-55 — accumulated volume ratio (det of F)
+    _pad0: u32,                            // bytes 52-55
     _pad1: u32, _pad2: u32,               // bytes 56-63
 };
 
@@ -67,12 +67,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let p = particles[pid];
     let props = comp_props[p.composition_id];
-    let density = props.x;
-
-    // Material properties from composition table
-    let rest_density = density;        // kg/m³ (target density)
-    let stiffness = props.w;           // pressure stiffness (EOS)
-    let viscosity = props.y;           // for viscous damping
+    let rest_density = props.x;        // kg/m³ (target density)
 
     // Mass and volume per particle
     let volume = DX * DX * DX;         // cell volume
@@ -87,12 +82,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Base cell (integer coords of the lower-left corner of the 3x3x3 stencil)
     let base = vec3<i32>(floor(pos_grid - 0.5));
-
-    // ── MLS-MPM Equation of State: pressure from accumulated J ────────
-    // J = det(deformation gradient), tracked per particle across frames.
-    // J < 1 = compressed → positive pressure → pushes apart
-    // J > 1 = expanded → negative pressure → pulls together
-    let pressure = -stiffness * (1.0 / max(p.J, 0.1) - 1.0);
 
     // Scatter to 3x3x3 neighborhood
     for (var di: i32 = 0; di < 3; di++) {
@@ -131,11 +120,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                     0.0
                 );
 
-                // MLS-MPM stress: pressure pushes particles apart when compressed
-                let stress_force = pressure * w * volume * 4.0 * INV_DX * INV_DX * dx_world;
-
-                // Total momentum = velocity contribution + stress force * dt
-                let momentum = (vel + affine_vel) * wm + stress_force * params.dt;
+                // Total momentum = velocity + affine velocity contribution
+                let momentum = (vel + affine_vel) * wm;
 
                 // Fixed-point encode
                 let fm  = i32(wm * FIXED_SCALE);

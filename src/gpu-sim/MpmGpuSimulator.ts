@@ -236,8 +236,8 @@ export class MpmGpuSimulator {
       data[offset + 10] = 0; data[offset + 11] = 0  // C1: vec2<f32>
       // phase
       new Uint32Array(data.buffer, (offset + 12) * 4, 1)[0] = p.phase
-      // J = 1.0 (initial volume ratio — undeformed), then padding
-      data[offset + 13] = 1.0; data[offset + 14] = 0; data[offset + 15] = 0
+      // padding (J field removed — pressure now computed from grid density)
+      data[offset + 13] = 0; data[offset + 14] = 0; data[offset + 15] = 0
     }
     this.device.queue.writeBuffer(this.particleBuf, 0, data, 0, particles.length * FLOATS_PER_PARTICLE)
     this.numParticles = particles.length

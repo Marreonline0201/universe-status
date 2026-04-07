@@ -18,7 +18,7 @@ const CELL_VOLUME: f32 = DX * DX * DX;   // volume of one cell
 
 // MLS-MPM fluid parameters (in grid units, NOT real-world units)
 const REST_DENSITY: f32 = 4.0;           // target density in grid units
-const STIFFNESS: f32    = 50.0;          // pressure stiffness (EOS)
+const STIFFNESS: f32    = 0.5;           // pressure stiffness (EOS) — tunable
 const VISCOSITY_GRID: f32 = 0.1;         // grid-level viscosity damping
 
 // ── Uniforms ─────────────────────────────────────────────────────────────────
@@ -35,6 +35,12 @@ struct SimParams {
 // atomicLoad/atomicStore for read-modify-write on each cell sequentially.
 @group(0) @binding(0) var<storage, read_write> grid:   array<atomic<i32>>;
 @group(0) @binding(1) var<uniform>             params: SimParams;
+
+// ── Read neighbor cell mass (for pressure gradient) ─────────────────────────
+fn read_cell_mass(cell_idx: u32) -> f32 {
+    let mass_fixed = atomicLoad(&grid[cell_idx * 4u + 3u]);
+    return f32(mass_fixed) * INV_FIXED;
+}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 @compute @workgroup_size(256)
@@ -69,6 +75,36 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let xi = cell_idx % GRID_RES;
     let yi = (cell_idx / GRID_RES) % GRID_RES;
     let zi = cell_idx / (GRID_RES * GRID_RES);
+
+    // ── Grid-density pressure gradient ──────────────────────────────────
+    // Read neighbor cell masses for finite-difference pressure gradient
+    let density = mass / CELL_VOLUME;
+
+    let mass_xm = select(0.0, read_cell_mass(cell_idx - 1u), xi > 0u);
+    let mass_xp = select(0.0, read_cell_mass(cell_idx + 1u), xi < GRID_RES - 1u);
+    let mass_ym = select(0.0, read_cell_mass(cell_idx - GRID_RES), yi > 0u);
+    let mass_yp = select(0.0, read_cell_mass(cell_idx + GRID_RES), yi < GRID_RES - 1u);
+    let mass_zm = select(0.0, read_cell_mass(cell_idx - GRID_RES * GRID_RES), zi > 0u);
+    let mass_zp = select(0.0, read_cell_mass(cell_idx + GRID_RES * GRID_RES), zi < GRID_RES - 1u);
+
+    let density_xm = mass_xm / CELL_VOLUME;
+    let density_xp = mass_xp / CELL_VOLUME;
+    let density_ym = mass_ym / CELL_VOLUME;
+    let density_yp = mass_yp / CELL_VOLUME;
+    let density_zm = mass_zm / CELL_VOLUME;
+    let density_zp = mass_zp / CELL_VOLUME;
+
+    // Pressure gradient pushes velocity from high-density to low-density regions
+    let grad_p = vec3<f32>(
+        STIFFNESS * (density_xp - density_xm) * 0.5,
+        STIFFNESS * (density_yp - density_ym) * 0.5,
+        STIFFNESS * (density_zp - density_zm) * 0.5,
+    );
+
+    vel -= grad_p * params.dt / max(density, REST_DENSITY * 0.1);
+
+    // ── Viscosity damping ───────────────────────────────────────────────
+    vel *= 1.0 / (1.0 + VISCOSITY_GRID * params.dt);
 
     // ── Boundary conditions: clamp velocity near walls ───────────────────
     // X walls

@@ -22,7 +22,7 @@ struct Particle {
     C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
     C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
     phase:           u32,                   // bytes 48-51
-    J: f32,                                // bytes 52-55
+    _pad0: u32,                            // bytes 52-55
     _pad1: u32, _pad2: u32,               // bytes 56-63
 };
 
