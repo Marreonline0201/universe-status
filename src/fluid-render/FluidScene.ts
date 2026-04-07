@@ -12,7 +12,7 @@
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types
-import { pass, Fn, vec4, float, mix, step } from 'three/tsl'
+import { pass, Fn, vec4, vec3, float, mix, exp, clamp, max, pow, dot, normalize } from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
@@ -125,14 +125,45 @@ export class FluidScene {
       const { gaussianBlur } = await import('three/examples/jsm/tsl/display/GaussianBlurNode.js')
       const smoothFluid = gaussianBlur(fluidColor, null, 8)
 
-      // Composite: blend smoothed fluid over sharp scene using fluid alpha
+      // Composite: Beer's law absorption + Fresnel reflection
+      // Water is transparent. Its color comes from PHYSICS:
+      //   - Beer's law: light passing through water loses red first → blue tint
+      //   - Thicker water = more absorption = deeper blue
+      //   - Thin water = nearly invisible
+      //   - Surface reflection adds brightness at glancing angles (Fresnel)
       const output = Fn(() => {
         const scene = sceneColor
         const fluid = smoothFluid
-        // Fluid alpha: 0 where no particles, >0 where fluid exists
-        const fluidAlpha = fluid.a
-        // Blend fluid over scene — scene stays sharp, fluid is smooth
-        return mix(scene, vec4(fluid.rgb, float(1.0)), fluidAlpha)
+
+        // Fluid alpha = proxy for optical thickness (0 = no water, 1 = thick water)
+        const thickness = fluid.a.mul(5.0) // scale for visual range
+
+        // Beer's law: transmittance = exp(-absorption * thickness)
+        // Water absorbs red >> green >> blue (real coefficients scaled for visual effect)
+        const absorption = vec3(1.8, 0.12, 0.03) // red absorbed most, blue passes through
+        const transmittance = exp(absorption.negate().mul(thickness))
+
+        // Background light filtered through water (what you see through the surface)
+        const transmitted = scene.rgb.mul(transmittance)
+
+        // Scattered light within the water body (slight blue glow from volume scattering)
+        const scatterColor = vec3(0.05, 0.15, 0.25)
+        const scatter = scatterColor.mul(float(1.0).sub(exp(thickness.negate().mul(1.5))))
+
+        // Fresnel-like surface reflection (brighter at edges where alpha transitions)
+        // Approximate: edges of the fluid mass have lower alpha → more reflective
+        const edgeFactor = float(1.0).sub(fluid.a).mul(0.8)
+        const fresnelBoost = pow(edgeFactor, float(3.0))
+        const reflectionColor = vec3(0.4, 0.5, 0.6) // dim environment reflection
+        const reflection = reflectionColor.mul(fresnelBoost)
+
+        // Combine: transmitted background + volume scatter + surface reflection
+        const waterColor = transmitted.add(scatter).add(reflection)
+
+        // Opacity: thin water is nearly transparent, thick water is opaque
+        const opacity = clamp(float(1.0).sub(exp(thickness.negate().mul(2.0))), float(0.0), float(1.0))
+
+        return mix(scene, vec4(waterColor, float(1.0)), opacity)
       })()
 
       this.renderPipeline = new (THREE as any).RenderPipeline(renderer, output)
@@ -177,12 +208,11 @@ export class FluidScene {
         positions[dst + 1] = data[src + 1]
         positions[dst + 2] = data[src + 2]
 
-        // Water is transparent — color comes from physics, not paint.
-        // Near-white with very slight blue tint from Rayleigh scattering.
-        // Actual blue comes from Beer's law in the composite (thick water absorbs red).
-        colors[dst] = 0.85
-        colors[dst + 1] = 0.90
-        colors[dst + 2] = 0.95
+        // Pure white — particles are thickness carriers only.
+        // All color comes from Beer's law absorption in the composite shader.
+        colors[dst] = 1.0
+        colors[dst + 1] = 1.0
+        colors[dst + 2] = 1.0
       }
 
       posAttr.needsUpdate = true
