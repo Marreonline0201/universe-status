@@ -68,7 +68,7 @@ export class MpmGpuSimulator {
 
   private numParticles = 0
   private frameCount = 0
-  private gravity = 9.81
+  private gravity = 0.3    // MLS-MPM grid units (domain is [0,1], not real-world meters)
   private dt = 0.2
   private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
 

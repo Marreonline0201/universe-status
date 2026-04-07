@@ -75,7 +75,7 @@ function buildCompositionRenderProps(table: CompositionTable): Float32Array {
 export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
-  const [gravityVal, setGravityVal] = useState(9.81)
+  const [gravityVal, setGravityVal] = useState(0.3)
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
@@ -887,13 +887,13 @@ export function FluidTest() {
             <input
               type="range"
               min={0}
-              max={20}
-              step={0.1}
+              max={2.0}
+              step={0.01}
               value={gravityVal}
               onChange={(e) => setGravityVal(Number(e.target.value))}
               style={sliderStyle}
             />
-            <div style={valueStyle}>{gravityVal.toFixed(1)} m/s2</div>
+            <div style={valueStyle}>{gravityVal.toFixed(2)}</div>
           </div>
 
           {/* Reset button */}
