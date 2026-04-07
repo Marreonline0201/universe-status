@@ -68,7 +68,7 @@ function buildCompositionRenderProps(table: CompositionTable): Float32Array {
 export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
-  const [gravityVal, setGravityVal] = useState(0.3)
+  const [gravityVal, setGravityVal] = useState(0.5)
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)

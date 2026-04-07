@@ -98,7 +98,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Only apply pressure when local density exceeds rest density (compressed fluid).
     // Isolated low-density particles (splashes, droplets) should fall freely under
     // gravity without being pushed around by phantom pressure gradients.
-    if (density > REST_DENSITY * 0.5) {
+    if (density > REST_DENSITY * 0.8) {
         let grad_p = vec3<f32>(
             STIFFNESS * (density_xp - density_xm) * 0.5,
             STIFFNESS * (density_yp - density_ym) * 0.5,

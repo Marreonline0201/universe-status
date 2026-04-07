@@ -68,7 +68,7 @@ export class MpmGpuSimulator {
 
   private numParticles = 0
   private frameCount = 0
-  private gravity = 0.3    // MLS-MPM grid units (domain is [0,1], not real-world meters)
+  private gravity = 0.5    // MLS-MPM grid units — slightly higher so droplets fall back
   private dt = 0.1         // smaller dt for stability with pressure forces
   private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
 
