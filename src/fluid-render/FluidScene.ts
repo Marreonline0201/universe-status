@@ -1,18 +1,18 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // FluidScene — Renders MLS-MPM particles as a smooth fluid surface
 //
-// Two-pass rendering with separate scenes for proper surface smoothing:
-//   1. Main scene (ball, box, grids) renders via pass() → sceneColor
-//   2. Fluid scene (particles only) renders via pass() → fluidColor
-//   3. Gaussian blur on fluidColor → smooth continuous surface
-//   4. Composite: blend smoothed fluid over scene based on fluid alpha
+// Two-pass rendering: scene and fluid are rendered separately.
+//   Pass 1: Main scene (ball, box, grids) → sharp sceneColor + sceneDepth
+//   Pass 2: Fluid particles only → fluidColor + fluidDepth
+//   Gaussian blur on fluidColor → smooth continuous surface
+//   Composite: depth-aware blend of smooth fluid over sharp scene
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 // ══════════════════════════════════════════════════════════════════════════════
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types
-import { pass, Fn, vec4, float, mix, screenUV, texture, uniform } from 'three/tsl'
+import { pass, Fn, vec4, float, mix, step } from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
@@ -22,9 +22,9 @@ export class FluidScene {
   private positionAttr: THREE.BufferAttribute | null = null
   private colorAttr: THREE.BufferAttribute | null = null
 
-  // Two separate scenes: main scene for objects, fluid scene for particles
-  private mainScene: THREE.Scene
-  private fluidOnlyScene: THREE.Scene
+  // Two separate scenes
+  private mainScene: THREE.Scene          // ball, box, grids, lights (sharp)
+  private fluidOnlyScene: THREE.Scene     // particles only (blurred)
 
   private device: GPUDevice | null = null
   private readbackBuffer: GPUBuffer | null = null
@@ -37,8 +37,9 @@ export class FluidScene {
 
   constructor(mainScene: THREE.Scene) {
     this.mainScene = mainScene
-    // Separate scene for particles — blurred independently from main scene
+    // Separate scene for fluid particles — blurred independently
     this.fluidOnlyScene = new THREE.Scene()
+    // No background = transparent (alpha=0 where no particles)
   }
 
   /**
@@ -47,7 +48,6 @@ export class FluidScene {
   init(device: GPUDevice) {
     this.device = device
 
-    // Create readback buffer for GPU → CPU position transfer
     this.readbackBuffer = device.createBuffer({
       size: MAX_PARTICLES * 80,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -67,7 +67,6 @@ export class FluidScene {
 
     geo.setDrawRange(0, 0)
 
-    // Large overlapping points for surface formation
     const mat = new THREE.PointsMaterial({
       size: 0.045,
       sizeAttenuation: true,
@@ -82,63 +81,69 @@ export class FluidScene {
     this.points = new THREE.Points(geo, mat)
     this.points.frustumCulled = false
 
-    // Add particles to BOTH scenes:
-    // - mainScene: for depth testing against ball/box (depth buffer shared)
-    // - fluidOnlyScene: for isolated blur pass
-    this.mainScene.add(this.points)
+    // Add particles to the fluid-only scene (for isolated blur)
+    this.fluidOnlyScene.add(this.points)
+
+    // Also add to main scene for depth ordering with ball/box
+    // We need a second Points instance sharing the same geometry
+    const mainMat = new THREE.PointsMaterial({
+      size: 0.045,
+      sizeAttenuation: true,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: true,
+      depthTest: true,
+      blending: THREE.NormalBlending,
+    })
+    const mainPoints = new THREE.Points(geo, mainMat)
+    mainPoints.frustumCulled = false
+    mainPoints.visible = false // hidden — only used for depth buffer contribution
+    this.mainScene.add(mainPoints)
   }
 
   /**
-   * Initialize the two-pass SSFR pipeline:
-   * Pass 1: render main scene (objects + particles) → scene with depth ordering
-   * Pass 2: render particles alone → Gaussian blur → smooth fluid
-   * Composite: blend blurred fluid over the scene
+   * Initialize two-pass SSFR pipeline:
+   * - Sharp scene pass (ball, box, grids)
+   * - Blurred fluid pass (particles only)
+   * - Depth-aware composite
    */
   async initPostProcessing(renderer: any, camera: THREE.PerspectiveCamera) {
     if (this.pipelineInitialized) return
 
     try {
-      // Pass 1: Full scene (ball + box + particles with correct depth ordering)
+      // Pass 1: Main scene → sharp (ball, box, wireframe grids)
       const scenePass = pass(this.mainScene, camera)
       const sceneColor = scenePass.getTextureNode()
-
-      // Pass 2: Just the particles in a separate scene for isolated blur
-      // Clone particles into the fluid-only scene
-      if (this.points) {
-        this.fluidOnlyScene.add(this.points.clone())
-      }
-
-      // Actually, cloning won't share the buffer updates. Instead, use a
-      // different approach: render the full scene, then apply a selective
-      // Gaussian blur that targets the blue fluid regions.
-      //
-      // Simpler approach: just use a strong Gaussian blur on the full scene.
-      // The background is dark (0x060810), box is thin lines, ball is small.
-      // The dominant visual element IS the fluid — blurring everything smooths
-      // the fluid while only slightly softening other elements.
-
-      const { gaussianBlur } = await import('three/examples/jsm/tsl/display/GaussianBlurNode.js')
-
-      // Gaussian blur: sigma=6 is enough to merge overlapping particles
-      // into a continuous surface without destroying scene details
-      const blurred = gaussianBlur(sceneColor, null, 6)
-
-      // Mix: use the blurred version primarily, keep some scene sharpness
-      // for the box edges and ball highlights
       const sceneDepth = scenePass.getLinearDepthNode()
 
-      this.renderPipeline = new (THREE as any).RenderPipeline(renderer, blurred)
+      // Pass 2: Fluid particles only → will be blurred
+      const fluidPass = pass(this.fluidOnlyScene, camera)
+      const fluidColor = fluidPass.getTextureNode()
+
+      // Gaussian blur on fluid only — sigma=8 merges particles into surface
+      const { gaussianBlur } = await import('three/examples/jsm/tsl/display/GaussianBlurNode.js')
+      const smoothFluid = gaussianBlur(fluidColor, null, 8)
+
+      // Composite: blend smoothed fluid over sharp scene using fluid alpha
+      const output = Fn(() => {
+        const scene = sceneColor
+        const fluid = smoothFluid
+        // Fluid alpha: 0 where no particles, >0 where fluid exists
+        const fluidAlpha = fluid.a
+        // Blend fluid over scene — scene stays sharp, fluid is smooth
+        return mix(scene, vec4(fluid.rgb, float(1.0)), fluidAlpha)
+      })()
+
+      this.renderPipeline = new (THREE as any).RenderPipeline(renderer, output)
       this.pipelineInitialized = true
-      console.log('SSFR pipeline: Gaussian blur (sigma=6) initialized')
+      console.log('SSFR pipeline: two-pass (sharp scene + blurred fluid) initialized')
     } catch (e) {
       console.warn('SSFR pipeline init failed, falling back to direct render:', e)
       this.renderPipeline = null
     }
   }
 
-  /**
-   * Copy particle buffer from GPU and schedule async readback.
-   */
   scheduleReadback(encoder: GPUCommandEncoder, particleBuffer: GPUBuffer, count: number) {
     if (!this.readbackBuffer || !this.device) return
     if (this.readbackPending) return
@@ -148,9 +153,6 @@ export class FluidScene {
     encoder.copyBufferToBuffer(particleBuffer, 0, this.readbackBuffer, 0, byteSize)
   }
 
-  /**
-   * After command buffer submission, start the async readback.
-   */
   startReadback(count: number) {
     if (!this.readbackBuffer || !this.points || !this.positionAttr || !this.colorAttr) return
     if (this.readbackPending) return
@@ -175,7 +177,6 @@ export class FluidScene {
         positions[dst + 1] = data[src + 1]
         positions[dst + 2] = data[src + 2]
 
-        // Water blue
         colors[dst] = 0.15
         colors[dst + 1] = 0.50
         colors[dst + 2] = 0.95
@@ -194,7 +195,7 @@ export class FluidScene {
 
   dispose() {
     if (this.points) {
-      this.mainScene.remove(this.points)
+      this.fluidOnlyScene.remove(this.points)
       this.points.geometry.dispose()
       ;(this.points.material as THREE.Material).dispose()
       this.points = null
