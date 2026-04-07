@@ -9,12 +9,14 @@ struct VertexOutput {
     @location(0) uv: vec2f,
     @location(1) view_position: vec3f,
     @location(2) world_position: vec3f,
+    @location(3) @interpolate(flat) comp_id: u32,
 }
 
 struct FragmentInput {
     @location(0) uv: vec2f,
     @location(1) view_position: vec3f,
     @location(2) world_position: vec3f,
+    @location(3) @interpolate(flat) comp_id: u32,
 }
 
 // Box half-extents for clipping (configurable via pipeline constants)
@@ -24,6 +26,7 @@ override box_half_d: f32 = 0.75;
 
 struct FragmentOutput {
     @location(0) frag_color: vec4f,
+    @location(1) comp_id: u32,
     @builtin(frag_depth) frag_depth: f32,
 }
 
@@ -35,12 +38,16 @@ struct RenderUniforms {
     view_matrix: mat4x4f,
 }
 
-// Particle data — 32 bytes per particle (8 floats, 16-byte aligned)
+// Particle data — 64 bytes per particle (scalar layout)
 struct Particle {
-    x: f32, y: f32, z: f32,
-    vx: f32, vy: f32, vz: f32,
-    mat_id: f32,  // stored as float for alignment
-    _pad: f32,
+    pos_x: f32, pos_y: f32, pos_z: f32,
+    composition_id: u32,
+    vel_x: f32, vel_y: f32, vel_z: f32,
+    temperature: f32,
+    C0: vec2<f32>,
+    C1: vec2<f32>,
+    phase: u32,
+    _pad0: u32, _pad1: u32, _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -65,13 +72,20 @@ fn vs(
     let corner = vec3f(corner_positions[vertex_index] * size, 0.0);
     let uv = corner_positions[vertex_index] + 0.5;
 
-    let world_pos = vec3f(particles[instance_index].x, particles[instance_index].y, particles[instance_index].z);
+    let p = particles[instance_index];
+    let world_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
     let view_position = (uniforms.view_matrix * vec4f(world_pos, 1.0)).xyz;
 
     // Billboard: offset in view space so quad always faces camera
     let out_position = uniforms.projection_matrix * vec4f(view_position + corner, 1.0);
 
-    return VertexOutput(out_position, uv, view_position, world_pos);
+    var out: VertexOutput;
+    out.position = out_position;
+    out.uv = uv;
+    out.view_position = view_position;
+    out.world_position = world_pos;
+    out.comp_id = p.composition_id;
+    return out;
 }
 
 @fragment
@@ -101,6 +115,7 @@ fn fs(input: FragmentInput) -> FragmentOutput {
 
     out.frag_depth = clip_space_pos.z / clip_space_pos.w;
     out.frag_color = vec4f(real_view_pos.z, 0.0, 0.0, 1.0);
+    out.comp_id = input.comp_id;
 
     return out;
 }

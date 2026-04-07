@@ -32,11 +32,26 @@ struct CompositeUniforms {
     _pad5: f32,
 }
 
+// Per-composition material properties (48 bytes each, 256 entries)
+struct CompRenderProps {
+    color_r: f32, color_g: f32, color_b: f32,
+    density: f32,
+    F0: f32,
+    metalness: f32,
+    emissive: f32,
+    IOR: f32,
+    specular_power: f32,
+    opacity_density: f32,
+    _pad0: f32, _pad1: f32,  // pad to 48 bytes
+}
+
 @group(0) @binding(0) var texture_sampler: sampler;
 @group(0) @binding(1) var depth_texture: texture_2d<f32>;
 @group(0) @binding(2) var thickness_texture: texture_2d<f32>;
 @group(0) @binding(3) var scene_texture: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> uniforms: CompositeUniforms;
+@group(0) @binding(5) var comp_id_tex: texture_2d<u32>;
+@group(0) @binding(6) var<storage, read> comp_render_props: array<CompRenderProps>;
 
 // Hash for procedural noise
 fn hash2(p: vec2f) -> f32 {
@@ -85,6 +100,18 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
         discard;
     }
 
+    // Look up per-pixel composition material properties
+    let comp_id = textureLoad(comp_id_tex, vec2u(pixel), 0).r;
+    let mat = comp_render_props[comp_id];
+    let diffuse_color = vec3f(mat.color_r, mat.color_g, mat.color_b);
+    let mat_density = mat.density;
+    let mat_F0 = mat.F0;
+    let mat_metalness = mat.metalness;
+    let mat_emissive = mat.emissive;
+    let mat_ior = mat.IOR;
+    let mat_specular_power = mat.specular_power;
+    let mat_opacity_density = mat.opacity_density;
+
     // §3.2 Pass 4: Normal reconstruction from smoothed depth
     // ∂z/∂x = (depth(x+1,y) - depth(x-1,y)) / 2
     // ∂z/∂y = (depth(x,y+1) - depth(x,y-1)) / 2
@@ -107,7 +134,7 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
 
     // Animated micro-surface wave perturbation — smooth ripples
     // Dielectrics (water) get more perturbation; metals (mercury) stay mirror-smooth
-    var wave_strength = 0.05 * (1.0 - uniforms.metalness * 0.8);
+    var wave_strength = 0.05 * (1.0 - mat_metalness * 0.8);
     var t = uniforms.time;
     // Three octaves of smooth animated waves at different scales/speeds
     var p1 = pixel * 0.08 + vec2f(t * 6.0, t * 4.0);
@@ -123,20 +150,19 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     var NdotV = max(dot(normal, -ray_dir), 0.0);
 
     // Fresnel: F = F0 + (1-F0)(1 - N·V)^5 — metallic materials use colored F0
-    var f0 = uniforms.F0;
+    var f0 = mat_F0;
     var fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0), 0.0, 1.0);
 
     // Refraction: offset background UV — IOR from material properties
-    var ior = mix(uniforms.ior, 1.0, uniforms.metalness); // metals: no refraction
+    var ior = mix(mat_ior, 1.0, mat_metalness); // metals: no refraction
     var refract_dir = refract(ray_dir, normal, 1.0 / max(ior, 1.001));
-    var refract_strength = mix(50.0, 0.0, uniforms.metalness); // metals don't refract
+    var refract_strength = mix(50.0, 0.0, mat_metalness); // metals don't refract
     var refract_uv = pixel + refract_dir.xy * thickness * refract_strength;
     var scene_dims = vec2f(f32(textureDimensions(scene_texture).x - 1u), f32(textureDimensions(scene_texture).y - 1u));
     var background = textureLoad(scene_texture, vec2u(clamp(refract_uv, vec2f(0.0), scene_dims)), 0);
 
     // Beer's law absorption: color = exp(-absorption × thickness)
-    var diffuse_color = uniforms.fluid_color;
-    var transmittance = exp(-uniforms.density * thickness * (1.0 - diffuse_color));
+    var transmittance = exp(-mat_density * thickness * (1.0 - diffuse_color));
     var refraction_color = background.rgb * transmittance;
 
     // Reflection: procedural environment — brighter for metallic materials
@@ -148,20 +174,20 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
                   + vec3f(0.3, 0.25, 0.2) * exp(-8.0 * sky_down)                // warm horizon
                   + vec3f(0.1, 0.1, 0.12) * exp(-3.0 * abs(reflect_dir.y));     // horizon band
     // Metals reflect more brightly — boost environment for mirror-like materials
-    sky_color *= mix(1.0, 1.8, uniforms.metalness);
-    var reflection_color = mix(sky_color, sky_color * diffuse_color, uniforms.metalness);
+    sky_color *= mix(1.0, 1.8, mat_metalness);
+    var reflection_color = mix(sky_color, sky_color * diffuse_color, mat_metalness);
 
     // Specular highlights (Blinn-Phong) — primary + rim light
     var light_dir = normalize(uniforms.light_dir);
     var H = normalize(light_dir - ray_dir);
-    var specular = pow(max(0.0, dot(H, normal)), uniforms.specular_power);
+    var specular = pow(max(0.0, dot(H, normal)), mat_specular_power);
     // Secondary rim light from below-right for depth
     var light2 = normalize(vec3f(-0.3, -0.5, 0.8));
     var H2 = normalize(light2 - ray_dir);
-    specular += 0.3 * pow(max(0.0, dot(H2, normal)), uniforms.specular_power * 0.5);
+    specular += 0.3 * pow(max(0.0, dot(H2, normal)), mat_specular_power * 0.5);
 
     // Fluid opacity — must be computed before SSS which depends on it
-    var opacity = 1.0 - exp(-uniforms.density * thickness * 3.0);
+    var opacity = 1.0 - exp(-mat_opacity_density * thickness * 3.0);
 
     // Diffuse lighting for non-metals (Lambertian + secondary + SSS approximation)
     var NdotL = max(dot(normal, light_dir), 0.0);
@@ -175,9 +201,9 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     // Emissive glow: lava and molten copper emit their own light
     // Glow intensity varies with thickness — thicker = brighter core, thin edges glow softly
     var glow_core = smoothstep(0.0, 0.5, thickness);
-    var emissive = diffuse_color * uniforms.emissive_intensity * (0.7 + 0.5 * glow_core);
+    var emissive = diffuse_color * mat_emissive * (0.7 + 0.5 * glow_core);
     // Subtle hot core for thick emissive regions — keeps base color dominant
-    emissive += vec3f(1.0, 0.7, 0.3) * uniforms.emissive_intensity * 0.15 * glow_core * glow_core;
+    emissive += vec3f(1.0, 0.7, 0.3) * mat_emissive * 0.15 * glow_core * glow_core;
 
     // Mix: transparent fluid shows background through, opaque shows color
     var base_color = mix(refraction_color, fluid_contribution, opacity * 0.7);
@@ -185,20 +211,20 @@ fn fs(@builtin(position) frag_pos: vec4f, input: FragmentInput) -> @location(0) 
     // Metals: high Fresnel, tinted reflections, no transmission
     var metal_color = mix(base_color, reflection_color, fresnel);
     var dielectric_color = mix(base_color, reflection_color, fresnel * 0.7);
-    var shaded = mix(dielectric_color, metal_color, uniforms.metalness);
+    var shaded = mix(dielectric_color, metal_color, mat_metalness);
 
     // Add specular + emissive
-    var spec_intensity = mix(1.2, 2.5, uniforms.metalness);
+    var spec_intensity = mix(1.2, 2.5, mat_metalness);
     var final_color = shaded + vec3f(specular * spec_intensity) + emissive;
 
     // Edge darkening — subtle contact shadow (reduced for emissive materials)
     var edge_ao = smoothstep(0.0, 0.3, thickness);
-    var ao_strength = mix(0.7, 1.0, max(edge_ao, uniforms.emissive_intensity * 0.5));
+    var ao_strength = mix(0.7, 1.0, max(edge_ao, mat_emissive * 0.5));
     final_color *= ao_strength;
 
     // Alpha: smooth falloff at thin edges, emissive materials more opaque
     // Dielectrics: softer edges (min alpha 0.15), metals/emissive: harder edges (min 0.5)
-    var min_alpha = mix(0.15, 0.5, max(uniforms.metalness, uniforms.emissive_intensity * 0.3));
+    var min_alpha = mix(0.15, 0.5, max(mat_metalness, mat_emissive * 0.3));
     var alpha = clamp(opacity * 2.0, min_alpha, 1.0);
 
     // Premultiply alpha for correct canvas compositing (alphaMode: premultiplied)

@@ -34,6 +34,7 @@ export class FluidRenderer {
   private tmpThicknessTex!: GPUTexture
   private depthTestTex!: GPUTexture
   private sceneTexture!: GPUTexture
+  private compIdTexture!: GPUTexture
 
   // Pipelines
   private depthPipeline!: GPURenderPipeline
@@ -46,10 +47,12 @@ export class FluidRenderer {
 
   // Buffers
   private particleBuffer!: GPUBuffer
+  private externalParticleBuffer: GPUBuffer | null = null
   private uniformBuffer!: GPUBuffer
   private filterXBuf!: GPUBuffer
   private filterYBuf!: GPUBuffer
   private compositeUniformBuf!: GPUBuffer
+  private compRenderPropsBuf!: GPUBuffer
 
   // Bind group layouts
   private depthBGL!: GPUBindGroupLayout
@@ -128,15 +131,30 @@ export class FluidRenderer {
     this.tmpThicknessTex = d.createTexture({ size: [w, h], format: 'r16float', usage: rt })
     this.depthTestTex = d.createTexture({ size: [w, h], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
     this.sceneTexture = d.createTexture({ size: [w, h], format: this.presentationFormat, usage: rt | GPUTextureUsage.COPY_DST })
+    this.compIdTexture = d.createTexture({ size: [w, h], format: 'r32uint', usage: rt })
   }
 
   private createBuffers() {
     const d = this.device
-    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 8 floats × 4 bytes
+    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 64 bytes per particle (new layout)
     this.uniformBuffer = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterXBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterYBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.compositeUniformBuf = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.compRenderPropsBuf = d.createBuffer({ size: 256 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 256 compositions × 48 bytes each
+
+    // Initialize comp render props with default water material at index 0
+    const defaultProps = new Float32Array(12) // 48 bytes = 12 floats
+    defaultProps[0] = 0.13; defaultProps[1] = 0.4; defaultProps[2] = 0.87 // color (water blue)
+    defaultProps[3] = 3.0   // density
+    defaultProps[4] = 0.02  // F0
+    defaultProps[5] = 0.0   // metalness
+    defaultProps[6] = 0.0   // emissive
+    defaultProps[7] = 1.333 // IOR
+    defaultProps[8] = 250.0 // specular_power
+    defaultProps[9] = 3.0   // opacity_density
+    // 10-11: padding
+    d.queue.writeBuffer(this.compRenderPropsBuf, 0, defaultProps)
 
     d.queue.writeBuffer(this.filterXBuf, 0, new Float32Array([1, 0, 0, 0]))
     d.queue.writeBuffer(this.filterYBuf, 0, new Float32Array([0, 1, 0, 0]))
@@ -167,7 +185,14 @@ export class FluidRenderer {
     this.depthPipeline = d.createRenderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthBGL] }),
       vertex: { module: depthMod, entryPoint: 'vs' },
-      fragment: { module: depthMod, entryPoint: 'fs', targets: [{ format: 'r32float' }], constants: boxConst },
+      fragment: {
+        module: depthMod, entryPoint: 'fs',
+        targets: [
+          { format: 'r32float' },   // location(0): depth (frag_color)
+          { format: 'r32uint' },    // location(1): composition ID
+        ],
+        constants: boxConst,
+      },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
       primitive: { topology: 'triangle-list' },
     })
@@ -226,6 +251,8 @@ export class FluidRenderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // thickness
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },                                   // scene
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'uint' } },               // comp_id
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },         // comp render props
       ],
     })
 
@@ -288,17 +315,53 @@ export class FluidRenderer {
     this.fluidIOR = opts.ior ?? 1.333
   }
 
-  updateParticles(positions: Float32Array, velocities: Float32Array, matIds: Uint8Array, count: number) {
+  /**
+   * Accept an external GPU particle buffer directly (e.g., from MpmGpuSimulator).
+   * The buffer must match the 64-byte particle layout expected by the shaders.
+   * When set, this buffer is used instead of the internal particleBuffer for rendering.
+   */
+  setParticleBuffer(buffer: GPUBuffer) {
+    this.externalParticleBuffer = buffer
+  }
+
+  /**
+   * CPU-side particle upload for backwards compatibility.
+   * Packs positions, velocities, and composition IDs into the 64-byte layout.
+   */
+  updateParticles(positions: Float32Array, velocities: Float32Array, compIds: Uint32Array | Uint8Array, count: number) {
     if (!this.initialized) return
-    const data = new Float32Array(count * 8) // 8 floats per particle (padded to 32 bytes)
+    this.externalParticleBuffer = null // switch back to internal buffer
+    // 64 bytes per particle = 16 x u32/f32 values
+    const buf = new ArrayBuffer(count * 64)
+    const f32 = new Float32Array(buf)
+    const u32 = new Uint32Array(buf)
     for (let i = 0; i < count; i++) {
-      const i3 = i * 3, i8 = i * 8
-      data[i8] = positions[i3]; data[i8+1] = positions[i3+1]; data[i8+2] = positions[i3+2]
-      data[i8+3] = velocities[i3]; data[i8+4] = velocities[i3+1]; data[i8+5] = velocities[i3+2]
-      data[i8+6] = matIds[i]
-      data[i8+7] = 0 // padding
+      const i3 = i * 3
+      const base = i * 16 // 16 x 4-byte values per particle
+      f32[base + 0] = positions[i3]      // pos_x
+      f32[base + 1] = positions[i3 + 1]  // pos_y
+      f32[base + 2] = positions[i3 + 2]  // pos_z
+      u32[base + 3] = compIds[i]         // composition_id (u32)
+      f32[base + 4] = velocities[i3]     // vel_x
+      f32[base + 5] = velocities[i3 + 1] // vel_y
+      f32[base + 6] = velocities[i3 + 2] // vel_z
+      f32[base + 7] = 0                  // temperature
+      f32[base + 8] = 0; f32[base + 9] = 0   // C0
+      f32[base + 10] = 0; f32[base + 11] = 0 // C1
+      u32[base + 12] = 0                 // phase
+      u32[base + 13] = 0; u32[base + 14] = 0; u32[base + 15] = 0 // padding
     }
-    this.device.queue.writeBuffer(this.particleBuffer, 0, data, 0, count * 8)
+    this.device.queue.writeBuffer(this.particleBuffer, 0, buf, 0, count * 64)
+  }
+
+  /**
+   * Upload composition render properties table (up to 256 entries, 48 bytes each).
+   * data: Float32Array with 12 floats per entry (color_rgb, density, F0, metalness,
+   *       emissive, IOR, specular_power, opacity_density, pad0, pad1).
+   */
+  updateCompositionRenderProps(data: Float32Array) {
+    if (!this.initialized) return
+    this.device.queue.writeBuffer(this.compRenderPropsBuf, 0, data)
   }
 
   /**
@@ -381,17 +444,19 @@ export class FluidRenderer {
     }
 
     const d = this.device
+    const activeParticleBuf = this.externalParticleBuffer ?? this.particleBuffer
     const depthView = this.depthMapTex.createView()
     const tmpDepthView = this.tmpDepthMapTex.createView()
     const thickView = this.thicknessTex.createView()
     const tmpThickView = this.tmpThicknessTex.createView()
     const depthTestView = this.depthTestTex.createView()
+    const compIdView = this.compIdTexture.createView()
 
     // Create bind groups fresh each frame (views may change)
     const depthBG = d.createBindGroup({
       layout: this.depthBGL,
       entries: [
-        { binding: 0, resource: { buffer: this.particleBuffer } },
+        { binding: 0, resource: { buffer: activeParticleBuf } },
         { binding: 1, resource: { buffer: this.uniformBuffer } },
       ],
     })
@@ -431,12 +496,18 @@ export class FluidRenderer {
 
     const encoder = d.createCommandEncoder()
 
-    // ── Pass 1: Depth sprites ─────────────────────────────────────
+    // ── Pass 1: Depth sprites + composition ID ────────────────────
     const p1 = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: depthView, clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
-        loadOp: 'clear', storeOp: 'store',
-      }],
+      colorAttachments: [
+        {
+          view: depthView, clearValue: { r: 1e6, g: 0, b: 0, a: 1 },
+          loadOp: 'clear', storeOp: 'store',
+        },
+        {
+          view: compIdView, clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear', storeOp: 'store',
+        },
+      ],
       depthStencilAttachment: {
         view: depthTestView, depthClearValue: 1.0,
         depthLoadOp: 'clear', depthStoreOp: 'store',
@@ -529,6 +600,8 @@ export class FluidRenderer {
         { binding: 2, resource: thickView },
         { binding: 3, resource: sceneView },
         { binding: 4, resource: { buffer: this.compositeUniformBuf } },
+        { binding: 5, resource: compIdView },
+        { binding: 6, resource: { buffer: this.compRenderPropsBuf } },
       ],
     })
 
@@ -562,10 +635,12 @@ export class FluidRenderer {
     this.tmpThicknessTex?.destroy()
     this.depthTestTex?.destroy()
     this.sceneTexture?.destroy()
+    this.compIdTexture?.destroy()
     this.particleBuffer?.destroy()
     this.uniformBuffer?.destroy()
     this.filterXBuf?.destroy()
     this.filterYBuf?.destroy()
     this.compositeUniformBuf?.destroy()
+    this.compRenderPropsBuf?.destroy()
   }
 }
