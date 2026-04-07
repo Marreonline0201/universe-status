@@ -62,7 +62,7 @@ export class FluidScene {
     geo.setDrawRange(0, 0)
 
     const mat = new THREE.PointsMaterial({
-      size: 0.055,
+      size: 0.07,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
@@ -94,7 +94,11 @@ export class FluidScene {
       const fluidColor = fluidPass.getTextureNode()
       const fluidDepth = fluidPass.getLinearDepthNode()
       const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
-      const smoothFluid = bilateralBlur(fluidColor, fluidDepth, 8, 0.05)
+      // sigma=12: wide enough to merge particles across the surface
+      // sigmaColor=0.15: permissive enough to merge particles at different depths
+      //   on the surface (they vary in depth), but still stops at the
+      //   fluid-vs-empty boundary (infinite depth jump)
+      const smoothFluid = bilateralBlur(fluidColor, fluidDepth, 12, 0.15)
 
       // Composite: Beer's law absorption
       const output = Fn(() => {
