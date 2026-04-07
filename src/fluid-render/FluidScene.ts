@@ -84,22 +84,21 @@ export class FluidScene {
     // Add particles to the fluid-only scene (for isolated blur)
     this.fluidOnlyScene.add(this.points)
 
-    // Also add to main scene for depth ordering with ball/box
-    // We need a second Points instance sharing the same geometry
-    const mainMat = new THREE.PointsMaterial({
-      size: 0.055,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: true,
-      depthTest: true,
-      blending: THREE.NormalBlending,
+    // ── Depth clip box ──────────────────────────────────────────────────
+    // Invisible box that writes depth but no color. Its walls block point
+    // sprite fragments from rendering past the [0,1]^3 boundary.
+    // From any external camera angle, the box walls are CLOSER to the camera
+    // than particles inside → sprites extending past walls fail depth test.
+    const clipBoxGeo = new THREE.BoxGeometry(1, 1, 1)
+    const clipBoxMat = new THREE.MeshBasicMaterial({
+      colorWrite: false,   // invisible — writes no color
+      depthWrite: true,    // but DOES write depth
+      side: THREE.FrontSide,
     })
-    const mainPoints = new THREE.Points(geo, mainMat)
-    mainPoints.frustumCulled = false
-    mainPoints.visible = false // hidden — only used for depth buffer contribution
-    this.mainScene.add(mainPoints)
+    const clipBox = new THREE.Mesh(clipBoxGeo, clipBoxMat)
+    clipBox.position.set(0.5, 0.5, 0.5)
+    clipBox.renderOrder = -1 // render BEFORE particles so depth is ready
+    this.fluidOnlyScene.add(clipBox)
   }
 
   /**
