@@ -44,7 +44,7 @@ export class CompositionTable {
     this.gpuData[id * 4 + 0] = baseDensity * Math.max(densityRatio, 0.1)
     this.gpuData[id * 4 + 1] = props.viscosity
     this.gpuData[id * 4 + 2] = props.surfaceTension
-    this.gpuData[id * 4 + 3] = 50.0  // stiffness — higher = more incompressible
+    this.gpuData[id * 4 + 3] = 10.0  // stiffness — balance between collapse (3) and explosion (50)
 
     return id
   }
