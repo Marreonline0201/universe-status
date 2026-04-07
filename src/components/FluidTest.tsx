@@ -469,6 +469,9 @@ export function FluidTest() {
       const fluidScene = new FluidScene(scene)
       fluidScene.init(device)
 
+      // Initialize SSFR post-processing (bilateral blur to smooth particles)
+      await fluidScene.initPostProcessing(renderer, camera)
+
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
@@ -604,8 +607,12 @@ export function FluidTest() {
         // Update orbit controls
         sim.controls.update()
 
-        // Render: Three.js scene (ball, box, fluid particles — shared depth buffer)
-        sim.renderer.render(sim.scene, sim.camera)
+        // Render: scene + SSFR post-processing (bilateral blur smooths particles)
+        if (sim.fluidScene.renderPipeline) {
+          sim.fluidScene.renderPipeline.render()
+        } else {
+          sim.renderer.render(sim.scene, sim.camera)
+        }
       }
 
       animate()

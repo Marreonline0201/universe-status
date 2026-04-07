@@ -1,17 +1,21 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// FluidScene — Renders MLS-MPM particles in the Three.js scene
+// FluidScene — Renders MLS-MPM particles in the Three.js scene with SSFR
 //
 // Particles share the scene's depth buffer with all other objects (ball, box,
 // terrain, organisms). Depth ordering is automatic — no overlay canvas needed.
 //
-// Current approach: THREE.Points with BufferGeometry — each particle is a point
-// sprite with size attenuation. This is a stepping stone; the full SSFR pipeline
-// (sphere depth + bilateral blur + composite) will be added in later tasks.
+// Rendering approach:
+//   1. Particles as THREE.Points in the scene (shared depth buffer)
+//   2. Scene rendered via pass() into a render target
+//   3. Bilateral blur smooths particle boundaries into a continuous surface
+//   4. Final output via RenderPipeline
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 // ══════════════════════════════════════════════════════════════════════════════
 
 import * as THREE from 'three'
+// @ts-ignore — TSL types not in @types/three
+import { pass, renderOutput } from 'three/tsl'
 
 const MAX_PARTICLES = 40_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
@@ -25,6 +29,10 @@ export class FluidScene {
   private readbackBuffer: GPUBuffer | null = null
   private readbackPending = false
   private currentCount = 0
+
+  // SSFR post-processing
+  renderPipeline: any = null // THREE.RenderPipeline
+  private pipelineInitialized = false
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -73,6 +81,34 @@ export class FluidScene {
     this.points = new THREE.Points(geo, mat)
     this.points.frustumCulled = false
     this.scene.add(this.points)
+  }
+
+  /**
+   * Initialize the SSFR post-processing pipeline.
+   * Must be called after renderer.init() and scene setup.
+   */
+  async initPostProcessing(renderer: any, camera: THREE.PerspectiveCamera) {
+    if (this.pipelineInitialized) return
+
+    try {
+      // Render the full scene (particles + ball + box) to a render target
+      const scenePass = pass(this.scene, camera)
+      const sceneColor = scenePass.getTextureNode()
+      const sceneDepth = scenePass.getLinearDepthNode()
+
+      // Bilateral blur: smooths particle boundaries while preserving depth edges
+      // sigma=4 spatial, sigmaColor=0.1 for edge preservation
+      const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
+      const blurred = bilateralBlur(sceneColor, sceneDepth, 4, 0.1)
+
+      // Create the render pipeline with blurred output
+      this.renderPipeline = new (THREE as any).RenderPipeline(renderer, blurred)
+      this.pipelineInitialized = true
+      console.log('SSFR post-processing pipeline initialized')
+    } catch (e) {
+      console.warn('SSFR pipeline init failed, falling back to direct render:', e)
+      this.renderPipeline = null
+    }
   }
 
   /**
@@ -141,6 +177,8 @@ export class FluidScene {
       ;(this.points.material as THREE.Material).dispose()
       this.points = null
     }
+    this.renderPipeline?.dispose()
+    this.renderPipeline = null
     this.readbackBuffer?.destroy()
     this.readbackBuffer = null
     this.positionAttr = null
