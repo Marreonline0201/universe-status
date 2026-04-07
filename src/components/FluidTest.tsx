@@ -17,7 +17,7 @@ import { AIChatPanel } from './AIChatPanel'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_PARTICLES = 40_000
+const MAX_PARTICLES = 300_000
 
 // Everything uses the MLS-MPM [0,1]^3 coordinate system directly.
 // No coordinate mapping needed — Three.js scene, glass box, and particle

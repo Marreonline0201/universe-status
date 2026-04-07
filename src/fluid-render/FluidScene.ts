@@ -17,7 +17,7 @@ import * as THREE from 'three'
 // @ts-ignore — TSL types not in @types/three
 import { pass, renderOutput } from 'three/tsl'
 
-const MAX_PARTICLES = 40_000
+const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
 
 export class FluidScene {
