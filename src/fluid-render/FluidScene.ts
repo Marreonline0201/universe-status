@@ -1,19 +1,23 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// FluidScene — Renders MLS-MPM particles as a smooth fluid surface
+// FluidScene — SSFR Depth Pipeline for smooth fluid surface rendering
 //
-// Two-pass rendering:
+// Proper Screen-Space Fluid Rendering:
 //   Pass 1: Main scene (ball, box, grids) → sharp sceneColor
-//   Pass 2: Fluid particles only → bilateral blur → smooth surface
-//   Bilateral blur merges particles (similar depth) but STOPS at fluid edge
-//   (fluid vs empty = depth discontinuity → no bleeding past boundaries)
-//   Composite: Beer's law absorption (physically correct water color)
+//   Pass 2: Fluid particles → fluidColor + fluidDepth
+//   Bilateral blur on fluid color (merges particles, stops at fluid edge)
+//   Normal reconstruction from fluid depth (Three.js getNormalFromDepth)
+//   Composite: Beer's law + Fresnel + specular using reconstructed normals
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 // ══════════════════════════════════════════════════════════════════════════════
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types
-import { pass, Fn, vec4, vec3, float, mix, exp, clamp, pow, smoothstep } from 'three/tsl'
+import {
+  pass, Fn, vec3, vec4, float, mix, exp, clamp, pow, smoothstep,
+  normalize, dot, max, sub, add, mul, reflect, screenUV,
+  cameraProjectionMatrixInverse, getNormalFromDepth,
+} from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
@@ -62,11 +66,11 @@ export class FluidScene {
     geo.setDrawRange(0, 0)
 
     const mat = new THREE.PointsMaterial({
-      size: 0.07,
+      size: 0.08,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.6,
       depthWrite: true,
       depthTest: true,
       blending: THREE.NormalBlending,
@@ -85,59 +89,80 @@ export class FluidScene {
       const scenePass = pass(this.mainScene, camera)
       const sceneColor = scenePass.getTextureNode()
 
-      // Pass 2: Fluid particles → bilateral blur (edge-aware)
-      // Bilateral blur on the ISOLATED fluid pass:
-      //   - Merges particles into each other (similar depth → blurs freely)
-      //   - STOPS at fluid surface edge (fluid vs empty = depth discontinuity)
-      //   - No bleeding past boundaries — the blur respects the edge
+      // Pass 2: Fluid particles → color + depth
       const fluidPass = pass(this.fluidOnlyScene, camera)
       const fluidColor = fluidPass.getTextureNode()
       const fluidDepth = fluidPass.getLinearDepthNode()
+      const fluidDepthTexture = fluidPass.getDepthNode().renderTarget.depthTexture
+
+      // Bilateral blur: merges particles, stops at fluid edge
       const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
-      // sigma=12: wide enough to merge particles across the surface
-      // sigmaColor=0.15: permissive enough to merge particles at different depths
-      //   on the surface (they vary in depth), but still stops at the
-      //   fluid-vs-empty boundary (infinite depth jump)
       const smoothFluid = bilateralBlur(fluidColor, fluidDepth, 12, 0.15)
 
-      // Composite: Beer's law absorption
+      // Normal reconstruction from fluid depth using Three.js built-in
+      // Uses finite differences on the depth buffer (same technique as §3.2 spec)
+      const fluidNormal = getNormalFromDepth(screenUV, fluidDepthTexture, cameraProjectionMatrixInverse)
+
+      // ── SSFR Composite ──
       const output = Fn(() => {
         const scene = sceneColor
         const fluid = smoothFluid
 
-        // Bilateral blur already respects the fluid boundary — no mask needed
-        const alpha = smoothstep(float(0.02), float(0.2), fluid.a)
+        // Fluid presence
+        const alpha = smoothstep(float(0.02), float(0.25), fluid.a)
 
-        // Beer's law: thickness from alpha
+        // Reconstruct surface normal from depth
+        const normal = fluidNormal
+
+        // View direction (camera looks along -Z in view space)
+        const viewDir = vec3(0.0, 0.0, -1.0)
+
+        // ── Beer's law absorption ──
         const thickness = alpha.mul(5.0)
-
-        // Absorption: red absorbed most, blue passes through
         const absorption = vec3(1.8, 0.12, 0.03)
         const transmittance = exp(absorption.negate().mul(thickness))
-
-        // Background seen through water
         const transmitted = scene.rgb.mul(transmittance)
 
-        // Volume scattering (subtle blue glow in deep water)
-        const scatterColor = vec3(0.05, 0.15, 0.25)
-        const scatter = scatterColor.mul(float(1.0).sub(exp(thickness.negate().mul(1.5))))
+        // ── Volume scattering ──
+        const scatterCol = vec3(0.04, 0.12, 0.22)
+        const scatter = scatterCol.mul(sub(float(1.0), exp(thickness.negate().mul(1.5))))
 
-        // Fresnel approximation at surface edges
-        const edgeFactor = float(1.0).sub(alpha).mul(0.8)
-        const fresnelBoost = pow(edgeFactor, float(3.0))
-        const reflection = vec3(0.4, 0.5, 0.6).mul(fresnelBoost)
+        // ── Fresnel: F = F0 + (1-F0)(1 - N·V)^5 ──
+        const F0 = float(0.02)
+        const NdotV = max(dot(normal, viewDir.negate()), float(0.0))
+        const fresnel = clamp(
+          add(F0, mul(sub(float(1.0), F0), pow(sub(float(1.0), NdotV), float(5.0)))),
+          float(0.0), float(1.0)
+        )
 
-        const waterColor = transmitted.add(scatter).add(reflection)
+        // ── Environment reflection ──
+        const reflDir = reflect(viewDir, normal)
+        const skyUp = max(reflDir.y, float(0.0))
+        const envColor = mix(vec3(0.1, 0.15, 0.25), vec3(0.4, 0.5, 0.7), skyUp)
 
-        // Opacity from thickness
-        const opacity = clamp(float(1.0).sub(exp(thickness.negate().mul(2.0))), float(0.0), float(1.0))
+        // ── Specular (Blinn-Phong) ──
+        const lightDir = normalize(vec3(3.0, 5.0, 3.0))
+        const halfDir = normalize(add(lightDir, viewDir.negate()))
+        const specAngle = max(dot(normal, halfDir), float(0.0))
+        const specular = pow(specAngle, float(150.0)).mul(1.5)
+
+        // ── Diffuse ──
+        const NdotL = max(dot(normal, lightDir), float(0.0))
+        const diffuse = float(0.3).add(NdotL.mul(0.5))
+
+        // ── Combine ──
+        const waterBody = add(transmitted, scatter).mul(diffuse)
+        const reflectionContrib = envColor.mul(fresnel)
+        const waterColor = add(waterBody, reflectionContrib).add(vec3(specular, specular, specular))
+
+        const opacity = clamp(sub(float(1.0), exp(thickness.negate().mul(2.0))), float(0.0), float(1.0))
 
         return mix(scene, vec4(waterColor, float(1.0)), opacity)
       })()
 
       this.renderPipeline = new (THREE as any).RenderPipeline(renderer, output)
       this.pipelineInitialized = true
-      console.log('SSFR pipeline: bilateral blur on isolated fluid pass (no boundary bleed)')
+      console.log('SSFR pipeline: depth normals + Beer\'s law + Fresnel + specular')
     } catch (e) {
       console.warn('SSFR pipeline init failed, falling back to direct render:', e)
       this.renderPipeline = null
