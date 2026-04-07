@@ -11,6 +11,9 @@ import { FluidRenderer } from '../fluid-render/FluidRenderer'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { ContactProcessor } from '../composition/ContactProcessor'
+import { MaterialGenerator } from '../ai/MaterialGenerator'
+import { AutoExperimenter } from '../ai/AutoExperimenter'
+import { AIChatPanel } from './AIChatPanel'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -80,6 +83,13 @@ export function FluidTest() {
   const [fpsWarning, setFpsWarning] = useState(false)
   const [gpuReady, setGpuReady] = useState(false)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
+
+  // AI state
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('anthropic-api-key') || '')
+  const [autoExperimentActive, setAutoExperimentActive] = useState(false)
+  const materialGenRef = useRef<MaterialGenerator | null>(null)
+  const autoExpRef = useRef<AutoExperimenter | null>(null)
+  const chatAddMessageRef = useRef<((role: 'user' | 'ai' | 'system', text: string) => void) | null>(null)
 
   // Refs for simulation state
   const simRef = useRef<{
@@ -202,6 +212,80 @@ export function FluidTest() {
   useEffect(() => {
     if (simRef.current) simRef.current.temperature = temperatureVal
   }, [temperatureVal])
+
+  // ── AI: Update MaterialGenerator when API key changes ─────────────────────
+  useEffect(() => {
+    if (apiKey) {
+      localStorage.setItem('anthropic-api-key', apiKey)
+      materialGenRef.current = new MaterialGenerator(apiKey)
+    } else {
+      materialGenRef.current = null
+    }
+  }, [apiKey])
+
+  // ── AI: Spawn material via Claude API ─────────────────────────────────────
+  const handleSpawnMaterial = useCallback(async (description: string): Promise<string> => {
+    if (!materialGenRef.current) return 'No API key set'
+    if (!simRef.current) return 'Simulation not ready'
+
+    const result = await materialGenRef.current.generate(description)
+    if (!result) return 'Could not generate material. Try a different description.'
+
+    const { compositionTable, gpuSim, fluidRenderer } = simRef.current
+
+    // Add to composition table
+    const compId = compositionTable.add(result.name, result.formula, result.elements, result.temperature)
+
+    // Update GPU composition data
+    gpuSim.updateCompositionProps(compositionTable.getGpuData())
+    fluidRenderer.updateCompositionRenderProps(buildCompositionRenderProps(compositionTable))
+
+    // Spawn 3000 particles of the new material
+    const particles: GpuParticle[] = []
+    for (let i = 0; i < 3000; i++) {
+      particles.push({
+        pos: [0.3 + Math.random() * 0.4, 0.6 + Math.random() * 0.3, 0.3 + Math.random() * 0.4],
+        vel: [0, 0, 0],
+        composition_id: compId,
+        temperature: result.temperature,
+        phase: result.state === 'solid' ? 0 : result.state === 'liquid' ? 1 : 2,
+      })
+    }
+    gpuSim.addParticles(particles)
+    setParticleCount(gpuSim.particleCount)
+    setCompositions(compositionTable.getAll())
+    setSelectedComposition(compId)
+
+    return `Spawned 3000 ${result.name} (${result.formula}) at ${result.temperature} C [${result.state}]`
+  }, [])
+
+  // ── AI: Toggle auto-experiment ────────────────────────────────────────────
+  const handleToggleAutoExperiment = useCallback(() => {
+    if (autoExpRef.current?.isRunning) {
+      autoExpRef.current.stop()
+      setAutoExperimentActive(false)
+    } else {
+      if (!materialGenRef.current) return
+      const exp = new AutoExperimenter(
+        handleSpawnMaterial,
+        (msg) => {
+          chatAddMessageRef.current?.('system', msg)
+        },
+      )
+      autoExpRef.current = exp
+      exp.start()
+      setAutoExperimentActive(true)
+    }
+  }, [handleSpawnMaterial])
+
+  // Cleanup auto-experimenter on unmount
+  useEffect(() => {
+    return () => {
+      if (autoExpRef.current?.isRunning) {
+        autoExpRef.current.stop()
+      }
+    }
+  }, [])
 
   // ── Main setup and render loop ─────────────────────────────────────────────
   useEffect(() => {
@@ -691,17 +775,23 @@ export function FluidTest() {
           )}
         </div>
 
-        {/* Control Panel */}
+        {/* Right Panel: Controls + AI Chat */}
         <div style={{
-          width: 240,
+          width: 260,
           flexShrink: 0,
           borderLeft: '1px solid rgba(0,180,255,0.1)',
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'rgba(4,8,18,0.6)',
+        }}>
+        {/* Control Panel (60%) */}
+        <div style={{
+          flex: '0 0 60%',
           padding: 14,
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
           overflowY: 'auto',
-          background: 'rgba(4,8,18,0.6)',
         }}>
           {/* Active Compositions List */}
           <div>
@@ -918,6 +1008,69 @@ export function FluidTest() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* AI Chat Panel (40%) */}
+        <div style={{ flex: '0 0 40%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {/* API Key input (only shows if no key stored) */}
+          {!apiKey && (
+            <div style={{
+              padding: '8px 10px',
+              borderTop: '1px solid rgba(0,180,255,0.1)',
+              display: 'flex',
+              gap: 4,
+            }}>
+              <input
+                type="password"
+                placeholder="Anthropic API key..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setApiKey((e.target as HTMLInputElement).value)
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  background: 'rgba(0,180,255,0.04)',
+                  border: '1px solid rgba(0,180,255,0.15)',
+                  borderRadius: 3,
+                  padding: '4px 8px',
+                  color: '#c0d0e0',
+                  fontSize: 9,
+                  fontFamily: 'inherit',
+                  outline: 'none',
+                }}
+              />
+              <button
+                onClick={(e) => {
+                  const input = (e.target as HTMLElement).previousElementSibling as HTMLInputElement
+                  if (input?.value) setApiKey(input.value)
+                }}
+                style={{
+                  background: 'rgba(0,255,136,0.08)',
+                  border: '1px solid rgba(0,255,136,0.2)',
+                  borderRadius: 3,
+                  padding: '4px 8px',
+                  color: 'rgba(0,255,136,0.6)',
+                  fontSize: 8,
+                  fontFamily: 'inherit',
+                  letterSpacing: 1,
+                  cursor: 'pointer',
+                }}
+              >
+                SET
+              </button>
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <AIChatPanel
+              onSpawnMaterial={handleSpawnMaterial}
+              onSetTemperature={(temp) => setTemperatureVal(temp)}
+              autoExperimentActive={autoExperimentActive}
+              onToggleAutoExperiment={handleToggleAutoExperiment}
+              disabled={!apiKey}
+            />
+          </div>
+        </div>
         </div>
       </div>
     </div>
