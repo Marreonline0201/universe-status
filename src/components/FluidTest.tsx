@@ -36,11 +36,17 @@ const HALF_D = BOX_D / 2
 // MLS-MPM (0, 0, 0) maps to Three.js (-1.0, -0.75, -0.75)
 // MLS-MPM (1, 1, 1) maps to Three.js (1.0, 0.75, 0.75)
 
+// Inverse of the depth shader's domain mapping:
+// world → normalized [0,1] within particle domain → MLS-MPM grid coords
+const DOMAIN_MIN = 1.0 / 64.0   // G2P hard clamp lower bound
+const DOMAIN_MAX = 62.0 / 64.0  // G2P hard clamp upper bound
+const DOMAIN_SIZE = DOMAIN_MAX - DOMAIN_MIN
+
 function worldToMpm(x: number, y: number, z: number): [number, number, number] {
   return [
-    x / BOX_W + 0.5,
-    y / BOX_H + 0.5,
-    z / BOX_D + 0.5,
+    (x / BOX_W + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
+    (y / BOX_H + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
+    (z / BOX_D + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
   ]
 }
 

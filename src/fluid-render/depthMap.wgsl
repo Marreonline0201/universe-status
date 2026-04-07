@@ -74,12 +74,18 @@ fn vs(
     let uv = corner_positions[vertex_index] + 0.5;
 
     let p = particles[instance_index];
-    // Map MLS-MPM [0,1] coords to Three.js world space: (mpm - 0.5) * box_size
+    // Map MLS-MPM particle domain to Three.js glass box.
+    // Particles are clamped to [DOMAIN_MIN, DOMAIN_MAX] in grid coords by G2P.
+    // Map this range to fill the glass box exactly: [-box_half, +box_half].
     let mpm_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
+    const DOMAIN_MIN: f32 = 1.0 / 64.0;   // G2P hard clamp lower bound
+    const DOMAIN_MAX: f32 = 62.0 / 64.0;  // G2P hard clamp upper bound
+    const DOMAIN_SIZE: f32 = DOMAIN_MAX - DOMAIN_MIN;
+    let normalized = (mpm_pos - DOMAIN_MIN) / DOMAIN_SIZE;  // [0, 1] within particle domain
     let world_pos = vec3f(
-        (mpm_pos.x - 0.5) * box_half_w * 2.0,
-        (mpm_pos.y - 0.5) * box_half_h * 2.0,
-        (mpm_pos.z - 0.5) * box_half_d * 2.0,
+        (normalized.x - 0.5) * box_half_w * 2.0,
+        (normalized.y - 0.5) * box_half_h * 2.0,
+        (normalized.z - 0.5) * box_half_d * 2.0,
     );
     let view_position = (uniforms.view_matrix * vec4f(world_pos, 1.0)).xyz;
 
