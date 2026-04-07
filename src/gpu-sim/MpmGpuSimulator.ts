@@ -244,6 +244,11 @@ export class MpmGpuSimulator {
 
   /** Add more particles without clearing existing ones */
   addParticles(particles: GpuParticle[]) {
+    if (this.numParticles + particles.length > MAX_PARTICLES) {
+      console.warn(`Particle overflow: ${this.numParticles} + ${particles.length} > ${MAX_PARTICLES}, clamping`)
+      particles = particles.slice(0, MAX_PARTICLES - this.numParticles)
+      if (particles.length === 0) return
+    }
     const data = new Float32Array(particles.length * FLOATS_PER_PARTICLE)
     for (let i = 0; i < particles.length; i++) {
       const offset = i * FLOATS_PER_PARTICLE
@@ -335,22 +340,26 @@ export class MpmGpuSimulator {
 
   /** Read contact pairs back to CPU (async). Call after command buffer submission. */
   async readContacts(): Promise<{ a: number; b: number }[]> {
-    await this.counterReadBuf.mapAsync(GPUMapMode.READ)
-    const countData = new Uint32Array(this.counterReadBuf.getMappedRange())
-    const count = Math.min(countData[0], MAX_CONTACTS)
-    this.counterReadBuf.unmap()
+    try {
+      await this.counterReadBuf.mapAsync(GPUMapMode.READ)
+      const countData = new Uint32Array(this.counterReadBuf.getMappedRange())
+      const count = Math.min(countData[0], MAX_CONTACTS)
+      this.counterReadBuf.unmap()
 
-    if (count === 0) return []
+      if (count === 0) return []
 
-    await this.contactReadBuf.mapAsync(GPUMapMode.READ)
-    const contactData = new Uint32Array(this.contactReadBuf.getMappedRange())
-    const contacts: { a: number; b: number }[] = []
-    for (let i = 0; i < count; i++) {
-      contacts.push({ a: contactData[i * 2], b: contactData[i * 2 + 1] })
+      await this.contactReadBuf.mapAsync(GPUMapMode.READ)
+      const contactData = new Uint32Array(this.contactReadBuf.getMappedRange())
+      const contacts: { a: number; b: number }[] = []
+      for (let i = 0; i < count; i++) {
+        contacts.push({ a: contactData[i * 2], b: contactData[i * 2 + 1] })
+      }
+      this.contactReadBuf.unmap()
+
+      return contacts
+    } catch {
+      return []
     }
-    this.contactReadBuf.unmap()
-
-    return contacts
   }
 
   /** Get the particle buffer for the SSFR renderer to bind */
