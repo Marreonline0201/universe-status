@@ -36,11 +36,15 @@ export class CompositionTable {
 
     this.compositions.push({ id, name, formula, composition, props, temperature })
 
-    // Update GPU data — density is critical for MLS-MPM mass calculation
-    this.gpuData[id * 4 + 0] = props.density
+    // GPU data uses MLS-MPM grid-scale values, NOT real-world units.
+    // rest_density=4.0 is the standard MLS-MPM value for fluid (from WebGPU-Ocean).
+    // Density RATIO between materials is preserved for relative behavior.
+    const baseDensity = 4.0  // grid-scale rest density
+    const densityRatio = props.density / 1000  // normalize to water=1.0
+    this.gpuData[id * 4 + 0] = baseDensity * Math.max(densityRatio, 0.1)
     this.gpuData[id * 4 + 1] = props.viscosity
     this.gpuData[id * 4 + 2] = props.surfaceTension
-    this.gpuData[id * 4 + 3] = 3.0  // stiffness (MLS-MPM parameter)
+    this.gpuData[id * 4 + 3] = 50.0  // stiffness — higher = more incompressible
 
     return id
   }
