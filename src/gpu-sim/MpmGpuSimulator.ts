@@ -351,12 +351,12 @@ export class MpmGpuSimulator {
       p2gPass.dispatchWorkgroups(particleGroups)
       p2gPass.end()
 
-      // 3. P2G pass 2 — TEMPORARILY DISABLED to test if gravity works alone
-      // const p2g2Pass = encoder.beginComputePass()
-      // p2g2Pass.setPipeline(this.p2g2Pipeline)
-      // p2g2Pass.setBindGroup(0, this.p2g2BG)
-      // p2g2Pass.dispatchWorkgroups(particleGroups)
-      // p2g2Pass.end()
+      // 3. P2G pass 2 — scatter constitutive stress (pressure + viscosity)
+      const p2g2Pass = encoder.beginComputePass()
+      p2g2Pass.setPipeline(this.p2g2Pipeline)
+      p2g2Pass.setBindGroup(0, this.p2g2BG)
+      p2g2Pass.dispatchWorkgroups(particleGroups)
+      p2g2Pass.end()
 
       // 4. Grid update — momentum→velocity, gravity, boundary conditions
       const forcesPass = encoder.beginComputePass()
