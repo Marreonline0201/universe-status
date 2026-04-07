@@ -1,6 +1,6 @@
 // CompositionTable.ts — Manages named compositions and their GPU-side property data
 
-import { Composition, DerivedProps, computeProperties, type ElementName } from './PropertyCalculator'
+import { computeProperties, type Composition, type DerivedProps, type ElementName } from './PropertyCalculator'
 
 export interface NamedComposition {
   id: number
