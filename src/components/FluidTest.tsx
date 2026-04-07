@@ -128,7 +128,7 @@ export function FluidTest() {
     const waterId = 0
     for (let i = 0; i < 10000; i++) {
       particles.push({
-        pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+        pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
         vel: [0, 0, 0],
         composition_id: waterId,
         temperature: 20,
@@ -188,7 +188,7 @@ export function FluidTest() {
     const particles: GpuParticle[] = []
     for (let i = 0; i < count; i++) {
       particles.push({
-        pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+        pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
         vel: [0, 0, 0],
         composition_id: compId,
         temperature: temperature,
@@ -358,7 +358,7 @@ export function FluidTest() {
       const initParticles: GpuParticle[] = []
       for (let i = 0; i < 10000; i++) {
         initParticles.push({
-          pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+          pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
           vel: [0, 0, 0],
           composition_id: 0,
           temperature: 20,

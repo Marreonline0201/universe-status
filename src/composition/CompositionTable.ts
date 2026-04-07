@@ -44,7 +44,7 @@ export class CompositionTable {
     this.gpuData[id * 4 + 0] = baseDensity * Math.max(densityRatio, 0.1)
     this.gpuData[id * 4 + 1] = props.viscosity
     this.gpuData[id * 4 + 2] = props.surfaceTension
-    this.gpuData[id * 4 + 3] = 10.0  // stiffness — balance between collapse (3) and explosion (50)
+    this.gpuData[id * 4 + 3] = 4.0   // stiffness — matches WebGPU-Ocean reference value
 
     return id
   }
