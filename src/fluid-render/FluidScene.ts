@@ -12,7 +12,7 @@
 
 import * as THREE from 'three'
 // @ts-ignore — TSL types
-import { pass, Fn, vec4, vec3, float, mix, exp, clamp, max, pow, dot, normalize } from 'three/tsl'
+import { pass, Fn, vec4, vec3, float, mix, exp, clamp, max, pow, dot, normalize, smoothstep } from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20 // 80 bytes / 4 bytes per float
@@ -68,7 +68,7 @@ export class FluidScene {
     geo.setDrawRange(0, 0)
 
     const mat = new THREE.PointsMaterial({
-      size: 0.045,
+      size: 0.055,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
@@ -87,7 +87,7 @@ export class FluidScene {
     // Also add to main scene for depth ordering with ball/box
     // We need a second Points instance sharing the same geometry
     const mainMat = new THREE.PointsMaterial({
-      size: 0.045,
+      size: 0.055,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
@@ -121,9 +121,9 @@ export class FluidScene {
       const fluidPass = pass(this.fluidOnlyScene, camera)
       const fluidColor = fluidPass.getTextureNode()
 
-      // Gaussian blur on fluid only — sigma=8 merges particles into surface
+      // Gaussian blur on fluid only — sigma=4 merges particles while limiting edge bleed
       const { gaussianBlur } = await import('three/examples/jsm/tsl/display/GaussianBlurNode.js')
-      const smoothFluid = gaussianBlur(fluidColor, null, 8)
+      const smoothFluid = gaussianBlur(fluidColor, null, 4)
 
       // Composite: Beer's law absorption + Fresnel reflection
       // Water is transparent. Its color comes from PHYSICS:
@@ -135,8 +135,12 @@ export class FluidScene {
         const scene = sceneColor
         const fluid = smoothFluid
 
+        // Cut blur tails: faint alpha outside the box (0.0-0.1) gets suppressed.
+        // This prevents fluid bleeding past the glass walls.
+        const rawAlpha = smoothstep(float(0.08), float(0.3), fluid.a)
+
         // Fluid alpha = proxy for optical thickness (0 = no water, 1 = thick water)
-        const thickness = fluid.a.mul(5.0) // scale for visual range
+        const thickness = rawAlpha.mul(5.0) // scale for visual range
 
         // Beer's law: transmittance = exp(-absorption * thickness)
         // Water absorbs red >> green >> blue (real coefficients scaled for visual effect)
@@ -151,8 +155,7 @@ export class FluidScene {
         const scatter = scatterColor.mul(float(1.0).sub(exp(thickness.negate().mul(1.5))))
 
         // Fresnel-like surface reflection (brighter at edges where alpha transitions)
-        // Approximate: edges of the fluid mass have lower alpha → more reflective
-        const edgeFactor = float(1.0).sub(fluid.a).mul(0.8)
+        const edgeFactor = float(1.0).sub(rawAlpha).mul(0.8)
         const fresnelBoost = pow(edgeFactor, float(3.0))
         const reflectionColor = vec3(0.4, 0.5, 0.6) // dim environment reflection
         const reflection = reflectionColor.mul(fresnelBoost)
