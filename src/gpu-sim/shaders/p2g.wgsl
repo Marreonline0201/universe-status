@@ -22,16 +22,16 @@ struct SimParams {
     _pad:           u32,
 };
 
-// ── Particle layout (64 bytes, 16 floats) ────────────────────────────────────
+// ── Particle layout (64 bytes, scalar fields to avoid vec3 alignment gaps) ───
 struct Particle {
-    pos:             vec3<f32>,  // bytes  0-11
-    composition_id:  u32,       // bytes 12-15
-    vel:             vec3<f32>,  // bytes 16-27
-    temperature:     f32,       // bytes 28-31
-    C0:              vec2<f32>, // affine row 0 (bytes 32-39)
-    C1:              vec2<f32>, // affine row 1 (bytes 40-47)
-    phase:           u32,       // bytes 48-51
-    _pad:            vec3<f32>, // bytes 52-63
+    pos_x: f32, pos_y: f32, pos_z: f32,   // bytes  0-11
+    composition_id:  u32,                   // bytes 12-15
+    vel_x: f32, vel_y: f32, vel_z: f32,   // bytes 16-27
+    temperature:     f32,                   // bytes 28-31
+    C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
+    C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
+    phase:           u32,                   // bytes 48-51
+    _pad0: u32, _pad1: u32, _pad2: u32,   // bytes 52-63
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
@@ -71,8 +71,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Mass per particle = density * cell_volume
     let mass = density * DX * DX * DX;
 
+    // Reconstruct vec3 from scalar fields
+    let pos = vec3<f32>(p.pos_x, p.pos_y, p.pos_z);
+    let vel = vec3<f32>(p.vel_x, p.vel_y, p.vel_z);
+
     // Position in grid-space (continuous)
-    let pos_grid = p.pos * INV_DX;
+    let pos_grid = pos * INV_DX;
 
     // Base cell (integer coords of the lower-left corner of the 3x3x3 stencil)
     let base = vec3<i32>(floor(pos_grid - 0.5));
@@ -105,7 +109,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
                 // APIC momentum transfer: vel + C * (cell_pos - particle_pos) in world space
                 let cell_world = vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z)) * DX;
-                let dx_world = cell_world - p.pos;
+                let dx_world = cell_world - pos;
 
                 // Affine velocity contribution (C is 2x2 for the x-y plane, ignore z for now)
                 let affine_vel = vec3<f32>(
@@ -114,13 +118,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                     0.0
                 );
 
-                let momentum = (p.vel + affine_vel) * wm;
+                let momentum = (vel + affine_vel) * wm;
 
                 // Fixed-point encode
                 let fm  = i32(wm * FIXED_SCALE);
-                let fmx = i32(momentum.x * FIXED_SCALE);
-                let fmy = i32(momentum.y * FIXED_SCALE);
-                let fmz = i32(momentum.z * FIXED_SCALE);
+                let fmx = i32(round(momentum.x * FIXED_SCALE));
+                let fmy = i32(round(momentum.y * FIXED_SCALE));
+                let fmz = i32(round(momentum.z * FIXED_SCALE));
 
                 // Flat index: 4 i32 slots per cell
                 let base_slot = grid_cell_index(u32(cell.x), u32(cell.y), u32(cell.z)) * 4u;

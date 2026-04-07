@@ -13,16 +13,16 @@ struct SimParams {
     _pad:           u32,
 };
 
-// ── Particle layout (64 bytes) — read-only, same as other shaders ────────
+// ── Particle layout (64 bytes, scalar fields to avoid vec3 alignment gaps) ───
 struct Particle {
-    pos:             vec3<f32>,
-    composition_id:  u32,
-    vel:             vec3<f32>,
-    temperature:     f32,
-    C0:              vec2<f32>,
-    C1:              vec2<f32>,
-    phase:           u32,
-    _pad:            vec3<f32>,
+    pos_x: f32, pos_y: f32, pos_z: f32,   // bytes  0-11
+    composition_id:  u32,                   // bytes 12-15
+    vel_x: f32, vel_y: f32, vel_z: f32,   // bytes 16-27
+    temperature:     f32,                   // bytes 28-31
+    C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
+    C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
+    phase:           u32,                   // bytes 48-51
+    _pad0: u32, _pad1: u32, _pad2: u32,   // bytes 52-63
 };
 
 // ── Contact pair output ──────────────────────────────────────────────────────
@@ -49,6 +49,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= params.num_particles) { return; }
 
     let pi = particles[i];
+    let pos_i = vec3<f32>(pi.pos_x, pi.pos_y, pi.pos_z);
 
     // Only check j > i to avoid duplicate pairs
     for (var j: u32 = i + 1u; j < params.num_particles; j++) {
@@ -58,7 +59,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if (pi.composition_id == pj.composition_id) { continue; }
 
         // Distance squared
-        let diff = pi.pos - pj.pos;
+        let pos_j = vec3<f32>(pj.pos_x, pj.pos_y, pj.pos_z);
+        let diff = pos_i - pos_j;
         let dist_sq = dot(diff, diff);
 
         if (dist_sq < CONTACT_RADIUS_SQ) {

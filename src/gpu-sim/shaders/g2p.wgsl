@@ -26,16 +26,16 @@ struct SimParams {
     _pad:           u32,
 };
 
-// ── Particle layout (64 bytes) ───────────────────────────────────────────────
+// ── Particle layout (64 bytes, scalar fields to avoid vec3 alignment gaps) ───
 struct Particle {
-    pos:             vec3<f32>,
-    composition_id:  u32,
-    vel:             vec3<f32>,
-    temperature:     f32,
-    C0:              vec2<f32>,
-    C1:              vec2<f32>,
-    phase:           u32,
-    _pad:            vec3<f32>,
+    pos_x: f32, pos_y: f32, pos_z: f32,   // bytes  0-11
+    composition_id:  u32,                   // bytes 12-15
+    vel_x: f32, vel_y: f32, vel_z: f32,   // bytes 16-27
+    temperature:     f32,                   // bytes 28-31
+    C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
+    C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
+    phase:           u32,                   // bytes 48-51
+    _pad0: u32, _pad1: u32, _pad2: u32,   // bytes 52-63
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
@@ -68,8 +68,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     var p = particles[pid];
 
+    // Reconstruct vec3 from scalar fields
+    let pos = vec3<f32>(p.pos_x, p.pos_y, p.pos_z);
+
     // Position in grid-space
-    let pos_grid = p.pos * INV_DX;
+    let pos_grid = pos * INV_DX;
     let base = vec3<i32>(floor(pos_grid - 0.5));
 
     // Accumulated velocity and affine matrix
@@ -105,8 +108,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 let mz_fixed   = grid[base_slot + 2u];
                 let mass_fixed = grid[base_slot + 3u];
 
-                // Skip empty cells
-                if (mass_fixed == 0) { continue; }
+                // Skip empty or negligible-mass cells
+                if (mass_fixed < 100) { continue; }
 
                 let inv_mass = 1.0 / (f32(mass_fixed) * INV_FIXED);
                 let cell_vel = vec3<f32>(
@@ -119,7 +122,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 new_vel += w * cell_vel;
 
                 // APIC affine matrix update (2D x-y plane)
-                let dx_world = (vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z)) * DX) - p.pos;
+                let dx_world = (vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z)) * DX) - pos;
                 let weight_times_4_inv_dx2 = w * 4.0 * INV_DX * INV_DX;
                 new_C0 += vec2<f32>(cell_vel.x * dx_world.x, cell_vel.x * dx_world.y) * weight_times_4_inv_dx2;
                 new_C1 += vec2<f32>(cell_vel.y * dx_world.x, cell_vel.y * dx_world.y) * weight_times_4_inv_dx2;
@@ -128,24 +131,26 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     // ── Update velocity ──────────────────────────────────────────────────
-    p.vel = new_vel;
+    var vel = new_vel;
     p.C0 = new_C0;
     p.C1 = new_C1;
 
     // ── Advect position ──────────────────────────────────────────────────
-    p.pos += p.vel * params.dt;
+    var new_pos = pos + vel * params.dt;
 
     // ── Clamp to domain with margin ──────────────────────────────────────
     let lo = MARGIN;
     let hi = 1.0 - MARGIN;
 
-    if (p.pos.x < lo) { p.pos.x = lo; p.vel.x = 0.0; }
-    if (p.pos.x > hi) { p.pos.x = hi; p.vel.x = 0.0; }
-    if (p.pos.y < lo) { p.pos.y = lo; p.vel.y = 0.0; }
-    if (p.pos.y > hi) { p.pos.y = hi; p.vel.y = 0.0; }
-    if (p.pos.z < lo) { p.pos.z = lo; p.vel.z = 0.0; }
-    if (p.pos.z > hi) { p.pos.z = hi; p.vel.z = 0.0; }
+    if (new_pos.x < lo) { new_pos.x = lo; vel.x = 0.0; }
+    if (new_pos.x > hi) { new_pos.x = hi; vel.x = 0.0; }
+    if (new_pos.y < lo) { new_pos.y = lo; vel.y = 0.0; }
+    if (new_pos.y > hi) { new_pos.y = hi; vel.y = 0.0; }
+    if (new_pos.z < lo) { new_pos.z = lo; vel.z = 0.0; }
+    if (new_pos.z > hi) { new_pos.z = hi; vel.z = 0.0; }
 
-    // ── Write back ───────────────────────────────────────────────────────
+    // ── Write back scalar fields ─────────────────────────────────────────
+    p.pos_x = new_pos.x; p.pos_y = new_pos.y; p.pos_z = new_pos.z;
+    p.vel_x = vel.x; p.vel_y = vel.y; p.vel_z = vel.z;
     particles[pid] = p;
 }

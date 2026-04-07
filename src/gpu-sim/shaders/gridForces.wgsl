@@ -43,8 +43,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let mz_fixed = atomicLoad(&grid[base_slot + 2u]);
     let mass_fixed = atomicLoad(&grid[base_slot + 3u]);
 
-    // Empty cell — nothing to do
-    if (mass_fixed == 0) { return; }
+    // Empty or negligible-mass cell — skip to avoid division by near-zero
+    if (mass_fixed < 100) { return; }
 
     let mass = f32(mass_fixed) * INV_FIXED;
 
