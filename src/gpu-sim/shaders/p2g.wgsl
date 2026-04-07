@@ -1,18 +1,19 @@
-// p2g.wgsl — Particle-to-Grid transfer (MLS-MPM).
-// Scatters each particle's mass and momentum onto a 3x3x3 stencil of grid cells
-// using quadratic B-spline weights and fixed-point atomicAdd.
+// p2g.wgsl — Particle-to-Grid pass 1: scatter mass and APIC momentum.
+// Ported from WebGPU-Ocean/mls-mpm/p2g_1.wgsl
 //
-// Grid is stored as array<atomic<i32>> with 4 slots per cell:
-//   [4*cellIdx + 0] = momentum_x
-//   [4*cellIdx + 1] = momentum_y
-//   [4*cellIdx + 2] = momentum_z
-//   [4*cellIdx + 3] = mass
+// Grid layout: array<atomic<i32>> with 4 slots per cell:
+//   [4*cellIdx + 0] = momentum_x  (fixed-point)
+//   [4*cellIdx + 1] = momentum_y  (fixed-point)
+//   [4*cellIdx + 2] = momentum_z  (fixed-point)
+//   [4*cellIdx + 3] = mass        (fixed-point)
+//
+// Positions are stored in [0,1] world space. We convert to grid-space
+// (0..GRID_RES) internally so the B-spline math matches WebGPU-Ocean exactly.
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const GRID_RES: u32    = 64u;
-const DX: f32          = 1.0 / 64.0;       // cell size
-const INV_DX: f32      = 64.0;             // 1 / DX
-const FIXED_SCALE: f32 = 1e7;             // float → fixed-point multiplier
+const GRID_RESf: f32   = 64.0;
+const FIXED_SCALE: f32 = 1e7;
 
 // ── Uniforms ─────────────────────────────────────────────────────────────────
 struct SimParams {
@@ -22,121 +23,91 @@ struct SimParams {
     _pad:           u32,
 };
 
-// ── Particle layout (64 bytes, scalar fields to avoid vec3 alignment gaps) ───
+// ── Particle layout (80 bytes) ───────────────────────────────────────────────
 struct Particle {
     pos_x: f32, pos_y: f32, pos_z: f32,   // bytes  0-11
     composition_id:  u32,                   // bytes 12-15
     vel_x: f32, vel_y: f32, vel_z: f32,   // bytes 16-27
     temperature:     f32,                   // bytes 28-31
-    C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
-    C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
-    phase:           u32,                   // bytes 48-51
-    _pad0: u32,                            // bytes 52-55
-    _pad1: u32, _pad2: u32,               // bytes 56-63
+    // C matrix (3x3 affine velocity field) stored as 9 scalars, row-major:
+    // C = [[C00,C01,C02],[C10,C11,C12],[C20,C21,C22]]
+    C00: f32, C01: f32, C02: f32,          // bytes 32-43
+    C10: f32, C11: f32, C12: f32,          // bytes 44-55
+    C20: f32, C21: f32, C22: f32,          // bytes 56-67
+    phase:           u32,                   // bytes 68-71
+    _pad0: u32, _pad1: u32,               // bytes 72-79
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
 @group(0) @binding(0) var<storage, read>       particles:  array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid:       array<atomic<i32>>;
 @group(0) @binding(2) var<uniform>             params:     SimParams;
-@group(0) @binding(3) var<storage, read>       comp_props: array<vec4<f32>>;
-// comp_props[id]: x=density, y=viscosity, z=surfaceTension, w=stiffness
 
-// ── Quadratic B-spline weight (1D) ──────────────────────────────────────────
-fn bspline_weight(x: f32) -> f32 {
-    let ax = abs(x);
-    if (ax < 0.5) {
-        return 0.75 - ax * ax;
-    } else if (ax < 1.5) {
-        let t = 1.5 - ax;
-        return 0.5 * t * t;
-    }
-    return 0.0;
+fn encodeFixedPoint(v: f32) -> i32 {
+    return i32(v * FIXED_SCALE);
 }
 
-// ── Grid cell index from integer coordinates ─────────────────────────────────
-fn grid_cell_index(xi: u32, yi: u32, zi: u32) -> u32 {
-    return xi + yi * GRID_RES + zi * GRID_RES * GRID_RES;
+fn grid_cell_index(ix: i32, iy: i32, iz: i32) -> i32 {
+    // Row-major: x * Ny * Nz + y * Nz + z (matching WebGPU-Ocean)
+    return ix * i32(GRID_RES) * i32(GRID_RES) + iy * i32(GRID_RES) + iz;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
-@compute @workgroup_size(256)
+@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let pid = id.x;
     if (pid >= params.num_particles) { return; }
 
     let p = particles[pid];
-    let props = comp_props[p.composition_id];
-    let rest_density = props.x;        // kg/m³ (target density)
 
-    // Mass and volume per particle
-    let volume = DX * DX * DX;         // cell volume
-    let mass = rest_density * volume;
+    // Convert [0,1] position to grid-space [0, GRID_RES)
+    let position = vec3<f32>(p.pos_x, p.pos_y, p.pos_z) * GRID_RESf;
 
-    // Reconstruct vec3 from scalar fields
-    let pos = vec3<f32>(p.pos_x, p.pos_y, p.pos_z);
-    let vel = vec3<f32>(p.vel_x, p.vel_y, p.vel_z);
+    // Velocity also needs to be in grid-space units (grid_vel = world_vel * GRID_RES)
+    let velocity = vec3<f32>(p.vel_x, p.vel_y, p.vel_z) * GRID_RESf;
 
-    // Position in grid-space (continuous)
-    let pos_grid = pos * INV_DX;
+    // Reconstruct C matrix (already in grid-space units from G2P)
+    let C = mat3x3<f32>(
+        p.C00, p.C10, p.C20,   // column 0
+        p.C01, p.C11, p.C21,   // column 1
+        p.C02, p.C12, p.C22,   // column 2
+    );
 
-    // Base cell (integer coords of the lower-left corner of the 3x3x3 stencil)
-    let base = vec3<i32>(floor(pos_grid - 0.5));
+    // B-spline weights (quadratic, matches WebGPU-Ocean exactly)
+    var weights: array<vec3<f32>, 3>;
+    let cell_idx = floor(position);
+    let cell_diff = position - (cell_idx + 0.5);
+    weights[0] = 0.5 * (0.5 - cell_diff) * (0.5 - cell_diff);
+    weights[1] = 0.75 - cell_diff * cell_diff;
+    weights[2] = 0.5 * (0.5 + cell_diff) * (0.5 + cell_diff);
 
-    // Scatter to 3x3x3 neighborhood
-    for (var di: i32 = 0; di < 3; di++) {
-        for (var dj: i32 = 0; dj < 3; dj++) {
-            for (var dk: i32 = 0; dk < 3; dk++) {
-                let cell = base + vec3<i32>(di, dj, dk);
+    // Scatter mass and momentum to 3x3x3 neighborhood
+    for (var gx = 0; gx < 3; gx++) {
+        for (var gy = 0; gy < 3; gy++) {
+            for (var gz = 0; gz < 3; gz++) {
+                let weight = weights[gx].x * weights[gy].y * weights[gz].z;
 
-                // Skip out-of-bounds cells
-                if (cell.x < 0 || cell.x >= i32(GRID_RES) ||
-                    cell.y < 0 || cell.y >= i32(GRID_RES) ||
-                    cell.z < 0 || cell.z >= i32(GRID_RES)) {
-                    continue;
-                }
-
-                // Distance from particle to cell center (in grid units)
-                let diff = pos_grid - vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z));
-
-                // Trilinear B-spline weight
-                let w = bspline_weight(diff.x)
-                      * bspline_weight(diff.y)
-                      * bspline_weight(diff.z);
-
-                if (w <= 0.0) { continue; }
-
-                // Weighted mass
-                let wm = w * mass;
-
-                // APIC momentum transfer: vel + C * (cell_pos - particle_pos)
-                let cell_world = vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z)) * DX;
-                let dx_world = cell_world - pos;
-
-                // Affine velocity contribution (C maps velocity field around particle)
-                let affine_vel = vec3<f32>(
-                    p.C0.x * dx_world.x + p.C0.y * dx_world.y,
-                    p.C1.x * dx_world.x + p.C1.y * dx_world.y,
-                    0.0
+                let cell_x = vec3<f32>(
+                    cell_idx.x + f32(gx) - 1.0,
+                    cell_idx.y + f32(gy) - 1.0,
+                    cell_idx.z + f32(gz) - 1.0,
                 );
+                let cell_dist = (cell_x + 0.5) - position;
 
-                // Total momentum = velocity + affine velocity contribution
-                let momentum = (vel + affine_vel) * wm;
+                // APIC affine velocity contribution: Q = C * cell_dist
+                let Q = C * cell_dist;
 
-                // Fixed-point encode
-                let fm  = i32(wm * FIXED_SCALE);
-                let fmx = i32(round(momentum.x * FIXED_SCALE));
-                let fmy = i32(round(momentum.y * FIXED_SCALE));
-                let fmz = i32(round(momentum.z * FIXED_SCALE));
+                // Mass contribution (particle mass = 1.0, matching WebGPU-Ocean)
+                let mass_contrib = weight * 1.0;
+                let vel_contrib = mass_contrib * (velocity + Q);
 
-                // Flat index: 4 i32 slots per cell
-                let base_slot = grid_cell_index(u32(cell.x), u32(cell.y), u32(cell.z)) * 4u;
+                let ci = grid_cell_index(i32(cell_x.x), i32(cell_x.y), i32(cell_x.z));
+                let base_slot = u32(ci) * 4u;
 
-                // Atomic scatter — each component to its own slot
-                atomicAdd(&grid[base_slot + 0u], fmx);
-                atomicAdd(&grid[base_slot + 1u], fmy);
-                atomicAdd(&grid[base_slot + 2u], fmz);
-                atomicAdd(&grid[base_slot + 3u], fm);
+                atomicAdd(&grid[base_slot + 0u], encodeFixedPoint(vel_contrib.x));
+                atomicAdd(&grid[base_slot + 1u], encodeFixedPoint(vel_contrib.y));
+                atomicAdd(&grid[base_slot + 2u], encodeFixedPoint(vel_contrib.z));
+                atomicAdd(&grid[base_slot + 3u], encodeFixedPoint(mass_contrib));
             }
         }
     }

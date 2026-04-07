@@ -1,7 +1,9 @@
 // MpmGpuSimulator.ts — Orchestrates MLS-MPM compute passes on GPU
+// Ported pipeline structure from WebGPU-Ocean: clearGrid → P2G1 → P2G2 → updateGrid → G2P
 
 import clearGridWGSL from './shaders/clearGrid.wgsl?raw'
 import p2gWGSL from './shaders/p2g.wgsl?raw'
+import p2g2WGSL from './shaders/p2g2.wgsl?raw'
 import gridForcesWGSL from './shaders/gridForces.wgsl?raw'
 import g2pWGSL from './shaders/g2p.wgsl?raw'
 import contactDetectWGSL from './shaders/contactDetect.wgsl?raw'
@@ -34,9 +36,9 @@ const GRID_CELLS = GRID_SIZE ** 3          // 262,144 cells
 const GRID_SLOTS = GRID_CELLS * 4          // 1,048,576 i32 slots (4 per cell)
 const MAX_PARTICLES = 40_000
 const MAX_CONTACTS = 10_000
-// Particle struct: pos(12) + comp_id(4) + vel(12) + temp(4) + C(16) + phase(4) + pad(12) = 64 bytes
-const PARTICLE_STRIDE = 64
-const FLOATS_PER_PARTICLE = PARTICLE_STRIDE / 4  // 16
+// Particle struct: pos(12) + comp_id(4) + vel(12) + temp(4) + C_3x3(36) + phase(4) + pad(8) = 80 bytes
+const PARTICLE_STRIDE = 80
+const FLOATS_PER_PARTICLE = PARTICLE_STRIDE / 4  // 20
 
 export class MpmGpuSimulator {
   private device!: GPUDevice
@@ -55,6 +57,7 @@ export class MpmGpuSimulator {
   // Pipelines
   private clearGridPipeline!: GPUComputePipeline
   private p2gPipeline!: GPUComputePipeline
+  private p2g2Pipeline!: GPUComputePipeline    // NEW: stress scatter pass
   private gridForcesPipeline!: GPUComputePipeline
   private g2pPipeline!: GPUComputePipeline
   private contactDetectPipeline!: GPUComputePipeline
@@ -62,14 +65,15 @@ export class MpmGpuSimulator {
   // Bind groups
   private clearGridBG!: GPUBindGroup
   private p2gBG!: GPUBindGroup
+  private p2g2BG!: GPUBindGroup              // NEW
   private gridForcesBG!: GPUBindGroup
   private g2pBG!: GPUBindGroup
   private contactDetectBG!: GPUBindGroup
 
   private numParticles = 0
   private frameCount = 0
-  private gravity = 0.5    // MLS-MPM grid units — slightly higher so droplets fall back
-  private dt = 0.1         // smaller dt for stability with pressure forces
+  private gravity = 0.3    // grid-space gravity (WebGPU-Ocean uses 0.3)
+  private dt = 0.2         // WebGPU-Ocean uses 0.20
   private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
 
   get particleBuffer(): GPUBuffer { return this.particleBuf }
@@ -87,7 +91,6 @@ export class MpmGpuSimulator {
     })
 
     // Grid: array<atomic<i32>> with 4 slots per cell = 1,048,576 i32 entries
-    // Total size = 1,048,576 * 4 bytes = 4,194,304 bytes
     this.gridBuf = device.createBuffer({
       size: GRID_SLOTS * 4,
       usage: GPUBufferUsage.STORAGE,
@@ -100,31 +103,24 @@ export class MpmGpuSimulator {
     })
 
     // Composition properties: array<vec4<f32>, 256> = 256 * 16 = 4,096 bytes
-    // Each vec4: (density, viscosity, surfaceTension, stiffness)
     this.compPropsBuf = device.createBuffer({
       size: 256 * 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     })
 
-    // Contact pairs: array<ContactPair> where ContactPair = { particle_a: u32, particle_b: u32 }
-    // Max 10,000 pairs * 8 bytes = 80,000 bytes
+    // Contact buffers
     this.contactBuf = device.createBuffer({
       size: MAX_CONTACTS * 8,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     })
-
-    // Atomic counter for contact detection
     this.contactCounterBuf = device.createBuffer({
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     })
-
-    // CPU-readable readback buffers (MAP_READ + COPY_DST)
     this.contactReadBuf = device.createBuffer({
       size: MAX_CONTACTS * 8,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     })
-
     this.counterReadBuf = device.createBuffer({
       size: 4,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -140,6 +136,12 @@ export class MpmGpuSimulator {
     this.p2gPipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: p2gWGSL }), entryPoint: 'main' },
+    })
+
+    // NEW: P2G pass 2 — stress scatter
+    this.p2g2Pipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: p2g2WGSL }), entryPoint: 'main' },
     })
 
     this.gridForcesPipeline = device.createComputePipeline({
@@ -158,7 +160,6 @@ export class MpmGpuSimulator {
     })
 
     // ── Create bind groups ────────────────────────────────────────────────
-    // Each bind group must match the shader's @group(0) @binding(N) declarations.
 
     // clearGrid: binding 0 = grid (read_write, atomic<i32>)
     this.clearGridBG = device.createBindGroup({
@@ -166,19 +167,27 @@ export class MpmGpuSimulator {
       entries: [{ binding: 0, resource: { buffer: this.gridBuf } }],
     })
 
-    // p2g: binding 0 = particles (read), 1 = grid (read_write, atomic<i32>),
-    //       2 = params (uniform), 3 = comp_props (read)
+    // p2g: binding 0 = particles (read), 1 = grid (read_write), 2 = params
     this.p2gBG = device.createBindGroup({
       layout: this.p2gPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.particleBuf } },
         { binding: 1, resource: { buffer: this.gridBuf } },
         { binding: 2, resource: { buffer: this.simParamsBuf } },
-        { binding: 3, resource: { buffer: this.compPropsBuf } },
       ],
     })
 
-    // gridForces: binding 0 = grid (read_write, atomic<i32>), 1 = params (uniform)
+    // p2g2: binding 0 = particles (read), 1 = grid (read_write), 2 = params
+    this.p2g2BG = device.createBindGroup({
+      layout: this.p2g2Pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.particleBuf } },
+        { binding: 1, resource: { buffer: this.gridBuf } },
+        { binding: 2, resource: { buffer: this.simParamsBuf } },
+      ],
+    })
+
+    // gridForces: binding 0 = grid, 1 = params
     this.gridForcesBG = device.createBindGroup({
       layout: this.gridForcesPipeline.getBindGroupLayout(0),
       entries: [
@@ -187,10 +196,7 @@ export class MpmGpuSimulator {
       ],
     })
 
-    // g2p: binding 0 = particles (read_write), 1 = grid (read, array<i32>),
-    //       2 = params (uniform)
-    // Note: g2p reads grid as array<i32> (not atomic), but same GPUBuffer works —
-    // the shader declares var<storage, read> so WebGPU auto-layout infers read-only.
+    // g2p: binding 0 = particles (read_write), 1 = grid (read), 2 = params
     this.g2pBG = device.createBindGroup({
       layout: this.g2pPipeline.getBindGroupLayout(0),
       entries: [
@@ -200,8 +206,7 @@ export class MpmGpuSimulator {
       ],
     })
 
-    // contactDetect: binding 0 = particles (read), 1 = contacts (read_write),
-    //                2 = counter (read_write), 3 = params (uniform)
+    // contactDetect: binding 0 = particles, 1 = contacts, 2 = counter, 3 = params
     this.contactDetectBG = device.createBindGroup({
       layout: this.contactDetectPipeline.getBindGroupLayout(0),
       entries: [
@@ -231,13 +236,12 @@ export class MpmGpuSimulator {
       data[offset + 5] = p.vel[1]
       data[offset + 6] = p.vel[2]
       data[offset + 7] = p.temperature
-      // C matrix (affine velocity field) — start at zero
-      data[offset + 8] = 0; data[offset + 9] = 0   // C0: vec2<f32>
-      data[offset + 10] = 0; data[offset + 11] = 0  // C1: vec2<f32>
+      // C matrix (3x3) — start at zero: 9 floats at offset 8-16
+      for (let c = 0; c < 9; c++) { data[offset + 8 + c] = 0 }
       // phase
-      new Uint32Array(data.buffer, (offset + 12) * 4, 1)[0] = p.phase
-      // padding (J field removed — pressure now computed from grid density)
-      data[offset + 13] = 0; data[offset + 14] = 0; data[offset + 15] = 0
+      new Uint32Array(data.buffer, (offset + 17) * 4, 1)[0] = p.phase
+      // padding
+      data[offset + 18] = 0; data[offset + 19] = 0
     }
     this.device.queue.writeBuffer(this.particleBuf, 0, data.buffer, 0, particles.length * FLOATS_PER_PARTICLE * 4)
     this.numParticles = particles.length
@@ -262,10 +266,9 @@ export class MpmGpuSimulator {
       data[offset + 5] = p.vel[1]
       data[offset + 6] = p.vel[2]
       data[offset + 7] = p.temperature
-      data[offset + 8] = 0; data[offset + 9] = 0
-      data[offset + 10] = 0; data[offset + 11] = 0
-      new Uint32Array(data.buffer, (offset + 12) * 4, 1)[0] = p.phase
-      data[offset + 13] = 0; data[offset + 14] = 0; data[offset + 15] = 0
+      for (let c = 0; c < 9; c++) { data[offset + 8 + c] = 0 }
+      new Uint32Array(data.buffer, (offset + 17) * 4, 1)[0] = p.phase
+      data[offset + 18] = 0; data[offset + 19] = 0
     }
     const byteOffset = this.numParticles * PARTICLE_STRIDE
     this.device.queue.writeBuffer(this.particleBuf, byteOffset, data.buffer, data.byteOffset, data.byteLength)
@@ -274,23 +277,26 @@ export class MpmGpuSimulator {
 
   /** Upload composition properties to GPU */
   updateCompositionProps(props: Float32Array) {
-    // props: up to 256 * 4 floats (density, viscosity, surfaceTension, stiffness per composition)
     this.device.queue.writeBuffer(this.compPropsBuf, 0, props.buffer, props.byteOffset, props.byteLength)
   }
 
-  /** Run one simulation step (2 substeps of clearGrid -> P2G -> gridForces -> G2P) */
+  /** Run one simulation step.
+   *  Pipeline per substep (matching WebGPU-Ocean):
+   *    clearGrid → P2G1 (mass+momentum) → P2G2 (stress) → updateGrid → G2P
+   *  2 substeps per frame for stability.
+   */
   step(encoder: GPUCommandEncoder) {
     // Upload sim params
     const params = new Float32Array([this.dt, this.gravity, 0, 0])
     new Uint32Array(params.buffer, 8, 1)[0] = this.numParticles
     this.device.queue.writeBuffer(this.simParamsBuf, 0, params)
 
-    const particleGroups = Math.ceil(this.numParticles / 256)
+    // Workgroup counts
+    const particleGroups = Math.ceil(this.numParticles / 64)  // workgroup_size=64 in shaders
     const gridCellGroups = Math.ceil(GRID_CELLS / 256)
-    // clearGrid iterates over all 1,048,576 i32 slots, not just 262,144 cells
     const gridSlotGroups = Math.ceil(GRID_SLOTS / 256)
 
-    // 2 substeps per frame for stability
+    // 2 substeps per frame for stability (matching WebGPU-Ocean)
     for (let sub = 0; sub < 2; sub++) {
       // 1. Clear grid — dispatches over all GRID_SLOTS (1,048,576 entries)
       const clearPass = encoder.beginComputePass()
@@ -299,21 +305,28 @@ export class MpmGpuSimulator {
       clearPass.dispatchWorkgroups(gridSlotGroups)
       clearPass.end()
 
-      // 2. P2G — dispatches over particles
+      // 2. P2G pass 1 — scatter mass and APIC momentum
       const p2gPass = encoder.beginComputePass()
       p2gPass.setPipeline(this.p2gPipeline)
       p2gPass.setBindGroup(0, this.p2gBG)
       p2gPass.dispatchWorkgroups(particleGroups)
       p2gPass.end()
 
-      // 3. Grid forces — dispatches over grid cells (262,144)
+      // 3. P2G pass 2 — scatter constitutive stress (pressure + viscosity)
+      const p2g2Pass = encoder.beginComputePass()
+      p2g2Pass.setPipeline(this.p2g2Pipeline)
+      p2g2Pass.setBindGroup(0, this.p2g2BG)
+      p2g2Pass.dispatchWorkgroups(particleGroups)
+      p2g2Pass.end()
+
+      // 4. Grid update — momentum→velocity, gravity, boundary conditions
       const forcesPass = encoder.beginComputePass()
       forcesPass.setPipeline(this.gridForcesPipeline)
       forcesPass.setBindGroup(0, this.gridForcesBG)
       forcesPass.dispatchWorkgroups(gridCellGroups)
       forcesPass.end()
 
-      // 4. G2P — dispatches over particles
+      // 5. G2P — gather velocity, build APIC C matrix, advect
       const g2pPass = encoder.beginComputePass()
       g2pPass.setPipeline(this.g2pPipeline)
       g2pPass.setBindGroup(0, this.g2pBG)
@@ -324,16 +337,15 @@ export class MpmGpuSimulator {
     // Contact detection every 10 frames (only when enabled — O(n²) is expensive)
     this.frameCount++
     if (this.contactDetectionEnabled && this.frameCount % 10 === 0) {
-      // Reset counter to zero before detection pass
       this.device.queue.writeBuffer(this.contactCounterBuf, 0, new Uint32Array([0]))
 
+      const contactGroups = Math.ceil(this.numParticles / 256)
       const contactPass = encoder.beginComputePass()
       contactPass.setPipeline(this.contactDetectPipeline)
       contactPass.setBindGroup(0, this.contactDetectBG)
-      contactPass.dispatchWorkgroups(particleGroups)
+      contactPass.dispatchWorkgroups(contactGroups)
       contactPass.end()
 
-      // Copy results from STORAGE buffers to MAP_READ buffers for CPU readback
       encoder.copyBufferToBuffer(this.contactCounterBuf, 0, this.counterReadBuf, 0, 4)
       encoder.copyBufferToBuffer(this.contactBuf, 0, this.contactReadBuf, 0, MAX_CONTACTS * 8)
     }

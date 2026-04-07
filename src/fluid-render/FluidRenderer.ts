@@ -136,7 +136,7 @@ export class FluidRenderer {
 
   private createBuffers() {
     const d = this.device
-    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 64 bytes per particle (new layout)
+    this.particleBuffer = d.createBuffer({ size: this.maxParticles * 80, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) // 80 bytes per particle (expanded for 3x3 C matrix)
     this.uniformBuffer = d.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterXBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.filterYBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
@@ -317,7 +317,7 @@ export class FluidRenderer {
 
   /**
    * Accept an external GPU particle buffer directly (e.g., from MpmGpuSimulator).
-   * The buffer must match the 64-byte particle layout expected by the shaders.
+   * The buffer must match the 80-byte particle layout expected by the shaders.
    * When set, this buffer is used instead of the internal particleBuffer for rendering.
    */
   setParticleBuffer(buffer: GPUBuffer) {
@@ -326,18 +326,18 @@ export class FluidRenderer {
 
   /**
    * CPU-side particle upload for backwards compatibility.
-   * Packs positions, velocities, and composition IDs into the 64-byte layout.
+   * Packs positions, velocities, and composition IDs into the 80-byte layout.
    */
   updateParticles(positions: Float32Array, velocities: Float32Array, compIds: Uint32Array | Uint8Array, count: number) {
     if (!this.initialized) return
     this.externalParticleBuffer = null // switch back to internal buffer
-    // 64 bytes per particle = 16 x u32/f32 values
-    const buf = new ArrayBuffer(count * 64)
+    // 80 bytes per particle = 20 x u32/f32 values
+    const buf = new ArrayBuffer(count * 80)
     const f32 = new Float32Array(buf)
     const u32 = new Uint32Array(buf)
     for (let i = 0; i < count; i++) {
       const i3 = i * 3
-      const base = i * 16 // 16 x 4-byte values per particle
+      const base = i * 20 // 20 x 4-byte values per particle
       f32[base + 0] = positions[i3]      // pos_x
       f32[base + 1] = positions[i3 + 1]  // pos_y
       f32[base + 2] = positions[i3 + 2]  // pos_z
@@ -346,12 +346,12 @@ export class FluidRenderer {
       f32[base + 5] = velocities[i3 + 1] // vel_y
       f32[base + 6] = velocities[i3 + 2] // vel_z
       f32[base + 7] = 0                  // temperature
-      f32[base + 8] = 0; f32[base + 9] = 0   // C0
-      f32[base + 10] = 0; f32[base + 11] = 0 // C1
-      u32[base + 12] = 0                 // phase
-      u32[base + 13] = 0; u32[base + 14] = 0; u32[base + 15] = 0 // padding
+      // C matrix (9 floats, all zero for CPU upload)
+      for (let c = 0; c < 9; c++) { f32[base + 8 + c] = 0 }
+      u32[base + 17] = 0                 // phase
+      u32[base + 18] = 0; u32[base + 19] = 0 // padding
     }
-    this.device.queue.writeBuffer(this.particleBuffer, 0, buf, 0, count * 64)
+    this.device.queue.writeBuffer(this.particleBuffer, 0, buf, 0, count * 80)
   }
 
   /**

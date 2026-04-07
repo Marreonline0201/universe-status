@@ -13,17 +13,17 @@ struct SimParams {
     _pad:           u32,
 };
 
-// ── Particle layout (64 bytes, scalar fields to avoid vec3 alignment gaps) ───
+// ── Particle layout (80 bytes) ───────────────────────────────────────────────
 struct Particle {
     pos_x: f32, pos_y: f32, pos_z: f32,   // bytes  0-11
     composition_id:  u32,                   // bytes 12-15
     vel_x: f32, vel_y: f32, vel_z: f32,   // bytes 16-27
     temperature:     f32,                   // bytes 28-31
-    C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
-    C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
-    phase:           u32,                   // bytes 48-51
-    _pad0: u32,                            // bytes 52-55
-    _pad1: u32, _pad2: u32,               // bytes 56-63
+    C00: f32, C01: f32, C02: f32,          // bytes 32-43
+    C10: f32, C11: f32, C12: f32,          // bytes 44-55
+    C20: f32, C21: f32, C22: f32,          // bytes 56-67
+    phase:           u32,                   // bytes 68-71
+    _pad0: u32, _pad1: u32,               // bytes 72-79
 };
 
 // ── Contact pair output ──────────────────────────────────────────────────────
