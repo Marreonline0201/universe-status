@@ -1,165 +1,105 @@
 // ── FluidTest ────────────────────────────────────────────────────────────────
-// SPH Fluid Simulation — Rust/WASM SPH solver (replaces JS Web Worker)
-// Real SPH algorithm with real material properties from structure.md S3.1
-// WASM runs on main thread — fast enough for 5000+ tiny particles at 60fps
+// GPU MLS-MPM Fluid Simulation with multi-material composition system
+// Replaces WASM CPU solver with WebGPU compute (MpmGpuSimulator)
+// SSFR rendering via FluidRenderer — shares GPU device + particle buffer
 // Public demo page for universe-status site
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { MarchingCubes } from 'three/examples/jsm/objects/MarchingCubes.js'
 import { FluidRenderer } from '../fluid-render/FluidRenderer'
-import initWasm, { Simulation, MpmSimulation } from '../wasm/sph_wasm'
+import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
+import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
+import { ContactProcessor } from '../composition/ContactProcessor'
 
-// ── Material definitions (section 3.1 property calculator) ───────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
-interface MaterialPacket {
-  name: string
-  composition: string
-  density: number       // kg/m^3
-  viscosity: number     // Pa*s
-  surfaceTension: number // N/m
-  color: number
-  restDensity: number   // kg/m^3
-  description: string
-  emissive?: boolean
-}
+const MAX_PARTICLES = 40_000
 
-const MATERIALS: MaterialPacket[] = [
-  {
-    name: 'Water',
-    composition: 'H\u2082O',
-    density: 1000,
-    viscosity: 0.001,
-    surfaceTension: 0.0728, // IAPWS 2014
-    color: 0x3399ff,
-    restDensity: 1000,
-    description: 'The most common liquid. Low viscosity \u2014 flows freely and splashes easily.',
-  },
-  {
-    name: 'Honey',
-    composition: 'Sugar solution (C\u2086H\u2081\u2082O\u2086 + H\u2082O)',
-    density: 1400,
-    viscosity: 50,
-    surfaceTension: 0.065,
-    color: 0xdaa520,
-    restDensity: 1400,
-    description: 'Very thick. Pours slowly. Non-Newtonian \u2014 stirring makes it thinner.',
-  },
-  {
-    name: 'Molten Copper',
-    composition: 'Cu (1085\u00b0C)',
-    density: 7800,
-    viscosity: 0.004,
-    surfaceTension: 1.3,
-    color: 0xff6600,
-    restDensity: 7800,
-    description: 'Heavy but thin when molten. High surface tension \u2014 forms round blobs.',
-    emissive: true,
-  },
-  {
-    name: 'Mercury',
-    composition: 'Hg',
-    density: 13546,
-    viscosity: 0.00153,
-    surfaceTension: 0.49,
-    color: 0xc0c0c0,
-    restDensity: 13546,
-    description: 'Extremely heavy, very high surface tension. Forms perfect spherical droplets.',
-  },
-  {
-    name: 'Olive Oil',
-    composition: 'Triglycerides (C\u2085\u2087H\u2081\u2080\u2084O\u2086)',
-    density: 920,
-    viscosity: 0.08,
-    surfaceTension: 0.032,
-    color: 0x8b8000,
-    restDensity: 920,
-    description: 'Lighter than water (floats on top). Moderate viscosity. Low surface tension.',
-  },
-  {
-    name: 'Lava (Basaltic)',
-    composition: 'SiO\u2082 50%, MgO, FeO',
-    density: 2700,
-    viscosity: 500,
-    surfaceTension: 0.4,
-    color: 0xff3300,
-    restDensity: 2700,
-    description: 'Heavy and extremely thick. Flows like thick paste. Glows orange-red.',
-    emissive: true,
-  },
-  {
-    name: 'Blood',
-    composition: 'H\u2082O 55%, proteins, cells',
-    density: 1060,
-    viscosity: 0.004,
-    surfaceTension: 0.058,
-    color: 0xcc2222,
-    restDensity: 1060,
-    description: 'Slightly thicker than water. Non-Newtonian \u2014 thins under shear.',
-  },
-]
-
-// ── Simulation constants ─────────────────────────────────────────────────────
-
-const PARTICLE_RADIUS = 0.008
-const MAX_PARTICLES = 8000
-
-// Box dimensions
+// Glass box dimensions in Three.js world space
 const BOX_W = 2.0
 const BOX_H = 1.5
 const BOX_D = 1.5
 const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
-const AMBIENT_TEMP = 20.0
 
-// §3.2: SPH kernel and MC grid constants (from structure.md lines 1855-1863)
-const SPH_H = 0.04              // kernel radius (same as WASM)
-const SPACING = SPH_H * 0.5     // particle rest spacing = 0.02
-const MC_RES = 32               // 32³ grid (line 1855)
-const MC_THRESHOLD = 0.3        // ~0.6 for thick 3D fluid, lower for thin pools in demo
-void SPACING // used by sphere geometry above
+// Coordinate mapping: MLS-MPM domain [0,1] <-> Three.js world space
+// MLS-MPM (0.5, 0.5, 0.5) maps to Three.js (0, 0, 0)
+// MLS-MPM (0, 0, 0) maps to Three.js (-1.0, -0.75, -0.75)
+// MLS-MPM (1, 1, 1) maps to Three.js (1.0, 0.75, 0.75)
+function mpmToWorld(x: number, y: number, z: number): [number, number, number] {
+  return [
+    (x - 0.5) * BOX_W,
+    (y - 0.5) * BOX_H,
+    (z - 0.5) * BOX_D,
+  ]
+}
 
+function worldToMpm(x: number, y: number, z: number): [number, number, number] {
+  return [
+    x / BOX_W + 0.5,
+    y / BOX_H + 0.5,
+    z / BOX_D + 0.5,
+  ]
+}
+
+// ── Build composition render props for FluidRenderer ─────────────────────────
+// FluidRenderer expects 12 floats per composition (48 bytes):
+// [color_r, color_g, color_b, density, F0, metalness, emissive, IOR, specular_power, opacity_density, pad, pad]
+function buildCompositionRenderProps(table: CompositionTable): Float32Array {
+  const all = table.getAll()
+  const data = new Float32Array(256 * 12) // 256 max compositions * 12 floats
+  for (const comp of all) {
+    const base = comp.id * 12
+    data[base + 0] = comp.props.color[0]
+    data[base + 1] = comp.props.color[1]
+    data[base + 2] = comp.props.color[2]
+    data[base + 3] = comp.props.opacityDensity
+    data[base + 4] = comp.props.F0
+    data[base + 5] = comp.props.metalness
+    data[base + 6] = comp.props.emissive
+    data[base + 7] = comp.props.IOR
+    data[base + 8] = comp.props.specularPower
+    data[base + 9] = comp.props.opacityDensity
+    // 10-11: padding
+  }
+  return data
+}
 
 // ── React Component ──────────────────────────────────────────────────────────
 
 export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
-  const [selectedMaterial, setSelectedMaterial] = useState(0)
+  const [selectedComposition, setSelectedComposition] = useState(0)
   const [gravityVal, setGravityVal] = useState(9.81)
-  const [timeScale, setTimeScale] = useState(1.0)
+  const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
   const [showInfo, setShowInfo] = useState(true)
   const [fpsWarning, setFpsWarning] = useState(false)
-  const [wasmReady, setWasmReady] = useState(false)
-  const [showParticles, setShowParticles] = useState(false) // toggle raw particle spheres
-  const [boxScale, setBoxScale] = useState(1.0) // 0.5 to 1.0 — shrink/expand box
-  const [solverType, setSolverType] = useState<'sph' | 'mpm'>('sph') // §3.2 solver toggle
+  const [gpuReady, setGpuReady] = useState(false)
+  const [compositions, setCompositions] = useState<NamedComposition[]>([])
 
   // Refs for simulation state
   const simRef = useRef<{
-    simulation: Simulation
-    mpmSimulation: MpmSimulation
+    gpuSim: MpmGpuSimulator
+    compositionTable: CompositionTable
+    contactProcessor: ContactProcessor
+    device: GPUDevice
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
     renderer: any /* WebGPURenderer */
     controls: OrbitControls
-    instMeshes: THREE.InstancedMesh[]
-    dummy: THREE.Matrix4
-    sprayPoints: THREE.Points
-    sprayPosAttr: THREE.BufferAttribute
-    sprayColAttr: THREE.BufferAttribute
-    mcubes: MarchingCubes
-    fluidRenderer: FluidRenderer | null
+    fluidRenderer: FluidRenderer
     animId: number
     lastTime: number
     fpsAccum: number
     fpsFrames: number
-    selectedMaterial: number
+    frameCount: number
+    selectedComposition: number
     gravity: number
-    timeScale: number
+    temperature: number
     raycaster: THREE.Raycaster
     mouse: THREE.Vector2
     boxMesh: THREE.LineSegments
@@ -168,102 +108,102 @@ export function FluidTest() {
     wallMesh: THREE.Mesh
     leftWall: THREE.Mesh
     rightWall: THREE.Mesh
-    avgTemp: number
-    showParticles: boolean
-    boxScale: number
-    solverType: 'sph' | 'mpm'
   } | null>(null)
 
   const resetSim = useCallback(() => {
     if (!simRef.current) return
-    simRef.current.simulation.reset()
-    simRef.current.mpmSimulation.reset()
-    simRef.current.instMeshes.forEach(im => { im.count = 0 })
-    simRef.current.sprayPoints.geometry.setDrawRange(0, 0)
-    simRef.current.mcubes.reset()
-    simRef.current.mcubes.update()
-    setParticleCount(0)
-    setFpsWarning(false)
+    // Re-spawn initial water particles
+    const { gpuSim, compositionTable } = simRef.current
+    const particles: GpuParticle[] = []
+    const waterId = 0
+    for (let i = 0; i < 15000; i++) {
+      particles.push({
+        pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+        vel: [0, 0, 0],
+        composition_id: waterId,
+        temperature: 20,
+        phase: 1,
+      })
+    }
+    gpuSim.spawnParticles(particles)
+    setParticleCount(particles.length)
+
+    // Re-upload composition data
+    gpuSim.updateCompositionProps(compositionTable.getGpuData())
   }, [])
 
-  const spawnParticles = useCallback((worldPos: THREE.Vector3) => {
+  const spawnParticlesAtClick = useCallback((worldPos: THREE.Vector3) => {
     if (!simRef.current) return
-    const matIdx = simRef.current.selectedMaterial
+    const { gpuSim, selectedComposition: compId, temperature } = simRef.current
 
-    // Spawn a cluster of particles: 7x7x7 = 343 per click
-    // Spacing matches WASM rest spacing (H*0.5 = 0.02) + jitter to break grid symmetry
-    const spacing = 0.022
+    // Convert world position to MLS-MPM space
+    const [cx, cy, cz] = worldToMpm(worldPos.x, worldPos.y, worldPos.z)
+
+    // Spawn a cluster of ~343 particles (7x7x7)
+    const particles: GpuParticle[] = []
+    const spacing = 0.015
     const gridSize = 7
     const jitter = spacing * 0.25
-    const positions: number[] = []
 
     for (let xi = 0; xi < gridSize; xi++) {
       for (let yi = 0; yi < gridSize; yi++) {
         for (let zi = 0; zi < gridSize; zi++) {
-          const x = worldPos.x + (xi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-          const y = worldPos.y + (yi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-          const z = worldPos.z + (zi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-          if (Math.abs(x) < HALF_W - PARTICLE_RADIUS &&
-              Math.abs(y) < HALF_H - PARTICLE_RADIUS &&
-              Math.abs(z) < HALF_D - PARTICLE_RADIUS) {
-            positions.push(x, y, z)
+          const x = cx + (xi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+          const y = cy + (yi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+          const z = cz + (zi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+          // Clamp to MLS-MPM domain [0.02, 0.98] (with margin)
+          if (x > 0.02 && x < 0.98 && y > 0.02 && y < 0.98 && z > 0.02 && z < 0.98) {
+            particles.push({
+              pos: [x, y, z],
+              vel: [0, 0, 0],
+              composition_id: compId,
+              temperature: temperature,
+              phase: 1,
+            })
           }
         }
       }
     }
 
-    if (positions.length > 0) {
-      const buf = new Float32Array(positions)
-      if (simRef.current.solverType === 'mpm') {
-        simRef.current.mpmSimulation.add_particles(buf, matIdx)
-        setParticleCount(simRef.current.mpmSimulation.get_count())
-      } else {
-        simRef.current.simulation.add_particles(buf, matIdx)
-        setParticleCount(simRef.current.simulation.get_count())
-      }
+    if (particles.length > 0) {
+      gpuSim.addParticles(particles)
+      setParticleCount(gpuSim.particleCount)
     }
+  }, [])
+
+  const spawnBatch = useCallback((count: number) => {
+    if (!simRef.current) return
+    const { gpuSim, selectedComposition: compId, temperature } = simRef.current
+
+    const particles: GpuParticle[] = []
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+        vel: [0, 0, 0],
+        composition_id: compId,
+        temperature: temperature,
+        phase: 1,
+      })
+    }
+    gpuSim.addParticles(particles)
+    setParticleCount(gpuSim.particleCount)
   }, [])
 
   // Keep refs in sync with state
   useEffect(() => {
-    if (simRef.current) simRef.current.selectedMaterial = selectedMaterial
-  }, [selectedMaterial])
+    if (simRef.current) simRef.current.selectedComposition = selectedComposition
+  }, [selectedComposition])
   useEffect(() => {
-    if (simRef.current) simRef.current.gravity = gravityVal
+    if (simRef.current) {
+      simRef.current.gravity = gravityVal
+      simRef.current.gpuSim.setGravity(gravityVal)
+    }
   }, [gravityVal])
   useEffect(() => {
-    if (simRef.current) simRef.current.timeScale = timeScale
-  }, [timeScale])
-  useEffect(() => {
-    if (simRef.current) simRef.current.showParticles = showParticles
-  }, [showParticles])
-  useEffect(() => {
-    if (simRef.current) simRef.current.solverType = solverType
-  }, [solverType])
-  useEffect(() => {
-    if (!simRef.current) return
-    const sim = simRef.current
-    sim.boxScale = boxScale
+    if (simRef.current) simRef.current.temperature = temperatureVal
+  }, [temperatureVal])
 
-    // Update box geometry — scale from center
-    const sw = BOX_W * boxScale, sh = BOX_H * boxScale, sd = BOX_D * boxScale
-    sim.boxMesh.scale.set(boxScale, boxScale, boxScale)
-    sim.glassBox.scale.set(boxScale, boxScale, boxScale)
-    sim.floorMesh.position.y = -sh / 2 + 0.001
-    sim.floorMesh.scale.set(boxScale, 1, boxScale)
-    sim.wallMesh.position.z = -sd / 2 + 0.001
-    sim.wallMesh.scale.set(boxScale, boxScale, 1)
-    sim.leftWall.position.x = -sw / 2 + 0.001
-    sim.leftWall.scale.set(boxScale, boxScale, 1)
-    sim.rightWall.position.x = sw / 2 - 0.001
-    sim.rightWall.scale.set(boxScale, boxScale, 1)
-
-    // Update WASM boundary — particles must be pushed inside new bounds
-    sim.simulation.set_bounds(sw / 2, sh / 2, sd / 2)
-    sim.mpmSimulation.set_bounds(sw / 2, sh / 2, sd / 2)
-  }, [boxScale])
-
-  // ── Main Three.js setup and render loop ─────────────────────────────────
+  // ── Main setup and render loop ─────────────────────────────────────────────
   useEffect(() => {
     const container = canvasRef.current
     if (!container) return
@@ -271,18 +211,83 @@ export function FluidTest() {
     let cancelled = false
 
     const setup = async () => {
-      // ── Initialize WASM ───────────────────────────────────────────
-      await initWasm('/sph_wasm_bg.wasm')
-      if (cancelled) return
-      const simulation = new Simulation()
-      const mpmSimulation = new MpmSimulation()
-      setWasmReady(true)
+      // ── Initialize WebGPU ────────────────────────────────────────────
+      if (!navigator.gpu) {
+        console.error('WebGPU not available')
+        return
+      }
 
-      // Scene
+      // Init FluidRenderer first — it creates the device + overlay canvas
+      const fluidRenderer = new FluidRenderer()
+      const frOk = await fluidRenderer.init(container, container.clientWidth, container.clientHeight)
+      if (!frOk || cancelled) {
+        console.error('FluidRenderer init failed')
+        return
+      }
+
+      // Share the FluidRenderer's device with the simulator
+      const device = fluidRenderer.gpuDevice
+
+      // Init GPU MLS-MPM simulator
+      const gpuSim = new MpmGpuSimulator()
+      const simOk = await gpuSim.init(device)
+      if (!simOk || cancelled) {
+        console.error('MpmGpuSimulator init failed')
+        return
+      }
+
+      // Init composition system
+      const compositionTable = new CompositionTable()
+      compositionTable.addDefaults()
+      const contactProcessor = new ContactProcessor(compositionTable)
+
+      // Upload composition simulation props to GPU simulator
+      gpuSim.updateCompositionProps(compositionTable.getGpuData())
+
+      // Upload composition render props to FluidRenderer
+      fluidRenderer.updateCompositionRenderProps(buildCompositionRenderProps(compositionTable))
+
+      // Connect simulator particle buffer to renderer
+      fluidRenderer.setParticleBuffer(gpuSim.getParticleBuffer())
+
+      // Set initial fluid material from water (composition 0)
+      const waterComp = compositionTable.get(0)
+      if (waterComp) {
+        fluidRenderer.setFluidMaterial({
+          r: waterComp.props.color[0],
+          g: waterComp.props.color[1],
+          b: waterComp.props.color[2],
+          density: waterComp.props.opacityDensity,
+          F0: waterComp.props.F0,
+          emissive: waterComp.props.emissive,
+          specularPower: waterComp.props.specularPower,
+          metalness: waterComp.props.metalness,
+          ior: waterComp.props.IOR,
+        })
+      }
+
+      if (cancelled) return
+      setGpuReady(true)
+      setCompositions(compositionTable.getAll())
+
+      // ── Spawn initial water particles ──────────────────────────────────
+      const initParticles: GpuParticle[] = []
+      for (let i = 0; i < 15000; i++) {
+        initParticles.push({
+          pos: [0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4, 0.3 + Math.random() * 0.4],
+          vel: [0, 0, 0],
+          composition_id: 0,
+          temperature: 20,
+          phase: 1,
+        })
+      }
+      gpuSim.spawnParticles(initParticles)
+      setParticleCount(initParticles.length)
+
+      // ── Three.js Scene ─────────────────────────────────────────────────
       const scene = new THREE.Scene()
       scene.background = new THREE.Color(0x060810)
 
-      // Camera
       const camera = new THREE.PerspectiveCamera(
         50,
         container.clientWidth / container.clientHeight,
@@ -329,7 +334,7 @@ export function FluidTest() {
       const boxMesh = new THREE.LineSegments(edgesGeo, edgesMat)
       scene.add(boxMesh)
 
-      // Glass panels (very transparent)
+      // Glass panels
       const glassMat = new THREE.MeshPhysicalMaterial({
         color: 0x88ccff,
         transparent: true,
@@ -350,7 +355,7 @@ export function FluidTest() {
       clickPlane.position.y = 0
       scene.add(clickPlane)
 
-      // Floor grid inside box — visible enough for refraction distortion
+      // Floor grid inside box
       const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 20, 20)
       const floorMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050,
@@ -363,7 +368,7 @@ export function FluidTest() {
       floorMesh.position.y = -HALF_H + 0.001
       scene.add(floorMesh)
 
-      // Back wall grid — makes refraction visible from the front
+      // Back wall grid
       const wallGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_H - 0.02, 20, 15)
       const wallMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050,
@@ -376,7 +381,7 @@ export function FluidTest() {
       wallMesh.position.z = -HALF_D + 0.001
       scene.add(wallMesh)
 
-      // Side wall grids — refraction visible from side angles
+      // Side wall grids
       const sideGeo = new THREE.PlaneGeometry(BOX_D - 0.02, BOX_H - 0.02, 15, 15)
       const sideMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050, wireframe: true, transparent: true, opacity: 0.25, side: THREE.DoubleSide,
@@ -390,101 +395,29 @@ export function FluidTest() {
       rightWall.position.x = HALF_W - 0.001
       scene.add(rightWall)
 
-      // ── InstancedMesh per material (works on WebGL and WebGPU) ────
-      // One InstancedMesh per material type with correct color baked in
-      // Larger spheres so they overlap at rest spacing — creates continuous surface
-      // SPACING = 0.02, so radius 0.012 makes adjacent spheres overlap slightly
-      const sphereGeo = new THREE.SphereGeometry(SPACING * 0.6, 8, 6)
-      const instMeshes: THREE.InstancedMesh[] = []
-      MATERIALS.forEach((mat) => {
-        const meshMat = new THREE.MeshStandardMaterial({
-          color: mat.color,
-          roughness: 0.3,
-          metalness: mat.name === 'Mercury' ? 0.8 : 0.0,
-          emissive: mat.emissive ? new THREE.Color(mat.color).multiplyScalar(0.3) : new THREE.Color(0),
-          emissiveIntensity: mat.emissive ? 1.0 : 0,
-        })
-        const im = new THREE.InstancedMesh(sphereGeo, meshMat, MAX_PARTICLES)
-        im.count = 0
-        im.frustumCulled = false
-        scene.add(im)
-        instMeshes.push(im)
-      })
-      const dummy = new THREE.Matrix4()
-
-      // §3.2: Spray particles (secondary particles — smaller, brighter)
-      const sprayGeo = new THREE.BufferGeometry()
-      const sprayPosAttr = new THREE.BufferAttribute(new Float32Array(2000 * 3), 3)
-      const sprayColAttr = new THREE.BufferAttribute(new Float32Array(2000 * 3), 3)
-      sprayPosAttr.setUsage(THREE.DynamicDrawUsage)
-      sprayColAttr.setUsage(THREE.DynamicDrawUsage)
-      sprayGeo.setAttribute('position', sprayPosAttr)
-      sprayGeo.setAttribute('color', sprayColAttr)
-      sprayGeo.setDrawRange(0, 0)
-      const sprayMat = new THREE.PointsMaterial({
-        size: 3,
-        sizeAttenuation: false,
-        vertexColors: true,
-      })
-      const sprayPoints = new THREE.Points(sprayGeo, sprayMat)
-      sprayPoints.frustumCulled = false
-      scene.add(sprayPoints)
-
-      // §3.2 Tier 1: Marching Cubes — smooth mesh surface from particles
-      // Resolution 28 = 28³ grid cells. Document says 32³ (~0.6ms).
-      const mcMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0x2288dd,
-        roughness: 0.1,
-        metalness: 0.0,
-        transmission: 0.5,
-        thickness: 0.4,
-        transparent: true,
-        opacity: 0.8,
-        side: THREE.DoubleSide,
-      })
-      // enableUvs=false, enableColors=false — colors cause shader mismatch with MeshStandardMaterial
-      const mcubes = new MarchingCubes(MC_RES, mcMaterial, false, false, 50000)
-      // MC generates geometry in [0,1]³. Scale to box size, offset to center at origin.
-      mcubes.position.set(-HALF_W, -HALF_H, -HALF_D)
-      mcubes.scale.set(BOX_W, BOX_H, BOX_D)
-      mcubes.isolation = MC_THRESHOLD
-      mcubes.visible = true
-      scene.add(mcubes)
-
-      // §3.2 Tier 2: SSFR — Screen-Space Fluid Rendering
-      // Raw WebGPU fluid renderer — overlay canvas for SSFR
-      // Init async — updates simRef when ready
-      let fluidRenderer: FluidRenderer | null = null
-      ;(async () => {
-        const fr = new FluidRenderer()
-        if (await fr.init(container, container.clientWidth, container.clientHeight)) {
-          fluidRenderer = fr
-          // Update the ref so the render loop picks it up
-          if (simRef.current) simRef.current.fluidRenderer = fr
-        }
-      })()
-
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
       const mouse = new THREE.Vector2()
 
       // ── Store in ref ──────────────────────────────────────────────────
       simRef.current = {
-        simulation,
-        mpmSimulation,
+        gpuSim,
+        compositionTable,
+        contactProcessor,
+        device,
         scene,
         camera,
         renderer,
         controls,
-        instMeshes,
-        dummy,
+        fluidRenderer,
         animId: 0,
         lastTime: performance.now(),
         fpsAccum: 0,
         fpsFrames: 0,
-        selectedMaterial: 0,
+        frameCount: 0,
+        selectedComposition: 0,
         gravity: 9.81,
-        timeScale: 1.0,
+        temperature: 20,
         raycaster,
         mouse,
         boxMesh,
@@ -493,15 +426,6 @@ export function FluidTest() {
         wallMesh,
         leftWall,
         rightWall,
-        avgTemp: AMBIENT_TEMP,
-        sprayPoints,
-        sprayPosAttr,
-        sprayColAttr,
-        mcubes,
-        fluidRenderer,
-        showParticles: false,
-        boxScale: 1.0,
-        solverType: 'sph' as const,
       }
 
       // ── Click handler ─────────────────────────────────────────────────
@@ -518,7 +442,7 @@ export function FluidTest() {
         if (intersects.length > 0) {
           const pt = intersects[0].point
           const spawnY = Math.min(HALF_H - 0.15, Math.max(-HALF_H + 0.15, pt.y))
-          spawnParticles(new THREE.Vector3(
+          spawnParticlesAtClick(new THREE.Vector3(
             Math.max(-HALF_W + 0.2, Math.min(HALF_W - 0.2, pt.x)),
             spawnY,
             Math.max(-HALF_D + 0.2, Math.min(HALF_D - 0.2, pt.z)),
@@ -526,9 +450,6 @@ export function FluidTest() {
         }
       }
       renderer.domElement.addEventListener('pointerdown', onPointerDown)
-
-      // ── Temp color for per-particle coloring ───────────────────────────
-      const tempColor = new THREE.Color()
 
       // ── Animation loop ────────────────────────────────────────────────
       const animate = () => {
@@ -546,140 +467,54 @@ export function FluidTest() {
         if (sim.fpsAccum >= 0.5) {
           const currentFps = Math.round(sim.fpsFrames / sim.fpsAccum)
           setFps(currentFps)
-          const count = sim.simulation.get_count()
-          setFpsWarning(currentFps < 30 && count > 100)
+          setFpsWarning(currentFps < 30 && sim.gpuSim.particleCount > 100)
           sim.fpsAccum = 0
           sim.fpsFrames = 0
         }
 
-        // ── Step WASM simulation (SPH or MPM based on solver type) ──
-        const useMPM = sim.solverType === 'mpm'
-        const activeSim = useMPM ? sim.mpmSimulation : sim.simulation
-        const count = activeSim.get_count()
+        sim.frameCount++
+        const count = sim.gpuSim.particleCount
+
         if (count > 0) {
-          const simDt = Math.min(rawDt, 1 / 30) * sim.timeScale
-          const substeps = useMPM ? 8 : 3 // MPM: 8 substeps for stability, SPH: 3 at 60Hz
-          activeSim.step(sim.gravity, simDt, substeps)
+          // GPU compute: MLS-MPM step (clearGrid -> P2G -> forces -> G2P x2 substeps)
+          const encoder = sim.device.createCommandEncoder()
+          sim.gpuSim.step(encoder)
+          sim.device.queue.submit([encoder.finish()])
 
-          // Get results from WASM
-          const positions = activeSim.get_positions()
-          const velsRaw = activeSim.get_velocities()
-          const mats = useMPM ? activeSim.get_mat_ids() : sim.simulation.get_materials()
-          const temps = useMPM ? new Float32Array(count).fill(20) : sim.simulation.get_temperatures()
-          if (!useMPM) void sim.simulation.get_phases()
-
-          // Update per-material InstancedMeshes
-          let avgTemp = 0
-          const matOffsets = new Array(MATERIALS.length).fill(0)
-
-          // Count particles per material
-          const matCounts = new Array(MATERIALS.length).fill(0)
-          for (let i = 0; i < count; i++) {
-            matCounts[mats[i]]++
-            avgTemp += temps[i]
-          }
-          sim.instMeshes.forEach((im, idx) => { im.count = matCounts[idx] })
-          let dominantMat = 0
-          for (let m = 1; m < MATERIALS.length; m++) if (matCounts[m] > matCounts[dominantMat]) dominantMat = m
-
-          // Set matrices per material
-          for (let i = 0; i < count; i++) {
-            const i3 = i * 3
-            const m = mats[i]
-            const localIdx = matOffsets[m]++
-            sim.dummy.makeTranslation(positions[i3], positions[i3 + 1], positions[i3 + 2])
-            sim.instMeshes[m].setMatrixAt(localIdx, sim.dummy)
-          }
-
-          // Mark instanced meshes for GPU upload
-          // Hide spheres when SSFR is active — fluid surface replaces them
-          const ssfrActive = sim.fluidRenderer?.isInitialized ?? false
-          sim.instMeshes.forEach((im) => {
-            if (im.count > 0) im.instanceMatrix.needsUpdate = true
-            // Show particles when: SSFR off, OR user toggled showParticles on
-            im.visible = !ssfrActive || sim.showParticles
-          })
-
-          // Upload particles to WebGPU fluid renderer
-          if (sim.fluidRenderer?.isInitialized) {
-            sim.fluidRenderer.updateParticles(positions, velsRaw, mats, count)
-
-            const viewMat = new Float32Array(16)
-            sim.camera.matrixWorldInverse.toArray(viewMat)
-            const fov = sim.camera.fov * Math.PI / 180
-            sim.fluidRenderer.updateCamera(viewMat, fov, sim.camera.aspect, sim.camera.near, sim.camera.far, 0.12)
-
-            // Set fluid appearance from dominant material — per-material visual properties
-            const domColor = new THREE.Color(MATERIALS[dominantMat].color)
-            const matName = MATERIALS[dominantMat].name
-            // Per-material rendering properties based on real physics:
-            // F0: Fresnel base reflectance (Schlick), metalness, emissive glow, specular
-            const matVisuals: Record<string, { density: number, F0: number, emissive: number, specPow: number, metalness: number, ior: number }> = {
-              'Water':          { density: 2.0,  F0: 0.02, emissive: 0.0, specPow: 300, metalness: 0.0,  ior: 1.333 },
-              'Honey':          { density: 8.0,  F0: 0.04, emissive: 0.0, specPow: 80,  metalness: 0.0,  ior: 1.504 },
-              'Molten Copper':  { density: 1.5,  F0: 0.6,  emissive: 1.2, specPow: 150, metalness: 0.8,  ior: 1.0 },
-              'Mercury':        { density: 8.0,  F0: 0.9,  emissive: 0.0, specPow: 600, metalness: 0.98, ior: 1.0 },
-              'Olive Oil':      { density: 4.0,  F0: 0.03, emissive: 0.0, specPow: 120, metalness: 0.0,  ior: 1.473 },
-              'Lava (Basaltic)':{ density: 1.0,  F0: 0.04, emissive: 1.5, specPow: 60,  metalness: 0.0,  ior: 1.6 },
-              'Blood':          { density: 5.0,  F0: 0.03, emissive: 0.0, specPow: 150, metalness: 0.0,  ior: 1.35 },
-            }
-            const vis = matVisuals[matName] ?? matVisuals['Water']
-            sim.fluidRenderer.setFluidMaterial({
-              r: domColor.r, g: domColor.g, b: domColor.b,
-              density: vis.density,
-              F0: vis.F0,
-              emissive: vis.emissive,
-              specularPower: vis.specPow,
-              metalness: vis.metalness,
-              ior: vis.ior,
-            })
-          }
-
-          if (count > 0) sim.avgTemp = avgTemp / count
-
-          // MC disabled — too coarse (32³ grid, 0.05m cells) and expensive.
-          // Will re-enable when moved to WebGPU compute shader for finer grid.
-          sim.mcubes.visible = false
+          // Update camera for SSFR rendering
+          const viewMat = new Float32Array(16)
+          sim.camera.matrixWorldInverse.toArray(viewMat)
+          const fov = sim.camera.fov * Math.PI / 180
+          sim.fluidRenderer.updateCamera(viewMat, fov, sim.camera.aspect, sim.camera.near, sim.camera.far, 0.12)
 
           setParticleCount(count)
-
-          // §3.2: Render spray particles
-          const sprayCount = sim.simulation.get_spray_count()
-          if (sprayCount > 0) {
-            const sprayPos = sim.simulation.get_spray_positions()
-            const sprayMats = sim.simulation.get_spray_materials()
-            const sPosArr = sim.sprayPosAttr.array as Float32Array
-            const sColArr = sim.sprayColAttr.array as Float32Array
-            for (let s = 0; s < sprayCount; s++) {
-              const s3 = s * 3
-              sPosArr[s3]     = sprayPos[s3]
-              sPosArr[s3 + 1] = sprayPos[s3 + 1]
-              sPosArr[s3 + 2] = sprayPos[s3 + 2]
-              // Bright white-tinted version of material color
-              const sm = MATERIALS[sprayMats[s]]
-              tempColor.setHex(sm.color).lerp(new THREE.Color(0xffffff), 0.5)
-              sColArr[s3]     = tempColor.r
-              sColArr[s3 + 1] = tempColor.g
-              sColArr[s3 + 2] = tempColor.b
-            }
-            sim.sprayPosAttr.needsUpdate = true
-            sim.sprayColAttr.needsUpdate = true
-          }
-          sim.sprayPoints.geometry.setDrawRange(0, sprayCount)
         }
 
+        // Update orbit controls
         sim.controls.update()
 
-        // Render: Three.js scene first, then WebGPU fluid overlay
+        // Render: Three.js scene first
         sim.renderer.render(sim.scene, sim.camera)
 
-        // WebGPU SSFR fluid rendering — every frame
-        if (sim.fluidRenderer?.isInitialized) {
-          const count = sim.simulation.get_count()
+        // SSFR fluid rendering — every frame
+        if (sim.fluidRenderer.isInitialized) {
           if (count > 0) {
             sim.fluidRenderer.captureScene(sim.renderer.domElement as HTMLCanvasElement)
           }
-          sim.fluidRenderer.render(count, now / 1000) // always render (clears overlay when count=0)
+          sim.fluidRenderer.render(count, now / 1000)
+        }
+
+        // Contact processing every 10 frames (async readback)
+        if (sim.frameCount % 10 === 0 && count > 0) {
+          sim.gpuSim.readContacts().then(contacts => {
+            if (contacts.length > 0) {
+              // For now, log contacts — full composition update requires
+              // reading particle comp IDs back from GPU (future: batch update buffer)
+              console.debug(`Contacts detected: ${contacts.length} pairs`)
+            }
+          }).catch(() => {
+            // Readback may fail if buffers are still in use — non-fatal
+          })
         }
       }
 
@@ -707,7 +542,7 @@ export function FluidTest() {
     const cleanupRef: {
       onResize?: () => void
       onPointerDown?: (e: PointerEvent) => void
-      renderer?: any /* WebGPURenderer */
+      renderer?: any
       container?: HTMLDivElement
     } = {}
 
@@ -724,7 +559,8 @@ export function FluidTest() {
       }
       if (simRef.current) {
         cancelAnimationFrame(simRef.current.animId)
-        simRef.current.simulation.free()
+        simRef.current.gpuSim.destroy()
+        simRef.current.fluidRenderer.dispose()
       }
       if (cleanupRef.renderer) {
         cleanupRef.renderer.dispose()
@@ -738,10 +574,10 @@ export function FluidTest() {
       }
       simRef.current = null
     }
-  }, [spawnParticles])
+  }, [spawnParticlesAtClick])
 
-  // ── Render ──────────────────────────────────────────────────────────────
-  const mat = MATERIALS[selectedMaterial]
+  // Currently selected composition details
+  const selectedComp = compositions[selectedComposition]
 
   return (
     <div style={{
@@ -769,14 +605,14 @@ export function FluidTest() {
             color: '#00d4ff',
             letterSpacing: 2,
           }}>
-            SPH FLUID SIMULATION
+            GPU MLS-MPM FLUID
           </span>
           <span style={{
             fontSize: 9,
             color: 'rgba(100,150,200,0.5)',
             letterSpacing: 1,
           }}>
-            structure.md S3.0+S3.1+S3.2+S3.11 | Rust/WASM
+            WebGPU Compute + SSFR
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -797,7 +633,7 @@ export function FluidTest() {
           }}>
             FPS: {fps}
           </span>
-          {wasmReady && (
+          {gpuReady && (
             <span style={{
               fontSize: 8,
               fontWeight: 700,
@@ -807,7 +643,7 @@ export function FluidTest() {
               borderRadius: 3,
               letterSpacing: 1,
             }}>
-              WASM
+              GPU
             </span>
           )}
           <span style={{
@@ -817,15 +653,6 @@ export function FluidTest() {
           }}>
             N: {particleCount} / {MAX_PARTICLES}
           </span>
-          {simRef.current && particleCount > 0 && (
-            <span style={{
-              fontSize: 10,
-              color: 'rgba(100,150,200,0.4)',
-              letterSpacing: 1,
-            }}>
-              {Math.round(simRef.current.avgTemp)}°C
-            </span>
-          )}
         </div>
       </div>
 
@@ -842,7 +669,7 @@ export function FluidTest() {
           }}
         >
           {/* Click hint overlay */}
-          {particleCount === 0 && (
+          {!gpuReady && (
             <div style={{
               position: 'absolute',
               top: '50%',
@@ -855,10 +682,10 @@ export function FluidTest() {
               textAlign: 'center',
               lineHeight: 2,
             }}>
-              {wasmReady ? 'CLICK THE BOX TO DROP FLUID' : 'LOADING WASM...'}
+              INITIALIZING GPU...
               <br />
               <span style={{ fontSize: 10, opacity: 0.6 }}>
-                {wasmReady ? 'Drag to orbit / Scroll to zoom' : 'Initializing Rust SPH solver'}
+                Setting up WebGPU compute + SSFR render
               </span>
             </div>
           )}
@@ -866,76 +693,111 @@ export function FluidTest() {
 
         {/* Control Panel */}
         <div style={{
-          width: 220,
+          width: 240,
           flexShrink: 0,
           borderLeft: '1px solid rgba(0,180,255,0.1)',
           padding: 14,
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 12,
           overflowY: 'auto',
           background: 'rgba(4,8,18,0.6)',
         }}>
-          {/* Solver toggle: SPH / MPM */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-            {(['sph', 'mpm'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => { resetSim(); setSolverType(s) }}
-                style={{
-                  flex: 1, padding: '5px 0', cursor: 'pointer',
-                  background: solverType === s ? 'rgba(0,180,255,0.2)' : 'rgba(0,180,255,0.05)',
-                  border: `1px solid ${solverType === s ? 'rgba(0,180,255,0.5)' : 'rgba(0,180,255,0.15)'}`,
-                  borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit',
-                  fontSize: 11, letterSpacing: 2, fontWeight: solverType === s ? 700 : 400,
-                }}
-              >
-                {s.toUpperCase()}
-              </button>
-            ))}
-          </div>
-
-          {/* Material select */}
+          {/* Active Compositions List */}
           <div>
-            <label style={labelStyle}>MATERIAL</label>
-            <select
-              value={selectedMaterial}
-              onChange={(e) => setSelectedMaterial(Number(e.target.value))}
-              style={{
-                width: '100%',
-                padding: '6px 8px',
-                background: 'rgba(0,20,40,0.8)',
-                border: '1px solid rgba(0,180,255,0.2)',
-                borderRadius: 3,
-                color: '#c0d0e0',
-                fontSize: 11,
-                fontFamily: 'inherit',
-                cursor: 'pointer',
-                outline: 'none',
-              }}
-            >
-              {MATERIALS.map((m, i) => (
-                <option key={m.name} value={i} style={{ background: '#0a1020' }}>
-                  {m.name}
-                </option>
+            <label style={labelStyle}>MATERIALS</label>
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              maxHeight: 200,
+              overflowY: 'auto',
+            }}>
+              {compositions.map((comp) => (
+                <button
+                  key={comp.id}
+                  onClick={() => setSelectedComposition(comp.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '5px 8px',
+                    cursor: 'pointer',
+                    background: selectedComposition === comp.id
+                      ? 'rgba(0,180,255,0.15)'
+                      : 'rgba(0,180,255,0.03)',
+                    border: `1px solid ${selectedComposition === comp.id
+                      ? 'rgba(0,180,255,0.4)'
+                      : 'rgba(0,180,255,0.1)'}`,
+                    borderRadius: 3,
+                    color: '#c0d0e0',
+                    fontFamily: 'inherit',
+                    fontSize: 10,
+                    textAlign: 'left',
+                    width: '100%',
+                  }}
+                >
+                  {/* Color swatch */}
+                  <div style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2,
+                    flexShrink: 0,
+                    background: `rgb(${Math.round(comp.props.color[0] * 255)},${Math.round(comp.props.color[1] * 255)},${Math.round(comp.props.color[2] * 255)})`,
+                    boxShadow: comp.props.emissive > 0
+                      ? `0 0 6px rgb(${Math.round(comp.props.color[0] * 255)},${Math.round(comp.props.color[1] * 255)},${Math.round(comp.props.color[2] * 255)})`
+                      : 'none',
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {comp.name}
+                  </div>
+                  <span style={{ fontSize: 8, color: 'rgba(100,150,200,0.4)', flexShrink: 0 }}>
+                    {comp.formula}
+                  </span>
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
-          {/* Color swatch */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{
-              width: 14,
-              height: 14,
+          {/* Spawn button */}
+          <button
+            onClick={() => spawnBatch(3000)}
+            disabled={!gpuReady}
+            style={{
+              padding: '7px 0',
+              background: gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)',
+              border: '1px solid rgba(0,180,255,0.3)',
               borderRadius: 3,
-              background: `#${mat.color.toString(16).padStart(6, '0')}`,
-              boxShadow: mat.emissive
-                ? `0 0 8px #${mat.color.toString(16).padStart(6, '0')}`
-                : 'none',
-            }} />
-            <span style={{ fontSize: 10, color: 'rgba(100,150,200,0.6)' }}>
-              {mat.composition}
-            </span>
+              color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
+              fontSize: 10,
+              fontFamily: 'inherit',
+              letterSpacing: 2,
+              cursor: gpuReady ? 'pointer' : 'default',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,180,255,0.2)'
+            }}
+            onMouseLeave={(e) => {
+              (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)'
+            }}
+          >
+            SPAWN 3K {selectedComp ? selectedComp.name.toUpperCase() : ''}
+          </button>
+
+          {/* Temperature slider */}
+          <div>
+            <label style={labelStyle}>TEMPERATURE</label>
+            <input
+              type="range"
+              min={-50}
+              max={2000}
+              step={10}
+              value={temperatureVal}
+              onChange={(e) => setTemperatureVal(Number(e.target.value))}
+              style={sliderStyle}
+            />
+            <div style={valueStyle}>{temperatureVal} C</div>
           </div>
 
           {/* Gravity slider */}
@@ -951,21 +813,6 @@ export function FluidTest() {
               style={sliderStyle}
             />
             <div style={valueStyle}>{gravityVal.toFixed(1)} m/s2</div>
-          </div>
-
-          {/* Time scale slider */}
-          <div>
-            <label style={labelStyle}>TIME SCALE</label>
-            <input
-              type="range"
-              min={0.1}
-              max={3.0}
-              step={0.1}
-              value={timeScale}
-              onChange={(e) => setTimeScale(Number(e.target.value))}
-              style={sliderStyle}
-            />
-            <div style={valueStyle}>{timeScale.toFixed(1)}x</div>
           </div>
 
           {/* Reset button */}
@@ -993,45 +840,8 @@ export function FluidTest() {
             RESET
           </button>
 
-          {/* Show/Hide Particles */}
-          <button
-            onClick={() => setShowParticles(!showParticles)}
-            style={{
-              width: '100%', padding: '6px 0', cursor: 'pointer',
-              background: showParticles ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.05)',
-              border: '1px solid rgba(0,180,255,0.2)', borderRadius: 3,
-              color: '#c0d0e0', fontFamily: 'inherit', fontSize: 11, letterSpacing: 1,
-              marginBottom: 6,
-            }}
-          >
-            {showParticles ? 'HIDE PARTICLES' : 'SHOW PARTICLES'}
-          </button>
-
-          {/* Box Scale */}
-          <div style={{ marginBottom: 6 }}>
-            <div style={{ fontSize: 10, letterSpacing: 2, color: 'rgba(0,180,255,0.5)', marginBottom: 2 }}>
-              BOX SIZE
-            </div>
-            <input
-              type="range" min={0.4} max={1.0}
-              step={0.05}
-              value={boxScale}
-              onChange={(e) => setBoxScale(Number(e.target.value))}
-              style={{
-                width: '100%', accentColor: '#00bbff',
-                background: 'transparent', cursor: 'pointer',
-              }}
-            />
-            <div style={{ fontSize: 10, textAlign: 'right', color: 'rgba(0,180,255,0.4)' }}>
-              {(boxScale * 100).toFixed(0)}%
-            </div>
-          </div>
-
           {/* Separator */}
-          <div style={{
-            height: 1,
-            background: 'rgba(0,180,255,0.1)',
-          }} />
+          <div style={{ height: 1, background: 'rgba(0,180,255,0.1)' }} />
 
           {/* Info panel */}
           <div>
@@ -1049,10 +859,10 @@ export function FluidTest() {
                 marginBottom: 8,
               }}
             >
-              {showInfo ? '[-] INFO' : '[+] INFO'}
+              {showInfo ? '[-] MATERIAL INFO' : '[+] MATERIAL INFO'}
             </button>
 
-            {showInfo && (
+            {showInfo && selectedComp && (
               <div style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -1063,20 +873,24 @@ export function FluidTest() {
                 <div style={{
                   fontSize: 12,
                   fontWeight: 700,
-                  color: `#${mat.color.toString(16).padStart(6, '0')}`,
+                  color: `rgb(${Math.round(selectedComp.props.color[0] * 255)},${Math.round(selectedComp.props.color[1] * 255)},${Math.round(selectedComp.props.color[2] * 255)})`,
                 }}>
-                  {mat.name}
+                  {selectedComp.name}
                 </div>
 
                 <div style={{ color: 'rgba(100,150,200,0.55)', fontSize: 9 }}>
-                  {mat.description}
+                  {selectedComp.formula}
                 </div>
 
                 <div style={{ marginTop: 4 }}>
-                  <InfoRow label="Density" value={`${mat.density} kg/m3`} symbol={'\u03c1'} />
-                  <InfoRow label="Viscosity" value={`${mat.viscosity} Pa\u00b7s`} symbol={'\u03bc'} />
-                  <InfoRow label="Surface Tension" value={`${mat.surfaceTension} N/m`} symbol={'\u03c3'} />
-                  <InfoRow label="Rest Density" value={`${mat.restDensity} kg/m3`} symbol={'\u03c1\u2080'} />
+                  <InfoRow label="Density" value={`${selectedComp.props.density.toFixed(0)} kg/m3`} symbol={'\u03c1'} />
+                  <InfoRow label="Viscosity" value={`${selectedComp.props.viscosity.toFixed(4)} Pa\u00b7s`} symbol={'\u03bc'} />
+                  <InfoRow label="Surface Tension" value={`${selectedComp.props.surfaceTension.toFixed(4)} N/m`} symbol={'\u03c3'} />
+                  <InfoRow label="Melting Point" value={`${selectedComp.props.meltingPoint.toFixed(0)} C`} symbol={'Tm'} />
+                  <InfoRow label="Boiling Point" value={`${selectedComp.props.boilingPoint.toFixed(0)} C`} symbol={'Tb'} />
+                  <InfoRow label="Metalness" value={`${(selectedComp.props.metalness * 100).toFixed(0)}%`} symbol={'M'} />
+                  <InfoRow label="F0" value={selectedComp.props.F0.toFixed(3)} symbol={'F'} />
+                  <InfoRow label="IOR" value={selectedComp.props.IOR.toFixed(3)} symbol={'n'} />
                 </div>
 
                 <div style={{
@@ -1090,14 +904,13 @@ export function FluidTest() {
                   lineHeight: 1.8,
                 }}>
                   <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>
-                    FORMULAS
+                    GPU MLS-MPM
                   </div>
-                  <div>Pressure: P = B((\u03c1/\u03c1\u2080)^7 - 1)</div>
-                  <div>B = \u03c1\u2080 * cs\u00b2 / 7, cs=8</div>
-                  <div>F_p = -\u03a3 m_j(P_i/\u03c1_i\u00b2 + P_j/\u03c1_j\u00b2)\u2207W</div>
-                  <div>F_v = \u03bc\u03a3 m_j(v_j-v_i)/\u03c1_j \u2207\u00b2W</div>
-                  <div>Kernel: Cubic spline (M4)</div>
-                  <div>Solver: Rust/WASM, 4 substeps</div>
+                  <div>Solver: WebGPU compute</div>
+                  <div>Substeps: 2 per frame</div>
+                  <div>Grid: 64x64x64</div>
+                  <div>Render: SSFR (5-pass)</div>
+                  <div>Transfer: P2G + G2P</div>
                   <div style={{ marginTop: 4, color: 'rgba(0,180,255,0.4)', letterSpacing: 1 }}>
                     From structure.md S3.2
                   </div>
