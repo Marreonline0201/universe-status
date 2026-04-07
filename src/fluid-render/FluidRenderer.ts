@@ -61,7 +61,7 @@ export class FluidRenderer {
 
   private sampler!: GPUSampler
   private maxParticles = 10000
-  private boxHalf = [1.0, 0.75, 0.75] // half-extents for clipping
+  private boxHalf = [0.75, 0.75, 0.75] // half-extents for clipping — must match cubic box (1.5/2)
   private fluidColor = [0.13, 0.4, 0.87]
   private fluidDensity = 3.0
   private fluidF0 = 0.02

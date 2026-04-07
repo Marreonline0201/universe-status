@@ -20,9 +20,13 @@ import { AIChatPanel } from './AIChatPanel'
 const MAX_PARTICLES = 40_000
 
 // Glass box dimensions in Three.js world space
-const BOX_W = 2.0
-const BOX_H = 1.5
-const BOX_D = 1.5
+// Box must be cubic to match MLS-MPM [0,1]^3 simulation domain.
+// If the box is rectangular, the sim-to-world mapping stretches differently
+// per axis, causing misaligned boundaries (fluid hits invisible walls).
+const BOX_SIZE = 1.5
+const BOX_W = BOX_SIZE
+const BOX_H = BOX_SIZE
+const BOX_D = BOX_SIZE
 const HALF_W = BOX_W / 2
 const HALF_H = BOX_H / 2
 const HALF_D = BOX_D / 2
