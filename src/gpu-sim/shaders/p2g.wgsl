@@ -68,8 +68,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let props = comp_props[p.composition_id];
     let density = props.x;
 
-    // Mass per particle = density * cell_volume
-    let mass = density * DX * DX * DX;
+    // Material properties from composition table
+    let rest_density = density;        // kg/m³ (target density)
+    let stiffness = props.w;           // pressure stiffness (EOS)
+    let viscosity = props.y;           // for viscous damping
+
+    // Mass and volume per particle
+    let volume = DX * DX * DX;         // cell volume
+    let mass = rest_density * volume;
 
     // Reconstruct vec3 from scalar fields
     let pos = vec3<f32>(p.pos_x, p.pos_y, p.pos_z);
@@ -80,6 +86,17 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Base cell (integer coords of the lower-left corner of the 3x3x3 stencil)
     let base = vec3<i32>(floor(pos_grid - 0.5));
+
+    // ── MLS-MPM Equation of State: compute stress tensor ────────────────
+    // J = det(deformation gradient) ≈ 1 + trace(C) * dt
+    // For fluid: pressure = stiffness * (1/J - 1) pushing particles apart
+    // This is what makes water incompressible instead of collapsing into sheets
+    let J = 1.0 + (p.C0.x + p.C1.y) * params.dt;  // simplified det for small deformation
+    let pressure = stiffness * (1.0 / max(J, 0.1) - 1.0);
+
+    // Stress = -pressure * I (isotropic for fluid)
+    // Force contribution per cell = stress * volume * grad_w
+    // In MLS-MPM, this simplifies to: force = -volume * 4 * inv_dx^2 * pressure * weight * (cell - pos)
 
     // Scatter to 3x3x3 neighborhood
     for (var di: i32 = 0; di < 3; di++) {
@@ -107,18 +124,23 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 // Weighted mass
                 let wm = w * mass;
 
-                // APIC momentum transfer: vel + C * (cell_pos - particle_pos) in world space
+                // APIC momentum transfer: vel + C * (cell_pos - particle_pos)
                 let cell_world = vec3<f32>(f32(cell.x), f32(cell.y), f32(cell.z)) * DX;
                 let dx_world = cell_world - pos;
 
-                // Affine velocity contribution (C is 2x2 for the x-y plane, ignore z for now)
+                // Affine velocity contribution (C maps velocity field around particle)
                 let affine_vel = vec3<f32>(
                     p.C0.x * dx_world.x + p.C0.y * dx_world.y,
                     p.C1.x * dx_world.x + p.C1.y * dx_world.y,
                     0.0
                 );
 
-                let momentum = (vel + affine_vel) * wm;
+                // MLS-MPM stress force: pushes particles apart when compressed
+                // force = -volume * pressure * weight * 4 * inv_dx^2 * (cell_pos - particle_pos)
+                let stress_force = -volume * pressure * w * 4.0 * INV_DX * INV_DX * dx_world;
+
+                // Total momentum = velocity contribution + stress force * dt
+                let momentum = (vel + affine_vel) * wm + stress_force * params.dt;
 
                 // Fixed-point encode
                 let fm  = i32(wm * FIXED_SCALE);
