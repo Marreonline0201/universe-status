@@ -13,6 +13,13 @@ const NUM_CELLS: u32   = 262144u;         // 64^3
 const INV_FIXED: f32   = 1e-7;           // fixed-point → float
 const FIXED_SCALE: f32 = 1e7;            // float → fixed-point
 const BOUNDARY: u32    = 2u;              // wall margin in cells
+const DX: f32          = 1.0 / 64.0;     // cell size
+const CELL_VOLUME: f32 = DX * DX * DX;   // volume of one cell
+
+// MLS-MPM fluid parameters (in grid units, NOT real-world units)
+const REST_DENSITY: f32 = 4.0;           // target density in grid units
+const STIFFNESS: f32    = 50.0;          // pressure stiffness (EOS)
+const VISCOSITY_GRID: f32 = 0.1;         // grid-level viscosity damping
 
 // ── Uniforms ─────────────────────────────────────────────────────────────────
 struct SimParams {

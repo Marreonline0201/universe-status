@@ -35,7 +35,8 @@ struct Particle {
     C0:              vec2<f32>,             // bytes 32-39 (align 8, OK)
     C1:              vec2<f32>,             // bytes 40-47 (align 8, OK)
     phase:           u32,                   // bytes 48-51
-    _pad0: u32, _pad1: u32, _pad2: u32,   // bytes 52-63
+    J: f32,                                // bytes 52-55 — accumulated volume ratio
+    _pad1: u32, _pad2: u32,               // bytes 56-63
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
@@ -130,10 +131,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    // ── Update velocity ──────────────────────────────────────────────────
+    // ── Update velocity and affine matrix ───────────────────────────────
     var vel = new_vel;
     p.C0 = new_C0;
     p.C1 = new_C1;
+
+    // ── Accumulate J (volume ratio / determinant of deformation gradient) ──
+    // J tracks how much the fluid has compressed or expanded over time.
+    // trace(C) = C0.x + C1.y gives the velocity divergence (rate of volume change)
+    p.J *= 1.0 + (new_C0.x + new_C1.y) * params.dt;
+    p.J = clamp(p.J, 0.05, 20.0);  // prevent extreme values
 
     // ── Advect position ──────────────────────────────────────────────────
     var new_pos = pos + vel * params.dt;
