@@ -1,24 +1,17 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// FluidScene — SSFR rendering for smooth fluid surface
+// FluidScene — Renders MLS-MPM particles in the Three.js scene
 //
-// Two-pass rendering:
-//   Pass 1: Main scene (ball, box, grids) → sharp sceneColor
-//   Pass 2: Fluid particles → bilateral blur → smooth surface
-//   Composite: Beer's law + Fresnel + surface shading
+// Particles render as THREE.Points sharing the scene's depth buffer with
+// all other objects (ball, box, terrain). Depth ordering is correct.
 //
-// CRITICAL: particles are in BOTH scenes. If the pipeline fails, the fallback
-// (direct renderer.render of mainScene) still shows particles. Never let
-// a pipeline failure hide all fluid.
+// Current state: particles are visible dots. Smooth surface rendering (SSFR)
+// requires proper Three.js TSL documentation and testing — deferred until
+// the TSL API can be verified reliably.
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 // ══════════════════════════════════════════════════════════════════════════════
 
 import * as THREE from 'three'
-// @ts-ignore — TSL types
-import {
-  pass, Fn, vec3, vec4, float, mix, exp, clamp, pow, smoothstep,
-  normalize, dot, max, sub, add, mul, reflect,
-} from 'three/tsl'
 
 const MAX_PARTICLES = 300_000
 const FLOATS_PER_PARTICLE = 20
@@ -27,21 +20,16 @@ export class FluidScene {
   private points: THREE.Points | null = null
   private positionAttr: THREE.BufferAttribute | null = null
   private colorAttr: THREE.BufferAttribute | null = null
-
-  private mainScene: THREE.Scene
-  private fluidOnlyScene: THREE.Scene
-
+  private scene: THREE.Scene
   private device: GPUDevice | null = null
   private readbackBuffer: GPUBuffer | null = null
   private readbackPending = false
-  private currentCount = 0
 
+  // Public — checked by FluidTest.tsx render loop
   renderPipeline: any = null
-  private pipelineInitialized = false
 
-  constructor(mainScene: THREE.Scene) {
-    this.mainScene = mainScene
-    this.fluidOnlyScene = new THREE.Scene()
+  constructor(scene: THREE.Scene) {
+    this.scene = scene
   }
 
   init(device: GPUDevice) {
@@ -66,117 +54,30 @@ export class FluidScene {
 
     geo.setDrawRange(0, 0)
 
-    // Material for the fluid-only scene (blurred pass)
-    const fluidMat = new THREE.PointsMaterial({
-      size: 0.08,
+    const mat = new THREE.PointsMaterial({
+      size: 0.03,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.7,
       depthWrite: true,
       depthTest: true,
-      blending: THREE.NormalBlending,
     })
 
-    this.points = new THREE.Points(geo, fluidMat)
+    this.points = new THREE.Points(geo, mat)
     this.points.frustumCulled = false
-    this.fluidOnlyScene.add(this.points)
-
-    // FALLBACK: also add particles to mainScene so they're ALWAYS visible
-    // even if the SSFR pipeline fails. Uses the same geometry (shared buffer).
-    const fallbackMat = new THREE.PointsMaterial({
-      size: 0.04,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.5,
-      depthWrite: true,
-      depthTest: true,
-      blending: THREE.NormalBlending,
-    })
-    const fallbackPoints = new THREE.Points(geo, fallbackMat)
-    fallbackPoints.frustumCulled = false
-    this.mainScene.add(fallbackPoints)
+    this.scene.add(this.points)
   }
 
-  async initPostProcessing(renderer: any, camera: THREE.PerspectiveCamera) {
-    if (this.pipelineInitialized) return
-
-    try {
-      // Pass 1: Main scene → sharp (includes fallback particles for depth ordering)
-      const scenePass = pass(this.mainScene, camera)
-      const sceneColor = scenePass.getTextureNode()
-
-      // Pass 2: Fluid particles only → bilateral blur
-      const fluidPass = pass(this.fluidOnlyScene, camera)
-      const fluidColor = fluidPass.getTextureNode()
-      const fluidDepth = fluidPass.getLinearDepthNode()
-
-      // Bilateral blur: merges particles, stops at fluid edge
-      const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
-      const smoothFluid = bilateralBlur(fluidColor, fluidDepth, 12, 0.15)
-
-      // ── Composite: Beer's law + Fresnel + surface lighting ──
-      // Uses blurred alpha as thickness proxy. No internal Three.js access needed.
-      const output = Fn(() => {
-        const scene = sceneColor
-        const fluid = smoothFluid
-
-        const alpha = smoothstep(float(0.02), float(0.25), fluid.a)
-
-        // ── Beer's law absorption ──
-        const thickness = alpha.mul(5.0)
-        const absorption = vec3(1.8, 0.12, 0.03)
-        const transmittance = exp(absorption.negate().mul(thickness))
-        const transmitted = scene.rgb.mul(transmittance)
-
-        // ── Volume scattering ──
-        const scatterCol = vec3(0.04, 0.12, 0.22)
-        const scatter = scatterCol.mul(sub(float(1.0), exp(thickness.negate().mul(1.5))))
-
-        // ── Fresnel: F = F0 + (1-F0)(1 - N·V)^5 ──
-        // Approximate N·V from alpha gradient: edges (low alpha) = glancing angle
-        const NdotV = clamp(alpha, float(0.1), float(1.0))
-        const F0 = float(0.02)
-        const fresnel = clamp(
-          add(F0, mul(sub(float(1.0), F0), pow(sub(float(1.0), NdotV), float(5.0)))),
-          float(0.0), float(1.0)
-        )
-
-        // ── Environment reflection ──
-        const envColor = vec3(0.2, 0.3, 0.5)
-
-        // ── Surface lighting from alpha shape ──
-        // Approximate: thick center is brighter (NdotL ~ 1), thin edges darker
-        const diffuse = float(0.35).add(alpha.mul(0.45))
-
-        // ── Combine ──
-        const waterBody = add(transmitted, scatter).mul(diffuse)
-        const reflectionContrib = envColor.mul(fresnel)
-        const waterColor = add(waterBody, reflectionContrib)
-
-        const opacity = clamp(sub(float(1.0), exp(thickness.negate().mul(2.0))), float(0.0), float(1.0))
-
-        return mix(scene, vec4(waterColor, float(1.0)), opacity)
-      })()
-
-      this.renderPipeline = new (THREE as any).RenderPipeline(renderer, output)
-      this.pipelineInitialized = true
-      console.log('SSFR pipeline: Beer\'s law + Fresnel composite initialized')
-    } catch (e) {
-      console.warn('SSFR pipeline init failed, falling back to direct render:', e)
-      this.renderPipeline = null
-      // Fallback particles in mainScene will still be visible
-    }
-  }
+  // No-op — SSFR pipeline deferred
+  async initPostProcessing(_renderer: any, _camera: THREE.PerspectiveCamera) {}
 
   scheduleReadback(encoder: GPUCommandEncoder, particleBuffer: GPUBuffer, count: number) {
     if (!this.readbackBuffer || !this.device) return
     if (this.readbackPending) return
 
-    this.currentCount = Math.min(count, MAX_PARTICLES)
-    const byteSize = this.currentCount * 80
-    encoder.copyBufferToBuffer(particleBuffer, 0, this.readbackBuffer, 0, byteSize)
+    const n = Math.min(count, MAX_PARTICLES)
+    encoder.copyBufferToBuffer(particleBuffer, 0, this.readbackBuffer, 0, n * 80)
   }
 
   startReadback(count: number) {
@@ -203,9 +104,10 @@ export class FluidScene {
         positions[dst + 1] = data[src + 1]
         positions[dst + 2] = data[src + 2]
 
-        colors[dst] = 1.0
-        colors[dst + 1] = 1.0
-        colors[dst + 2] = 1.0
+        // Light blue-white (transparent water)
+        colors[dst] = 0.7
+        colors[dst + 1] = 0.8
+        colors[dst + 2] = 0.95
       }
 
       posAttr.needsUpdate = true
@@ -221,13 +123,11 @@ export class FluidScene {
 
   dispose() {
     if (this.points) {
-      this.fluidOnlyScene.remove(this.points)
+      this.scene.remove(this.points)
       this.points.geometry.dispose()
       ;(this.points.material as THREE.Material).dispose()
       this.points = null
     }
-    this.renderPipeline?.dispose()
-    this.renderPipeline = null
     this.readbackBuffer?.destroy()
     this.readbackBuffer = null
     this.positionAttr = null
