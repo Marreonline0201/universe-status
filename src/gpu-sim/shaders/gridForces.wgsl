@@ -32,7 +32,7 @@ struct SphereObstacle {
     center:   vec3<f32>,
     radius:   f32,
     velocity: vec3<f32>,
-    active:   u32,       // 0 = no sphere, 1 = sphere present
+    is_active: u32,      // 0 = no sphere, 1 = sphere present
 };
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let z = cell_idx % GRID_RES;
 
     // ── Sphere obstacle: cells inside sphere move with sphere ────────────
-    if (sphere.active > 0u) {
+    if (sphere.is_active > 0u) {
         // Cell center in MLS-MPM normalized coords [0,1]
         let cell_pos = (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) / f32(GRID_RES);
         let dist = length(cell_pos - sphere.center);

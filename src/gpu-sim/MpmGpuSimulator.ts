@@ -143,30 +143,41 @@ export class MpmGpuSimulator {
 
     // ── Create compute pipelines ──────────────────────────────────────────
 
+    // Check for shader compilation errors
+    const checkShader = (name: string, code: string) => {
+      const mod = device.createShaderModule({ code })
+      mod.getCompilationInfo().then(info => {
+        for (const msg of info.messages) {
+          if (msg.type === 'error') console.error(`[SHADER ERROR] ${name}: ${msg.message} (line ${msg.lineNum})`)
+          else if (msg.type === 'warning') console.warn(`[SHADER WARN] ${name}: ${msg.message}`)
+        }
+      })
+      return mod
+    }
+
     this.clearGridPipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: clearGridWGSL }), entryPoint: 'main' },
+      compute: { module: checkShader('clearGrid', clearGridWGSL), entryPoint: 'main' },
     })
 
     this.p2gPipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: p2gWGSL }), entryPoint: 'main' },
+      compute: { module: checkShader('p2g', p2gWGSL), entryPoint: 'main' },
     })
 
-    // NEW: P2G pass 2 — stress scatter
     this.p2g2Pipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: p2g2WGSL }), entryPoint: 'main' },
+      compute: { module: checkShader('p2g2', p2g2WGSL), entryPoint: 'main' },
     })
 
     this.gridForcesPipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: gridForcesWGSL }), entryPoint: 'main' },
+      compute: { module: checkShader('gridForces', gridForcesWGSL), entryPoint: 'main' },
     })
 
     this.g2pPipeline = device.createComputePipeline({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code: g2pWGSL }), entryPoint: 'main' },
+      compute: { module: checkShader('g2p', g2pWGSL), entryPoint: 'main' },
     })
 
     this.contactDetectPipeline = device.createComputePipeline({
@@ -340,12 +351,12 @@ export class MpmGpuSimulator {
       p2gPass.dispatchWorkgroups(particleGroups)
       p2gPass.end()
 
-      // 3. P2G pass 2 — scatter constitutive stress (pressure + viscosity)
-      const p2g2Pass = encoder.beginComputePass()
-      p2g2Pass.setPipeline(this.p2g2Pipeline)
-      p2g2Pass.setBindGroup(0, this.p2g2BG)
-      p2g2Pass.dispatchWorkgroups(particleGroups)
-      p2g2Pass.end()
+      // 3. P2G pass 2 — TEMPORARILY DISABLED to test if gravity works alone
+      // const p2g2Pass = encoder.beginComputePass()
+      // p2g2Pass.setPipeline(this.p2g2Pipeline)
+      // p2g2Pass.setBindGroup(0, this.p2g2BG)
+      // p2g2Pass.dispatchWorkgroups(particleGroups)
+      // p2g2Pass.end()
 
       // 4. Grid update — momentum→velocity, gravity, boundary conditions
       const forcesPass = encoder.beginComputePass()
