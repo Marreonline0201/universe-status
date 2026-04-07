@@ -1,11 +1,12 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // FluidScene — Renders MLS-MPM particles as a smooth fluid surface
 //
-// Three-pass rendering:
+// Two-pass rendering:
 //   Pass 1: Main scene (ball, box, grids) → sharp sceneColor
-//   Pass 2: Fluid particles only → fluidColor → Gaussian blur → smooth surface
-//   Pass 3: Box mask (solid white box) → maskColor (1 inside box, 0 outside)
-//   Composite: Beer's law + mask clipping (fluid only visible inside box)
+//   Pass 2: Fluid particles only → bilateral blur → smooth surface
+//   Bilateral blur merges particles (similar depth) but STOPS at fluid edge
+//   (fluid vs empty = depth discontinuity → no bleeding past boundaries)
+//   Composite: Beer's law absorption (physically correct water color)
 //
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 // ══════════════════════════════════════════════════════════════════════════════
@@ -24,7 +25,6 @@ export class FluidScene {
 
   private mainScene: THREE.Scene
   private fluidOnlyScene: THREE.Scene
-  private maskScene: THREE.Scene  // solid white box for boundary clipping
 
   private device: GPUDevice | null = null
   private readbackBuffer: GPUBuffer | null = null
@@ -37,16 +37,6 @@ export class FluidScene {
   constructor(mainScene: THREE.Scene) {
     this.mainScene = mainScene
     this.fluidOnlyScene = new THREE.Scene()
-    this.maskScene = new THREE.Scene()
-
-    // Mask scene: solid white box at [0,1]^3
-    // Pixels inside the box render white (mask=1), outside render black (mask=0)
-    const maskBox = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.FrontSide })
-    )
-    maskBox.position.set(0.5, 0.5, 0.5)
-    this.maskScene.add(maskBox)
   }
 
   init(device: GPUDevice) {
@@ -95,27 +85,24 @@ export class FluidScene {
       const scenePass = pass(this.mainScene, camera)
       const sceneColor = scenePass.getTextureNode()
 
-      // Pass 2: Fluid particles → blurred
+      // Pass 2: Fluid particles → bilateral blur (edge-aware)
+      // Bilateral blur on the ISOLATED fluid pass:
+      //   - Merges particles into each other (similar depth → blurs freely)
+      //   - STOPS at fluid surface edge (fluid vs empty = depth discontinuity)
+      //   - No bleeding past boundaries — the blur respects the edge
       const fluidPass = pass(this.fluidOnlyScene, camera)
       const fluidColor = fluidPass.getTextureNode()
-      const { gaussianBlur } = await import('three/examples/jsm/tsl/display/GaussianBlurNode.js')
-      const smoothFluid = gaussianBlur(fluidColor, null, 4)
+      const fluidDepth = fluidPass.getLinearDepthNode()
+      const { bilateralBlur } = await import('three/examples/jsm/tsl/display/BilateralBlurNode.js')
+      const smoothFluid = bilateralBlur(fluidColor, fluidDepth, 8, 0.05)
 
-      // Pass 3: Box mask → clips fluid to [0,1]^3 boundary
-      const maskPass = pass(this.maskScene, camera)
-      const maskColor = maskPass.getTextureNode()
-
-      // Composite: Beer's law + box mask
+      // Composite: Beer's law absorption
       const output = Fn(() => {
         const scene = sceneColor
         const fluid = smoothFluid
-        const mask = maskColor.r // 1.0 inside box, 0.0 outside
 
-        // Kill fluid outside the box
-        const rawAlpha = fluid.a.mul(mask)
-
-        // Smooth threshold to clean up any remaining blur tail
-        const alpha = smoothstep(float(0.05), float(0.25), rawAlpha)
+        // Bilateral blur already respects the fluid boundary — no mask needed
+        const alpha = smoothstep(float(0.02), float(0.2), fluid.a)
 
         // Beer's law: thickness from alpha
         const thickness = alpha.mul(5.0)
@@ -146,7 +133,7 @@ export class FluidScene {
 
       this.renderPipeline = new (THREE as any).RenderPipeline(renderer, output)
       this.pipelineInitialized = true
-      console.log('SSFR pipeline: three-pass (scene + fluid + mask) initialized')
+      console.log('SSFR pipeline: bilateral blur on isolated fluid pass (no boundary bleed)')
     } catch (e) {
       console.warn('SSFR pipeline init failed, falling back to direct render:', e)
       this.renderPipeline = null
