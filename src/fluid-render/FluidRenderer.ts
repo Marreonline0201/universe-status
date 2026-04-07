@@ -61,7 +61,6 @@ export class FluidRenderer {
 
   private sampler!: GPUSampler
   private maxParticles = 10000
-  private boxHalf = [0.75, 0.75, 0.75] // half-extents for clipping — must match cubic box (1.5/2)
   private fluidColor = [0.13, 0.4, 0.87]
   private fluidDensity = 3.0
   private fluidF0 = 0.02
@@ -180,8 +179,6 @@ export class FluidRenderer {
       ],
     })
 
-    const boxConst = { box_half_w: this.boxHalf[0], box_half_h: this.boxHalf[1], box_half_d: this.boxHalf[2] }
-
     this.depthPipeline = d.createRenderPipeline({
       layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthBGL] }),
       vertex: { module: depthMod, entryPoint: 'vs' },
@@ -191,7 +188,6 @@ export class FluidRenderer {
           { format: 'r32float' },   // location(0): depth (frag_color)
           { format: 'r32uint' },    // location(1): composition ID
         ],
-        constants: boxConst,
       },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
       primitive: { topology: 'triangle-list' },
@@ -223,7 +219,6 @@ export class FluidRenderer {
       vertex: { module: depthMod, entryPoint: 'vs' },
       fragment: {
         module: thicknessMod, entryPoint: 'fs',
-        constants: boxConst,
         targets: [{
           format: 'r16float',
           blend: {

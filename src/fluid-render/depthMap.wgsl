@@ -19,11 +19,6 @@ struct FragmentInput {
     @location(3) @interpolate(flat) comp_id: u32,
 }
 
-// Box half-extents for clipping (configurable via pipeline constants)
-override box_half_w: f32 = 1.0;
-override box_half_h: f32 = 0.75;
-override box_half_d: f32 = 0.75;
-
 struct FragmentOutput {
     @location(0) frag_color: vec4f,
     @location(1) comp_id: u32,
@@ -74,19 +69,9 @@ fn vs(
     let uv = corner_positions[vertex_index] + 0.5;
 
     let p = particles[instance_index];
-    // Map MLS-MPM particle domain to Three.js glass box.
-    // Particles are clamped to [DOMAIN_MIN, DOMAIN_MAX] in grid coords by G2P.
-    // Map this range to fill the glass box exactly: [-box_half, +box_half].
-    let mpm_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
-    const DOMAIN_MIN: f32 = 1.0 / 64.0;   // G2P hard clamp lower bound
-    const DOMAIN_MAX: f32 = 62.0 / 64.0;  // G2P hard clamp upper bound
-    const DOMAIN_SIZE: f32 = DOMAIN_MAX - DOMAIN_MIN;
-    let normalized = (mpm_pos - DOMAIN_MIN) / DOMAIN_SIZE;  // [0, 1] within particle domain
-    let world_pos = vec3f(
-        (normalized.x - 0.5) * box_half_w * 2.0,
-        (normalized.y - 0.5) * box_half_h * 2.0,
-        (normalized.z - 0.5) * box_half_d * 2.0,
-    );
+    // Use raw MLS-MPM [0,1] positions directly — no coordinate mapping needed.
+    // Three.js scene is also set up in [0,1]^3 space.
+    let world_pos = vec3f(p.pos_x, p.pos_y, p.pos_z);
     let view_position = (uniforms.view_matrix * vec4f(world_pos, 1.0)).xyz;
 
     // Billboard: offset in view space so quad always faces camera
@@ -105,13 +90,7 @@ fn vs(
 fn fs(input: FragmentInput) -> FragmentOutput {
     var out: FragmentOutput;
 
-    // Clip to box bounds (world space) — discard fragments outside the glass box
-    let wp = input.world_position;
-    if (wp.x < -box_half_w || wp.x > box_half_w ||
-        wp.y < -box_half_h || wp.y > box_half_h ||
-        wp.z < -box_half_d || wp.z > box_half_d) {
-        discard;
-    }
+    // No box clipping needed — G2P already clamps particles to the domain.
 
     // Map UV to [-1, 1], compute sphere surface
     var normalxy = input.uv * 2.0 - 1.0;

@@ -11,20 +11,9 @@ struct FragmentInput {
     @location(2) world_position: vec3f,
 }
 
-// Box half-extents for clipping
-override box_half_w: f32 = 1.0;
-override box_half_h: f32 = 0.75;
-override box_half_d: f32 = 0.75;
-
 @fragment
 fn fs(input: FragmentInput) -> @location(0) vec4f {
-    // Clip to box bounds
-    let wp = input.world_position;
-    if (wp.x < -box_half_w || wp.x > box_half_w ||
-        wp.y < -box_half_h || wp.y > box_half_h ||
-        wp.z < -box_half_d || wp.z > box_half_d) {
-        discard;
-    }
+    // No box clipping needed — G2P already clamps particles to the domain.
 
     var normalxy = input.uv * 2.0 - 1.0;
     var r2 = dot(normalxy, normalxy);

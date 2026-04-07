@@ -19,47 +19,12 @@ import { AIChatPanel } from './AIChatPanel'
 
 const MAX_PARTICLES = 40_000
 
-// Glass box dimensions in Three.js world space
-// Box must be cubic to match MLS-MPM [0,1]^3 simulation domain.
-// If the box is rectangular, the sim-to-world mapping stretches differently
-// per axis, causing misaligned boundaries (fluid hits invisible walls).
-const BOX_SIZE = 1.5
-const BOX_W = BOX_SIZE
-const BOX_H = BOX_SIZE
-const BOX_D = BOX_SIZE
-const HALF_W = BOX_W / 2
-const HALF_H = BOX_H / 2
-const HALF_D = BOX_D / 2
-
-// Coordinate mapping: MLS-MPM domain [0,1] <-> Three.js world space
-// MLS-MPM (0.5, 0.5, 0.5) maps to Three.js (0, 0, 0)
-// MLS-MPM (0, 0, 0) maps to Three.js (-1.0, -0.75, -0.75)
-// MLS-MPM (1, 1, 1) maps to Three.js (1.0, 0.75, 0.75)
-
-// Inverse of the depth shader's domain mapping:
-// world → normalized [0,1] within particle domain → MLS-MPM grid coords
-const DOMAIN_MIN = 1.0 / 64.0   // G2P hard clamp lower bound
-const DOMAIN_MAX = 62.0 / 64.0  // G2P hard clamp upper bound
-const DOMAIN_SIZE = DOMAIN_MAX - DOMAIN_MIN
-
-function worldToMpm(x: number, y: number, z: number): [number, number, number] {
-  return [
-    (x / BOX_W + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
-    (y / BOX_H + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
-    (z / BOX_D + 0.5) * DOMAIN_SIZE + DOMAIN_MIN,
-  ]
-}
-
-function mpmToWorld(mx: number, my: number, mz: number): [number, number, number] {
-  return [
-    ((mx - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_W,
-    ((my - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_H,
-    ((mz - DOMAIN_MIN) / DOMAIN_SIZE - 0.5) * BOX_D,
-  ]
-}
+// Everything uses the MLS-MPM [0,1]^3 coordinate system directly.
+// No coordinate mapping needed — Three.js scene, glass box, and particle
+// positions all live in the same [0,1]^3 space.
 
 // Sphere obstacle constants
-const SPHERE_RADIUS_MPM = 0.06    // ~4 grid cells in MLS-MPM space
+const SPHERE_RADIUS_MPM = 0.1     // ~6 grid cells in MLS-MPM space (visible)
 const SPHERE_GRAVITY_MPM = 0.3    // grid-space gravity (matches GRAVITY in gridForces.wgsl)
 
 // ── Build composition render props for FluidRenderer ─────────────────────────
@@ -171,8 +136,8 @@ export function FluidTest() {
     if (!simRef.current) return
     const { gpuSim, selectedComposition: compId, temperature } = simRef.current
 
-    // Convert world position to MLS-MPM space
-    const [cx, cy, cz] = worldToMpm(worldPos.x, worldPos.y, worldPos.z)
+    // World position IS MLS-MPM position — same coordinate system
+    const [cx, cy, cz] = [worldPos.x, worldPos.y, worldPos.z]
 
     // Spawn a cluster of ~343 particles (7x7x7)
     const particles: GpuParticle[] = []
@@ -231,11 +196,10 @@ export function FluidTest() {
     ball.center = [0.5, 0.9, 0.5]  // top-center of MLS-MPM domain
     ball.velocity = [0, 0, 0]
     setBallActive(true)
-    // Make Three.js mesh visible
+    // Make Three.js mesh visible — same coordinate system, no conversion needed
     if (ball.mesh) {
       ball.mesh.visible = true
-      const [wx, wy, wz] = mpmToWorld(...ball.center)
-      ball.mesh.position.set(wx, wy, wz)
+      ball.mesh.position.set(...ball.center)
     }
     // Set obstacle in simulator
     simRef.current.gpuSim.setSphereObstacle(ball.center, SPHERE_RADIUS_MPM, ball.velocity)
@@ -417,6 +381,7 @@ export function FluidTest() {
         })
       }
       gpuSim.spawnParticles(initParticles)
+      console.log(`Spawned ${initParticles.length} initial particles`)
       setParticleCount(initParticles.length)
 
       // ── Three.js Scene ─────────────────────────────────────────────────
@@ -429,8 +394,8 @@ export function FluidTest() {
         0.1,
         50,
       )
-      camera.position.set(2.5, 1.8, 2.5)
-      camera.lookAt(0, 0, 0)
+      camera.position.set(2.0, 1.5, 2.0)
+      camera.lookAt(0.5, 0.5, 0.5)
 
       // Renderer — WebGPU with WebGL fallback
       const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
@@ -443,9 +408,10 @@ export function FluidTest() {
 
       // Controls
       const controls = new OrbitControls(camera, renderer.domElement)
+      controls.target.set(0.5, 0.5, 0.5)
       controls.enableDamping = true
       controls.dampingFactor = 0.08
-      controls.minDistance = 1.5
+      controls.minDistance = 1.0
       controls.maxDistance = 8
 
       // Lighting
@@ -458,8 +424,8 @@ export function FluidTest() {
       pointLight.position.set(-2, 2, -2)
       scene.add(pointLight)
 
-      // Glass box (wireframe edges)
-      const boxGeo = new THREE.BoxGeometry(BOX_W, BOX_H, BOX_D)
+      // Glass box (wireframe edges) — unit cube [0,1]^3, matching MLS-MPM domain
+      const boxGeo = new THREE.BoxGeometry(1, 1, 1)
       const edgesGeo = new THREE.EdgesGeometry(boxGeo)
       const edgesMat = new THREE.LineBasicMaterial({
         color: 0x00bbff,
@@ -467,6 +433,7 @@ export function FluidTest() {
         opacity: 0.35,
       })
       const boxMesh = new THREE.LineSegments(edgesGeo, edgesMat)
+      boxMesh.position.set(0.5, 0.5, 0.5)  // center of [0,1]^3
       scene.add(boxMesh)
 
       // Glass panels
@@ -479,19 +446,20 @@ export function FluidTest() {
         side: THREE.DoubleSide,
       })
       const glassBox = new THREE.Mesh(boxGeo, glassMat)
+      glassBox.position.set(0.5, 0.5, 0.5)
       scene.add(glassBox)
 
       // Ground plane for click detection
       const clickPlane = new THREE.Mesh(
-        new THREE.PlaneGeometry(BOX_W, BOX_D),
+        new THREE.PlaneGeometry(1, 1),
         new THREE.MeshBasicMaterial({ visible: false }),
       )
       clickPlane.rotation.x = -Math.PI / 2
-      clickPlane.position.y = 0
+      clickPlane.position.set(0.5, 0.5, 0.5)
       scene.add(clickPlane)
 
       // Floor grid inside box
-      const floorGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_D - 0.02, 20, 20)
+      const floorGeo = new THREE.PlaneGeometry(0.98, 0.98, 20, 20)
       const floorMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050,
         wireframe: true,
@@ -500,11 +468,11 @@ export function FluidTest() {
       })
       const floorMesh = new THREE.Mesh(floorGeo, floorMat)
       floorMesh.rotation.x = -Math.PI / 2
-      floorMesh.position.y = -HALF_H + 0.001
+      floorMesh.position.set(0.5, 0.001, 0.5)
       scene.add(floorMesh)
 
       // Back wall grid
-      const wallGeo = new THREE.PlaneGeometry(BOX_W - 0.02, BOX_H - 0.02, 20, 15)
+      const wallGeo = new THREE.PlaneGeometry(0.98, 0.98, 20, 15)
       const wallMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050,
         wireframe: true,
@@ -513,26 +481,25 @@ export function FluidTest() {
         side: THREE.DoubleSide,
       })
       const wallMesh = new THREE.Mesh(wallGeo, wallMat)
-      wallMesh.position.z = -HALF_D + 0.001
+      wallMesh.position.set(0.5, 0.5, 0.001)
       scene.add(wallMesh)
 
       // Side wall grids
-      const sideGeo = new THREE.PlaneGeometry(BOX_D - 0.02, BOX_H - 0.02, 15, 15)
+      const sideGeo = new THREE.PlaneGeometry(0.98, 0.98, 15, 15)
       const sideMat = new THREE.MeshBasicMaterial({
         color: 0x1a3050, wireframe: true, transparent: true, opacity: 0.25, side: THREE.DoubleSide,
       })
       const leftWall = new THREE.Mesh(sideGeo, sideMat)
       leftWall.rotation.y = Math.PI / 2
-      leftWall.position.x = -HALF_W + 0.001
+      leftWall.position.set(0.001, 0.5, 0.5)
       scene.add(leftWall)
       const rightWall = new THREE.Mesh(sideGeo, sideMat)
       rightWall.rotation.y = Math.PI / 2
-      rightWall.position.x = HALF_W - 0.001
+      rightWall.position.set(0.999, 0.5, 0.5)
       scene.add(rightWall)
 
-      // Droppable metal sphere
-      const sphereWorldRadius = (SPHERE_RADIUS_MPM / DOMAIN_SIZE) * BOX_SIZE
-      const sphereGeo = new THREE.SphereGeometry(sphereWorldRadius, 32, 32)
+      // Droppable metal sphere — radius in MLS-MPM [0,1] space directly
+      const sphereGeo = new THREE.SphereGeometry(SPHERE_RADIUS_MPM, 32, 32)
       const sphereMat = new THREE.MeshStandardMaterial({
         color: 0x888888,
         metalness: 0.95,
@@ -590,11 +557,11 @@ export function FluidTest() {
         const intersects = raycaster.intersectObject(glassBox)
         if (intersects.length > 0) {
           const pt = intersects[0].point
-          const spawnY = Math.min(HALF_H - 0.15, Math.max(-HALF_H + 0.15, pt.y))
+          // Clamp to [0.05, 0.95] to keep spawn away from walls
           spawnParticlesAtClick(new THREE.Vector3(
-            Math.max(-HALF_W + 0.2, Math.min(HALF_W - 0.2, pt.x)),
-            spawnY,
-            Math.max(-HALF_D + 0.2, Math.min(HALF_D - 0.2, pt.z)),
+            Math.max(0.05, Math.min(0.95, pt.x)),
+            Math.max(0.05, Math.min(0.95, pt.y)),
+            Math.max(0.05, Math.min(0.95, pt.z)),
           ))
         }
       }
@@ -635,9 +602,9 @@ export function FluidTest() {
           ball.center[1] += ball.velocity[1] * simDt
           ball.center[2] += ball.velocity[2] * simDt
 
-          // Bounce off domain boundaries (with margin)
-          const lo = DOMAIN_MIN + SPHERE_RADIUS_MPM
-          const hi = DOMAIN_MAX - SPHERE_RADIUS_MPM
+          // Bounce off domain boundaries (with margin for sphere radius)
+          const lo = SPHERE_RADIUS_MPM
+          const hi = 1.0 - SPHERE_RADIUS_MPM
           for (let axis = 0; axis < 3; axis++) {
             if (ball.center[axis] < lo) {
               ball.center[axis] = lo
@@ -652,10 +619,9 @@ export function FluidTest() {
           // Update GPU obstacle
           sim.gpuSim.setSphereObstacle(ball.center, SPHERE_RADIUS_MPM, ball.velocity)
 
-          // Update Three.js mesh position
+          // Update Three.js mesh position — same coordinate system
           if (ball.mesh) {
-            const [wx, wy, wz] = mpmToWorld(ball.center[0], ball.center[1], ball.center[2])
-            ball.mesh.position.set(wx, wy, wz)
+            ball.mesh.position.set(ball.center[0], ball.center[1], ball.center[2])
           }
         }
 
