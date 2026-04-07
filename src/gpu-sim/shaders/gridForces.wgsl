@@ -95,13 +95,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let density_zp = mass_zp / CELL_VOLUME;
 
     // Pressure gradient pushes velocity from high-density to low-density regions
-    let grad_p = vec3<f32>(
-        STIFFNESS * (density_xp - density_xm) * 0.5,
-        STIFFNESS * (density_yp - density_ym) * 0.5,
-        STIFFNESS * (density_zp - density_zm) * 0.5,
-    );
+    // Only apply pressure when local density exceeds rest density (compressed fluid).
+    // Isolated low-density particles (splashes, droplets) should fall freely under
+    // gravity without being pushed around by phantom pressure gradients.
+    if (density > REST_DENSITY * 0.5) {
+        let grad_p = vec3<f32>(
+            STIFFNESS * (density_xp - density_xm) * 0.5,
+            STIFFNESS * (density_yp - density_ym) * 0.5,
+            STIFFNESS * (density_zp - density_zm) * 0.5,
+        );
 
-    vel -= grad_p * params.dt / max(density, REST_DENSITY * 0.1);
+        vel -= grad_p * params.dt / max(density, REST_DENSITY * 0.1);
+    }
 
     // ── Viscosity damping ───────────────────────────────────────────────
     vel *= 1.0 / (1.0 + VISCOSITY_GRID * params.dt);
