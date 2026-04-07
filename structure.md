@@ -1957,6 +1957,89 @@ The pipeline (5 GPU passes):
 Total GPU cost: 1.5–3.5ms at 1080p — INDEPENDENT of particle count.
 ```
 
+**SSFR Integration Architecture — Single Scene, Shared Depth Buffer**
+
+// **What this means:** The fluid and all other objects (ball, glass box, terrain,
+// organisms, buildings) render into the SAME Three.js scene with a shared depth
+// buffer. Objects behind the fluid are correctly occluded. Objects in front of
+// the fluid appear in front. No layering hacks, no overlay canvases.
+
+The game uses a two-layer GPU architecture: raw WebGPU compute for physics,
+Three.js for rendering. All systems share one GPUDevice.
+
+```
+Architecture:
+
+  ┌─────────────────────────────────────────────────────┐
+  │              Compute Layer (Raw WebGPU)              │
+  │  Owns: GPUDevice (shared with Three.js renderer)    │
+  │                                                     │
+  │  MLS-MPM    Thermal    Chemistry    Biology    ...  │
+  │    ↓           ↓          ↓           ↓             │
+  │  [WGSL compute pipelines — unchanged]               │
+  │    ↓ output: particle position/comp_id buffers      │
+  ├─────────────────────────────────────────────────────┤
+  │              Render Layer (Three.js)                 │
+  │  Owns: Scene graph, depth buffer, post-processing   │
+  │                                                     │
+  │  Scene objects: terrain, ball, box, organisms, ...  │
+  │  Fluid: InstancedMesh (one quad per particle)       │
+  │    reads particle buffer via StorageInstancedBuffer  │
+  │    → shares depth buffer with all scene objects     │
+  │                                                     │
+  │  SSFR post-processing via RenderPipeline:           │
+  │    Pass 1: Depth sprites (InstancedMesh in scene)   │
+  │    Pass 2: Bilateral blur (TSL/wgslFn)              │
+  │    Pass 3: Thickness (InstancedMesh, additive)      │
+  │    Pass 4: Gaussian blur (TSL/wgslFn)               │
+  │    Pass 5: Composite — Fresnel + Beer's law (wgslFn)│
+  └─────────────────────────────────────────────────────┘
+
+  Render loop per frame:
+    1. GPU compute: encoder = device.createCommandEncoder()
+       gpuSim.step(encoder)  // MLS-MPM: clearGrid → P2G → forces → G2P × 2 substeps
+       device.queue.submit([encoder.finish()])
+
+    2. Scene render: renderer.render(scene, camera)
+       // Ball, glass box, fluid InstancedMesh all write to the same depth buffer.
+       // Depth ordering is automatic — no special handling needed.
+
+    3. SSFR post-processing: renderPipeline.render()
+       // Bilateral blur → thickness → gaussian → composite
+       // Reads scene color + fluid depth → outputs final frame
+```
+
+Why this architecture scales for the full game:
+
+1. **Compute is decoupled from rendering.** Adding particle properties (energy,
+   charge, nutrients) changes the compute struct but NOT the render pipeline.
+   The InstancedMesh only reads position + composition_id.
+
+2. **Every future compute system follows the same pattern.** Thermal writes to
+   a temperature buffer. Chemistry writes to a reaction buffer. Biology writes
+   to an organism buffer. Three.js reads whichever buffers it needs for visuals.
+
+3. **Depth ordering is free.** Any new object added to the Three.js scene (terrain,
+   NPC, tree) automatically depth-tests against the fluid. No per-object integration.
+
+4. **GPU time budgeting.** Compute and render use the same device queue. A central
+   scheduler can throttle systems: fluid at 60Hz, chemistry at 20Hz, thermal at
+   10Hz. The renderer always runs at display refresh rate.
+
+Key implementation detail: the MpmGpuSimulator creates its compute pipelines
+on the shared GPUDevice (obtained from renderer.backend.device after
+renderer.init()). The particle buffer is a GPUBuffer with STORAGE usage.
+The InstancedMesh reads this buffer via StorageInstancedBufferAttribute —
+zero CPU readback, GPU writes positions → GPU reads for instancing.
+
+Files:
+  - src/gpu-sim/MpmGpuSimulator.ts — unchanged (raw WGSL compute)
+  - src/gpu-sim/shaders/*.wgsl — unchanged (physics shaders)
+  - src/fluid-render/FluidScene.ts — NEW: creates InstancedMesh + RenderPipeline
+  - src/fluid-render/shaders/ — NEW: TSL/wgslFn versions of SSFR fragment shaders
+  - src/fluid-render/FluidRenderer.ts — DELETED (overlay canvas approach, replaced)
+  - src/fluid-render/*.wgsl — DELETED (raw WebGPU render shaders, replaced)
+
 **Tier 3: Raw Points + Shaders — Visual-Only Effects**
 
 Rain, snow, ash, sparks, embers, wind particles. These are not physics fluid — they are visual atmosphere. No smooth surface needed. GPU billboard particle system (THREE.Points). No physics interaction, no SPH, no fluid behavior. Already implemented in WeatherRenderer.tsx. 10,000+ particles at near-zero GPU cost. No change needed.
