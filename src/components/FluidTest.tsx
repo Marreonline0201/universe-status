@@ -862,31 +862,59 @@ export function FluidTest() {
             </div>
           </div>
 
-          {/* Spawn button */}
-          <button
-            onClick={() => spawnBatch(3000)}
-            disabled={!gpuReady}
-            style={{
-              padding: '7px 0',
-              background: gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)',
-              border: '1px solid rgba(0,180,255,0.3)',
-              borderRadius: 3,
-              color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
-              fontSize: 10,
-              fontFamily: 'inherit',
-              letterSpacing: 2,
-              cursor: gpuReady ? 'pointer' : 'default',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,180,255,0.2)'
-            }}
-            onMouseLeave={(e) => {
-              (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)'
-            }}
-          >
-            SPAWN 3K {selectedComp ? selectedComp.name.toUpperCase() : ''}
-          </button>
+          {/* Spawn buttons */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => spawnBatch(10000)}
+              disabled={!gpuReady}
+              style={{
+                flex: 1,
+                padding: '7px 0',
+                background: gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)',
+                border: '1px solid rgba(0,180,255,0.3)',
+                borderRadius: 3,
+                color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
+                fontSize: 10,
+                fontFamily: 'inherit',
+                letterSpacing: 2,
+                cursor: gpuReady ? 'pointer' : 'default',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,180,255,0.2)'
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)'
+              }}
+            >
+              +10K
+            </button>
+            <button
+              onClick={() => spawnBatch(50000)}
+              disabled={!gpuReady}
+              style={{
+                flex: 1,
+                padding: '7px 0',
+                background: gpuReady ? 'rgba(0,140,255,0.15)' : 'rgba(0,180,255,0.03)',
+                border: '1px solid rgba(0,180,255,0.3)',
+                borderRadius: 3,
+                color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
+                fontSize: 10,
+                fontFamily: 'inherit',
+                letterSpacing: 2,
+                cursor: gpuReady ? 'pointer' : 'default',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,140,255,0.25)'
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,140,255,0.15)' : 'rgba(0,180,255,0.03)'
+              }}
+            >
+              +50K
+            </button>
+          </div>
 
           {/* Drop ball button */}
           <button
