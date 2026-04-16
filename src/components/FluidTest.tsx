@@ -478,12 +478,12 @@ export function FluidTest() {
           particleRadius: 0.025,
           blurRadius: 10,
           blurDepthFalloff: 40.0,
-          // Water IOR ≈ 1.333. Refraction is small but visible; bumping
-          // from 0.04 so the scene behind the fluid clearly bends.
+          // Water IOR ≈ 1.333. Refraction is small but visible.
           refractionStrength: 0.08,
           // Multiplier on Beer-Lambert RGB coefficients (0.45/0.09/0.04).
-          // 1.5 = moderately clear water; higher feels like a deep pool.
-          absorptionScale: 1.5,
+          // 0.6 keeps the blue tint without absorbing the bg to black
+          // when particles clump and thickness spikes.
+          absorptionScale: 0.6,
         })
         await ssfr.init(device, container.clientWidth, container.clientHeight)
         ssfrPipeline = ssfr

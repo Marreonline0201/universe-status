@@ -160,14 +160,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         0.18 + 0.12 * max(0.0, reflectDir.y),
     );
 
-    // Fluid color: blend between transmitted scene and fluid color based on thickness
-    let fluidTint = matColor * (diffuse * 0.7 + params.ambientStrength);
-    let thicknessFactor = 1.0 - exp(-thickness * opacity * 3.0);
+    // Fluid color philosophy:
+    //   - Beer-Lambert on the refracted bg gives water its natural blue
+    //     tint (red absorbs fastest). That's where most of the COLOR
+    //     comes from.
+    //   - fluidTint is a modest diffuse-scattered surface contribution,
+    //     not a full replacement for the bg.
+    //   - thicknessFactor controls how much fluidTint mixes in; it must
+    //     saturate smoothly so moderate-thickness water still shows the
+    //     scene behind it, not turn into an opaque sheet.
+    let fluidTint = matColor * (diffuse * 0.35 + params.ambientStrength * 0.7);
+    let thicknessFactor = 1.0 - exp(-thickness * opacity * 1.6);
 
-    var finalColor = mix(transmittedColor, fluidTint, thicknessFactor);
+    var finalColor = mix(transmittedColor, fluidTint, thicknessFactor * 0.75);
     finalColor = mix(finalColor, envColor, fresnel * 0.5);
     // Specular highlight is narrower + weaker so the surface reads as water,
-    // not polished plastic. Full-intensity whitish highlight looked milky.
+    // not polished plastic.
     finalColor += specular * vec3<f32>(0.95, 0.95, 1.0) * 0.3;
 
     // Add emissive glow
@@ -175,7 +183,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         finalColor += matColor * emissive;
     }
 
-    let alpha = max(0.3, min(1.0, thicknessFactor + fresnel * 0.3));
+    // Alpha: no minimum floor. Thin fluid is genuinely translucent.
+    let alpha = min(1.0, thicknessFactor + fresnel * 0.3);
 
     // Select: fluid pixels show composited fluid, non-fluid pixels show background
     let result = select(sceneBg, vec4<f32>(finalColor, alpha), hasFluid);
