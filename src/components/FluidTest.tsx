@@ -643,6 +643,13 @@ export function FluidTest() {
             }
 
             const encoder2 = sim.device.createCommandEncoder()
+            const ballSnapshot = ballRef.current.active
+              ? {
+                  center: [...ballRef.current.center] as [number, number, number],
+                  radius: SPHERE_RADIUS_MPM,
+                  active: true,
+                }
+              : undefined
             sim.ssfrPipeline.render(
               encoder2,
               sim.gpuSim.particleBuffer,
@@ -652,6 +659,7 @@ export function FluidTest() {
               new Float32Array(sim.camera.projectionMatrixInverse.elements),
               new Float32Array(invViewMat.elements),
               outputView,
+              ballSnapshot,
             )
             sim.device.queue.submit([encoder2.finish()])
 
