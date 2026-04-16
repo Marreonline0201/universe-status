@@ -9,6 +9,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FluidScene } from '../fluid-render/FluidScene'
+import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { ContactProcessor } from '../composition/ContactProcessor'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
@@ -73,6 +74,7 @@ export function FluidTest() {
     renderer: any /* WebGPURenderer */
     controls: OrbitControls
     fluidScene: FluidScene
+    ssfrPipeline: SSFRPipeline | null
     animId: number
     lastTime: number
     fpsAccum: number
@@ -469,8 +471,26 @@ export function FluidTest() {
       const fluidScene = new FluidScene(scene)
       fluidScene.init(device)
 
-      // Initialize SSFR post-processing (bilateral blur to smooth particles)
-      await fluidScene.initPostProcessing(renderer, camera)
+      // SSFR pipeline: real fluid rendering (depth spheres, blur, composite)
+      let ssfrPipeline: SSFRPipeline | null = null
+      try {
+        const ssfr = new SSFRPipeline({
+          particleRadius: 0.025,
+          blurRadius: 10,
+          blurDepthFalloff: 40.0,
+          // Water IOR ≈ 1.333. Refraction is small but visible; bumping
+          // from 0.04 so the scene behind the fluid clearly bends.
+          refractionStrength: 0.08,
+          // Multiplier on Beer-Lambert RGB coefficients (0.45/0.09/0.04).
+          // 1.5 = moderately clear water; higher feels like a deep pool.
+          absorptionScale: 1.5,
+        })
+        await ssfr.init(device, container.clientWidth, container.clientHeight)
+        ssfrPipeline = ssfr
+        console.log('SSFR pipeline active — real fluid rendering')
+      } catch (e) {
+        console.warn('SSFR init failed, using Points fallback:', e)
+      }
 
       // Raycaster for click-to-spawn
       const raycaster = new THREE.Raycaster()
@@ -487,6 +507,7 @@ export function FluidTest() {
         renderer,
         controls,
         fluidScene,
+        ssfrPipeline,
         animId: 0,
         lastTime: performance.now(),
         fpsAccum: 0,
@@ -607,10 +628,46 @@ export function FluidTest() {
         // Update orbit controls
         sim.controls.update()
 
-        // Render: scene + SSFR post-processing (bilateral blur smooths particles)
-        if (sim.fluidScene.renderPipeline) {
-          sim.fluidScene.renderPipeline.render()
-        } else {
+        // Render: SSFR (depth spheres + blur + composite) or Points fallback
+        let ssfrOk = false
+        if (sim.ssfrPipeline && count > 0) {
+          try {
+            sim.camera.updateMatrixWorld()
+            const ctx = sim.renderer.backend.context as GPUCanvasContext
+            const outputView = ctx.getCurrentTexture().createView()
+
+            const invViewMat = sim.camera.matrixWorld  // matrixWorld = inverse of matrixWorldInverse
+            // Enable error logging on first frame
+            if (sim.frameCount < 2) {
+              sim.device.pushErrorScope('validation')
+            }
+
+            const encoder2 = sim.device.createCommandEncoder()
+            sim.ssfrPipeline.render(
+              encoder2,
+              sim.gpuSim.particleBuffer,
+              count,
+              new Float32Array(sim.camera.matrixWorldInverse.elements),
+              new Float32Array(sim.camera.projectionMatrix.elements),
+              new Float32Array(sim.camera.projectionMatrixInverse.elements),
+              new Float32Array(invViewMat.elements),
+              outputView,
+            )
+            sim.device.queue.submit([encoder2.finish()])
+
+            // Check for GPU validation errors on first frame
+            if (sim.frameCount < 2) {
+              sim.device.popErrorScope().then((err: any) => {
+                if (err) console.error('[SSFR GPU ERROR]', err.message)
+                else console.log('[SSFR] No GPU validation errors')
+              })
+            }
+            ssfrOk = true
+          } catch (e: any) {
+            if (sim.frameCount < 3) console.warn('[SSFR] Render error:', e?.message || e)
+          }
+        }
+        if (!ssfrOk) {
           sim.renderer.render(sim.scene, sim.camera)
         }
       }
