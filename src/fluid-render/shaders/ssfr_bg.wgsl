@@ -39,7 +39,12 @@ fn getCameraPos() -> vec3<f32> {
 }
 
 fn getRayDir(uv: vec2<f32>) -> vec3<f32> {
-    let ndc = vec4<f32>(uv * 2.0 - 1.0, -1.0, 1.0);
+    // vs_main stores uv with Y flipped (uv.y=0 at top, uv.y=1 at bottom),
+    // which is the screen-texture convention. To recover WebGPU NDC
+    // (y=+1 top, y=-1 bottom), we must flip Y back when reconstructing
+    // the ray. Without this flip the whole raytraced scene renders
+    // upside-down relative to the particle-splatted fluid.
+    let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - 2.0 * uv.y, -1.0, 1.0);
     let viewDir = uniforms.invProjMatrix * ndc;
     let worldDir = (uniforms.invViewMatrix * vec4<f32>(viewDir.xyz, 0.0)).xyz;
     return normalize(worldDir);
