@@ -34,7 +34,7 @@ export interface CompositionGpuProps {
 const GRID_SIZE = 64
 const GRID_CELLS = GRID_SIZE ** 3          // 262,144 cells
 const GRID_SLOTS = GRID_CELLS * 4          // 1,048,576 i32 slots (4 per cell)
-const MAX_PARTICLES = 300_000
+const MAX_PARTICLES = 1_000_000
 const MAX_CONTACTS = 10_000
 // Particle struct: pos(12) + comp_id(4) + vel(12) + temp(4) + C_3x3(36) + phase(4) + pad(8) = 80 bytes
 const PARTICLE_STRIDE = 80

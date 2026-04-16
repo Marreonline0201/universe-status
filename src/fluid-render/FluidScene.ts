@@ -13,7 +13,7 @@
 
 import * as THREE from 'three'
 
-const MAX_PARTICLES = 300_000
+const MAX_PARTICLES = 1_000_000
 const FLOATS_PER_PARTICLE = 20
 
 export class FluidScene {

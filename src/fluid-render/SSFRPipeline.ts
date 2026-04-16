@@ -339,20 +339,9 @@ export class SSFRPipeline {
     // Triangle strip indices for a quad: 0,1,2,3 (with primitive restart)
     // Actually, we use vertex_index / 4 = particle, vertex_index % 4 = corner
     // with triangle-strip topology and stripIndexFormat
-    // Indices: [0,1,2,3] per quad with restarts
-    const MAX_PARTICLES = 300000
-    const indices = new Uint16Array(MAX_PARTICLES * 6) // 2 triangles per quad
-    for (let i = 0; i < MAX_PARTICLES; i++) {
-      const base = i * 4
-      const idx = i * 6
-      indices[idx + 0] = base + 0
-      indices[idx + 1] = base + 1
-      indices[idx + 2] = base + 2
-      indices[idx + 3] = base + 2
-      indices[idx + 4] = base + 1
-      indices[idx + 5] = base + 3
-    }
-    // This is too large for uint16. Use uint32 instead.
+    // Indices: [0,1,2,3] per quad → 6 indices per particle.
+    // Uint32 required: at 1M particles, max index = 4M which overflows Uint16.
+    const MAX_PARTICLES = 1_000_000
     const indices32 = new Uint32Array(MAX_PARTICLES * 6)
     for (let i = 0; i < MAX_PARTICLES; i++) {
       const base = i * 4
