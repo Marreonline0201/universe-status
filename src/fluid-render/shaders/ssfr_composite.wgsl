@@ -23,12 +23,18 @@ struct MaterialProps {
 };
 
 @group(0) @binding(0) var<uniform> params: CompositeParams;
-@group(0) @binding(1) var depthTex: texture_2d<f32>;      // smoothed depth
+@group(0) @binding(1) var depthTex: texture_2d<f32>;      // smoothed fluid depth
 @group(0) @binding(2) var thicknessTex: texture_2d<f32>;   // accumulated thickness
-@group(0) @binding(3) var sceneTex: texture_2d<f32>;       // Three.js scene render
+@group(0) @binding(3) var sceneTex: texture_2d<f32>;       // bg color (grid/box/ball raytrace)
 @group(0) @binding(4) var compIdTex: texture_2d<u32>;      // per-pixel composition ID
 @group(0) @binding(5) var<storage, read> materials: MaterialProps;
 @group(0) @binding(6) var linearSampler: sampler;
+// Eye-space depth of the BG geometry (grid / box / ball). Used per-pixel
+// to decide whether the bg surface is IN FRONT of the fluid (then the bg
+// wins and we skip the fluid composite) or BEHIND (then fluid overlays).
+// This replaces the old "bg is always infinitely behind" assumption that
+// caused the two-layer problem.
+@group(0) @binding(7) var bgDepthTex: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -94,6 +100,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let depthD = textureSample(depthTex, linearSampler, in.uv - vec2<f32>(0.0, texelSize.y)).r;
     let thickness = textureSample(thicknessTex, linearSampler, in.uv).r;
     let sceneBg = textureSample(sceneTex, linearSampler, in.uv);
+    // bg eye-space depth. r32float with 'unfilterable-float' sampling
+    // requires textureLoad, not textureSample.
+    let bgPixel = vec2<i32>(in.uv * params.screenSize);
+    let bgDepth = textureLoad(bgDepthTex, bgPixel, 0).r;
 
     // Determine if fluid exists at this pixel
     let hasFluid = depth > 0.0 && depth < 1000.0;
@@ -186,7 +196,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Alpha: no minimum floor. Thin fluid is genuinely translucent.
     let alpha = min(1.0, thicknessFactor + fresnel * 0.3);
 
-    // Select: fluid pixels show composited fluid, non-fluid pixels show background
-    let result = select(sceneBg, vec4<f32>(finalColor, alpha), hasFluid);
+    // ── Per-pixel depth compositing ─────────────────────────────────
+    // Three cases:
+    //   1. No fluid at this pixel → show bg directly.
+    //   2. bg surface is IN FRONT of fluid surface (bgDepth < fluidDepth)
+    //      → bg wins, bypass fluid composite. This handles the ball or
+    //      box edge being between the camera and the fluid.
+    //   3. Otherwise → fluid composite (bg shows through via
+    //      transmittedColor + Beer-Lambert).
+    // Small bias (1e-4) avoids z-fighting where bg and fluid coincide.
+    let bgInFront = hasFluid && (bgDepth + 1e-4) < depth;
+    let fluidColor = vec4<f32>(finalColor, alpha);
+    var result: vec4<f32>;
+    if (!hasFluid) {
+        result = sceneBg;
+    } else if (bgInFront) {
+        result = sceneBg;
+    } else {
+        result = fluidColor;
+    }
     return result;
 }

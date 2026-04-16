@@ -61,8 +61,16 @@ fn intersectSphere(ro: vec3<f32>, rd: vec3<f32>, center: vec3<f32>, radius: f32)
     return t;
 }
 
+// Fragment shader outputs: color (to bgTex) and eye-space depth (to bgDepthTex).
+// The depth must use the same convention as the fluid depth texture
+// (negative eye-space Z stored positive), so composite can compare them.
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) depth: f32,
+};
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> FragOutput {
     let camPos = getCameraPos();
     let rayDir = getRayDir(in.uv);
 
@@ -159,5 +167,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return vec4<f32>(bgColor, 1.0);
+    // Convert world-space ray distance to eye-space depth that matches
+    // the fluid depth convention (positive-valued negative-Z).
+    // If no surface hit (nearestT still 1e9), emit a far sentinel so
+    // the composite's depth compare won't let bg occlude anything.
+    var eyeDepth = 1e6;
+    if (nearestT < 1e8) {
+        let hitWorld = camPos + nearestT * rayDir;
+        let hitEye = uniforms.viewMatrix * vec4<f32>(hitWorld, 1.0);
+        // Fluid depth stores -eyeZ (positive). Match it.
+        eyeDepth = -hitEye.z;
+    }
+
+    var out: FragOutput;
+    out.color = vec4<f32>(bgColor, 1.0);
+    out.depth = eyeDepth;
+    return out;
 }

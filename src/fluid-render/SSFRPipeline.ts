@@ -41,6 +41,13 @@ export class SSFRPipeline {
   // Textures
   private bgTex!: GPUTexture         // background scene (for composite to sample)
   private bgView!: GPUTextureView
+  // Per-pixel eye-space depth of the background geometry. Composite reads
+  // this to decide — per pixel — whether the bg is in FRONT of the fluid
+  // surface (then bg wins) or behind it (then fluid composites over bg).
+  // Without this we had the two-layer problem: ball/box always rendered
+  // "behind" fluid even when physically in front.
+  private bgDepthTex!: GPUTexture
+  private bgDepthView!: GPUTextureView
   private depthTex!: GPUTexture
   private depthView!: GPUTextureView
   private blurTempTex!: GPUTexture
@@ -115,6 +122,14 @@ export class SSFRPipeline {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     })
     this.bgView = this.bgTex.createView()
+
+    // BG depth (eye-space z, positive = in front of camera).
+    // Written by ssfr_bg.wgsl as a second color attachment (r32float).
+    this.bgDepthTex = this.device.createTexture({
+      size: [w, h], format: 'r32float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    })
+    this.bgDepthView = this.bgDepthTex.createView()
 
     // Depth texture (R32Float — linear eye-space depth)
     this.depthTex = this.device.createTexture({
@@ -207,7 +222,9 @@ export class SSFRPipeline {
       vertex: { module: bgModule, entryPoint: 'vs_main' },
       fragment: {
         module: bgModule, entryPoint: 'fs_main',
-        targets: [{ format: canvasFormat }],
+        // Two color targets: color (canvasFormat) and eye-space depth (r32float).
+        // Composite uses depth to decide if bg is in front of fluid or behind.
+        targets: [{ format: canvasFormat }, { format: 'r32float' }],
       },
       primitive: { topology: 'triangle-list' },
     }).catch((e: any) => { console.error('[BG PIPELINE]', e); throw e })
@@ -291,12 +308,13 @@ export class SSFRPipeline {
     this.compositeBGL = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },          // depth
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },          // depth (fluid)
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },          // thickness
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },          // scene
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },          // scene color
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'uint' } },           // compId
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },     // materials
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // bg eye-space depth
       ],
     })
 
@@ -434,11 +452,22 @@ export class SSFRPipeline {
       })
 
       const pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: this.bgView,
-          loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 },
-        }],
+        colorAttachments: [
+          {
+            view: this.bgView,
+            loadOp: 'clear', storeOp: 'store',
+            clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 },
+          },
+          {
+            // Clear to a far-away depth (well beyond any fluid particle).
+            // The shader will overwrite this for any pixel where a surface
+            // is hit; leftover pixels keep the far value so "no bg hit"
+            // never wins the depth comparison against fluid.
+            view: this.bgDepthView,
+            loadOp: 'clear', storeOp: 'store',
+            clearValue: { r: 1e6, g: 0, b: 0, a: 0 },
+          },
+        ],
       })
       pass.setPipeline(this.bgPipeline)
       pass.setBindGroup(0, bgBindGroup)
@@ -587,12 +616,13 @@ export class SSFRPipeline {
         layout: this.compositeBGL,
         entries: [
           { binding: 0, resource: { buffer: this.compositeUBO } },
-          { binding: 1, resource: this.depthView },       // smoothed depth
+          { binding: 1, resource: this.depthView },       // smoothed fluid depth
           { binding: 2, resource: this.thicknessView },    // thickness
-          { binding: 3, resource: sceneView },             // scene
+          { binding: 3, resource: sceneView },             // scene color
           { binding: 4, resource: this.dummyCompIdView },  // comp ID (placeholder)
           { binding: 5, resource: { buffer: this.dummyMatBuf } },// materials
           { binding: 6, resource: this.linearSampler },
+          { binding: 7, resource: this.bgDepthView },      // bg eye-space depth
         ],
       })
 
@@ -615,6 +645,7 @@ export class SSFRPipeline {
 
   destroy() {
     this.bgTex?.destroy()
+    this.bgDepthTex?.destroy()
     this.depthTex?.destroy()
     this.blurTempTex?.destroy()
     this.thicknessTex?.destroy()
