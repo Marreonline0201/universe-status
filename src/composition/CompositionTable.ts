@@ -1,4 +1,5 @@
 // CompositionTable.ts — Manages named compositions and their GPU-side property data
+// Updated: integrates with physics-based PropertyCalculator and ContactProcessor
 
 import { computeProperties, type Composition, type DerivedProps, type ElementName } from './PropertyCalculator'
 
@@ -16,6 +17,7 @@ export interface NamedComposition {
   id: number
   name: string
   formula: string
+  elements: Partial<Record<ElementName, number>>  // raw element fractions
   composition: Composition
   props: DerivedProps
   temperature: number
@@ -23,11 +25,12 @@ export interface NamedComposition {
 
 export class CompositionTable {
   private compositions: NamedComposition[] = []
-  private gpuData = new Float32Array(256 * 4)  // vec4 per composition for GPU
+  private gpuData = new Float32Array(256 * 4)  // vec4 per composition for GPU simulation
+  private colorData = new Float32Array(256 * 4) // vec4 per composition for SSFR rendering
+  private blendCache = new Map<string, number>() // hash → composition ID
 
   /** Add a composition. Returns its ID.
    *  densityOverride: use this for molecular compounds where Vegard's law doesn't apply
-   *  (e.g., water = 1000 kg/m³, not the 1.28 kg/m³ that element interpolation gives)
    *  renderOverride: physically correct render properties that override PropertyCalculator values
    */
   add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number, renderOverride?: RenderOverride): number {
@@ -54,17 +57,24 @@ export class CompositionTable {
     }
     const id = this.compositions.length
 
-    this.compositions.push({ id, name, formula, composition, props, temperature })
+    this.compositions.push({ id, name, formula, elements: normalized, composition, props, temperature })
 
-    // GPU data uses MLS-MPM grid-scale values, NOT real-world units.
-    // rest_density=4.0 is the standard MLS-MPM value for fluid (from WebGPU-Ocean).
-    // Density RATIO between materials is preserved for relative behavior.
-    const baseDensity = 4.0  // grid-scale rest density
-    const densityRatio = props.density / 1000  // normalize to water=1.0
+    // GPU simulation data: MLS-MPM grid-scale values
+    const baseDensity = 4.0
+    const densityRatio = props.density / 1000
     this.gpuData[id * 4 + 0] = baseDensity * Math.max(densityRatio, 0.1)
     this.gpuData[id * 4 + 1] = props.viscosity
     this.gpuData[id * 4 + 2] = props.surfaceTension
-    this.gpuData[id * 4 + 3] = 4.0   // stiffness — matches WebGPU-Ocean reference value
+    this.gpuData[id * 4 + 3] = 4.0  // stiffness
+
+    // Color data for SSFR rendering: [R, G, B, packed(metalness, F0, emissive, opacity)]
+    this.colorData[id * 4 + 0] = props.color[0]
+    this.colorData[id * 4 + 1] = props.color[1]
+    this.colorData[id * 4 + 2] = props.color[2]
+    // Pack rendering properties into w channel as follows:
+    // w = metalness * 0.01 + F0 * 0.001 + emissive * 0.0001
+    // (We'll use a separate uniform for these in the actual shader)
+    this.colorData[id * 4 + 3] = props.opacityDensity
 
     return id
   }
@@ -84,12 +94,35 @@ export class CompositionTable {
     return null
   }
 
+  /** Get by ID */
+  getById(id: number): NamedComposition | undefined { return this.compositions[id] }
   get(id: number): NamedComposition | undefined { return this.compositions[id] }
   getAll(): NamedComposition[] { return [...this.compositions] }
   getGpuData(): Float32Array { return this.gpuData }
   get count(): number { return this.compositions.length }
 
-  /** Create a blended composition from two existing ones */
+  /** Get per-composition color data for SSFR shader binding */
+  getColorData(): Float32Array { return this.colorData }
+
+  /** Get full rendering properties for all compositions (for SSFR uniform buffer) */
+  getRenderData(): Float32Array {
+    // 8 floats per composition: [R, G, B, metalness, F0, emissive, IOR, opacity]
+    const data = new Float32Array(256 * 8)
+    for (const comp of this.compositions) {
+      const base = comp.id * 8
+      data[base + 0] = comp.props.color[0]
+      data[base + 1] = comp.props.color[1]
+      data[base + 2] = comp.props.color[2]
+      data[base + 3] = comp.props.metalness
+      data[base + 4] = comp.props.F0
+      data[base + 5] = comp.props.emissive
+      data[base + 6] = comp.props.IOR
+      data[base + 7] = comp.props.opacityDensity
+    }
+    return data
+  }
+
+  /** Create a blended composition from two existing ones (ratio-based) */
   blend(idA: number, idB: number, ratioA: number): number {
     const compA = this.compositions[idA]
     const compB = this.compositions[idB]
@@ -107,7 +140,6 @@ export class CompositionTable {
       blended[el] = fracA * ratioA + fracB * (1 - ratioA)
     }
 
-    // Check if this blend already exists
     const existing = this.find(blended)
     if (existing !== null) return existing
 
@@ -120,10 +152,48 @@ export class CompositionTable {
     )
   }
 
+  /** Mass-weighted blend for ContactProcessor */
+  blendByMass(idA: number, idB: number, massA: number, massB: number): number {
+    const ratio = massA / (massA + massB)
+    return this.blend(idA, idB, ratio)
+  }
+
+  /** Add or find an existing blend by element composition */
+  addOrFindBlend(name: string, elements: Partial<Record<ElementName, number>>, temperature: number): number {
+    // Create a hash of the composition for fast lookup
+    const hash = this.hashComposition(elements)
+    const cached = this.blendCache.get(hash)
+    if (cached !== undefined) return cached
+
+    // Check existing compositions
+    const existing = this.find(elements)
+    if (existing !== null) {
+      this.blendCache.set(hash, existing)
+      return existing
+    }
+
+    // Create new composition
+    const formula = Object.entries(elements)
+      .filter(([, f]) => f > 0.01)
+      .sort(([, a], [, b]) => b - a)
+      .map(([el, f]) => `${el}${(f * 100).toFixed(0)}`)
+      .join('')
+    const id = this.add(name, formula, elements, temperature)
+    this.blendCache.set(hash, id)
+    return id
+  }
+
+  /** Hash composition for cache lookup */
+  private hashComposition(elements: Partial<Record<ElementName, number>>): string {
+    return Object.entries(elements)
+      .filter(([, f]) => (f ?? 0) > 0.005)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([el, f]) => `${el}:${((f ?? 0) * 1000).toFixed(0)}`)
+      .join('|')
+  }
+
   /** Add common starting materials with physically correct render properties */
   addDefaults(): void {
-    // densityOverride is required for molecular compounds — Vegard's law only works for solid alloys
-    // renderOverride provides physically correct optical properties per material
     this.add('Water', 'H₂O', { H: 0.111, O: 0.889 }, 20, 1000,
       { color: [0.8, 0.9, 1.0], opacityDensity: 0.15, F0: 0.02, metalness: 0.0, emissive: 0.0, IOR: 1.333 })
     this.add('Salt', 'NaCl', { Na: 0.393, Cl: 0.607 }, 20, 2170,
