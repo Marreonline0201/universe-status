@@ -1,0 +1,1 @@
+[ERROR] Failed to get GPUDevice from Three.js WebGPU renderer

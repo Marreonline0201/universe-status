@@ -1,0 +1,9 @@
+[DEBUG] [vite] connecting...
+[DEBUG] [vite] connected.
+[INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[WARNING] [StatusSocket] VITE_WS_URL not set — showing offline state
+[WARNING] No available adapters.
+[WARNING] THREE.WebGPURenderer: WebGPU is not available, running under WebGL2 backend.
+[ERROR] Failed to get GPUDevice from Three.js WebGPU renderer
+[WARNING] [.WebGL-0x9dc0011e200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o

@@ -1,0 +1,106 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]: UNIVERSE
+    - button "GAME GUIDE" [ref=e6] [cursor=pointer]
+    - button "CONNECTIONS" [ref=e7] [cursor=pointer]
+    - button "AGENT CONTROL" [ref=e8] [cursor=pointer]
+    - button "FLUID TEST" [active] [ref=e9] [cursor=pointer]
+    - generic [ref=e12]: OFFLINE
+  - generic [ref=e19222]:
+    - generic [ref=e19223]:
+      - generic [ref=e19224]:
+        - generic [ref=e19225]: GPU MLS-MPM FLUID
+        - generic [ref=e19226]: WebGPU Compute + SSFR
+      - generic [ref=e19227]:
+        - generic [ref=e19228]: "FPS: 60"
+        - generic [ref=e19229]: GPU
+        - generic [ref=e19230]: "N: 10000 / 300000"
+    - generic [ref=e19234]:
+      - generic [ref=e19235]:
+        - generic [ref=e19236]:
+          - generic [ref=e19237]: MATERIALS
+          - generic [ref=e19238]:
+            - button "Water H₂O" [ref=e19239] [cursor=pointer]:
+              - generic [ref=e19241]: Water
+              - generic [ref=e19242]: H₂O
+            - button "Salt NaCl" [ref=e19243] [cursor=pointer]:
+              - generic [ref=e19245]: Salt
+              - generic [ref=e19246]: NaCl
+            - button "Iron Fe" [ref=e19247] [cursor=pointer]:
+              - generic [ref=e19249]: Iron
+              - generic [ref=e19250]: Fe
+            - button "Copper Cu" [ref=e19251] [cursor=pointer]:
+              - generic [ref=e19253]: Copper
+              - generic [ref=e19254]: Cu
+            - button "Mercury Hg" [ref=e19255] [cursor=pointer]:
+              - generic [ref=e19257]: Mercury
+              - generic [ref=e19258]: Hg
+            - button "Olive Oil C₅₅H₁₀₄O₆" [ref=e19259] [cursor=pointer]:
+              - generic [ref=e19261]: Olive Oil
+              - generic [ref=e19262]: C₅₅H₁₀₄O₆
+            - button "Lava Basalt" [ref=e19263] [cursor=pointer]:
+              - generic [ref=e19265]: Lava
+              - generic [ref=e19266]: Basalt
+        - generic [ref=e19267]:
+          - button "+10K" [ref=e19268] [cursor=pointer]
+          - button "+50K" [ref=e19269] [cursor=pointer]
+        - button "DROP BALL" [ref=e19270] [cursor=pointer]
+        - generic [ref=e19271]:
+          - generic [ref=e19272]: TEMPERATURE
+          - slider [ref=e19273] [cursor=pointer]: "20"
+          - generic [ref=e19274]: 20 C
+        - generic [ref=e19275]:
+          - generic [ref=e19276]: GRAVITY
+          - slider [ref=e19277] [cursor=pointer]: "0.5"
+          - generic [ref=e19278]: "0.50"
+        - button "RESET" [ref=e19279] [cursor=pointer]
+        - generic [ref=e19280]:
+          - button "[-] MATERIAL INFO" [ref=e19281] [cursor=pointer]
+          - generic [ref=e19282]:
+            - generic [ref=e19283]: Water
+            - generic [ref=e19284]: H₂O
+            - generic [ref=e19285]:
+              - generic [ref=e19286]:
+                - generic [ref=e19287]: ρDensity
+                - generic [ref=e19288]: 1000 kg/m3
+              - generic [ref=e19289]:
+                - generic [ref=e19290]: μViscosity
+                - generic [ref=e19291]: 0.0010 Pa·s
+              - generic [ref=e19292]:
+                - generic [ref=e19293]: σSurface Tension
+                - generic [ref=e19294]: 0.0728 N/m
+              - generic [ref=e19295]:
+                - generic [ref=e19296]: TmMelting Point
+                - generic [ref=e19297]: 0 C
+              - generic [ref=e19298]:
+                - generic [ref=e19299]: TbBoiling Point
+                - generic [ref=e19300]: 100 C
+              - generic [ref=e19301]:
+                - generic [ref=e19302]: MMetalness
+                - generic [ref=e19303]: 0%
+              - generic [ref=e19304]:
+                - generic [ref=e19305]: FF0
+                - generic [ref=e19306]: "0.020"
+              - generic [ref=e19307]:
+                - generic [ref=e19308]: nIOR
+                - generic [ref=e19309]: "1.333"
+            - generic [ref=e19310]:
+              - generic [ref=e19311]: GPU MLS-MPM
+              - generic [ref=e19312]: "Solver: WebGPU compute"
+              - generic [ref=e19313]: "Substeps: 2 per frame"
+              - generic [ref=e19314]: "Grid: 64x64x64"
+              - generic [ref=e19315]: "Render: SSFR (5-pass)"
+              - generic [ref=e19316]: "Transfer: P2G + G2P"
+              - generic [ref=e19317]: From structure.md S3.2
+      - generic [ref=e19318]:
+        - generic [ref=e19319]:
+          - textbox "Anthropic API key..." [ref=e19320]
+          - button "SET" [ref=e19321] [cursor=pointer]
+        - generic [ref=e19323]:
+          - generic [ref=e19324]:
+            - generic [ref=e19325]: AI CHAT
+            - button "AUTO OFF" [disabled] [ref=e19326]
+          - generic [ref=e19328]: Enter Anthropic API key to enable AI features
+          - generic [ref=e19329]:
+            - textbox "API key required..." [disabled] [ref=e19330]
+            - button "SEND" [disabled] [ref=e19331]
