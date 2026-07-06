@@ -1,0 +1,13 @@
+{
+  "port": 4571,
+  "maxConcurrent": 8,
+  "maxTurns": 30,
+  "activationTimeoutMs": 1200000,
+  "agentCooldownMs": 30000,
+  "noProgressBackoffMs": 300000,
+  "allowedTools": "Read,Glob,Grep,Write,Edit,WebSearch,WebFetch",
+  "fableFallbackModel": "claude-opus-4-8",
+  "autoCommit": true,
+  "autoCommitBranch": "agent-office",
+  "autoCommitIntervalMs": 120000
+}
