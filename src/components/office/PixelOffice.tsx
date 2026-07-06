@@ -90,6 +90,24 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           </div>
         )}
 
+        {/* usage-guard banner: the office naps near the subscription limit */}
+        {state.connected && state.pool.resting && (
+          <div style={{
+            position: 'absolute', top: state.mock ? 96 : 34, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
+            background: 'rgba(110,85,10,0.92)', border: '2px solid #ffd700',
+            color: '#fff3cc', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+          }}>
+            😴 RESTING — {state.pool.restReason === 'weekly'
+              ? `weekly limit at ${Math.round(state.pool.weeklyPct ?? 0)}%`
+              : `session limit at ${Math.round(state.pool.usagePct ?? 0)}%`}
+            {state.pool.restResumeAt && ` · resumes ~${new Date(state.pool.restResumeAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffe699' }}>
+              in-flight agents finish their turn — no new sessions until the usage window resets
+            </div>
+          </div>
+        )}
+
         {/* HUD strip */}
         <div style={{
           position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 8,
@@ -99,6 +117,15 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           <Hud label={`SESSIONS ${state.pool.active.length}/${state.pool.cap || '—'}`} color="#00d4ff" />
           {state.pool.queued.length > 0 && <Hud label={`QUEUED ${state.pool.queued.length}`} color="#ff6b35" />}
           {state.pool.paused && <Hud label="PAUSED" color="#ffd700" />}
+          {state.pool.resting && <Hud label="RESTING" color="#ffd700" />}
+          {state.pool.usagePct !== null ? (
+            <Hud
+              label={`USAGE ${Math.round(state.pool.usagePct)}%${state.pool.weeklyPct !== null ? ` · WK ${Math.round(state.pool.weeklyPct)}%` : ''}`}
+              color={state.pool.usagePct >= 80 || (state.pool.weeklyPct ?? 0) >= 85 ? '#ffd700' : '#00d4ff'}
+            />
+          ) : state.connected && !state.mock && !state.pool.usageMonitorOk ? (
+            <Hud label="USAGE ?" color="#8a97b8" />
+          ) : null}
           <Hud label={`TASKS ${openTasks.length}`} color="#8a97b8" />
           <Hud label={`REPORTS ${state.reports.filter(r => r.status === 'approved').length}`} color="#00ff88" />
         </div>

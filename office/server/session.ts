@@ -11,8 +11,11 @@ export interface ActivationEvents {
   onStatus: (status: 'working' | 'reading' | 'typing' | 'talking' | 'blocked') => void
   onActivity: (kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string) => void
   onTranscript: (line: string) => void
-  onEnd: (result: { ok: boolean; sessionId: string | null; wroteFiles: boolean; error?: string }) => void
+  onEnd: (result: { ok: boolean; sessionId: string | null; wroteFiles: boolean; limitHit: boolean; error?: string }) => void
 }
+
+/** Matches the CLI's refusal text when the subscription limit is exhausted. */
+const LIMIT_ERROR = /usage limit|limit reached|rate.?limit|out of usage|hit your .*limit/i
 
 export interface ActivationConfig {
   maxTurns: number
@@ -30,6 +33,7 @@ export class Activation {
   private wroteFiles = false
   private sessionId: string | null = null
   private ended = false
+  private limitHit = false
 
   constructor(
     private paths: Paths,
@@ -93,13 +97,14 @@ export class Activation {
         this.start()
         return
       }
-      this.events.onEnd({ ok, sessionId: this.sessionId, wroteFiles: this.wroteFiles, error: ok ? undefined : stderr.slice(0, 500) })
+      if (!ok && LIMIT_ERROR.test(stderr)) this.limitHit = true
+      this.events.onEnd({ ok, sessionId: this.sessionId, wroteFiles: this.wroteFiles, limitHit: this.limitHit, error: ok ? undefined : stderr.slice(0, 500) })
     })
     this.child.on('error', (err) => {
       if (this.timer) clearTimeout(this.timer)
       if (this.ended) return
       this.ended = true
-      this.events.onEnd({ ok: false, sessionId: this.sessionId, wroteFiles: this.wroteFiles, error: String(err) })
+      this.events.onEnd({ ok: false, sessionId: this.sessionId, wroteFiles: this.wroteFiles, limitHit: this.limitHit, error: String(err) })
     })
   }
 
@@ -131,6 +136,7 @@ export class Activation {
     }
     if (ev.type === 'result') {
       this.sessionId = ev.session_id ?? this.sessionId
+      if (ev.is_error && typeof ev.result === 'string' && LIMIT_ERROR.test(ev.result)) this.limitHit = true
       this.events.onActivity('turn_end')
       this.events.onTranscript(`[turn end] ${ev.subtype ?? ''} ${ev.is_error ? 'ERROR' : ''}`.trim())
     }

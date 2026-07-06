@@ -49,7 +49,19 @@ export interface ReportMeta {
   date: string
 }
 
-export interface PoolState { cap: number; active: string[]; queued: string[]; paused: boolean }
+export interface PoolState {
+  cap: number
+  active: string[]
+  queued: string[]
+  paused: boolean
+  // Usage-aware rest mode (mirrors office/server/protocol.ts)
+  resting: boolean
+  restReason: 'session' | 'weekly' | null
+  restResumeAt: string | null
+  usagePct: number | null
+  weeklyPct: number | null
+  usageMonitorOk: boolean
+}
 
 export interface AgentDetail {
   id: string
@@ -94,7 +106,11 @@ const INITIAL: OfficeState = {
   tasks: [],
   chat: [],
   reports: [],
-  pool: { cap: 0, active: [], queued: [], paused: false },
+  pool: {
+    cap: 0, active: [], queued: [], paused: false,
+    resting: false, restReason: null, restResumeAt: null,
+    usagePct: null, weeklyPct: null, usageMonitorOk: false,
+  },
   detail: null,
 }
 

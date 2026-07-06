@@ -51,9 +51,28 @@ export function runMock(ctx: MockCtx) {
     ctx.pushChat({ from, to, subject: pick(SUBJECTS), kind: pick(['fyi', 'request', 'review-comment', 'handoff']), taskId: null, ts: Date.now() })
   }, 2500)
 
-  // Pool churn for the HUD meter.
+  // Pool churn for the HUD meter, with a fake usage ramp so the RESTING
+  // banner/chip can be developed without spending a single token:
+  // climbs 60→100 (resting from 90), then drops back to 60.
+  let usagePct = 60
   setInterval(() => {
-    const active = ids.filter(() => rand() < 0.12).slice(0, 8)
-    ctx.ws.broadcast({ type: 'POOL_STATE', pool: { cap: 8, active, queued: ids.filter(() => rand() < 0.05).slice(0, 4), paused: false } })
+    usagePct = usagePct >= 100 ? 60 : usagePct + 4
+    const resting = usagePct >= 90
+    const active = resting ? [] : ids.filter(() => rand() < 0.12).slice(0, 8)
+    ctx.ws.broadcast({
+      type: 'POOL_STATE',
+      pool: {
+        cap: 8,
+        active,
+        queued: ids.filter(() => rand() < 0.05).slice(0, 4),
+        paused: false,
+        resting,
+        restReason: resting ? 'session' : null,
+        restResumeAt: resting ? new Date(Date.now() + ((104 - usagePct) / 4) * 4000).toISOString() : null,
+        usagePct,
+        weeklyPct: 18,
+        usageMonitorOk: true,
+      },
+    })
   }, 4000)
 }
