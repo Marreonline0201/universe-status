@@ -19,6 +19,8 @@ export interface OfficeConfig {
   autoCommit: boolean
   autoCommitBranch: string
   autoCommitIntervalMs: number
+  /** Absolute path in the user's Obsidian vault that mirrors company/reports/**. */
+  vaultMirrorDir?: string
 }
 
 export interface SchedulerEvents {

@@ -37,6 +37,9 @@ Each team: 1 Team Lead, 3 Senior Researchers ("Fables", model `claude-fable-5`),
 5. The team Reviewer gates every report against `company/REPORT_STANDARDS.md` —
    revisions bounce back with review mail until approved.
 6. Approved reports land in `company/reports/<team>/` with sign-off front matter.
+   The orchestrator automatically mirrors every report (drafts and approved) into the
+   owner's Obsidian vault (`universe-brain/research/<team>/`) — agents never write
+   there themselves; writing to `company/reports/` is all that's needed.
 7. Agents may create follow-up tasks and assign each other work, like any real org —
    but volume is not the goal; only work that deserves to exist.
 

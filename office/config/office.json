@@ -9,5 +9,6 @@
   "fableFallbackModel": "claude-opus-4-8",
   "autoCommit": true,
   "autoCommitBranch": "agent-office",
-  "autoCommitIntervalMs": 120000
+  "autoCommitIntervalMs": 120000,
+  "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research"
 }

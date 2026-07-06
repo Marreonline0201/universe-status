@@ -10,6 +10,7 @@ import {
 import { Scheduler, type OfficeConfig } from './scheduler.ts'
 import { startWatcher } from './watcher.ts'
 import { AutoCommitter } from './autocommit.ts'
+import { VaultMirror } from './vault-mirror.ts'
 import { OfficeWs } from './ws.ts'
 import type { ChatMsg, OfficeAgent, ServerMsg, TaskSummary } from './protocol.ts'
 
@@ -49,6 +50,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
 
   const snapshot = (): ServerMsg => ({
     type: 'OFFICE_SNAPSHOT',
+    mock: !!opts.mock,
     teams,
     agents: [...agents.values()],
     tasks: loadTasks(paths),
@@ -120,10 +122,14 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     log,
   })
 
+  const vaultMirror = cfg.vaultMirrorDir ? new VaultMirror(paths, cfg.vaultMirrorDir, log) : null
+  vaultMirror?.sweep()
+
   const watcher = startWatcher(paths, {
     onMail: pushChat,
     onTask: (task: TaskSummary) => ws.broadcast({ type: 'TASK_UPDATE', task }),
     onReport: (report) => ws.broadcast({ type: 'REPORT_ADDED', report }),
+    onReportFile: (file) => vaultMirror?.mirrorFile(file),
     poke: () => scheduler.poke(),
   })
 
