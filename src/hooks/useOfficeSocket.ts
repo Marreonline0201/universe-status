@@ -60,7 +60,7 @@ export interface AgentDetail {
 }
 
 export type OfficeServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
+  | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
@@ -72,6 +72,8 @@ export type OfficeServerMsg =
 
 export interface OfficeState {
   connected: boolean
+  /** True when the orchestrator runs scripted mock activity instead of real agent sessions. */
+  mock: boolean
   teams: OfficeTeam[]
   agents: OfficeAgent[]
   tasks: TaskSummary[]
@@ -86,6 +88,7 @@ const OFFICE_URL: string =
 
 const INITIAL: OfficeState = {
   connected: false,
+  mock: false,
   teams: [],
   agents: [],
   tasks: [],
@@ -130,7 +133,7 @@ export function useOfficeSocket(): OfficeSocket {
           setState(s => {
             switch (msg.type) {
               case 'OFFICE_SNAPSHOT':
-                return { ...s, connected: true, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, pool: msg.pool }
+                return { ...s, connected: true, mock: !!msg.mock, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, pool: msg.pool }
               case 'AGENT_STATUS':
                 return {
                   ...s,

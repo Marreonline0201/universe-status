@@ -75,12 +75,27 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
       <div ref={wrapRef} style={{ flex: 1, position: 'relative', overflow: 'hidden', minWidth: 0 }}>
         <canvas ref={canvasRef} style={{ display: 'block', imageRendering: 'pixelated', cursor: 'grab' }} />
 
+        {/* mock-mode banner: scripted demo must never be mistaken for real agents */}
+        {state.mock && state.connected && (
+          <div style={{
+            position: 'absolute', top: 34, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
+            background: 'rgba(120,10,10,0.92)', border: '2px solid #ff4444',
+            color: '#ffdddd', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+          }}>
+            ⚠ MOCK MODE — scripted demo, real agents are NOT running
+            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ff9999' }}>
+              start the real company with: npm run office
+            </div>
+          </div>
+        )}
+
         {/* HUD strip */}
         <div style={{
           position: 'absolute', top: 8, left: 8, right: 8, display: 'flex', gap: 8,
           alignItems: 'center', pointerEvents: 'none', flexWrap: 'wrap',
         }}>
-          <Hud label={state.connected ? 'OFFICE LIVE' : 'OFFICE OFFLINE'} color={state.connected ? '#00ff88' : '#ff4444'} />
+          <Hud label={state.connected ? (state.mock ? 'MOCK' : 'OFFICE LIVE') : 'OFFICE OFFLINE'} color={state.connected ? (state.mock ? '#ff4444' : '#00ff88') : '#ff4444'} />
           <Hud label={`SESSIONS ${state.pool.active.length}/${state.pool.cap || '—'}`} color="#00d4ff" />
           {state.pool.queued.length > 0 && <Hud label={`QUEUED ${state.pool.queued.length}`} color="#ff6b35" />}
           {state.pool.paused && <Hud label="PAUSED" color="#ffd700" />}

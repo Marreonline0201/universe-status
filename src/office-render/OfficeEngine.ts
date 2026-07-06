@@ -8,6 +8,25 @@ import type { OfficeAgent, OfficeTeam, OfficeServerMsg } from '../hooks/useOffic
 
 interface Camera { x: number; y: number; scale: number }
 
+/** Short human phrase for a live tool/text event — the agent's thought cloud. */
+function activityLabel(kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string): string | null {
+  if (kind === 'text') return detail ? `“${detail}”` : null
+  if (kind !== 'tool_use' || !tool) return null
+  const base = detail ? (detail.split(/[\\/]/).pop() ?? detail) : ''
+  switch (tool) {
+    case 'Read': return base ? `reads ${base}` : 'reads a file'
+    case 'Write':
+    case 'Edit':
+    case 'MultiEdit':
+    case 'NotebookEdit': return base ? `writes ${base}` : 'writes a file'
+    case 'Grep':
+    case 'Glob': return detail ? `searches ${detail.slice(0, 36)}` : 'searches the repo'
+    case 'WebSearch': return detail ? `web: ${detail.slice(0, 38)}` : 'searches the web'
+    case 'WebFetch': return base ? `browses ${base.slice(0, 36)}` : 'browses the web'
+    default: return `uses ${tool}`
+  }
+}
+
 export class OfficeEngine {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -75,6 +94,11 @@ export class OfficeEngine {
             from.visit(to)
           }
         }
+        break
+      }
+      case 'AGENT_ACTIVITY': {
+        const label = activityLabel(msg.kind, msg.tool, msg.detail)
+        if (label) this.sprites.get(msg.id)?.think(label)
         break
       }
       case 'OFFICE_SHUTDOWN':
@@ -263,15 +287,26 @@ export class OfficeEngine {
     ctx.strokeStyle = (STATUS_COLORS.talking ?? '#00ff88') + 'aa'
     if (kind === 'review-comment') ctx.strokeStyle = '#ffd700aa'
     if (kind === 'handoff') ctx.strokeStyle = '#ff6b35aa'
+    if (kind === 'activity') ctx.strokeStyle = '#4d9fff77'
     ctx.beginPath()
-    ctx.roundRect(bx, by, w, h, 4)
+    ctx.roundRect(bx, by, w, h, kind === 'activity' ? 8 : 4)
     ctx.fill()
     ctx.stroke()
-    // tail
-    ctx.beginPath()
-    ctx.moveTo(x - 3, by + h); ctx.lineTo(x + 3, by + h); ctx.lineTo(x, by + h + 5)
-    ctx.closePath(); ctx.fill()
-    ctx.fillStyle = '#cfe3ff'
+    if (kind === 'activity') {
+      // thought-cloud tail: shrinking circles
+      for (const [r, oy] of [[2.5, 3], [1.5, 8]] as const) {
+        ctx.beginPath()
+        ctx.arc(x, by + h + oy, r, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+      }
+    } else {
+      // speech tail
+      ctx.beginPath()
+      ctx.moveTo(x - 3, by + h); ctx.lineTo(x + 3, by + h); ctx.lineTo(x, by + h + 5)
+      ctx.closePath(); ctx.fill()
+    }
+    ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : '#cfe3ff'
     ctx.textAlign = 'center'
     ctx.fillText(text, x, by + 12, w - 10)
     ctx.restore()

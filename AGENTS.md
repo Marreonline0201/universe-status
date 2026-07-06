@@ -150,6 +150,9 @@ The 12-agent hierarchy above is now generalized into a **50-agent research compa
   Haiku is never used.
 - Agent output (`company/**`, `.claude/agent-memory/**`) is auto-committed to the local
   `agent-office` branch — never pushed, never touching your checked-out branch.
+- Every research report (draft and approved) is additionally **auto-mirrored into the
+  owner's Obsidian vault** at `universe-brain/research/<team>/` the moment it is written
+  or updated (`vaultMirrorDir` in `office/config/office.json`; `office/server/vault-mirror.ts`).
 - Safety: a PreToolUse hook (`office/hooks/write-guard.cjs`) blocks agent writes outside
   `company/` and their own memory dir; agents have no Bash.
 - Risk-spike results and re-run instructions: `office/spikes/RESULTS.md`.

@@ -66,7 +66,7 @@ export interface PoolState {
 }
 
 export type ServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
+  | { type: 'OFFICE_SNAPSHOT'; mock: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }

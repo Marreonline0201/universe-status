@@ -10,6 +10,8 @@ export interface WatcherEvents {
   onMail: (msg: ChatMsg) => void
   onTask: (task: TaskSummary) => void
   onReport: (report: ReportMeta) => void
+  /** Raw report file path on add AND change — drives the vault mirror. */
+  onReportFile?: (absFile: string) => void
   poke: () => void
 }
 
@@ -50,7 +52,10 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
           parent: fm.parent ? String(fm.parent) : null,
           updatedAt: Date.now(),
         })
-      } else if (parts[0] === 'reports' && isNew && parts[2] !== undefined) {
+      } else if (parts[0] === 'reports' && parts[2] !== undefined) {
+        // add AND change: a reviewer flipping status draft→approved is a change,
+        // and both the site and the vault mirror must follow it.
+        events.onReportFile?.(file)
         const fm = matter(fs.readFileSync(file, 'utf8')).data
         events.onReport({
           team: parts[1],
