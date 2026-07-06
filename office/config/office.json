@@ -10,5 +10,10 @@
   "autoCommit": true,
   "autoCommitBranch": "agent-office",
   "autoCommitIntervalMs": 120000,
+  "usageRest": {
+    "sessionThresholdPct": 90,
+    "weeklyThresholdPct": 95,
+    "pollSeconds": 60
+  },
   "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research"
 }

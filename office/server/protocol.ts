@@ -63,6 +63,14 @@ export interface PoolState {
   active: string[] // agent ids with live sessions
   queued: string[] // runnable agent ids waiting for a slot
   paused: boolean
+  // Usage-aware rest mode: office stops spawning agents near the subscription
+  // limits (session window / weekly cap) and resumes when the window resets.
+  resting: boolean
+  restReason: 'session' | 'weekly' | null
+  restResumeAt: string | null // ISO — when agents are expected to resume
+  usagePct: number | null     // 5-hour window utilization, 0-100
+  weeklyPct: number | null    // 7-day window utilization, 0-100
+  usageMonitorOk: boolean     // false → guard is blind (creds/endpoint problem)
 }
 
 export type ServerMsg =

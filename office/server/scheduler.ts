@@ -6,6 +6,7 @@ import type { Paths, AgentProfile } from './store.ts'
 import { loadInbox, loadTasks } from './store.ts'
 import { Activation, SessionStore, type ActivationConfig } from './session.ts'
 import type { AgentVisualStatus, PoolState, TaskSummary } from './protocol.ts'
+import type { RestDecision, UsageRestConfig, UsageState } from './usage.ts'
 
 export interface OfficeConfig {
   port: number
@@ -21,6 +22,8 @@ export interface OfficeConfig {
   autoCommitIntervalMs: number
   /** Absolute path in the user's Obsidian vault that mirrors company/reports/**. */
   vaultMirrorDir?: string
+  /** Rest thresholds for the subscription usage guard (see usage.ts). */
+  usageRest?: Partial<UsageRestConfig>
 }
 
 export interface SchedulerEvents {
@@ -28,6 +31,8 @@ export interface SchedulerEvents {
   onActivity: (id: string, kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string) => void
   onTranscript: (id: string, line: string) => void
   onPool: (pool: PoolState) => void
+  /** An activation was refused because the subscription limit is exhausted. */
+  onLimitHit: () => void
   log: (line: string) => void
 }
 
@@ -47,6 +52,8 @@ const STATUS_PRIORITY: Record<string, number> = {
 
 export class Scheduler {
   paused = false
+  private usage: UsageState | null = null
+  private rest: RestDecision = { resting: false, reason: null, resumeAt: null }
   private live = new Map<string, Activation>()
   private lastEnd = new Map<string, number>()     // agentId → ts of last activation end
   private backoffUntil = new Map<string, number>() // agentId → ts before which not runnable
@@ -81,12 +88,34 @@ export class Scheduler {
   pause() { this.paused = true; this.emitPool() }
   resume() { this.paused = false; this.poke() }
 
+  /** Called by the UsageMonitor whenever fresh usage data arrives. */
+  setUsage(state: UsageState, rest: RestDecision) {
+    const wasResting = this.rest.resting
+    this.usage = state
+    this.rest = rest
+    if (rest.resting && !wasResting) {
+      this.events.log(`😴 resting — ${rest.reason} limit reached, agents resume ~${rest.resumeAt ?? 'soon'} (in-flight turns finish)`)
+      this.emitPool()
+    } else if (!rest.resting && wasResting) {
+      this.events.log('▶ rest over — usage window reset, resuming queued work')
+      this.poke()
+    } else {
+      this.emitPool() // fresh percentages for the HUD
+    }
+  }
+
   poolState(): PoolState {
     return {
       cap: this.cfg.maxConcurrent,
       active: [...this.live.keys()],
       queued: this.queued.map(r => r.agent.id),
       paused: this.paused,
+      resting: this.rest.resting,
+      restReason: this.rest.reason,
+      restResumeAt: this.rest.resumeAt,
+      usagePct: this.usage?.sessionPct ?? null,
+      weeklyPct: this.usage?.weeklyPct ?? null,
+      usageMonitorOk: this.usage?.ok ?? false,
     }
   }
 
@@ -126,6 +155,15 @@ export class Scheduler {
     }
 
     runnable.sort((a, b) => a.priority - b.priority)
+
+    // Usage guard: near the subscription limit everything waits in the queue;
+    // in-flight activations finish naturally (the 10% headroom absorbs them).
+    if (this.rest.resting) {
+      this.queued = runnable
+      this.emitPool()
+      return
+    }
+
     this.queued = runnable.slice(Math.max(0, this.cfg.maxConcurrent - this.live.size))
 
     for (const r of runnable) {
@@ -165,6 +203,7 @@ export class Scheduler {
         this.lastEnd.set(agent.id, Date.now())
         if (res.sessionId) this.sessions.set(agent.id, res.sessionId)
         if (!res.ok) {
+          if (res.limitHit) this.events.onLimitHit()
           // A failed resume is the most common failure: drop the session and retry fresh later.
           if (res.error && /resume|session/i.test(res.error)) this.sessions.clear(agent.id)
           this.events.onStatus(agent.id, 'blocked', r.task)

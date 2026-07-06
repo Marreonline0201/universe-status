@@ -8,6 +8,7 @@ import {
   resolvePaths, loadRoster, loadTeams, loadTasks, loadReports, buildAgents, createTaskFile,
 } from './store.ts'
 import { Scheduler, type OfficeConfig } from './scheduler.ts'
+import { UsageMonitor } from './usage.ts'
 import { startWatcher } from './watcher.ts'
 import { AutoCommitter } from './autocommit.ts'
 import { VaultMirror } from './vault-mirror.ts'
@@ -56,7 +57,11 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     tasks: loadTasks(paths),
     chat: chat.slice(-50),
     reports: loadReports(paths),
-    pool: scheduler?.poolState() ?? { cap: cfg.maxConcurrent, active: [], queued: [], paused: false },
+    pool: scheduler?.poolState() ?? {
+      cap: cfg.maxConcurrent, active: [], queued: [], paused: false,
+      resting: false, restReason: null, restResumeAt: null,
+      usagePct: null, weeklyPct: null, usageMonitorOk: false,
+    },
   })
 
   const ws = new OfficeWs(cfg.port, {
@@ -119,8 +124,21 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
       transcripts.set(id, buf)
     },
     onPool: (pool) => ws.broadcast({ type: 'POOL_STATE', pool }),
+    onLimitHit: () => usage?.noteLimitHit(),
     log,
   })
+
+  // Subscription usage guard: rest near the limit, resume on window reset.
+  const usage: UsageMonitor | null = opts.mock ? null : new UsageMonitor(
+    {
+      sessionThresholdPct: 90,
+      weeklyThresholdPct: 95,
+      pollSeconds: 60,
+      ...(cfg.usageRest ?? {}),
+    },
+    (state, rest) => scheduler.setUsage(state, rest),
+    log,
+  )
 
   const vaultMirror = cfg.vaultMirrorDir ? new VaultMirror(paths, cfg.vaultMirrorDir, log) : null
   vaultMirror?.sweep()
@@ -146,12 +164,17 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     runMock({ agents, teams, ws, pushChat })
     log('MOCK MODE — scripted office activity, no real sessions')
   } else {
+    // Prime the usage guard before the first poke() so a boot near the limit
+    // rests immediately instead of racing doomed activations.
+    await usage?.prime()
+    usage?.start()
     scheduler.start()
     log(`${roster.length} agents across ${teams.length} teams ready — demand-driven, soft cap ${cfg.maxConcurrent}`)
   }
 
   const shutdown = () => {
     log('shutting down…')
+    usage?.stop()
     scheduler.stop()
     void watcher.close()
     committer?.stop()

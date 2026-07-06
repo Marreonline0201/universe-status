@@ -155,4 +155,10 @@ The 12-agent hierarchy above is now generalized into a **50-agent research compa
   or updated (`vaultMirrorDir` in `office/config/office.json`; `office/server/vault-mirror.ts`).
 - Safety: a PreToolUse hook (`office/hooks/write-guard.cjs`) blocks agent writes outside
   `company/` and their own memory dir; agents have no Bash.
+- **Usage guard (rest mode)**: the orchestrator polls the subscription usage windows
+  (via the local Claude Code OAuth token, `office/server/usage.ts`) and stops spawning
+  agents at **90% of the 5-hour window / 95% of the weekly cap** (`usageRest` in
+  `office/config/office.json`). In-flight turns finish; queued work auto-resumes when
+  the window resets. The office page shows a gold RESTING banner + USAGE chip; a grey
+  "USAGE ?" chip means the monitor can't read usage and the office is running unguarded.
 - Risk-spike results and re-run instructions: `office/spikes/RESULTS.md`.
