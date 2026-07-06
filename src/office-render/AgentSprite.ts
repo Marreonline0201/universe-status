@@ -67,6 +67,14 @@ export class AgentSprite {
     this.bubble = { text: text.length > 48 ? text.slice(0, 47) + '…' : text, until: performance.now() + BUBBLE_MS, kind }
   }
 
+  /** Live-work thought cloud ("reads structure.md", a said sentence…).
+      Never steals the stage from a fresh mail bubble. */
+  think(text: string) {
+    const now = performance.now()
+    if (this.bubble && this.bubble.kind !== 'activity' && now < this.bubble.until) return
+    this.bubble = { text: text.length > 48 ? text.slice(0, 47) + '…' : text, until: now + 3200, kind: 'activity' }
+  }
+
   /** Walk to another agent (stand next to their tile), then wander home. */
   visit(target: AgentSprite) {
     const t = target.tile
