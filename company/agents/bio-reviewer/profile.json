@@ -1,0 +1,7 @@
+{
+  "id": "bio-reviewer",
+  "name": "Freya Holm",
+  "team": "bio",
+  "role": "Reviewer / Editor",
+  "model": "claude-opus-4-8"
+}

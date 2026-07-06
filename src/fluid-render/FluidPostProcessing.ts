@@ -26,7 +26,11 @@ export class FluidPostProcessing {
   private postProcessing: any = null
   private ready = false
 
-  constructor(private config: FluidPostProcessingConfig = {}) {}
+  private config: FluidPostProcessingConfig
+
+  constructor(config: FluidPostProcessingConfig = {}) {
+    this.config = config
+  }
 
   async init(
     renderer: any,
@@ -36,7 +40,7 @@ export class FluidPostProcessing {
   ): Promise<boolean> {
     try {
       const sigma = this.config.blurSigma ?? 5
-      const sigmaColor = this.config.blurSigmaColor ?? 0.3
+      void (this.config.blurSigmaColor ?? 0.3) // reserved for bilateral blur (not yet wired)
 
       // ── Pass 1: Full scene (sharp) ────────────────────────────────────
       const scenePass = pass(objectScene, camera)

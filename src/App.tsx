@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useStatusSocket } from './hooks/useStatusSocket'
+import { useOfficeSocket } from './hooks/useOfficeSocket'
 import { DocsPage } from './components/DocsPage'
-import { AgentControlCenter } from './components/AgentControlCenter'
+import { PixelOffice } from './components/office/PixelOffice'
 import { ConnectionMap } from './components/ConnectionMap'
 import { FluidTest } from './components/FluidTest'
 
@@ -10,14 +11,15 @@ type View = 'docs' | 'connections' | 'agents' | 'fluid'
 const VIEWS: { id: View; label: string }[] = [
   { id: 'docs',        label: 'GAME GUIDE' },
   { id: 'connections',  label: 'CONNECTIONS' },
-  { id: 'agents',      label: 'AGENT CONTROL' },
+  { id: 'agents',      label: 'AGENT OFFICE' },
   { id: 'fluid',       label: 'FLUID TEST' },
 ]
 
 export function App() {
   const world = useStatusSocket()
+  const office = useOfficeSocket()
   const [view, setView] = useState<View>('docs')
-  const hasBlocked = Object.values(world.agentState.agents).some(a => a.status === 'blocked')
+  const hasBlocked = office.state.agents.some(a => a.status === 'blocked')
 
   return (
     <div style={{
@@ -110,7 +112,7 @@ export function App() {
         {view === 'connections' && <ConnectionMap />}
         {view === 'agents' && (
           <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
-            <AgentControlCenter agentState={world.agentState} />
+            <PixelOffice office={office} />
           </div>
         )}
         {view === 'fluid' && <FluidTest />}

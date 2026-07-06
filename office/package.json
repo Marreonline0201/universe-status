@@ -1,0 +1,26 @@
+{
+  "name": "universe-office",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local orchestrator for the universe-status agent company: spawns Claude Code CLI sessions (subscription auth, no API keys), watches the company/ filesystem, and streams office activity to the website over WebSocket.",
+  "scripts": {
+    "start": "tsx cli.ts start",
+    "mock": "tsx cli.ts mock",
+    "assign": "tsx cli.ts assign",
+    "status": "tsx cli.ts status",
+    "scaffold": "tsx scaffold/generate.ts",
+    "spikes": "node spikes/04-write-guard.mjs && node spikes/01-fable-model.mjs && node spikes/03-resume.mjs && node spikes/02-concurrency.mjs"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "gray-matter": "^4.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "~5.9.3"
+  }
+}

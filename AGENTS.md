@@ -128,3 +128,28 @@ Add either line to your shell profile or `.env.local`, or prefix your agent comm
 ```bash
 AGENT_BUS_URL=https://questions-production-63a2.up.railway.app npx tsx your-agent.ts
 ```
+
+---
+
+## The Agent Office (successor to the Agent Control Center)
+
+The 12-agent hierarchy above is now generalized into a **50-agent research company**
+(7 teams × 7 agents + a director) run by the local office orchestrator. See
+`company/COMPANY.md` for the org chart and working conventions, and
+`company/REPORT_STANDARDS.md` for the report quality bar.
+
+- **Start the company**: `npm run office` (agents live only while this runs).
+  The website's **AGENT OFFICE** tab (`src/components/office/PixelOffice.tsx`) renders
+  the live 2D pixel office at `ws://localhost:4571` (`VITE_OFFICE_WS_URL` to override).
+- **Assign work**: `npm run office:assign -- assign --team physics --title "..."`
+  (add `--assignee <agent-id>` to skip the director, `--brief <file>` for a long brief).
+- **UI development without spending tokens**: `npm run office:mock`.
+- Agents are headless Claude Code CLI sessions under your subscription login (API-key
+  env vars are stripped). Models: 3× `claude-fable-5` researchers per team,
+  `claude-opus-4-8` leads/reviewers/director, `claude-sonnet-5` engineers/liaisons.
+  Haiku is never used.
+- Agent output (`company/**`, `.claude/agent-memory/**`) is auto-committed to the local
+  `agent-office` branch — never pushed, never touching your checked-out branch.
+- Safety: a PreToolUse hook (`office/hooks/write-guard.cjs`) blocks agent writes outside
+  `company/` and their own memory dir; agents have no Bash.
+- Risk-spike results and re-run instructions: `office/spikes/RESULTS.md`.

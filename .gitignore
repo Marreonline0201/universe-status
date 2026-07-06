@@ -27,3 +27,6 @@ dist-ssr
 
 # Rust build artifacts
 sph-wasm/target/
+
+# office orchestrator runtime state
+office/state/

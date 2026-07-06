@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "office": "npm --prefix office run start",
+    "office:mock": "npm --prefix office run mock",
+    "office:assign": "npm --prefix office run assign --"
   },
   "dependencies": {
     "@types/three": "^0.183.1",
@@ -25,6 +28,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "playwright-core": "^1.61.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
     "vite": "^8.0.1"
