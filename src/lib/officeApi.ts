@@ -20,7 +20,7 @@ function ownerToken(): string {
 
 async function req<T>(method: 'GET' | 'POST', route: string, body?: unknown): Promise<T> {
   const token = ownerToken()
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { 'ngrok-skip-browser-warning': 'true' } // never hit the free-ngrok interstitial on data calls
   if (body) headers['Content-Type'] = 'application/json'
   if (token) headers['x-office-token'] = token // owner: reach private files + mutations
   const res = await fetch(`${OFFICE_HTTP}${route}`, {
