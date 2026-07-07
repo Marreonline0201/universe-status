@@ -2,9 +2,17 @@
 // as the WS). Routes are defined in office/server/ws.ts handleHttp.
 import type { LabExperiment } from './labTypes'
 
-const WS_URL: string =
-  ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL) ?? 'ws://localhost:4571'
-export const OFFICE_HTTP = WS_URL.replace(/^ws/, 'http')
+// Mirror useOfficeSocket's resolution: env override → localhost dev → same origin
+// (page served by the office through a tunnel).
+function officeHttp(): string {
+  const env = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL
+  if (env) return env.replace(/^ws/, 'http')
+  if (typeof window === 'undefined') return 'http://localhost:4571'
+  const { protocol, hostname, origin } = window.location
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:4571'
+  return protocol === 'https:' ? origin : origin // same origin as the served page
+}
+export const OFFICE_HTTP = officeHttp()
 
 function ownerToken(): string {
   try { return sessionStorage.getItem('office-owner-token') ?? '' } catch { return '' }

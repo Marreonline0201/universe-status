@@ -43,12 +43,18 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
   const teams = loadTeams(paths)
   // Public-share auth: setting OFFICE_OWNER_TOKEN opts the office into "public read +
   // owner-token write" mode (for internet exposure via a tunnel). Unset → local-only.
-  const ownerToken = process.env.OFFICE_OWNER_TOKEN?.trim() || null
+  const tokenFile = path.join(repoRoot, 'office', 'config', 'owner-token.txt')
+  const ownerToken = process.env.OFFICE_OWNER_TOKEN?.trim()
+    || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '')
+    || null
   const allowedOrigins = [
     ...(process.env.OFFICE_ALLOWED_ORIGINS?.split(',') ?? []),
     ...(cfg.publicShare?.allowedOrigins ?? []),
   ].map(o => o.trim()).filter(Boolean)
   const wsAuth = { ownerToken, allowedOrigins }
+  // If the site is built (dist/), the office serves it so one tunnel exposes everything.
+  const distDir = path.join(repoRoot, 'dist')
+  const staticDir = fs.existsSync(path.join(distDir, 'index.html')) ? distDir : null
   const agents = new Map<string, OfficeAgent>(buildAgents(roster).map(a => [a.id, a]))
   const chat: ChatMsg[] = []
   const transcripts = new Map<string, string[]>()
@@ -133,7 +139,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
     killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
     runOutput: (id) => runner?.output(id) ?? null,
-  }, wsAuth, log)
+  }, wsAuth, staticDir, log)
 
   const pushChat = (msg: ChatMsg) => {
     chat.push(msg)
