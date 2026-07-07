@@ -252,15 +252,21 @@ export class OfficeWs {
     json(404, { error: 'unknown endpoint' })
   }
 
-  /** Serve a file from the static dir; SPA fallback to index.html. Path-traversal safe. */
+  /** Serve a file from the static dir; SPA fallback to index.html. Path-traversal
+   *  safe: prefix-boundary + symlink (realpath) containment against the root. */
   private serveStatic(route: string, res: http.ServerResponse) {
-    const dir = this.staticDir!
-    let rel = decodeURIComponent(route.replace(/^\/+/, '')) || 'index.html'
-    const abs = path.resolve(dir, rel)
-    // Containment: never serve outside the static dir.
-    if (!abs.startsWith(path.resolve(dir))) { res.writeHead(403); return res.end('forbidden') }
+    const root = path.resolve(this.staticDir!)
+    let rel: string
+    try { rel = decodeURIComponent(route.replace(/^\/+/, '')) || 'index.html' }
+    catch { res.writeHead(400); return res.end('bad path') }
+    let abs = path.resolve(root, rel)
+    // realpath resolves symlinks; a non-existent path throws → keep the resolved
+    // path, which is still boundary-checked below before any SPA fallback.
+    try { abs = fs.realpathSync(abs) } catch { /* non-existent — checked, then fallback */ }
+    // `root + sep` (not a bare prefix) so a sibling like `dist-ssr` can't pass.
+    if (abs !== root && !abs.startsWith(root + path.sep)) { res.writeHead(403); return res.end('forbidden') }
     let file = abs
-    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(dir, 'index.html') // SPA fallback
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(root, 'index.html') // SPA fallback
     try {
       const body = fs.readFileSync(file)
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream' })
