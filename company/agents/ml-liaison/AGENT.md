@@ -52,6 +52,35 @@ Teammates: `ml-lead`, `ml-fable-1`, `ml-fable-2`, `ml-fable-3`, `ml-reviewer`, `
   `id` (= filename stem), `title`, `team`, `assignee`, `status: assigned`,
   `created_by: ml-liaison`, `created_at`, `priority: low|normal|high`, optional `parent`,
   `reviewers: [<team>-reviewer]`, then `## Brief` and an empty `## Log`.
+- **Owner request** (anything needing the owner's machine or authority — a build/run, a
+  decision, an access grant): write `company/requests/REQ-<unix-seconds>-<slug>.md`:
+  ```markdown
+  ---
+  id: REQ-<unix-seconds>-<slug>        # must equal the filename stem
+  title: <one line — what and why>
+  requested_by: ml-liaison
+  task: <task-id, if related>
+  kind: run                            # run | decision | access
+  status: pending                      # never write any other status — the server owns transitions
+  created_at: <ISO timestamp>
+  command: ["cargo", "check"]          # kind:run only — EXACT argv, one string per argument,
+                                       # executed without a shell. No pipes, no &&, no quoting tricks.
+  cwd: universe-engine                 # kind:run only — universe-engine | universe-status
+  ---
+  ## Why
+  <one paragraph: what this unblocks, citing the task/report>
+
+  ## Expected outcome
+  <what you will do with the result>
+  ```
+  Whitelist: only `cargo check|build|test|clippy|fmt|bench|run` in `universe-engine`
+  (runs execute in an isolated worktree, never the main checkout) and
+  `node office/spikes/*.mjs|scripts/*.mjs` in `universe-status`. Anything else: use
+  `kind: decision` and describe it under `## Question` / `## Options`. One request per
+  concrete command. **Never edit a request after filing it** — the outcome arrives as mail
+  from `owner`; act on it and log it on the task.
+- **Lab experiment**: `company/lab/<name>/scenario.json` (+ `notes.md`) — format in
+  `company/COMPANY.md` Conventions. The owner watches it run on the site's LABORATORY page.
 - **Reports**: quality rules live in `company/REPORT_STANDARDS.md` and they are binding.
 
 ## Norms

@@ -14,6 +14,13 @@ function write(rel: string, content: string) {
   fs.mkdirSync(path.dirname(abs), { recursive: true })
   fs.writeFileSync(abs, content)
 }
+/** For files that accumulate agent-authored content (journal, charters):
+ *  re-running the scaffold must never wipe them. */
+function writeIfMissing(rel: string, content: string) {
+  const abs = path.join(companyDir, rel)
+  if (fs.existsSync(abs)) return
+  write(rel, content)
+}
 function ensureDir(rel: string) {
   fs.mkdirSync(path.join(companyDir, rel), { recursive: true })
   const keep = path.join(companyDir, rel, '.gitkeep')
@@ -75,6 +82,20 @@ Each team: 1 Team Lead, 3 Senior Researchers ("Fables", model \`claude-fable-5\`
 - **Memory**: maintain \`.claude/agent-memory/<your-id>/MEMORY.md\` (existing repo convention).
 - **Write boundary**: agents may only write under \`company/\` and their own memory dir —
   enforced by a PreToolUse hook. Code changes are proposals in reports, never direct edits.
+- **Owner requests**: anything needing the owner's machine or authority — running a command
+  (cargo, node scripts), a decision, an access grant — is filed as
+  \`company/requests/REQ-<unix-seconds>-<slug>.md\` (exact format in your role instructions).
+  The owner approves or denies in the office UI; the orchestrator executes approved runs
+  **in an isolated git worktree (never the main checkout)** and mails you the outcome.
+  Never ask for engine edits — file a request for a validating run, or write an
+  owner-executable plan.
+- **The Laboratory**: to run a fluid experiment the owner can watch, write
+  \`company/lab/<experiment-name>/scenario.json\` (+ optional \`notes.md\`). The scenario is
+  pure data driving the site's in-browser WebGPU MLS-MPM sim: \`{ "name", "materials":
+  [{ "name", "formula", "elements": {"H": 0.111, "O": 0.889}, "temperature" }], "spawns":
+  [{ "material", "count" (≤100000), "center": [x,y,z in 0..1], "spread" }], "gravity"
+  (grid-space, water ≈ 0.3), "ball": { "center", "radius" }? }\`. Element symbols must be
+  from the sim's 25-element periodic table. Cite lab experiments in reports by path.
 `)
 
 // ── REPORT_STANDARDS.md ─────────────────────────────────────────────────────
@@ -129,10 +150,13 @@ date: YYYY-MM-DD
   \`company/reports/<team>/YYYY-MM-DD-<slug>.md\` with \`status: approved\`, \`reviewed_by\`,
   and \`revision\` set, and marks the task \`status: done\`.
 - Two rounds of revision without convergence → escalate to the team lead by mail.
+- Claims that can be validated by running code should be: file an owner request for the
+  run (see COMPANY.md conventions) and cite its id and result in the report. "Compiles
+  clean (REQ-...: exit 0)" beats "should compile".
 `)
 
 // ── JOURNAL.md (director's) ─────────────────────────────────────────────────
-write('JOURNAL.md', `# Company Journal
+writeIfMissing('JOURNAL.md', `# Company Journal
 
 Kept by the Director in the style of DIRECTOR_PLAN.md: one dated entry per working
 session — assignments received, routing decisions, cross-team notes, completed reports.
@@ -142,7 +166,7 @@ session — assignments received, routing decisions, cross-team notes, completed
 
 // ── Teams ───────────────────────────────────────────────────────────────────
 for (const t of TEAMS) {
-  write(`teams/${t.id}/CHARTER.md`, `---
+  writeIfMissing(`teams/${t.id}/CHARTER.md`, `---
 team: ${t.id}
 name: ${t.name}
 color: "${t.color}"
@@ -275,6 +299,35 @@ ${roleBlocks[a.role] ?? ''}
   \`id\` (= filename stem), \`title\`, \`team\`, \`assignee\`, \`status: assigned\`,
   \`created_by: ${a.id}\`, \`created_at\`, \`priority: low|normal|high\`, optional \`parent\`,
   \`reviewers: [<team>-reviewer]\`, then \`## Brief\` and an empty \`## Log\`.
+- **Owner request** (anything needing the owner's machine or authority — a build/run, a
+  decision, an access grant): write \`company/requests/REQ-<unix-seconds>-<slug>.md\`:
+  \`\`\`markdown
+  ---
+  id: REQ-<unix-seconds>-<slug>        # must equal the filename stem
+  title: <one line — what and why>
+  requested_by: ${a.id}
+  task: <task-id, if related>
+  kind: run                            # run | decision | access
+  status: pending                      # never write any other status — the server owns transitions
+  created_at: <ISO timestamp>
+  command: ["cargo", "check"]          # kind:run only — EXACT argv, one string per argument,
+                                       # executed without a shell. No pipes, no &&, no quoting tricks.
+  cwd: universe-engine                 # kind:run only — universe-engine | universe-status
+  ---
+  ## Why
+  <one paragraph: what this unblocks, citing the task/report>
+
+  ## Expected outcome
+  <what you will do with the result>
+  \`\`\`
+  Whitelist: only \`cargo check|build|test|clippy|fmt|bench|run\` in \`universe-engine\`
+  (runs execute in an isolated worktree, never the main checkout) and
+  \`node office/spikes/*.mjs|scripts/*.mjs\` in \`universe-status\`. Anything else: use
+  \`kind: decision\` and describe it under \`## Question\` / \`## Options\`. One request per
+  concrete command. **Never edit a request after filing it** — the outcome arrives as mail
+  from \`owner\`; act on it and log it on the task.
+- **Lab experiment**: \`company/lab/<name>/scenario.json\` (+ \`notes.md\`) — format in
+  \`company/COMPANY.md\` Conventions. The owner watches it run on the site's LABORATORY page.
 - **Reports**: quality rules live in \`company/REPORT_STANDARDS.md\` and they are binding.
 
 ## Norms
@@ -296,4 +349,6 @@ for (const a of roster) {
 }
 
 ensureDir('tasks')
+ensureDir('requests/logs')
+ensureDir('lab')
 console.log(`Scaffolded company/ for ${roster.length} agents across ${TEAMS.length} teams at ${companyDir}`)

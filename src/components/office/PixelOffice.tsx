@@ -118,6 +118,9 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           {state.pool.queued.length > 0 && <Hud label={`QUEUED ${state.pool.queued.length}`} color="#ff6b35" />}
           {state.pool.paused && <Hud label="PAUSED" color="#ffd700" />}
           {state.pool.resting && <Hud label="RESTING" color="#ffd700" />}
+          {state.requests.filter(r => r.status === 'pending').length > 0 && (
+            <Hud label={`OWNER ${state.requests.filter(r => r.status === 'pending').length}`} color="#ffd700" />
+          )}
           {state.pool.usagePct !== null ? (
             <Hud
               label={`USAGE ${Math.round(state.pool.usagePct)}%${state.pool.weeklyPct !== null ? ` · WK ${Math.round(state.pool.weeklyPct)}%` : ''}`}
