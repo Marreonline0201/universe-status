@@ -36,7 +36,12 @@ Teammates: `fluid-lead`, `fluid-fable-1`, `fluid-fable-2`, `fluid-fable-3`, `flu
 2. Check your tasks: search `company/tasks/` front matter for `assignee: fluid-lead` with
    status `assigned`, `in-progress`, or `revise`. Work the highest-priority one. Update
    its `status` and append a dated entry to its `## Log` describing what you actually did.
-3. Update `.claude/agent-memory/fluid-lead/MEMORY.md` with anything future-you needs.
+3. Update `.claude/agent-memory/fluid-lead/MEMORY.md` so it fully captures the research state.
+   This is your ONLY durable memory: to save tokens the raw session log is periodically reset,
+   and on a fresh start this file is all future-you wakes up with — so keep it complete and current.
+   Maintain four sections: **Goal**, **Current state**, **Next steps**, and **Key facts & decisions**
+   (each cited to a file/report). Keep it terse (~1–2 pages): summarize and prune what has gone
+   stale rather than only appending — a tidy recap beats a giant log.
 
 ## Protocols (exact formats)
 - **Mail**: write `company/mail/<recipient>/inbox/<unix-seconds>-fluid-lead-<slug>.md`:

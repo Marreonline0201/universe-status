@@ -2,6 +2,8 @@
 // Every agent with runnable work gets a live session; the only limit is a
 // machine-stability soft cap (maxConcurrent). Safety valves: pause, per-agent
 // cooldown, and a no-progress backoff so a stuck task can't spin forever.
+import fs from 'node:fs'
+import path from 'node:path'
 import type { Paths, AgentProfile } from './store.ts'
 import { loadInbox, loadTasks } from './store.ts'
 import { Activation, SessionStore, type ActivationConfig } from './session.ts'
@@ -29,6 +31,10 @@ export interface OfficeConfig {
   /** Public-share exposure: browser origins allowed when OFFICE_OWNER_TOKEN is set
    *  (e.g. the deployed site's URL). The token itself is an env var, never config. */
   publicShare?: { allowedOrigins?: string[] }
+  /** Token-cost control: cap how large a resumed transcript may grow before the
+   *  session is reset (agents re-hydrate from their MEMORY.md notepad). Absent =
+   *  legacy resume-always behavior. See session.ts / the token-burn measurement. */
+  session?: { maxContextTokens?: number; injectMemory?: 'fresh' | 'always' | 'never' }
 }
 
 export interface SchedulerEvents {
@@ -181,7 +187,8 @@ export class Scheduler {
   private activate(r: Runnable) {
     const { agent } = r
     const inbox = loadInbox(this.paths, agent.id)
-    const prompt = [
+    const resume = this.sessions.get(agent.id)
+    const lines = [
       `Office activation for ${agent.id} (${agent.role}).`,
       inbox.length
         ? `You have ${inbox.length} unread mail(s) in company/mail/${agent.id}/inbox/ — process them first (oldest first), then archive them.`
@@ -190,7 +197,22 @@ export class Scheduler {
         ? `Your current task: ${r.task.id} — "${r.task.title}" (status: ${r.task.status}). The task file is in company/tasks/. Work it as far as you can this turn, update its status and ## Log.`
         : `You have no assigned task. Only act on your mail; do not invent work.`,
       `Follow the "Every activation, in order" checklist in your role instructions. Finish cleanly.`,
-    ].join('\n')
+    ]
+    // On a FRESH/post-reset start the transcript is gone, so hand the agent its durable
+    // notepad up front — it never wakes up blank. (On a resume it already holds it, and
+    // re-injecting would just re-bloat the transcript.) Injected in the user prompt so the
+    // cached AGENT.md system prompt stays byte-identical.
+    const mode = this.cfg.session?.injectMemory ?? 'fresh'
+    if (mode !== 'never' && (mode === 'always' || !resume)) {
+      const memFile = path.join(this.paths.repoRoot, '.claude', 'agent-memory', agent.id, 'MEMORY.md')
+      try {
+        if (fs.existsSync(memFile)) {
+          const mem = fs.readFileSync(memFile, 'utf8').slice(0, 8000) // cap so a runaway file can't re-bloat
+          if (mem.trim()) lines.push(`\nYour durable memory notepad (from prior activations — treat as ground truth for where things stand):\n${mem}`)
+        }
+      } catch { /* no memory yet — the agent will create it this activation */ }
+    }
+    const prompt = lines.join('\n')
 
     const cfg: ActivationConfig = {
       maxTurns: this.cfg.maxTurns,
@@ -199,14 +221,25 @@ export class Scheduler {
       allowedTools: this.cfg.allowedTools,
     }
 
-    const act = new Activation(this.paths, agent, prompt, this.sessions.get(agent.id), {
+    const act = new Activation(this.paths, agent, prompt, resume, {
       onStatus: (s) => this.events.onStatus(agent.id, agent.role === 'Reviewer / Editor' && s === 'working' ? 'reviewing' : s, r.task),
       onActivity: (kind, tool, detail) => this.events.onActivity(agent.id, kind, tool, detail),
       onTranscript: (line) => this.events.onTranscript(agent.id, line),
       onEnd: (res) => {
         this.live.delete(agent.id)
         this.lastEnd.set(agent.id, Date.now())
-        if (res.sessionId) this.sessions.set(agent.id, res.sessionId)
+        if (res.sessionId) {
+          // Compact: once a session's replay size exceeds the cap, drop it so the NEXT
+          // wake starts fresh + re-hydrates from MEMORY.md. Gate on wroteMemory so a reset
+          // only lands right AFTER the agent saved its notes (except the cap*2 hard ceiling).
+          const cap = this.cfg.session?.maxContextTokens
+          if (cap && res.contextTokens != null && res.contextTokens > cap && (res.wroteMemory || res.contextTokens > cap * 2)) {
+            this.sessions.clear(agent.id)
+            this.events.log(`↺ ${agent.id} session reset at ${Math.round(res.contextTokens / 1000)}k tok (cap ${Math.round(cap / 1000)}k, memSaved=${res.wroteMemory})`)
+          } else {
+            this.sessions.set(agent.id, res.sessionId)
+          }
+        }
         if (!res.ok) {
           if (res.limitHit) this.events.onLimitHit()
           // A failed resume is the most common failure: drop the session and retry fresh later.
