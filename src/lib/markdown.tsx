@@ -248,7 +248,12 @@ export function Inline({ text }: { text: string }) {
   return (
     <>
       {tokens.map((t, idx) => {
-        if (t.type === 'link')   return <a key={idx} href={t.href} style={{ color: '#00d4ff', textDecoration: 'none', borderBottom: '1px solid rgba(0,212,255,0.3)' }} onClick={e => { if (t.href?.startsWith('#')) { e.preventDefault(); const el = document.getElementById(t.href.slice(1)); if (el) el.scrollIntoView({ behavior: 'smooth' }) }}}>{t.content}</a>
+        if (t.type === 'link') {
+          // Scheme allowlist: reports/notes are agent-authored — never render a
+          // javascript:/data: href (React does not block those in href).
+          const safeHref = /^(https?:|mailto:|#|\/)/i.test(t.href ?? '') ? t.href : undefined
+          return <a key={idx} href={safeHref} rel="noopener noreferrer" style={{ color: '#00d4ff', textDecoration: 'none', borderBottom: '1px solid rgba(0,212,255,0.3)' }} onClick={e => { if (safeHref?.startsWith('#')) { e.preventDefault(); const el = document.getElementById(safeHref.slice(1)); if (el) el.scrollIntoView({ behavior: 'smooth' }) }}}>{t.content}</a>
+        }
         if (t.type === 'bold')   return <strong key={idx} style={{ color: '#e8f4ff', fontWeight: 600 }}>{t.content}</strong>
         if (t.type === 'code')   return <code key={idx} style={INLINE_CODE}>{t.content}</code>
         if (t.type === 'italic') return <em key={idx} style={{ color: 'rgba(180,210,255,0.8)', fontStyle: 'italic' }}>{t.content}</em>

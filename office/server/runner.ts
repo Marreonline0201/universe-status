@@ -83,6 +83,15 @@ export function validateRun(cfg: RunnerConfig, repoRoot: string, command: unknow
     if (argv.length > (entry.maxArgs ?? 16)) { lastReason = `too many arguments (max ${entry.maxArgs ?? 16})`; continue }
     const badArg = argv.slice(1).find(a => !ARG_PATTERN.test(a) || a.includes('..'))
     if (badArg !== undefined) { lastReason = `argument not allowed: ${JSON.stringify(badArg)}`; continue }
+    // Even inside the charset, an absolute path or a cargo file-reading/execution
+    // flag lets a whitelisted `cargo check` compile an agent-planted Cargo.toml +
+    // build.rs (build scripts run at compile time) → arbitrary code execution.
+    // Deny absolute paths and the config-bearing flags outright.
+    const escapeArg = argv.slice(1).find(a =>
+      /^(\/|[A-Za-z]:)/.test(a) ||
+      /^--?(manifest-path|config|target-dir|out-dir|Z)(=|$)/i.test(a),
+    )
+    if (escapeArg !== undefined) { lastReason = `path/config argument not allowed: ${JSON.stringify(escapeArg)}`; continue }
     return { ok: true, entry, absCwd, argv }
   }
   return { ok: false, reason: lastReason }

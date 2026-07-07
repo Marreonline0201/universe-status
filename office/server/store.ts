@@ -197,6 +197,9 @@ export function loadRequests(p: Paths): RawRequest[] {
 export function writeMail(p: Paths, m: {
   from: string; to: string; subject: string; kind: string; taskId?: string | null; body: string
 }): string {
+  // `to` becomes a path segment; a request's `requested_by` is agent-controlled,
+  // so reject anything but a roster-id shape to prevent traversal outside company/mail.
+  if (!/^[a-z0-9-]+$/.test(m.to)) throw new Error(`invalid mail recipient: ${JSON.stringify(m.to)}`)
   const ts = Math.floor(Date.now() / 1000)
   const slug = m.subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'mail'
   const dir = path.join(p.companyDir, 'mail', m.to, 'inbox')

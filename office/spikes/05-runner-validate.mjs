@@ -48,5 +48,13 @@ expect('dotdot in arg', validateRun(cfg, repoRoot, ['cargo', 'check', '--manifes
 expect('too many args', validateRun(cfg, repoRoot, ['cargo', 'check', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'], 'universe-engine'), false)
 expect('empty argv', validateRun(cfg, repoRoot, [], 'universe-engine'), false)
 
+// Escape-flag denials (cargo file-reading / execution flags → build.rs RCE)
+expect('cargo --manifest-path absolute', validateRun(cfg, repoRoot, ['cargo', 'check', '--manifest-path=C:/Users/x/company/evil/Cargo.toml'], 'universe-engine'), false)
+expect('cargo --config toml', validateRun(cfg, repoRoot, ['cargo', 'build', '--config', 'company/evil/x.toml'], 'universe-engine'), false)
+expect('cargo --target-dir', validateRun(cfg, repoRoot, ['cargo', 'check', '--target-dir=/tmp/x'], 'universe-engine'), false)
+expect('cargo unix-absolute arg', validateRun(cfg, repoRoot, ['cargo', 'check', '/etc/passwd'], 'universe-engine'), false)
+// still-allowed legit runs
+expect('cargo run -p app (still allowed)', validateRun(cfg, repoRoot, ['cargo', 'run', '--release', '-p', 'universe-app'], 'universe-engine'), true)
+
 console.log(`\n${pass}/${pass + fail} whitelist cases pass`)
 process.exit(fail ? 1 : 0)
