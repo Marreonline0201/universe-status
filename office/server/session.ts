@@ -11,7 +11,7 @@ export interface ActivationEvents {
   onStatus: (status: 'working' | 'reading' | 'typing' | 'talking' | 'blocked') => void
   onActivity: (kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string) => void
   onTranscript: (line: string) => void
-  onEnd: (result: { ok: boolean; sessionId: string | null; wroteFiles: boolean; limitHit: boolean; error?: string }) => void
+  onEnd: (result: { ok: boolean; sessionId: string | null; wroteFiles: boolean; wroteMemory: boolean; contextTokens: number | null; limitHit: boolean; error?: string }) => void
 }
 
 /** Matches the CLI's refusal text when the subscription limit is exhausted. */
@@ -31,6 +31,8 @@ export class Activation {
   private child: ChildProcess | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private wroteFiles = false
+  private wroteMemory = false          // did this activation write its own MEMORY.md?
+  private maxContextTokens = 0         // peak per-turn context (= what --resume would replay)
   private sessionId: string | null = null
   private ended = false
   private limitHit = false
@@ -98,13 +100,13 @@ export class Activation {
         return
       }
       if (!ok && LIMIT_ERROR.test(stderr)) this.limitHit = true
-      this.events.onEnd({ ok, sessionId: this.sessionId, wroteFiles: this.wroteFiles, limitHit: this.limitHit, error: ok ? undefined : stderr.slice(0, 500) })
+      this.events.onEnd({ ok, sessionId: this.sessionId, wroteFiles: this.wroteFiles, wroteMemory: this.wroteMemory, contextTokens: this.maxContextTokens || null, limitHit: this.limitHit, error: ok ? undefined : stderr.slice(0, 500) })
     })
     this.child.on('error', (err) => {
       if (this.timer) clearTimeout(this.timer)
       if (this.ended) return
       this.ended = true
-      this.events.onEnd({ ok: false, sessionId: this.sessionId, wroteFiles: this.wroteFiles, limitHit: this.limitHit, error: String(err) })
+      this.events.onEnd({ ok: false, sessionId: this.sessionId, wroteFiles: this.wroteFiles, wroteMemory: this.wroteMemory, contextTokens: this.maxContextTokens || null, limitHit: this.limitHit, error: String(err) })
     })
   }
 
@@ -117,12 +119,21 @@ export class Activation {
       return
     }
     if (ev.type === 'assistant') {
+      // Track peak context size: the largest per-turn prompt is what --resume replays next time.
+      const u = ev.message?.usage
+      if (u) this.maxContextTokens = Math.max(this.maxContextTokens,
+        (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
       const content = ev.message?.content ?? []
       for (const block of content) {
         if (block.type === 'tool_use') {
           const tool = String(block.name ?? '')
           const target = block.input?.file_path ?? block.input?.pattern ?? block.input?.url ?? ''
-          if (WRITE_TOOLS.test(tool)) { this.wroteFiles = true; this.events.onStatus('typing') }
+          if (WRITE_TOOLS.test(tool)) {
+            this.wroteFiles = true; this.events.onStatus('typing')
+            // Note when the agent saves its own notepad — a session reset is only safe after this.
+            const fp = String(block.input?.file_path ?? '').replace(/\\/g, '/')
+            if (fp.includes(`.claude/agent-memory/${this.agent.id}/MEMORY.md`)) this.wroteMemory = true
+          }
           else if (READ_TOOLS.test(tool)) this.events.onStatus('reading')
           this.events.onActivity('tool_use', tool, String(target).slice(0, 120))
           this.events.onTranscript(`[${tool}] ${String(target).slice(0, 160)}`)

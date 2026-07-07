@@ -15,6 +15,10 @@
     "weeklyThresholdPct": 95,
     "pollSeconds": 60
   },
+  "session": {
+    "maxContextTokens": 60000,
+    "injectMemory": "fresh"
+  },
   "runner": {
     "enabled": true,
     "defaultTimeoutMs": 600000,
