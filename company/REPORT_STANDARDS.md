@@ -19,6 +19,13 @@ revision: 1
 date: YYYY-MM-DD
 ---
 ## Abstract          — 3-6 sentences: question, method, findings, recommendation.
+## Introduction      — REQUIRED, written for a high-schooler. 1-2 short paragraphs, plain
+                       language, that explain what this research is about and why it matters
+                       BEFORE any jargon. Any technical term used here gets a one-clause plain
+                       definition in place. The owner reads this first to understand the report;
+                       if a bright 15-year-old couldn't follow it, rewrite it. This is not the
+                       Abstract restated — the Abstract tells the owner what to DO; the
+                       Introduction teaches them what the topic IS.
 ## Background        — what the sim does today. Every claim cites a repo path or a
                        structure.md section anchor. No generic textbook filler.
 ## Analysis          — the actual research. Quantitative wherever possible: numbers,
@@ -37,6 +44,9 @@ date: YYYY-MM-DD
 - [ ] Numbers over adjectives: "reduces neighbor search from O(n²) to O(n)" not "much faster".
 - [ ] No restating what the task brief already says; no boilerplate introductions.
 - [ ] Abstract alone tells the owner what to do and why.
+- [ ] The plain-language Introduction is genuinely followable by a high-schooler: no
+      undefined jargon, no equations without a plain-English gloss. Reject reports whose
+      Introduction just repeats the Abstract or dives straight into technical detail.
 - [ ] Length proportional to content: if a section has nothing non-obvious, it is one line.
 
 ## Review protocol
