@@ -90,6 +90,23 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           </div>
         )}
 
+        {/* offline banner: the orchestrator isn't reachable — never show a silent
+            frozen office. This is the "something is actually wrong / do this" state. */}
+        {!state.connected && (
+          <div style={{
+            position: 'absolute', top: 34, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 11, pointerEvents: 'none', padding: '10px 20px', borderRadius: 4,
+            background: 'rgba(70,70,80,0.95)', border: '2px solid #ff6b6b',
+            color: '#ffe0e0', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+          }}>
+            ⏻ OFFICE OFFLINE — can't reach the orchestrator
+            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffb3b3' }}>
+              the office isn't running (or the session hosting it ended). start it in a terminal:&nbsp;
+              <span style={{ fontFamily: MONO, color: '#ffd4d4' }}>npm run office</span>
+            </div>
+          </div>
+        )}
+
         {/* usage-guard banner: the office naps near the subscription limit */}
         {state.connected && state.pool.resting && (
           <div style={{
