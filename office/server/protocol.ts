@@ -110,7 +110,7 @@ export interface LabExperiment {
 }
 
 export type ServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; mock: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests: OwnerRequest[] }
+  | { type: 'OFFICE_SNAPSHOT'; mock: boolean; owner: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests: OwnerRequest[] }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
@@ -124,7 +124,7 @@ export type ServerMsg =
   | { type: 'OFFICE_SHUTDOWN' }
 
 export type ClientMsg =
-  | { type: 'HELLO' }
+  | { type: 'HELLO'; token?: string }
   | { type: 'GET_AGENT_DETAIL'; id: string }
 
 export const OFFICE_PORT = 4571

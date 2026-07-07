@@ -150,6 +150,26 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           <Hud label={`REPORTS ${state.reports.filter(r => r.status === 'approved').length}`} color="#00ff88" />
         </div>
 
+        {/* owner unlock: public viewers see VIEWER; entering the token upgrades to
+            OWNER (controls + private data). Hidden when disconnected. */}
+        {state.connected && (
+          <button
+            onClick={() => {
+              if (state.owner) { office.unlock('') }
+              else { const t = window.prompt('Enter the owner token to unlock controls:'); if (t) office.unlock(t) }
+            }}
+            title={state.owner ? 'You have owner controls. Click to return to viewer mode.' : 'Public viewer. Click to enter the owner token.'}
+            style={{
+              position: 'absolute', top: 8, right: 8, zIndex: 12, pointerEvents: 'auto',
+              background: 'rgba(8,12,24,0.9)', border: `1px solid ${state.owner ? '#00ff88' : '#ffd700'}88`,
+              color: state.owner ? '#00ff88' : '#ffd700', fontFamily: MONO, fontSize: 9, letterSpacing: 1,
+              padding: '3px 9px', borderRadius: 3, cursor: 'pointer', fontWeight: 700,
+            }}
+          >
+            {state.owner ? '🔓 OWNER' : '🔒 VIEWER — UNLOCK'}
+          </button>
+        )}
+
         {/* team legend */}
         <div style={{
           position: 'absolute', bottom: 8, left: 8, display: 'flex', gap: 6, flexWrap: 'wrap',

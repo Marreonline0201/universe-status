@@ -41,6 +41,14 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
   let mockFile: ((p: unknown) => ReturnType<typeof readCompanyFile>) | null = null
   let mockLab: import('./protocol.ts').LabExperiment[] | null = null
   const teams = loadTeams(paths)
+  // Public-share auth: setting OFFICE_OWNER_TOKEN opts the office into "public read +
+  // owner-token write" mode (for internet exposure via a tunnel). Unset → local-only.
+  const ownerToken = process.env.OFFICE_OWNER_TOKEN?.trim() || null
+  const allowedOrigins = [
+    ...(process.env.OFFICE_ALLOWED_ORIGINS?.split(',') ?? []),
+    ...(cfg.publicShare?.allowedOrigins ?? []),
+  ].map(o => o.trim()).filter(Boolean)
+  const wsAuth = { ownerToken, allowedOrigins }
   const agents = new Map<string, OfficeAgent>(buildAgents(roster).map(a => [a.id, a]))
   const chat: ChatMsg[] = []
   const transcripts = new Map<string, string[]>()
@@ -56,21 +64,29 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     }
   }
 
-  const snapshot = (): ServerMsg => ({
-    type: 'OFFICE_SNAPSHOT',
-    mock: !!opts.mock,
-    teams,
-    agents: [...agents.values()],
-    tasks: loadTasks(paths),
-    chat: chat.slice(-50),
-    reports: loadReports(paths),
-    requests: runner?.list() ?? [],
-    pool: scheduler?.poolState() ?? {
+  // Public (non-owner) viewers get a CURATED snapshot: the live office (agents +
+  // statuses) + approved reports metadata only. Mail feed, task list, and pending
+  // requests are owner-only. Owner viewers (valid token) get the full snapshot.
+  const snapshot = (owner: boolean): ServerMsg => {
+    const pool = scheduler?.poolState() ?? {
       cap: cfg.maxConcurrent, active: [], queued: [], paused: false,
       resting: false, restReason: null, restResumeAt: null,
       usagePct: null, weeklyPct: null, usageMonitorOk: false,
-    },
-  })
+    }
+    const reports = loadReports(paths)
+    return {
+      type: 'OFFICE_SNAPSHOT',
+      mock: !!opts.mock,
+      owner,
+      teams,
+      agents: [...agents.values()],
+      tasks: owner ? loadTasks(paths) : [],
+      chat: owner ? chat.slice(-50) : [],
+      reports: owner ? reports : reports.filter(r => r.status === 'approved'),
+      requests: owner ? (runner?.list() ?? []) : [],
+      pool,
+    }
+  }
 
   const ws = new OfficeWs(cfg.port, {
     snapshot,
@@ -117,7 +133,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
     killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
     runOutput: (id) => runner?.output(id) ?? null,
-  }, log)
+  }, wsAuth, log)
 
   const pushChat = (msg: ChatMsg) => {
     chat.push(msg)
