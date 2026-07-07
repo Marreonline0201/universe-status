@@ -10,6 +10,9 @@ import { Markdown, stripFrontmatter } from '../../lib/markdown'
 import { MockBanner } from '../common/MockBanner'
 import { LabSim } from './LabSim'
 import { RunConsole } from './RunConsole'
+import { FluidControls, type FluidController } from '../fluid/FluidControls'
+import type { LabFluidEngine } from '../../lab/LabFluidEngine'
+import type { NamedComposition } from '../../composition/CompositionTable'
 
 const MONO = '"IBM Plex Mono", monospace'
 
@@ -38,6 +41,15 @@ export function LabPage({ office, focusRequestId }: {
   const [stats, setStats] = useState({ fps: 0, count: 0 })
   const [consoleId, setConsoleId] = useState<string | null>(null)
   const notesCache = useRef(new Map<string, string>())
+
+  // Hands-on control state (parity with FLUID TEST), driven by the shared FluidControls panel.
+  const engineRef = useRef<LabFluidEngine | null>(null)
+  const [engine, setEngine] = useState<LabFluidEngine | null>(null)
+  const [compositions, setCompositions] = useState<NamedComposition[]>([])
+  const [selectedComp, setSelectedComp] = useState(0)
+  const [gravityVal, setGravityVal] = useState(0.3)
+  const [temperatureVal, setTemperatureVal] = useState(20)
+  const [ballActive, setBallActive] = useState(false)
 
   const webgpu = typeof navigator !== 'undefined' && !!navigator.gpu
 
@@ -98,6 +110,36 @@ export function LabPage({ office, focusRequestId }: {
   }, [])
 
   const liveRuns = state.requests.filter(r => r.kind === 'run' && (r.status === 'running' || r.status === 'approved'))
+
+  // ── hands-on controls wiring ──
+  const onLabEngine = useCallback((e: LabFluidEngine | null) => {
+    engineRef.current = e
+    setEngine(e)
+    if (e) setCompositions(e.getCompositions())
+  }, [])
+  const onLabLoaded = useCallback(() => {
+    const e = engineRef.current
+    if (!e) return
+    // A scenario just (re)loaded — resync the panel to the engine's new state.
+    setCompositions(e.getCompositions())
+    setBallActive(e.ballActive)
+    setGravityVal(e.gravity)
+  }, [])
+  const labController: FluidController | null = engine ? {
+    gpuReady: true,
+    compositions,
+    selectedComposition: selectedComp,
+    setSelectedComposition: (id) => { engine.setSelectedComposition(id); setSelectedComp(id) },
+    spawnBatch: (n) => engine.spawnBatch(n),
+    ballActive,
+    dropBall: () => { engine.dropBall(); setBallActive(true) },
+    removeBall: () => { engine.removeBall(); setBallActive(false) },
+    gravity: gravityVal,
+    setGravity: (g) => { engine.setGravity(g); setGravityVal(g) },
+    temperature: temperatureVal,
+    setTemperature: (t) => { engine.setTemperature(t); setTemperatureVal(t) },
+    reset: () => { engine.reset(); setCompositions(engine.getCompositions()); setBallActive(engine.ballActive); setGravityVal(engine.gravity) },
+  } : null
 
   const toolbarBtn = (label: string, onClick: () => void, active = false) => (
     <button
@@ -190,7 +232,7 @@ export function LabPage({ office, focusRequestId }: {
 
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {webgpu
-            ? <LabSim scenario={scenario} runNonce={runNonce} onStats={setStats} />
+            ? <LabSim scenario={scenario} runNonce={runNonce} onStats={setStats} onEngine={onLabEngine} onLoaded={onLabLoaded} />
             : (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 }}>
                 <div style={{ color: '#ff8787', fontSize: 12, letterSpacing: 1 }}>WEBGPU UNAVAILABLE</div>
@@ -237,6 +279,18 @@ export function LabPage({ office, focusRequestId }: {
 
         <RunConsole office={office} requestId={consoleId} />
       </div>
+
+      {/* ── hands-on controls (same panel as FLUID TEST) ── */}
+      {webgpu && labController && (
+        <div style={{ width: 264, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.92)' }}>
+          <div style={{ padding: '10px 12px 2px' }}>
+            <span style={{ fontSize: 9, letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>CONTROLS</span>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <FluidControls controller={labController} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

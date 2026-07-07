@@ -15,6 +15,7 @@ import { ContactProcessor } from '../composition/ContactProcessor'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
 import { AutoExperimenter } from '../ai/AutoExperimenter'
 import { AIChatPanel } from './AIChatPanel'
+import { FluidControls, type FluidController } from './fluid/FluidControls'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,7 +43,6 @@ export function FluidTest() {
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
-  const [showInfo, setShowInfo] = useState(true)
   const [fpsWarning, setFpsWarning] = useState(false)
   const [gpuReady, setGpuReady] = useState(false)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
@@ -738,8 +738,16 @@ export function FluidTest() {
     }
   }, [spawnParticlesAtClick])
 
-  // Currently selected composition details
-  const selectedComp = compositions[selectedComposition]
+  // Adapter over simRef state/closures → the shared FluidControls panel (same one the LAB page uses).
+  const ftController: FluidController = {
+    gpuReady, compositions, selectedComposition,
+    setSelectedComposition,
+    spawnBatch,
+    ballActive, dropBall, removeBall,
+    gravity: gravityVal, setGravity: setGravityVal,
+    temperature: temperatureVal, setTemperature: setTemperatureVal,
+    reset: resetSim,
+  }
 
   return (
     <div style={{
@@ -862,291 +870,9 @@ export function FluidTest() {
           flexDirection: 'column',
           background: 'rgba(4,8,18,0.6)',
         }}>
-        {/* Control Panel (60%) */}
-        <div style={{
-          flex: '0 0 60%',
-          padding: 14,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
-          overflowY: 'auto',
-        }}>
-          {/* Active Compositions List */}
-          <div>
-            <label style={labelStyle}>MATERIALS</label>
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              maxHeight: 200,
-              overflowY: 'auto',
-            }}>
-              {compositions.map((comp) => (
-                <button
-                  key={comp.id}
-                  onClick={() => setSelectedComposition(comp.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '5px 8px',
-                    cursor: 'pointer',
-                    background: selectedComposition === comp.id
-                      ? 'rgba(0,180,255,0.15)'
-                      : 'rgba(0,180,255,0.03)',
-                    border: `1px solid ${selectedComposition === comp.id
-                      ? 'rgba(0,180,255,0.4)'
-                      : 'rgba(0,180,255,0.1)'}`,
-                    borderRadius: 3,
-                    color: '#c0d0e0',
-                    fontFamily: 'inherit',
-                    fontSize: 10,
-                    textAlign: 'left',
-                    width: '100%',
-                  }}
-                >
-                  {/* Color swatch */}
-                  <div style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2,
-                    flexShrink: 0,
-                    background: `rgb(${Math.round(comp.props.color[0] * 255)},${Math.round(comp.props.color[1] * 255)},${Math.round(comp.props.color[2] * 255)})`,
-                    boxShadow: comp.props.emissive > 0
-                      ? `0 0 6px rgb(${Math.round(comp.props.color[0] * 255)},${Math.round(comp.props.color[1] * 255)},${Math.round(comp.props.color[2] * 255)})`
-                      : 'none',
-                  }} />
-                  <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {comp.name}
-                  </div>
-                  <span style={{ fontSize: 8, color: 'rgba(100,150,200,0.4)', flexShrink: 0 }}>
-                    {comp.formula}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Spawn buttons */}
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              onClick={() => spawnBatch(10000)}
-              disabled={!gpuReady}
-              style={{
-                flex: 1,
-                padding: '7px 0',
-                background: gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)',
-                border: '1px solid rgba(0,180,255,0.3)',
-                borderRadius: 3,
-                color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
-                fontSize: 10,
-                fontFamily: 'inherit',
-                letterSpacing: 2,
-                cursor: gpuReady ? 'pointer' : 'default',
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,180,255,0.2)'
-              }}
-              onMouseLeave={(e) => {
-                (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)'
-              }}
-            >
-              +10K
-            </button>
-            <button
-              onClick={() => spawnBatch(50000)}
-              disabled={!gpuReady}
-              style={{
-                flex: 1,
-                padding: '7px 0',
-                background: gpuReady ? 'rgba(0,140,255,0.15)' : 'rgba(0,180,255,0.03)',
-                border: '1px solid rgba(0,180,255,0.3)',
-                borderRadius: 3,
-                color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
-                fontSize: 10,
-                fontFamily: 'inherit',
-                letterSpacing: 2,
-                cursor: gpuReady ? 'pointer' : 'default',
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                if (gpuReady) (e.target as HTMLButtonElement).style.background = 'rgba(0,140,255,0.25)'
-              }}
-              onMouseLeave={(e) => {
-                (e.target as HTMLButtonElement).style.background = gpuReady ? 'rgba(0,140,255,0.15)' : 'rgba(0,180,255,0.03)'
-              }}
-            >
-              +50K
-            </button>
-          </div>
-
-          {/* Drop ball button */}
-          <button
-            onClick={ballActive ? removeBall : dropBall}
-            disabled={!gpuReady}
-            style={{
-              padding: '7px 0',
-              background: gpuReady
-                ? ballActive ? 'rgba(255,160,0,0.15)' : 'rgba(180,180,180,0.1)'
-                : 'rgba(180,180,180,0.03)',
-              border: `1px solid ${ballActive ? 'rgba(255,160,0,0.4)' : 'rgba(180,180,180,0.3)'}`,
-              borderRadius: 3,
-              color: gpuReady
-                ? ballActive ? '#ffaa00' : '#aaaaaa'
-                : 'rgba(100,150,200,0.3)',
-              fontSize: 10,
-              fontFamily: 'inherit',
-              letterSpacing: 2,
-              cursor: gpuReady ? 'pointer' : 'default',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              if (gpuReady) (e.target as HTMLButtonElement).style.background =
-                ballActive ? 'rgba(255,160,0,0.25)' : 'rgba(180,180,180,0.2)'
-            }}
-            onMouseLeave={(e) => {
-              (e.target as HTMLButtonElement).style.background = gpuReady
-                ? ballActive ? 'rgba(255,160,0,0.15)' : 'rgba(180,180,180,0.1)'
-                : 'rgba(180,180,180,0.03)'
-            }}
-          >
-            {ballActive ? 'REMOVE BALL' : 'DROP BALL'}
-          </button>
-
-          {/* Temperature slider */}
-          <div>
-            <label style={labelStyle}>TEMPERATURE</label>
-            <input
-              type="range"
-              min={-50}
-              max={2000}
-              step={10}
-              value={temperatureVal}
-              onChange={(e) => setTemperatureVal(Number(e.target.value))}
-              style={sliderStyle}
-            />
-            <div style={valueStyle}>{temperatureVal} C</div>
-          </div>
-
-          {/* Gravity slider */}
-          <div>
-            <label style={labelStyle}>GRAVITY</label>
-            <input
-              type="range"
-              min={0}
-              max={2.0}
-              step={0.01}
-              value={gravityVal}
-              onChange={(e) => setGravityVal(Number(e.target.value))}
-              style={sliderStyle}
-            />
-            <div style={valueStyle}>{gravityVal.toFixed(2)}</div>
-          </div>
-
-          {/* Reset button */}
-          <button
-            onClick={resetSim}
-            style={{
-              padding: '7px 0',
-              background: 'rgba(255,60,60,0.1)',
-              border: '1px solid rgba(255,60,60,0.3)',
-              borderRadius: 3,
-              color: '#ff6666',
-              fontSize: 10,
-              fontFamily: 'inherit',
-              letterSpacing: 2,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              (e.target as HTMLButtonElement).style.background = 'rgba(255,60,60,0.2)'
-            }}
-            onMouseLeave={(e) => {
-              (e.target as HTMLButtonElement).style.background = 'rgba(255,60,60,0.1)'
-            }}
-          >
-            RESET
-          </button>
-
-          {/* Separator */}
-          <div style={{ height: 1, background: 'rgba(0,180,255,0.1)' }} />
-
-          {/* Info panel */}
-          <div>
-            <button
-              onClick={() => setShowInfo(!showInfo)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'rgba(0,180,255,0.5)',
-                fontSize: 9,
-                letterSpacing: 2,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                padding: 0,
-                marginBottom: 8,
-              }}
-            >
-              {showInfo ? '[-] MATERIAL INFO' : '[+] MATERIAL INFO'}
-            </button>
-
-            {showInfo && selectedComp && (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                fontSize: 10,
-                lineHeight: 1.6,
-              }}>
-                <div style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: `rgb(${Math.round(selectedComp.props.color[0] * 255)},${Math.round(selectedComp.props.color[1] * 255)},${Math.round(selectedComp.props.color[2] * 255)})`,
-                }}>
-                  {selectedComp.name}
-                </div>
-
-                <div style={{ color: 'rgba(100,150,200,0.55)', fontSize: 9 }}>
-                  {selectedComp.formula}
-                </div>
-
-                <div style={{ marginTop: 4 }}>
-                  <InfoRow label="Density" value={`${selectedComp.props.density.toFixed(0)} kg/m3`} symbol={'\u03c1'} />
-                  <InfoRow label="Viscosity" value={`${selectedComp.props.viscosity.toFixed(4)} Pa\u00b7s`} symbol={'\u03bc'} />
-                  <InfoRow label="Surface Tension" value={`${selectedComp.props.surfaceTension.toFixed(4)} N/m`} symbol={'\u03c3'} />
-                  <InfoRow label="Melting Point" value={`${selectedComp.props.meltingPoint.toFixed(0)} C`} symbol={'Tm'} />
-                  <InfoRow label="Boiling Point" value={`${selectedComp.props.boilingPoint.toFixed(0)} C`} symbol={'Tb'} />
-                  <InfoRow label="Metalness" value={`${(selectedComp.props.metalness * 100).toFixed(0)}%`} symbol={'M'} />
-                  <InfoRow label="F0" value={selectedComp.props.F0.toFixed(3)} symbol={'F'} />
-                  <InfoRow label="IOR" value={selectedComp.props.IOR.toFixed(3)} symbol={'n'} />
-                </div>
-
-                <div style={{
-                  marginTop: 8,
-                  padding: '6px 8px',
-                  background: 'rgba(0,180,255,0.05)',
-                  border: '1px solid rgba(0,180,255,0.1)',
-                  borderRadius: 3,
-                  fontSize: 9,
-                  color: 'rgba(100,150,200,0.5)',
-                  lineHeight: 1.8,
-                }}>
-                  <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>
-                    GPU MLS-MPM
-                  </div>
-                  <div>Solver: WebGPU compute</div>
-                  <div>Substeps: 2 per frame</div>
-                  <div>Grid: 64x64x64</div>
-                  <div>Render: SSFR (5-pass)</div>
-                  <div>Transfer: P2G + G2P</div>
-                  <div style={{ marginTop: 4, color: 'rgba(0,180,255,0.4)', letterSpacing: 1 }}>
-                    From structure.md S3.2
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+        {/* Control Panel (60%) \u2014 hands-on controls, shared with the LAB page */}
+        <div style={{ flex: '0 0 60%', minHeight: 0 }}>
+          <FluidControls controller={ftController} />
         </div>
 
         {/* AI Chat Panel (40%) */}
@@ -1216,49 +942,5 @@ export function FluidTest() {
   )
 }
 
-// ── Shared styles ─────────────────────────────────────────────────────────
-
-const labelStyle: React.CSSProperties = {
-  display: 'block',
-  fontSize: 9,
-  letterSpacing: 2,
-  color: 'rgba(0,180,255,0.5)',
-  marginBottom: 6,
-}
-
-const sliderStyle: React.CSSProperties = {
-  width: '100%',
-  height: 4,
-  appearance: 'none' as const,
-  background: 'rgba(0,180,255,0.15)',
-  borderRadius: 2,
-  outline: 'none',
-  cursor: 'pointer',
-}
-
-const valueStyle: React.CSSProperties = {
-  fontSize: 10,
-  color: 'rgba(100,150,200,0.6)',
-  marginTop: 4,
-  textAlign: 'right',
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────
-
-function InfoRow({ label, value, symbol }: { label: string; value: string; symbol: string }) {
-  return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '2px 0',
-      fontSize: 10,
-    }}>
-      <span style={{ color: 'rgba(100,150,200,0.5)' }}>
-        <span style={{ color: 'rgba(0,180,255,0.5)', marginRight: 4 }}>{symbol}</span>
-        {label}
-      </span>
-      <span style={{ color: '#c0d0e0', fontWeight: 500 }}>{value}</span>
-    </div>
-  )
-}
+// (labelStyle / sliderStyle / valueStyle / InfoRow moved to ./fluid/FluidControls.tsx —
+//  now shared with the LABORATORY page's control panel.)
