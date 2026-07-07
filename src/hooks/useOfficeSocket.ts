@@ -136,8 +136,20 @@ export interface OfficeState {
   detail: AgentDetail | null
 }
 
-const OFFICE_URL: string =
-  ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL) ?? 'ws://localhost:4571'
+// Where the office WS lives:
+//  1. VITE_OFFICE_WS_URL if the build sets it (e.g. Vercel pointing at a tunnel).
+//  2. else on localhost dev (vite :5173) → the office on :4571.
+//  3. else (the page is served BY the office itself, e.g. through a tunnel) →
+//     the same origin, so one public URL exposes everything with no CORS.
+function officeWsUrl(): string {
+  const env = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL
+  if (env) return env
+  if (typeof window === 'undefined') return 'ws://localhost:4571'
+  const { protocol, hostname, host } = window.location
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'ws://localhost:4571'
+  return (protocol === 'https:' ? 'wss://' : 'ws://') + host
+}
+const OFFICE_URL: string = officeWsUrl()
 
 const INITIAL: OfficeState = {
   connected: false,

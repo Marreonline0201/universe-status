@@ -12,6 +12,8 @@
 //     never be exposed by accident; you opt in by setting the secret.
 import http from 'node:http'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { ClientMsg, LabExperiment, OwnerRequest, ServerMsg } from './protocol.ts'
 import type { RunOutputLine } from './runner.ts'
@@ -39,6 +41,20 @@ export interface WsHandlers {
 
 function isLoopbackOrigin(origin: string | undefined): boolean {
   return !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
+
+/** Same-origin: the page making the request was served by THIS server (its Origin
+ *  host matches the Host header). Always safe — this is what makes the one-URL
+ *  tunnel work (office serves the site, so page + API + WS share an origin). */
+function isSameOrigin(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin || !host) return false
+  try { return new URL(origin).host === host } catch { return false }
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.wasm': 'application/wasm', '.map': 'application/json',
 }
 
 /** Server messages that are safe to send to PUBLIC (non-owner) viewers. Everything
@@ -75,11 +91,18 @@ export class OfficeWs {
   private server: http.Server
   private owners = new WeakSet<WebSocket>()
 
-  constructor(private port: number, private handlers: WsHandlers, private auth: WsAuth, private log: (l: string) => void) {
+  constructor(
+    private port: number,
+    private handlers: WsHandlers,
+    private auth: WsAuth,
+    private staticDir: string | null,
+    private log: (l: string) => void,
+  ) {
     this.server = http.createServer((req, res) => this.handleHttp(req, res))
     this.wss = new WebSocketServer({
       server: this.server,
-      verifyClient: (info: { origin?: string }) => this.originAllowed(info.origin || undefined),
+      verifyClient: (info: { origin?: string; req: http.IncomingMessage }) =>
+        this.originAllowed(info.origin || undefined, info.req.headers.host),
     })
 
     this.wss.on('connection', (ws) => {
@@ -103,10 +126,12 @@ export class OfficeWs {
     })
   }
 
-  /** Local-only mode: loopback origins only. Public mode: loopback + configured origins. */
-  private originAllowed(origin: string | undefined): boolean {
+  /** Local-only mode: loopback origins only. Public mode: loopback + same-origin
+   *  (the office is serving the page) + explicitly configured origins. */
+  private originAllowed(origin: string | undefined, host?: string): boolean {
     if (isLoopbackOrigin(origin)) return true
     if (!this.auth.ownerToken) return false // no token set → never accept non-local origins
+    if (isSameOrigin(origin, host)) return true
     return !!origin && this.auth.allowedOrigins.includes(origin)
   }
 
@@ -146,13 +171,20 @@ export class OfficeWs {
     const [route, query] = (req.url ?? '').split('?')
     const params = new URLSearchParams(query ?? '')
     const origin = req.headers.origin
-    const cors: Record<string, string> = origin && this.originAllowed(origin)
+    const host = req.headers.host
+    // Static site: serve the built SPA for non-/api GETs (so one tunnel to this
+    // port exposes the whole app on a single origin). No origin check needed to
+    // fetch the page itself — the API/WS below still enforce it.
+    if (this.staticDir && req.method === 'GET' && !route.startsWith('/api/')) {
+      return this.serveStatic(route, res)
+    }
+    const cors: Record<string, string> = origin && this.originAllowed(origin, host)
       ? { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' } : {}
     const json = (code: number, body: unknown) => {
       res.writeHead(code, { 'Content-Type': 'application/json', ...cors })
       res.end(JSON.stringify(body))
     }
-    if (!this.originAllowed(origin)) return json(403, { error: 'forbidden origin' })
+    if (!this.originAllowed(origin, host)) return json(403, { error: 'forbidden origin' })
     if (req.method === 'OPTIONS' && route.startsWith('/api/')) {
       res.writeHead(204, {
         ...cors,
@@ -218,5 +250,23 @@ export class OfficeWs {
       })
     }
     json(404, { error: 'unknown endpoint' })
+  }
+
+  /** Serve a file from the static dir; SPA fallback to index.html. Path-traversal safe. */
+  private serveStatic(route: string, res: http.ServerResponse) {
+    const dir = this.staticDir!
+    let rel = decodeURIComponent(route.replace(/^\/+/, '')) || 'index.html'
+    const abs = path.resolve(dir, rel)
+    // Containment: never serve outside the static dir.
+    if (!abs.startsWith(path.resolve(dir))) { res.writeHead(403); return res.end('forbidden') }
+    let file = abs
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(dir, 'index.html') // SPA fallback
+    try {
+      const body = fs.readFileSync(file)
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream' })
+      res.end(body)
+    } catch {
+      res.writeHead(404); res.end('not found')
+    }
   }
 }

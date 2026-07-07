@@ -30,3 +30,6 @@ sph-wasm/target/
 
 # office orchestrator runtime state
 office/state/
+
+# office public-share secret (never commit)
+office/config/owner-token.txt
