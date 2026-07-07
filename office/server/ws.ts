@@ -51,13 +51,16 @@ function isSameOrigin(origin: string | undefined, host: string | undefined): boo
   try { return new URL(origin).host === host } catch { return false }
 }
 
-/** Match an allowed-origin entry against an origin. `*` in the pattern matches one
- *  URL label (letters/digits/dashes, NO dots) so `https://universe-status*.vercel.app`
- *  covers the production alias AND every per-deploy preview, but can't reach another
- *  domain. Patterns without `*` are exact matches. */
+/** Match an allowed-origin entry against an origin. `*` matches ≥1 char of a single
+ *  URL label (letters/digits/dashes, NO dots), so a pattern like
+ *  `https://universe-status-*-pioneer2026.vercel.app` matches this Vercel team's
+ *  per-deploy preview URLs but cannot reach another host or drop the anchor labels.
+ *  NOTE: `vercel.app` is a shared domain — always anchor the wildcard to something an
+ *  attacker can't forge (the team slug here), never a bare `project*` on `*.vercel.app`.
+ *  Patterns without `*` are exact matches. */
 function originMatches(pattern: string, origin: string): boolean {
   if (!pattern.includes('*')) return pattern === origin
-  const rx = '^' + pattern.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[-A-Za-z0-9]*') + '$'
+  const rx = '^' + pattern.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[-A-Za-z0-9]+') + '$'
   try { return new RegExp(rx).test(origin) } catch { return false }
 }
 
