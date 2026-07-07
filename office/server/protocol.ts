@@ -73,8 +73,44 @@ export interface PoolState {
   usageMonitorOk: boolean     // false → guard is blind (creds/endpoint problem)
 }
 
+// ── Owner requests: agents file them; the owner approves/denies in the UI; ──
+// the orchestrator executes approved runs and reports back.
+export type RequestKind = 'run' | 'decision' | 'access'
+export type RequestStatus = 'pending' | 'approved' | 'running' | 'done' | 'failed' | 'denied'
+
+export interface OwnerRequest {
+  id: string
+  title: string
+  kind: RequestKind
+  requestedBy: string
+  team: string
+  taskId: string | null
+  status: RequestStatus
+  command: string[] | null      // exact argv — the UI renders this verbatim
+  cwd: string | null            // symbolic key from runner config ("universe-engine")
+  runsIn: 'worktree' | 'repo' | null // engine runs execute in the lab worktree, never main
+  valid: boolean                // whitelist check result at load time
+  invalidReason: string | null
+  warn: string | null           // e.g. "cargo run launches the app window…"
+  createdAt: number
+  resolvedAt: number | null
+  exitCode: number | null
+  durationMs: number | null
+  resultTail: string | null     // last lines of output, for the card
+  path: string                  // repo-relative, feed to GET /api/file
+}
+
+export interface LabExperiment {
+  id: string        // directory name under company/lab/
+  name: string
+  path: string      // repo-relative directory
+  hasScenario: boolean
+  hasNotes: boolean
+  updatedAt: number
+}
+
 export type ServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; mock: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
+  | { type: 'OFFICE_SNAPSHOT'; mock: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests: OwnerRequest[] }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
@@ -82,6 +118,9 @@ export type ServerMsg =
   | { type: 'REPORT_ADDED'; report: ReportMeta }
   | { type: 'POOL_STATE'; pool: PoolState }
   | { type: 'AGENT_DETAIL'; id: string; profile: Record<string, unknown>; task: TaskSummary | null; transcriptTail: string[]; reports: ReportMeta[] }
+  | { type: 'REQUEST_UPDATE'; request: OwnerRequest }
+  | { type: 'RUN_OUTPUT'; requestId: string; stream: 'stdout' | 'stderr'; line: string; ts: number }
+  | { type: 'LAB_UPDATED'; path: string }
   | { type: 'OFFICE_SHUTDOWN' }
 
 export type ClientMsg =

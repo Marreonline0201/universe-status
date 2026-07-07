@@ -49,3 +49,6 @@ date: YYYY-MM-DD
   `company/reports/<team>/YYYY-MM-DD-<slug>.md` with `status: approved`, `reviewed_by`,
   and `revision` set, and marks the task `status: done`.
 - Two rounds of revision without convergence → escalate to the team lead by mail.
+- Claims that can be validated by running code should be: file an owner request for the
+  run (see COMPANY.md conventions) and cite its id and result in the report. "Compiles
+  clean (REQ-...: exit 0)" beats "should compile".

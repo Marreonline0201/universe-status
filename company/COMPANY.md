@@ -37,9 +37,6 @@ Each team: 1 Team Lead, 3 Senior Researchers ("Fables", model `claude-fable-5`),
 5. The team Reviewer gates every report against `company/REPORT_STANDARDS.md` —
    revisions bounce back with review mail until approved.
 6. Approved reports land in `company/reports/<team>/` with sign-off front matter.
-   The orchestrator automatically mirrors every report (drafts and approved) into the
-   owner's Obsidian vault (`universe-brain/research/<team>/`) — agents never write
-   there themselves; writing to `company/reports/` is all that's needed.
 7. Agents may create follow-up tasks and assign each other work, like any real org —
    but volume is not the goal; only work that deserves to exist.
 
@@ -54,3 +51,17 @@ Each team: 1 Team Lead, 3 Senior Researchers ("Fables", model `claude-fable-5`),
 - **Memory**: maintain `.claude/agent-memory/<your-id>/MEMORY.md` (existing repo convention).
 - **Write boundary**: agents may only write under `company/` and their own memory dir —
   enforced by a PreToolUse hook. Code changes are proposals in reports, never direct edits.
+- **Owner requests**: anything needing the owner's machine or authority — running a command
+  (cargo, node scripts), a decision, an access grant — is filed as
+  `company/requests/REQ-<unix-seconds>-<slug>.md` (exact format in your role instructions).
+  The owner approves or denies in the office UI; the orchestrator executes approved runs
+  **in an isolated git worktree (never the main checkout)** and mails you the outcome.
+  Never ask for engine edits — file a request for a validating run, or write an
+  owner-executable plan.
+- **The Laboratory**: to run a fluid experiment the owner can watch, write
+  `company/lab/<experiment-name>/scenario.json` (+ optional `notes.md`). The scenario is
+  pure data driving the site's in-browser WebGPU MLS-MPM sim: `{ "name", "materials":
+  [{ "name", "formula", "elements": {"H": 0.111, "O": 0.889}, "temperature" }], "spawns":
+  [{ "material", "count" (≤100000), "center": [x,y,z in 0..1], "spread" }], "gravity"
+  (grid-space, water ≈ 0.3), "ball": { "center", "radius" }? }`. Element symbols must be
+  from the sim's 25-element periodic table. Cite lab experiments in reports by path.

@@ -6,8 +6,10 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   resolvePaths, loadRoster, loadTeams, loadTasks, loadReports, buildAgents, createTaskFile,
+  readCompanyFile, listLab, loadRequests,
 } from './store.ts'
 import { Scheduler, type OfficeConfig } from './scheduler.ts'
+import { Runner } from './runner.ts'
 import { UsageMonitor } from './usage.ts'
 import { startWatcher } from './watcher.ts'
 import { AutoCommitter } from './autocommit.ts'
@@ -33,6 +35,11 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     console.error('No agents found — run `npm --prefix office run scaffold` first.')
     process.exit(1)
   }
+  // Forward-declared (same pattern as scheduler): snapshot/ws handlers close over it.
+  type RunnerLike = Pick<Runner, 'list' | 'approve' | 'deny' | 'kill' | 'output' | 'decorate' | 'stop' | 'bootRecover'>
+  let runner: RunnerLike | null = null
+  let mockFile: ((p: unknown) => ReturnType<typeof readCompanyFile>) | null = null
+  let mockLab: import('./protocol.ts').LabExperiment[] | null = null
   const teams = loadTeams(paths)
   const agents = new Map<string, OfficeAgent>(buildAgents(roster).map(a => [a.id, a]))
   const chat: ChatMsg[] = []
@@ -57,6 +64,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     tasks: loadTasks(paths),
     chat: chat.slice(-50),
     reports: loadReports(paths),
+    requests: runner?.list() ?? [],
     pool: scheduler?.poolState() ?? {
       cap: cfg.maxConcurrent, active: [], queued: [], paused: false,
       resting: false, restReason: null, restResumeAt: null,
@@ -93,7 +101,22 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
       agents: agents.size,
       pool: scheduler?.poolState() ?? null,
       tasks: loadTasks(paths).filter(t => t.status !== 'done' && t.status !== 'archived').length,
+      pendingRequests: (runner?.list() ?? []).filter(r => r.status === 'pending').length,
     }),
+    requests: () => runner?.list() ?? [],
+    file: (p) => {
+      // Mock mode: serve canned bodies for mock paths, real disk for everything else.
+      if (mockFile) {
+        const r = mockFile(p)
+        if (r.ok) return r
+      }
+      return readCompanyFile(paths, p)
+    },
+    lab: () => mockLab ?? listLab(paths),
+    approveRequest: (id) => runner?.approve(id) ?? { ok: false, error: 'runner not ready' },
+    denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
+    killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
+    runOutput: (id) => runner?.output(id) ?? null,
   }, log)
 
   const pushChat = (msg: ChatMsg) => {
@@ -148,6 +171,11 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     onTask: (task: TaskSummary) => ws.broadcast({ type: 'TASK_UPDATE', task }),
     onReport: (report) => ws.broadcast({ type: 'REPORT_ADDED', report }),
     onReportFile: (file) => vaultMirror?.mirrorFile(file),
+    onRequest: (id) => {
+      const raw = loadRequests(paths).find(r => r.id === id)
+      if (raw && runner) ws.broadcast({ type: 'REQUEST_UPDATE', request: runner.decorate(raw) })
+    },
+    onLab: (rel) => ws.broadcast({ type: 'LAB_UPDATED', path: rel }),
     poke: () => scheduler.poke(),
   })
 
@@ -160,10 +188,19 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
   await ws.listen()
 
   if (opts.mock) {
-    const { runMock } = await import('./mock.ts')
+    const { runMock, createMockRunner, mockCompanyFile, MOCK_LAB } = await import('./mock.ts')
+    runner = createMockRunner({ broadcast: (m) => ws.broadcast(m), log })
+    mockFile = mockCompanyFile
+    mockLab = MOCK_LAB
     runMock({ agents, teams, ws, pushChat })
     log('MOCK MODE — scripted office activity, no real sessions')
   } else {
+    runner = new Runner(paths, repoRoot, cfg.runner, {
+      broadcast: (m) => ws.broadcast(m),
+      poke: () => scheduler.poke(),
+      log,
+    })
+    runner.bootRecover()
     // Prime the usage guard before the first poke() so a boot near the limit
     // rests immediately instead of racing doomed activations.
     await usage?.prime()
@@ -174,6 +211,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
 
   const shutdown = () => {
     log('shutting down…')
+    runner?.stop()
     usage?.stop()
     scheduler.stop()
     void watcher.close()

@@ -71,8 +71,36 @@ export interface AgentDetail {
   reports: ReportMeta[]
 }
 
+// ── Owner requests (mirrors office/server/protocol.ts) ──
+export type RequestKind = 'run' | 'decision' | 'access'
+export type RequestStatus = 'pending' | 'approved' | 'running' | 'done' | 'failed' | 'denied'
+
+export interface OwnerRequest {
+  id: string
+  title: string
+  kind: RequestKind
+  requestedBy: string
+  team: string
+  taskId: string | null
+  status: RequestStatus
+  command: string[] | null
+  cwd: string | null
+  runsIn: 'worktree' | 'repo' | null
+  valid: boolean
+  invalidReason: string | null
+  warn: string | null
+  createdAt: number
+  resolvedAt: number | null
+  exitCode: number | null
+  durationMs: number | null
+  resultTail: string | null
+  path: string
+}
+
+export interface RunLine { stream: 'stdout' | 'stderr'; line: string; ts: number }
+
 export type OfficeServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState }
+  | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests?: OwnerRequest[] }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
@@ -80,6 +108,9 @@ export type OfficeServerMsg =
   | { type: 'REPORT_ADDED'; report: ReportMeta }
   | { type: 'POOL_STATE'; pool: PoolState }
   | ({ type: 'AGENT_DETAIL' } & AgentDetail)
+  | { type: 'REQUEST_UPDATE'; request: OwnerRequest }
+  | { type: 'RUN_OUTPUT'; requestId: string; stream: 'stdout' | 'stderr'; line: string; ts: number }
+  | { type: 'LAB_UPDATED'; path: string }
   | { type: 'OFFICE_SHUTDOWN' }
 
 export interface OfficeState {
@@ -91,6 +122,10 @@ export interface OfficeState {
   tasks: TaskSummary[]
   chat: ChatMsg[]
   reports: ReportMeta[]
+  requests: OwnerRequest[]
+  /** Live run output per request id — batched (100ms) and capped (500 lines) to
+   *  avoid a setState per cargo line; raw subscribe() listeners fire per-line. */
+  runOutput: Record<string, RunLine[]>
   pool: PoolState
   detail: AgentDetail | null
 }
@@ -106,6 +141,8 @@ const INITIAL: OfficeState = {
   tasks: [],
   chat: [],
   reports: [],
+  requests: [],
+  runOutput: {},
   pool: {
     cap: 0, active: [], queued: [], paused: false,
     resting: false, restReason: null, restResumeAt: null,
@@ -128,6 +165,9 @@ export function useOfficeSocket(): OfficeSocket {
   const destroyedRef = useRef(false)
   const listenersRef = useRef(new Set<(msg: OfficeServerMsg) => void>())
   const apiRef = useRef<OfficeSocket | null>(null)
+  // RUN_OUTPUT batching: buffer lines and flush at most every 100ms.
+  const runBufRef = useRef<Record<string, RunLine[]>>({})
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     function connect() {
@@ -146,10 +186,31 @@ export function useOfficeSocket(): OfficeSocket {
           try { msg = JSON.parse(evt.data as string) } catch { return }
           for (const fn of listenersRef.current) fn(msg)
 
+          if (msg.type === 'RUN_OUTPUT') {
+            const buf = runBufRef.current[msg.requestId] ?? (runBufRef.current[msg.requestId] = [])
+            buf.push({ stream: msg.stream, line: msg.line, ts: msg.ts })
+            if (!flushTimerRef.current) {
+              flushTimerRef.current = setTimeout(() => {
+                flushTimerRef.current = null
+                const pending = runBufRef.current
+                runBufRef.current = {}
+                setState(s => {
+                  const runOutput = { ...s.runOutput }
+                  for (const [id, lines] of Object.entries(pending)) {
+                    runOutput[id] = [...(runOutput[id] ?? []), ...lines].slice(-500)
+                  }
+                  return { ...s, runOutput }
+                })
+              }, 100)
+            }
+            return
+          }
+
           setState(s => {
             switch (msg.type) {
               case 'OFFICE_SNAPSHOT':
-                return { ...s, connected: true, mock: !!msg.mock, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, pool: msg.pool }
+                // Keep runOutput across reconnects — console history survives.
+                return { ...s, connected: true, mock: !!msg.mock, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, requests: msg.requests ?? [], pool: msg.pool }
               case 'AGENT_STATUS':
                 return {
                   ...s,
@@ -165,6 +226,8 @@ export function useOfficeSocket(): OfficeSocket {
               }
               case 'REPORT_ADDED':
                 return { ...s, reports: [msg.report, ...s.reports.filter(r => r.path !== msg.report.path)] }
+              case 'REQUEST_UPDATE':
+                return { ...s, requests: [msg.request, ...s.requests.filter(r => r.id !== msg.request.id)] }
               case 'POOL_STATE':
                 return { ...s, pool: msg.pool }
               case 'AGENT_DETAIL':
@@ -194,6 +257,7 @@ export function useOfficeSocket(): OfficeSocket {
     connect()
     return () => {
       destroyedRef.current = true
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current)
       wsRef.current?.close()
     }
   }, [])

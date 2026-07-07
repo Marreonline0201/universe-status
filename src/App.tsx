@@ -5,13 +5,17 @@ import { DocsPage } from './components/DocsPage'
 import { PixelOffice } from './components/office/PixelOffice'
 import { ConnectionMap } from './components/ConnectionMap'
 import { FluidTest } from './components/FluidTest'
+import { ReportsPage } from './components/reports/ReportsPage'
+import { LabPage } from './components/lab/LabPage'
 
-type View = 'docs' | 'connections' | 'agents' | 'fluid'
+type View = 'docs' | 'connections' | 'agents' | 'reports' | 'lab' | 'fluid'
 
 const VIEWS: { id: View; label: string }[] = [
   { id: 'docs',        label: 'GAME GUIDE' },
   { id: 'connections',  label: 'CONNECTIONS' },
   { id: 'agents',      label: 'AGENT OFFICE' },
+  { id: 'reports',     label: 'REPORTS' },
+  { id: 'lab',         label: 'LABORATORY' },
   { id: 'fluid',       label: 'FLUID TEST' },
 ]
 
@@ -19,7 +23,9 @@ export function App() {
   const world = useStatusSocket()
   const office = useOfficeSocket()
   const [view, setView] = useState<View>('docs')
+  const [labFocusRequest, setLabFocusRequest] = useState<string | null>(null)
   const hasBlocked = office.state.agents.some(a => a.status === 'blocked')
+  const pendingOwner = office.state.requests.filter(r => r.status === 'pending').length
 
   return (
     <div style={{
@@ -89,6 +95,23 @@ export function App() {
                   animation: 'blockedPulse 1.2s ease-in-out infinite',
                 }} />
               )}
+              {v.id === 'reports' && pendingOwner > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: -6, right: -6,
+                  minWidth: 14, height: 14,
+                  borderRadius: 7,
+                  background: '#ffd700',
+                  color: '#1a1400',
+                  fontSize: 8, fontWeight: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '0 3px',
+                  boxShadow: '0 0 6px #ffd700',
+                  animation: 'blockedPulse 1.2s ease-in-out infinite',
+                }}>
+                  {pendingOwner}
+                </span>
+              )}
             </button>
           )
         })}
@@ -113,6 +136,16 @@ export function App() {
         {view === 'agents' && (
           <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
             <PixelOffice office={office} />
+          </div>
+        )}
+        {view === 'reports' && (
+          <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
+            <ReportsPage office={office} onWatchRun={(id) => { setLabFocusRequest(id); setView('lab') }} />
+          </div>
+        )}
+        {view === 'lab' && (
+          <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
+            <LabPage office={office} focusRequestId={labFocusRequest} />
           </div>
         )}
         {view === 'fluid' && <FluidTest />}

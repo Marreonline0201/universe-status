@@ -60,7 +60,23 @@ switch (cmd) {
   case 'status':
     console.log(JSON.stringify(await api('GET', '/api/status'), null, 2))
     break
+  case 'requests': {
+    const { requests } = await api('GET', '/api/requests') as { requests: Array<Record<string, unknown>> }
+    if (!requests?.length) { console.log('no owner requests'); break }
+    for (const r of requests) {
+      console.log(`${String(r.status).padEnd(8)} ${r.id}  [${r.kind}] ${r.title}${r.command ? `\n         $ ${(r.command as string[]).join(' ')}  (cwd ${r.cwd}${r.runsIn === 'worktree' ? ', lab worktree' : ''})` : ''}${r.valid === false ? `\n         ⚠ invalid: ${r.invalidReason}` : ''}`)
+    }
+    break
+  }
+  case 'approve':
+  case 'deny':
+  case 'kill': {
+    const id = rest.find(a => !a.startsWith('--'))
+    if (!id) { console.error(`usage: office ${cmd} <REQ-id>${cmd === 'deny' ? ' [--reason "..."]' : ''}`); process.exit(1) }
+    console.log(await api('POST', `/api/request/${cmd}`, { id, ...(cmd === 'deny' && flag('reason') ? { reason: flag('reason') } : {}) }))
+    break
+  }
   default:
-    console.log('commands: start | mock | assign | pause | resume | status')
+    console.log('commands: start | mock | assign | pause | resume | status | requests | approve | deny | kill')
     process.exit(cmd ? 1 : 0)
 }

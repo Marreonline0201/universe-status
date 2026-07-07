@@ -15,5 +15,27 @@
     "weeklyThresholdPct": 95,
     "pollSeconds": 60
   },
+  "runner": {
+    "enabled": true,
+    "defaultTimeoutMs": 600000,
+    "maxTimeoutMs": 1800000,
+    "maxOutputLines": 2000,
+    "maxOutputBytes": 2000000,
+    "cwds": {
+      "universe-status": ".",
+      "universe-engine": "../universe-engine"
+    },
+    "engineWorktree": {
+      "path": "../universe-engine-lab",
+      "branch": "lab/agent-experiments",
+      "baseRepo": "../universe-engine"
+    },
+    "commands": [
+      { "bin": "cargo", "subcommands": ["check", "build", "test", "clippy", "fmt", "bench"], "cwds": ["universe-engine"], "maxArgs": 12 },
+      { "bin": "cargo", "subcommands": ["run"], "cwds": ["universe-engine"], "maxArgs": 12,
+        "warn": "cargo run launches the app window on your machine and holds the run slot until it exits or times out" },
+      { "bin": "node", "firstArgPattern": "^(office/spikes|scripts)/[A-Za-z0-9_\\-./]+\\.(mjs|js)$", "cwds": ["universe-status"], "maxArgs": 8 }
+    ]
+  },
   "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research"
 }

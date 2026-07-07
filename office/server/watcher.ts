@@ -12,6 +12,10 @@ export interface WatcherEvents {
   onReport: (report: ReportMeta) => void
   /** Raw report file path on add AND change — drives the vault mirror. */
   onReportFile?: (absFile: string) => void
+  /** Owner-request file added/changed — id is the filename stem. */
+  onRequest?: (id: string) => void
+  /** Lab artifact (any extension) added/changed — repo-relative path. */
+  onLab?: (repoRelPath: string) => void
   poke: () => void
 }
 
@@ -26,8 +30,14 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
 
   function handle(file: string, isNew: boolean) {
     const rel = path.relative(p.companyDir, file)
-    if (!rel.endsWith('.md')) return
     const parts = rel.split(path.sep)
+    // Lab artifacts fire for ANY extension (scenario.json, notes.md, data files).
+    if (parts[0] === 'lab') {
+      events.onLab?.(path.relative(p.repoRoot, file))
+      events.poke()
+      return
+    }
+    if (!rel.endsWith('.md')) return
     try {
       if (parts[0] === 'mail' && parts[2] === 'inbox' && isNew) {
         const fm = matter(fs.readFileSync(file, 'utf8')).data
@@ -52,6 +62,8 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
           parent: fm.parent ? String(fm.parent) : null,
           updatedAt: Date.now(),
         })
+      } else if (parts[0] === 'requests' && parts[1] !== 'logs' && parts.length === 2) {
+        events.onRequest?.(path.basename(file, '.md'))
       } else if (parts[0] === 'reports' && parts[2] !== undefined) {
         // add AND change: a reviewer flipping status draft→approved is a change,
         // and both the site and the vault mirror must follow it.

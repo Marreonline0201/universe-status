@@ -24,6 +24,8 @@ export interface OfficeConfig {
   vaultMirrorDir?: string
   /** Rest thresholds for the subscription usage guard (see usage.ts). */
   usageRest?: Partial<UsageRestConfig>
+  /** Owner-request run whitelist + limits (see runner.ts). */
+  runner?: import('./runner.ts').RunnerConfig
 }
 
 export interface SchedulerEvents {
