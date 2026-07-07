@@ -116,15 +116,16 @@ export function App() {
           )
         })}
 
-        {/* Connection status */}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        {/* Game-engine (sim) status — separate from the Agent Office. Labeled
+            explicitly so an offline engine isn't mistaken for the office being down. */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }} title="Game engine / simulation status feed (not the Agent Office)">
           <div style={{
             width: 6, height: 6, borderRadius: '50%',
             background: world.connected ? 'var(--green)' : '#ff4444',
             boxShadow: world.connected ? '0 0 6px var(--green)' : '0 0 6px #ff4444',
           }} />
           <span style={{ fontSize: 9, color: 'var(--text-muted)', letterSpacing: 1 }}>
-            {world.connected ? 'CONNECTED' : 'OFFLINE'}
+            {world.connected ? 'ENGINE LIVE' : 'ENGINE OFFLINE'}
           </span>
         </div>
       </div>
