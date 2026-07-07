@@ -19,13 +19,19 @@ revision: 1
 date: YYYY-MM-DD
 ---
 ## Abstract          — 3-6 sentences: question, method, findings, recommendation.
-## Introduction      — REQUIRED, written for a high-schooler. 1-2 short paragraphs, plain
-                       language, that explain what this research is about and why it matters
-                       BEFORE any jargon. Any technical term used here gets a one-clause plain
-                       definition in place. The owner reads this first to understand the report;
-                       if a bright 15-year-old couldn't follow it, rewrite it. This is not the
-                       Abstract restated — the Abstract tells the owner what to DO; the
-                       Introduction teaches them what the topic IS.
+## Introduction      — REQUIRED. Written so a motivated high-schooler can follow it, which
+                       means PLAIN LANGUAGE, not less substance. Take as much room as the
+                       topic needs — this section is NOT kept short. "High-school level" is
+                       about accessibility, not simplification: be specific and concrete, and
+                       when you introduce a technical term or an equation, define it in plain
+                       words right there and give the intuition (what it means, why it's used,
+                       a worked example if it helps). Being vague to sound simple is the
+                       failure mode to avoid — tell the owner exactly what is going on at a
+                       level he can actually learn from. This is not the Abstract restated:
+                       the Abstract says what to DO; the Introduction teaches what the topic IS
+                       and builds the reader up to the technical sections. This whole document
+                       is a research paper a professor would write — rigorous and deep — and
+                       the Introduction is its accessible on-ramp, not a dumbed-down summary.
 ## Background        — what the sim does today. Every claim cites a repo path or a
                        structure.md section anchor. No generic textbook filler.
 ## Analysis          — the actual research. Quantitative wherever possible: numbers,
@@ -44,9 +50,10 @@ date: YYYY-MM-DD
 - [ ] Numbers over adjectives: "reduces neighbor search from O(n²) to O(n)" not "much faster".
 - [ ] No restating what the task brief already says; no boilerplate introductions.
 - [ ] Abstract alone tells the owner what to do and why.
-- [ ] The plain-language Introduction is genuinely followable by a high-schooler: no
-      undefined jargon, no equations without a plain-English gloss. Reject reports whose
-      Introduction just repeats the Abstract or dives straight into technical detail.
+- [ ] The Introduction is genuinely followable by a high-schooler AND specific, not vague:
+      no undefined jargon, no equation without a plain-English gloss and intuition, but also
+      no hand-waving that hides the real detail. Length is whatever the topic needs — do not
+      reject it for being long; reject it for being vague, jargon-dense, or a restated Abstract.
 - [ ] Length proportional to content: if a section has nothing non-obvious, it is one line.
 
 ## Review protocol
