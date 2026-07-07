@@ -39,6 +39,6 @@
   },
   "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research",
   "publicShare": {
-    "allowedOrigins": ["https://universe-status.vercel.app"]
+    "allowedOrigins": ["https://universe-status.vercel.app", "https://universe-status-*-pioneer2026.vercel.app"]
   }
 }
