@@ -189,7 +189,7 @@ export class OfficeWs {
       res.writeHead(204, {
         ...cors,
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type,x-office-token',
+        'Access-Control-Allow-Headers': 'Content-Type,x-office-token,ngrok-skip-browser-warning',
       })
       return res.end()
     }

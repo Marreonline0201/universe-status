@@ -33,3 +33,4 @@ office/state/
 
 # office public-share secret (never commit)
 office/config/owner-token.txt
+start-office.bat
