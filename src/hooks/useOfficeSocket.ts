@@ -181,9 +181,10 @@ export interface OfficeSocket {
   /** Subscribe to raw protocol messages (used by the canvas engine). Returns unsubscribe. */
   subscribe: (fn: (msg: OfficeServerMsg) => void) => () => void
   requestDetail: (id: string | null) => void
-  /** Store the owner token and re-announce on the live socket to upgrade to owner
-   *  access (full data + controls). Empty string clears it back to public. */
-  unlock: (token: string) => void
+  /** Store the owner password and re-announce on the live socket to upgrade to owner
+   *  access (full data + controls). Empty string clears it back to public. Resolves
+   *  true if the server accepted it (owner granted), false if rejected/timed out. */
+  unlock: (token: string) => Promise<boolean>
 }
 
 export function useOfficeSocket(): OfficeSocket {
@@ -196,6 +197,9 @@ export function useOfficeSocket(): OfficeSocket {
   // RUN_OUTPUT batching: buffer lines and flush at most every 100ms.
   const runBufRef = useRef<Record<string, RunLine[]>>({})
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Pending unlock(): resolved with the owner flag when the next snapshot arrives
+  // after a HELLO, so the password modal can report accepted / incorrect.
+  const unlockResolverRef = useRef<((ok: boolean) => void) | null>(null)
 
   useEffect(() => {
     function connect() {
@@ -216,6 +220,13 @@ export function useOfficeSocket(): OfficeSocket {
           let msg: OfficeServerMsg
           try { msg = JSON.parse(evt.data as string) } catch { return }
           for (const fn of listenersRef.current) fn(msg)
+
+          // A snapshot following a HELLO tells us whether the password was accepted.
+          if (msg.type === 'OFFICE_SNAPSHOT' && unlockResolverRef.current) {
+            const resolve = unlockResolverRef.current
+            unlockResolverRef.current = null
+            resolve(!!msg.owner)
+          }
 
           if (msg.type === 'RUN_OUTPUT') {
             const buf = runBufRef.current[msg.requestId] ?? (runBufRef.current[msg.requestId] = [])
@@ -314,11 +325,22 @@ export function useOfficeSocket(): OfficeSocket {
           if (token) sessionStorage.setItem(TOKEN_KEY, token)
           else sessionStorage.removeItem(TOKEN_KEY)
         } catch { /* storage unavailable */ }
-        // Re-announce on the live socket; the server upgrades this connection and
-        // sends the owner snapshot (or drops us to public if the token is empty/wrong).
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'HELLO', token }))
-        }
+        const open = wsRef.current?.readyState === WebSocket.OPEN
+        // Empty token = drop to viewer; always "succeeds". Re-announce either way.
+        if (open) wsRef.current!.send(JSON.stringify({ type: 'HELLO', token }))
+        if (!token) return Promise.resolve(true)
+        if (!open) return Promise.resolve(false) // can't verify while disconnected
+        // Resolve when the server's next snapshot reports owner (or false on timeout).
+        return new Promise<boolean>((resolve) => {
+          const done = (ok: boolean) => {
+            if (unlockResolverRef.current === done) unlockResolverRef.current = null
+            clearTimeout(timer)
+            if (!ok) { try { sessionStorage.removeItem(TOKEN_KEY) } catch { /* ignore */ } }
+            resolve(ok)
+          }
+          const timer = setTimeout(() => done(false), 4000)
+          unlockResolverRef.current = done
+        })
       },
     }
   }
