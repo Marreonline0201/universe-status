@@ -100,7 +100,7 @@ export interface OwnerRequest {
 export interface RunLine { stream: 'stdout' | 'stderr'; line: string; ts: number }
 
 export type OfficeServerMsg =
-  | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests?: OwnerRequest[] }
+  | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; owner?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests?: OwnerRequest[] }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
   | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
@@ -113,10 +113,16 @@ export type OfficeServerMsg =
   | { type: 'LAB_UPDATED'; path: string }
   | { type: 'OFFICE_SHUTDOWN' }
 
+const TOKEN_KEY = 'office-owner-token'
+const readToken = (): string => { try { return sessionStorage.getItem(TOKEN_KEY) ?? '' } catch { return '' } }
+
 export interface OfficeState {
   connected: boolean
   /** True when the orchestrator runs scripted mock activity instead of real agent sessions. */
   mock: boolean
+  /** True when this client is authenticated as the owner (full data + controls).
+   *  Public viewers are false and receive only the curated view. */
+  owner: boolean
   teams: OfficeTeam[]
   agents: OfficeAgent[]
   tasks: TaskSummary[]
@@ -136,6 +142,7 @@ const OFFICE_URL: string =
 const INITIAL: OfficeState = {
   connected: false,
   mock: false,
+  owner: false,
   teams: [],
   agents: [],
   tasks: [],
@@ -156,6 +163,9 @@ export interface OfficeSocket {
   /** Subscribe to raw protocol messages (used by the canvas engine). Returns unsubscribe. */
   subscribe: (fn: (msg: OfficeServerMsg) => void) => () => void
   requestDetail: (id: string | null) => void
+  /** Store the owner token and re-announce on the live socket to upgrade to owner
+   *  access (full data + controls). Empty string clears it back to public. */
+  unlock: (token: string) => void
 }
 
 export function useOfficeSocket(): OfficeSocket {
@@ -179,6 +189,9 @@ export function useOfficeSocket(): OfficeSocket {
         ws.onopen = () => {
           backoffRef.current = 1_000
           setState(s => ({ ...s, connected: true }))
+          // Announce ourselves with the stored owner token (if any). Empty token →
+          // the server keeps us on the public curated feed.
+          ws.send(JSON.stringify({ type: 'HELLO', token: readToken() }))
         }
 
         ws.onmessage = (evt) => {
@@ -210,7 +223,7 @@ export function useOfficeSocket(): OfficeSocket {
             switch (msg.type) {
               case 'OFFICE_SNAPSHOT':
                 // Keep runOutput across reconnects — console history survives.
-                return { ...s, connected: true, mock: !!msg.mock, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, requests: msg.requests ?? [], pool: msg.pool }
+                return { ...s, connected: true, mock: !!msg.mock, owner: !!msg.owner, teams: msg.teams, agents: msg.agents, tasks: msg.tasks, chat: msg.chat, reports: msg.reports, requests: msg.requests ?? [], pool: msg.pool }
               case 'AGENT_STATUS':
                 return {
                   ...s,
@@ -276,6 +289,17 @@ export function useOfficeSocket(): OfficeSocket {
         }
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'GET_AGENT_DETAIL', id }))
+        }
+      },
+      unlock: (token) => {
+        try {
+          if (token) sessionStorage.setItem(TOKEN_KEY, token)
+          else sessionStorage.removeItem(TOKEN_KEY)
+        } catch { /* storage unavailable */ }
+        // Re-announce on the live socket; the server upgrades this connection and
+        // sends the owner snapshot (or drops us to public if the token is empty/wrong).
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'HELLO', token }))
         }
       },
     }

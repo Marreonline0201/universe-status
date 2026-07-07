@@ -26,6 +26,9 @@ export interface OfficeConfig {
   usageRest?: Partial<UsageRestConfig>
   /** Owner-request run whitelist + limits (see runner.ts). */
   runner?: import('./runner.ts').RunnerConfig
+  /** Public-share exposure: browser origins allowed when OFFICE_OWNER_TOKEN is set
+   *  (e.g. the deployed site's URL). The token itself is an env var, never config. */
+  publicShare?: { allowedOrigins?: string[] }
 }
 
 export interface SchedulerEvents {
