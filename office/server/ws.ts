@@ -51,6 +51,16 @@ function isSameOrigin(origin: string | undefined, host: string | undefined): boo
   try { return new URL(origin).host === host } catch { return false }
 }
 
+/** Match an allowed-origin entry against an origin. `*` in the pattern matches one
+ *  URL label (letters/digits/dashes, NO dots) so `https://universe-status*.vercel.app`
+ *  covers the production alias AND every per-deploy preview, but can't reach another
+ *  domain. Patterns without `*` are exact matches. */
+function originMatches(pattern: string, origin: string): boolean {
+  if (!pattern.includes('*')) return pattern === origin
+  const rx = '^' + pattern.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[-A-Za-z0-9]*') + '$'
+  try { return new RegExp(rx).test(origin) } catch { return false }
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
@@ -90,6 +100,11 @@ export class OfficeWs {
   private wss: WebSocketServer
   private server: http.Server
   private owners = new WeakSet<WebSocket>()
+  // Brute-force throttle for the owner password (memorable secret, internet-facing).
+  // Global (behind the tunnel every request carries ngrok's edge IP, so per-IP is moot).
+  private failWindowStart = 0
+  private failCount = 0
+  private throttleUntil = 0
 
   constructor(
     private port: number,
@@ -113,7 +128,7 @@ export class OfficeWs {
         let msg: ClientMsg
         try { msg = JSON.parse(String(raw)) } catch { return }
         if (msg.type === 'HELLO') {
-          const owner = this.checkToken(msg.token)
+          const owner = this.ownerAttempt(msg.token)
           if (owner) this.owners.add(ws); else this.owners.delete(ws)
           ws.send(JSON.stringify(this.handlers.snapshot(owner)))
         }
@@ -127,17 +142,35 @@ export class OfficeWs {
   }
 
   /** Local-only mode: loopback origins only. Public mode: loopback + same-origin
-   *  (the office is serving the page) + explicitly configured origins. */
+   *  (the office is serving the page) + explicitly configured origins. An allowed
+   *  origin may contain `*`, which matches one URL label (letters/digits/dashes, no
+   *  dots) — so `https://universe-status*.vercel.app` covers both the production
+   *  alias and every per-deploy preview URL without allowing another domain. */
   private originAllowed(origin: string | undefined, host?: string): boolean {
     if (isLoopbackOrigin(origin)) return true
     if (!this.auth.ownerToken) return false // no token set → never accept non-local origins
     if (isSameOrigin(origin, host)) return true
-    return !!origin && this.auth.allowedOrigins.includes(origin)
+    if (!origin) return false
+    return this.auth.allowedOrigins.some(p => originMatches(p, origin))
   }
 
   private checkToken(token: string | undefined): boolean {
     if (!this.auth.ownerToken) return true  // local-only mode: everyone reaching us is the local owner
     return typeof token === 'string' && token.length > 0 && tokenEq(token, this.auth.ownerToken)
+  }
+
+  /** checkToken + brute-force throttle. After 8 wrong non-empty passwords within a
+   *  60s window, owner upgrades are refused for a 60s cooldown. Empty tokens (public
+   *  viewers) and successes never count against the limit. */
+  private ownerAttempt(token: string | undefined): boolean {
+    const now = Date.now()
+    if (now < this.throttleUntil) return false          // locked out
+    if (this.checkToken(token)) { this.failCount = 0; return true }
+    if (typeof token === 'string' && token.length > 0) { // a genuine wrong password
+      if (now - this.failWindowStart > 60_000) { this.failWindowStart = now; this.failCount = 0 }
+      if (++this.failCount >= 8) { this.throttleUntil = now + 60_000; this.failCount = 0 }
+    }
+    return false
   }
 
   listen(): Promise<void> {
@@ -193,7 +226,7 @@ export class OfficeWs {
       })
       return res.end()
     }
-    const owner = this.checkToken(req.headers['x-office-token'] as string | undefined)
+    const owner = this.ownerAttempt(req.headers['x-office-token'] as string | undefined)
     const requireOwner = () => { json(401, { error: 'owner token required' }); return false as const }
     const readBody = (handler: (body: Record<string, unknown>) => void) => {
       let raw = ''

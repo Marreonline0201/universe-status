@@ -9,6 +9,7 @@ import publicMd from '../../structure-public.md?raw'
 // @ts-ignore
 import fullMd from '../../structure.md?raw'
 import { parseToc, parseBlocks, RenderBlock, type TocEntry } from '../lib/markdown'
+import { PasswordModal } from './common/PasswordModal'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 // Simple password gate: public visitors see structure-public.md,
@@ -48,79 +49,8 @@ function useAuth() {
   return { authed, login, logout }
 }
 
-// ── Login Modal ───────────────────────────────────────────────────────────────
-
-function LoginModal({ onLogin, onClose }: { onLogin: (pw: string) => Promise<boolean>; onClose: () => void }) {
-  const [pw, setPw] = useState('')
-  const [error, setError] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => { inputRef.current?.focus() }, [])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setError(false)
-    const ok = await onLogin(pw)
-    setLoading(false)
-    if (ok) onClose()
-    else { setError(true); setPw('') }
-  }
-
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }} onClick={onClose}>
-      <form onSubmit={handleSubmit} onClick={e => e.stopPropagation()} style={{
-        background: 'rgba(8,14,28,0.96)',
-        border: '1px solid rgba(0,180,255,0.2)',
-        borderRadius: 8, padding: '28px 32px', width: 320,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-      }}>
-        <div style={{
-          fontSize: 10, letterSpacing: 3, color: 'rgba(0,180,255,0.4)',
-          marginBottom: 16,
-        }}>
-          ADMIN ACCESS
-        </div>
-        <input
-          ref={inputRef}
-          type="password"
-          placeholder="Password"
-          value={pw}
-          onChange={e => { setPw(e.target.value); setError(false) }}
-          style={{
-            width: '100%', padding: '8px 12px',
-            background: 'rgba(0,20,50,0.6)',
-            border: `1px solid ${error ? 'rgba(255,80,80,0.5)' : 'rgba(0,180,255,0.2)'}`,
-            borderRadius: 4, fontSize: 13,
-            color: 'rgba(220,240,255,0.9)',
-            fontFamily: 'inherit', outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        />
-        {error && (
-          <div style={{ fontSize: 10, color: 'rgba(255,80,80,0.7)', marginTop: 6 }}>
-            Incorrect password
-          </div>
-        )}
-        <button type="submit" disabled={loading || !pw} style={{
-          marginTop: 14, width: '100%', padding: '7px 0',
-          background: pw ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.05)',
-          border: '1px solid rgba(0,180,255,0.3)',
-          borderRadius: 4, color: '#00d4ff',
-          fontSize: 10, letterSpacing: 2,
-          fontFamily: 'inherit', cursor: pw ? 'pointer' : 'default',
-        }}>
-          {loading ? 'CHECKING...' : 'UNLOCK'}
-        </button>
-      </form>
-    </div>
-  )
-}
+// (The password modal now lives in ./common/PasswordModal and is shared with the
+//  office owner unlock, so both look identical.)
 
 // ── Resize Handle ─────────────────────────────────────────────────────────────
 
@@ -646,7 +576,7 @@ export function DocsPage() {
 
       {/* ── Login modal ──────────────────────────────────────────────── */}
       {showLogin && (
-        <LoginModal onLogin={login} onClose={() => setShowLogin(false)} />
+        <PasswordModal title="ADMIN ACCESS" onSubmit={login} onClose={() => setShowLogin(false)} />
       )}
 
     </div>

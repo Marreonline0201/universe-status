@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { OfficeEngine } from '../../office-render/OfficeEngine'
 import type { OfficeSocket, TaskSummary } from '../../hooks/useOfficeSocket'
+import { PasswordModal } from '../common/PasswordModal'
 
 const MONO = '"IBM Plex Mono", monospace'
 
@@ -28,6 +29,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<OfficeEngine | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showUnlock, setShowUnlock] = useState(false)
   const [tab, setTab] = useState<'feed' | 'tasks' | 'reports'>('feed')
   const { state } = office
 
@@ -150,15 +152,15 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           <Hud label={`REPORTS ${state.reports.filter(r => r.status === 'approved').length}`} color="#00ff88" />
         </div>
 
-        {/* owner unlock: public viewers see VIEWER; entering the token upgrades to
+        {/* owner unlock: public viewers see VIEWER; typing the password upgrades to
             OWNER (controls + private data). Hidden when disconnected. */}
         {state.connected && (
           <button
             onClick={() => {
-              if (state.owner) { office.unlock('') }
-              else { const t = window.prompt('Enter the owner token to unlock controls:'); if (t) office.unlock(t) }
+              if (state.owner) office.unlock('')      // drop back to viewer
+              else setShowUnlock(true)                // open the password modal
             }}
-            title={state.owner ? 'You have owner controls. Click to return to viewer mode.' : 'Public viewer. Click to enter the owner token.'}
+            title={state.owner ? 'You have owner controls. Click to return to viewer mode.' : 'Public viewer. Click to enter the owner password.'}
             style={{
               position: 'absolute', top: 8, right: 8, zIndex: 12, pointerEvents: 'auto',
               background: 'rgba(8,12,24,0.9)', border: `1px solid ${state.owner ? '#00ff88' : '#ffd700'}88`,
@@ -168,6 +170,14 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           >
             {state.owner ? '🔓 OWNER' : '🔒 VIEWER — UNLOCK'}
           </button>
+        )}
+
+        {showUnlock && (
+          <PasswordModal
+            title="OWNER ACCESS"
+            onSubmit={(pw) => office.unlock(pw)}
+            onClose={() => setShowUnlock(false)}
+          />
         )}
 
         {/* team legend */}
