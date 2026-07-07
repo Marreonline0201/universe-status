@@ -3,14 +3,16 @@
 import type { LabExperiment } from './labTypes'
 
 // Mirror useOfficeSocket's resolution: env override → localhost dev → same origin
-// (page served by the office through a tunnel).
+// when served by the office through the tunnel → else the permanent tunnel (Vercel).
+const OFFICE_TUNNEL_HOST = 'graves-ladies-condone.ngrok-free.dev'
 function officeHttp(): string {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL
   if (env) return env.replace(/^ws/, 'http')
   if (typeof window === 'undefined') return 'http://localhost:4571'
-  const { protocol, hostname, origin } = window.location
+  const { hostname, origin } = window.location
   if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:4571'
-  return protocol === 'https:' ? origin : origin // same origin as the served page
+  if (hostname === OFFICE_TUNNEL_HOST) return origin // office serves the page directly
+  return 'https://' + OFFICE_TUNNEL_HOST // hosted elsewhere (Vercel) → the permanent tunnel
 }
 export const OFFICE_HTTP = officeHttp()
 

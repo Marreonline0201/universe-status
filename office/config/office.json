@@ -37,5 +37,8 @@
       { "bin": "node", "firstArgPattern": "^(office/spikes|scripts)/[A-Za-z0-9_\\-./]+\\.(mjs|js)$", "cwds": ["universe-status"], "maxArgs": 8 }
     ]
   },
-  "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research"
+  "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research",
+  "publicShare": {
+    "allowedOrigins": ["https://universe-status.vercel.app"]
+  }
 }

@@ -136,18 +136,24 @@ export interface OfficeState {
   detail: AgentDetail | null
 }
 
+// The office backend runs on the owner's machine and is reached over a permanent
+// ngrok tunnel. The Vercel-hosted site is just the window — it connects to that
+// tunnel. (Its origin is allowlisted in office/config/office.json publicShare.)
+const OFFICE_TUNNEL_HOST = 'graves-ladies-condone.ngrok-free.dev'
+
 // Where the office WS lives:
-//  1. VITE_OFFICE_WS_URL if the build sets it (e.g. Vercel pointing at a tunnel).
-//  2. else on localhost dev (vite :5173) → the office on :4571.
-//  3. else (the page is served BY the office itself, e.g. through a tunnel) →
-//     the same origin, so one public URL exposes everything with no CORS.
+//  1. VITE_OFFICE_WS_URL if the build sets it (explicit override).
+//  2. localhost dev (vite :5173) → the office on :4571.
+//  3. the page IS served by the office through the tunnel (same host) → same origin.
+//  4. anywhere else (the Vercel site) → the permanent tunnel.
 function officeWsUrl(): string {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_OFFICE_WS_URL
   if (env) return env
   if (typeof window === 'undefined') return 'ws://localhost:4571'
   const { protocol, hostname, host } = window.location
   if (hostname === 'localhost' || hostname === '127.0.0.1') return 'ws://localhost:4571'
-  return (protocol === 'https:' ? 'wss://' : 'ws://') + host
+  if (hostname === OFFICE_TUNNEL_HOST) return (protocol === 'https:' ? 'wss://' : 'ws://') + host
+  return 'wss://' + OFFICE_TUNNEL_HOST
 }
 const OFFICE_URL: string = officeWsUrl()
 
