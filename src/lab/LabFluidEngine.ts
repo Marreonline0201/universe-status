@@ -8,7 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
-import { CompositionTable } from '../composition/CompositionTable'
+import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { elementsAs, type LabScenario } from './scenario'
 
 const DEFAULT_BALL_RADIUS = 0.1
@@ -28,6 +28,16 @@ export class LabFluidEngine {
   private ssfrPipeline: SSFRPipeline | null = null
   private sphereMesh: THREE.Mesh | null = null
   private ball = { active: false, radius: DEFAULT_BALL_RADIUS, center: [0.5, 0.9, 0.5] as [number, number, number], velocity: [0, 0, 0] as [number, number, number] }
+  // Hands-on control state (parity with FLUID TEST). The composition table is
+  // persistent (starts with defaults) so the material picker + manual spawns work
+  // even before/independently of a scenario.
+  private compositionTable = new CompositionTable()
+  private selectedComposition = 0
+  private spawnTemperature = 20
+  private lastScenario: LabScenario | null = null
+  private glassBox: THREE.Mesh | null = null
+  private raycaster = new THREE.Raycaster()
+  private currentGravity = 0.3
   private animId = 0
   private lastTime = 0
   private fpsAccum = 0
@@ -145,7 +155,13 @@ export class LabFluidEngine {
     this.fluidScene = fluidScene
     this.ssfrPipeline = ssfrPipeline
     this.sphereMesh = sphereMesh
+    this.glassBox = glassBox
     this.lastTime = performance.now()
+
+    // Seed the composition table with defaults so the material picker + manual
+    // spawns work immediately (parity with FluidTest.tsx:340-345).
+    this.compositionTable.addDefaults()
+    gpuSim.updateCompositionProps(this.compositionTable.getGpuData())
 
     this.resizeObserver = new ResizeObserver(() => {
       if (!this.camera || !this.renderer) return
@@ -165,7 +181,12 @@ export class LabFluidEngine {
   /** Load (or re-load) a scenario. spawnParticles replaces everything → doubles as RESET. */
   loadScenario(s: LabScenario) {
     if (!this.gpuSim || this.destroyed) return
-    const table = new CompositionTable() // fresh table per scenario: ids restart at 0
+    this.lastScenario = s
+    // Fresh table seeded with defaults, then the scenario's materials — so the
+    // material picker + manual spawns keep the built-in materials AND the scenario's.
+    const table = new CompositionTable()
+    table.addDefaults()
+    this.compositionTable = table
     const idByName = new Map<string, number>()
     for (const m of s.materials) {
       idByName.set(m.name, table.add(
@@ -195,7 +216,8 @@ export class LabFluidEngine {
       }
     }
     this.gpuSim.spawnParticles(particles)
-    this.gpuSim.setGravity(s.gravity ?? 0.3)
+    this.currentGravity = s.gravity ?? 0.3
+    this.gpuSim.setGravity(this.currentGravity)
 
     if (s.ball) {
       this.ball.active = true
@@ -293,6 +315,86 @@ export class LabFluidEngine {
       }
     }
     if (!ssfrOk && this.scene) renderer.render(this.scene, camera)
+  }
+
+  // ── Hands-on controls (parity with FLUID TEST) ──────────────────────────────
+
+  getCompositions(): NamedComposition[] { return this.compositionTable.getAll() }
+  get selectedCompositionId(): number { return this.selectedComposition }
+  setSelectedComposition(id: number) { this.selectedComposition = id }
+  get spawnTemp(): number { return this.spawnTemperature }
+  setTemperature(t: number) { this.spawnTemperature = t }
+  get ballActive(): boolean { return this.ball.active }
+  get gravity(): number { return this.currentGravity }
+  setGravity(g: number) { this.currentGravity = g; this.gpuSim?.setGravity(g) }
+
+  /** +N button: add `count` particles of the selected material in the center. */
+  spawnBatch(count: number) {
+    if (!this.gpuSim) return
+    const particles: GpuParticle[] = []
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
+        vel: [0, 0, 0], composition_id: this.selectedComposition, temperature: this.spawnTemperature, phase: 1,
+      })
+    }
+    this.gpuSim.addParticles(particles)
+  }
+
+  /** Click-to-spawn: a 7×7×7 cluster of the selected material at a world point. */
+  spawnAt(worldPos: THREE.Vector3) {
+    if (!this.gpuSim) return
+    const [cx, cy, cz] = [worldPos.x, worldPos.y, worldPos.z]
+    const particles: GpuParticle[] = []
+    const spacing = 0.015, gridSize = 7, jitter = spacing * 0.25
+    for (let xi = 0; xi < gridSize; xi++) for (let yi = 0; yi < gridSize; yi++) for (let zi = 0; zi < gridSize; zi++) {
+      const x = cx + (xi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+      const y = cy + (yi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+      const z = cz + (zi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
+      if (x > 0.02 && x < 0.98 && y > 0.02 && y < 0.98 && z > 0.02 && z < 0.98) {
+        particles.push({ pos: [x, y, z], vel: [0, 0, 0], composition_id: this.selectedComposition, temperature: this.spawnTemperature, phase: 1 })
+      }
+    }
+    if (particles.length > 0) this.gpuSim.addParticles(particles)
+  }
+
+  /** Raycast a screen click against the glass box and spawn at the hit point. */
+  spawnAtPointer(clientX: number, clientY: number) {
+    if (!this.camera || !this.glassBox) return
+    const rect = this.container.getBoundingClientRect()
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    )
+    this.raycaster.setFromCamera(ndc, this.camera)
+    const hit = this.raycaster.intersectObject(this.glassBox, false)[0]
+    if (hit) this.spawnAt(hit.point)
+  }
+
+  dropBall() {
+    if (!this.gpuSim) return
+    this.ball.active = true
+    this.ball.radius = DEFAULT_BALL_RADIUS
+    this.ball.center = [0.5, 0.9, 0.5]
+    this.ball.velocity = [0, 0, 0]
+    if (this.sphereMesh) {
+      this.sphereMesh.visible = true
+      this.sphereMesh.scale.setScalar(1)
+      this.sphereMesh.position.set(0.5, 0.9, 0.5)
+    }
+    this.gpuSim.setSphereObstacle(this.ball.center, this.ball.radius, this.ball.velocity)
+  }
+
+  removeBall() {
+    this.ball.active = false
+    if (this.sphereMesh) this.sphereMesh.visible = false
+    this.gpuSim?.clearSphereObstacle()
+  }
+
+  /** RESET: re-run the current scenario, or clear to empty if none was loaded. */
+  reset() {
+    if (this.lastScenario) this.loadScenario(this.lastScenario)
+    else this.gpuSim?.spawnParticles([])
   }
 
   destroy() {
