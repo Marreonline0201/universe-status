@@ -21,13 +21,23 @@ export interface WsHandlers {
   runOutput: (id: string) => { requestId: string; lines: RunOutputLine[]; running: boolean } | null
 }
 
+/** Absent Origin (CLI, curl) or a local page. Company data must not be readable
+ *  cross-origin: CORS doesn't protect WS at all, and ACAO:* would let any
+ *  webpage the owner visits exfiltrate reports/requests via the browser. */
+function isLocalOrigin(origin: string | undefined): boolean {
+  return !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+}
+
 export class OfficeWs {
   private wss: WebSocketServer
   private server: http.Server
 
   constructor(private port: number, private handlers: WsHandlers, private log: (l: string) => void) {
     this.server = http.createServer((req, res) => this.handleHttp(req, res))
-    this.wss = new WebSocketServer({ server: this.server })
+    this.wss = new WebSocketServer({
+      server: this.server,
+      verifyClient: (info: { origin?: string }) => isLocalOrigin(info.origin || undefined),
+    })
 
     this.wss.on('connection', (ws) => {
       ws.send(JSON.stringify(this.handlers.snapshot()))
@@ -71,14 +81,20 @@ export class OfficeWs {
   private handleHttp(req: http.IncomingMessage, res: http.ServerResponse) {
     const [route, query] = (req.url ?? '').split('?')
     const params = new URLSearchParams(query ?? '')
+    const origin = req.headers.origin
+    // Echo the validated local origin — never ACAO:* — so foreign pages cannot
+    // read company data through the owner's browser. Foreign origins get 403
+    // on EVERY route (reads included; reports/requests/mail are private).
+    const cors: Record<string, string> = origin && isLocalOrigin(origin) ? { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin' } : {}
     const json = (code: number, body: unknown) => {
-      res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+      res.writeHead(code, { 'Content-Type': 'application/json', ...cors })
       res.end(JSON.stringify(body))
     }
+    if (!isLocalOrigin(origin)) return json(403, { error: 'forbidden origin' })
     // Browser preflight for JSON POSTs from the Vite origin.
     if (req.method === 'OPTIONS' && route.startsWith('/api/')) {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
+        ...cors,
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       })
@@ -90,12 +106,6 @@ export class OfficeWs {
       req.on('end', () => {
         try { handler(JSON.parse(raw || '{}')) } catch (err) { json(400, { error: String(err) }) }
       })
-    }
-    // CORS * lets any page READ these responses is fine (localhost data), but the
-    // mutating request routes execute commands — require a local Origin (or none: CLI).
-    const localOrigin = () => {
-      const origin = req.headers.origin
-      return !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
     }
 
     if (req.method === 'GET' && route === '/api/status') return json(200, this.handlers.status())
@@ -121,7 +131,6 @@ export class OfficeWs {
       })
     }
     if (req.method === 'POST' && (route === '/api/request/approve' || route === '/api/request/deny' || route === '/api/request/kill')) {
-      if (!localOrigin()) return json(403, { error: 'forbidden origin' })
       return readBody(body => {
         const id = typeof body.id === 'string' ? body.id : ''
         if (!id) return json(400, { error: 'id is required' })
