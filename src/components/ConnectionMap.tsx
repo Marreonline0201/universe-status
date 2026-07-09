@@ -776,7 +776,7 @@ export function ConnectionMap() {
               boxShadow: `0 0 4px ${GROUP_COLORS[g]}44`,
             }} />
             <span style={{
-              fontSize: 9, color: '#667788',
+              fontSize: 'calc(9px * var(--font-scale, 1))', color: '#667788',
               fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
               letterSpacing: 0.5,
             }}>
@@ -793,7 +793,7 @@ export function ConnectionMap() {
         textAlign: 'center', pointerEvents: 'none',
       }}>
         <div style={{
-          fontSize: 12, fontWeight: 700,
+          fontSize: 'calc(12px * var(--font-scale, 1))', fontWeight: 700,
           color: '#88aacc',
           fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
           letterSpacing: 2,
@@ -801,7 +801,7 @@ export function ConnectionMap() {
           CONCEPT MAP
         </div>
         <div style={{
-          fontSize: 9, color: '#445566',
+          fontSize: 'calc(9px * var(--font-scale, 1))', color: '#445566',
           fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
           letterSpacing: 1,
           marginTop: 2,
@@ -816,14 +816,14 @@ export function ConnectionMap() {
         textAlign: 'right', pointerEvents: 'none',
       }}>
         <div style={{
-          fontSize: 10, color: '#556677',
+          fontSize: 'calc(10px * var(--font-scale, 1))', color: '#556677',
           fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
           letterSpacing: 0.5,
         }}>
           {CONCEPTS.length} concepts
         </div>
         <div style={{
-          fontSize: 10, color: '#445566',
+          fontSize: 'calc(10px * var(--font-scale, 1))', color: '#445566',
           fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
           letterSpacing: 0.5,
         }}>
@@ -843,7 +843,7 @@ export function ConnectionMap() {
             border: '1px solid rgba(100,140,180,0.25)',
             borderRadius: 6,
             color: playing ? '#66ddaa' : '#ff8888',
-            fontSize: 11,
+            fontSize: 'calc(11px * var(--font-scale, 1))',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             padding: '6px 14px',
             cursor: 'pointer',
@@ -862,7 +862,7 @@ export function ConnectionMap() {
             border: '1px solid rgba(100,140,180,0.25)',
             borderRadius: 6,
             color: '#aabbdd',
-            fontSize: 11,
+            fontSize: 'calc(11px * var(--font-scale, 1))',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             padding: '6px 14px',
             cursor: 'pointer',
@@ -888,7 +888,7 @@ export function ConnectionMap() {
           pointerEvents: 'none',
         }}>
           <div style={{
-            fontSize: 12, fontWeight: 700,
+            fontSize: 'calc(12px * var(--font-scale, 1))', fontWeight: 700,
             color: GROUP_COLORS[hoveredConcept.group],
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             marginBottom: 4,
@@ -896,7 +896,7 @@ export function ConnectionMap() {
             {hoveredConcept.label}
           </div>
           <div style={{
-            fontSize: 10, color: '#889aab',
+            fontSize: 'calc(10px * var(--font-scale, 1))', color: '#889aab',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             lineHeight: 1.5,
           }}>
@@ -926,7 +926,7 @@ export function ConnectionMap() {
             style={{
               position: 'absolute', top: 8, right: 10,
               background: 'none', border: 'none',
-              color: '#667788', fontSize: 16,
+              color: '#667788', fontSize: 'calc(16px * var(--font-scale, 1))',
               cursor: 'pointer', padding: '2px 6px',
               lineHeight: 1,
             }}
@@ -945,7 +945,7 @@ export function ConnectionMap() {
               boxShadow: `0 0 6px ${GROUP_COLORS[selectedConcept.group]}66`,
             }} />
             <span style={{
-              fontSize: 14, fontWeight: 700,
+              fontSize: 'calc(14px * var(--font-scale, 1))', fontWeight: 700,
               color: GROUP_COLORS[selectedConcept.group],
               fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             }}>
@@ -953,7 +953,7 @@ export function ConnectionMap() {
             </span>
           </div>
           <div style={{
-            fontSize: 9, color: '#556677',
+            fontSize: 'calc(9px * var(--font-scale, 1))', color: '#556677',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             letterSpacing: 1,
             marginBottom: 10,
@@ -964,7 +964,7 @@ export function ConnectionMap() {
 
           {/* Description */}
           <div style={{
-            fontSize: 11, color: '#99aabb',
+            fontSize: 'calc(11px * var(--font-scale, 1))', color: '#99aabb',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             lineHeight: 1.6,
             marginBottom: 16,
@@ -974,7 +974,7 @@ export function ConnectionMap() {
 
           {/* Connected concepts */}
           <div style={{
-            fontSize: 10, fontWeight: 700,
+            fontSize: 'calc(10px * var(--font-scale, 1))', fontWeight: 700,
             color: '#667788',
             fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
             letterSpacing: 1,
@@ -1011,13 +1011,13 @@ export function ConnectionMap() {
                     flexShrink: 0,
                   }} />
                   <span style={{
-                    fontSize: 10, color: '#88aacc',
+                    fontSize: 'calc(10px * var(--font-scale, 1))', color: '#88aacc',
                     fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
                   }}>
                     {other.label}
                   </span>
                   <span style={{
-                    fontSize: 8, color: '#556677',
+                    fontSize: 'calc(8px * var(--font-scale, 1))', color: '#556677',
                     fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
                     marginLeft: 'auto',
                     whiteSpace: 'nowrap',

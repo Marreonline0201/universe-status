@@ -6,10 +6,10 @@ export function MockBanner({ sub }: { sub: string }) {
       position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
       zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
       background: 'rgba(120,10,10,0.92)', border: '2px solid #ff4444',
-      color: '#ffdddd', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+      color: '#ffdddd', fontSize: 'calc(13px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 2, textAlign: 'center',
     }}>
       ⚠ MOCK MODE — scripted demo, real agents are NOT running
-      <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ff9999' }}>
+      <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ff9999' }}>
         {sub}
       </div>
     </div>

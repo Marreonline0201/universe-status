@@ -47,7 +47,7 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
 
   if (!path) {
     return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3a4157', fontSize: 12, letterSpacing: 2 }}>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3a4157', fontSize: 'calc(12px * var(--font-scale, 1))', letterSpacing: 2 }}>
         SELECT A REPORT TO READ
       </div>
     )
@@ -55,31 +55,31 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
   if (err) {
     return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-        <div style={{ color: '#ff8787', fontSize: 11 }}>✗ {err}</div>
+        <div style={{ color: '#ff8787', fontSize: 'calc(11px * var(--font-scale, 1))' }}>✗ {err}</div>
         <button
           onClick={() => setNonce(n => n + 1)}
-          style={{ background: 'transparent', border: '1px solid #00d4ff88', color: '#00d4ff', fontFamily: 'inherit', fontSize: 10, letterSpacing: 1, padding: '4px 12px', borderRadius: 3, cursor: 'pointer' }}
+          style={{ background: 'transparent', border: '1px solid #00d4ff88', color: '#00d4ff', fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 1, padding: '4px 12px', borderRadius: 3, cursor: 'pointer' }}
         >RETRY</button>
       </div>
     )
   }
   if (body === null) {
-    return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#5c6a8a', fontSize: 11, letterSpacing: 2 }}>LOADING…</div>
+    return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#5c6a8a', fontSize: 'calc(11px * var(--font-scale, 1))', letterSpacing: 2 }}>LOADING…</div>
   }
 
   const status = (meta.status ?? '').toLowerCase()
   return (
     <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
       <div style={{ padding: '20px 40px 0' }}>
-        <div style={{ color: '#e8f4ff', fontSize: 15, fontWeight: 600 }}>{meta.title ?? path}</div>
-        <div style={{ display: 'flex', gap: 10, marginTop: 6, fontSize: 9, letterSpacing: 1, flexWrap: 'wrap' }}>
+        <div style={{ color: '#e8f4ff', fontSize: 'calc(15px * var(--font-scale, 1))', fontWeight: 600 }}>{meta.title ?? path}</div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 6, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, flexWrap: 'wrap' }}>
           {status && <span style={{ color: STATUS_COLORS[status] ?? '#8a97b8', fontWeight: 700 }}>{status === 'approved' ? '✓ APPROVED' : status.toUpperCase()}</span>}
           {meta.team && <span style={{ color: '#8a97b8' }}>{meta.team}</span>}
           {meta.authors && <span style={{ color: '#8a97b8' }}>by {meta.authors.replace(/[[\]]/g, '')}</span>}
           {meta.reviewed_by && <span style={{ color: '#8a97b8' }}>reviewed by {meta.reviewed_by}</span>}
           {meta.date && <span style={{ color: '#5c6a8a' }}>{meta.date}</span>}
         </div>
-        <div style={{ color: '#3a4157', fontSize: 9, marginTop: 4 }}>{path}</div>
+        <div style={{ color: '#3a4157', fontSize: 'calc(9px * var(--font-scale, 1))', marginTop: 4 }}>{path}</div>
         <div style={{ borderBottom: '1px solid rgba(0,180,255,0.15)', marginTop: 12 }} />
       </div>
       <div style={{ padding: '16px 40px 80px' }}>

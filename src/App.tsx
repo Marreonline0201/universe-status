@@ -7,6 +7,7 @@ import { ConnectionMap } from './components/ConnectionMap'
 import { FluidTest } from './components/FluidTest'
 import { ReportsPage } from './components/reports/ReportsPage'
 import { LabPage } from './components/lab/LabPage'
+import { SettingsPanel } from './settings/SettingsPanel'
 
 type View = 'docs' | 'connections' | 'agents' | 'reports' | 'lab' | 'fluid'
 
@@ -24,6 +25,7 @@ export function App() {
   const office = useOfficeSocket()
   const [view, setView] = useState<View>('docs')
   const [labFocusRequest, setLabFocusRequest] = useState<string | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
   const hasBlocked = office.state.agents.some(a => a.status === 'blocked')
   const pendingOwner = office.state.requests.filter(r => r.status === 'pending').length
 
@@ -52,7 +54,7 @@ export function App() {
         zIndex: 10,
       }}>
         <span style={{
-          fontSize: 11,
+          fontSize: 'calc(11px * var(--font-scale, 1))',
           fontWeight: 600,
           color: 'var(--cyan)',
           letterSpacing: 2,
@@ -74,7 +76,7 @@ export function App() {
                 border: `1px solid ${isActive ? 'rgba(0,180,255,0.4)' : 'rgba(0,180,255,0.1)'}`,
                 borderRadius: 3,
                 color: isActive ? '#00d4ff' : 'rgba(100,150,200,0.45)',
-                fontSize: 9,
+                fontSize: 'calc(9px * var(--font-scale, 1))',
                 letterSpacing: 2,
                 padding: '3px 14px',
                 cursor: 'pointer',
@@ -103,7 +105,7 @@ export function App() {
                   borderRadius: 7,
                   background: '#ffd700',
                   color: '#1a1400',
-                  fontSize: 8, fontWeight: 700,
+                  fontSize: 'calc(8px * var(--font-scale, 1))', fontWeight: 700,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   padding: '0 3px',
                   boxShadow: '0 0 6px #ffd700',
@@ -124,10 +126,29 @@ export function App() {
             background: world.connected ? 'var(--green)' : '#ff4444',
             boxShadow: world.connected ? '0 0 6px var(--green)' : '0 0 6px #ff4444',
           }} />
-          <span style={{ fontSize: 9, color: 'var(--text-muted)', letterSpacing: 1 }}>
+          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: 'var(--text-muted)', letterSpacing: 1 }}>
             {world.connected ? 'ENGINE LIVE' : 'ENGINE OFFLINE'}
           </span>
         </div>
+
+        {/* Settings — global text size */}
+        <button
+          onClick={() => setShowSettings(true)}
+          title="Settings — text size"
+          style={{
+            background: 'none',
+            border: '1px solid rgba(0,180,255,0.12)',
+            borderRadius: 3,
+            color: 'rgba(100,150,200,0.55)',
+            fontSize: 'calc(13px * var(--font-scale, 1))',
+            lineHeight: 1,
+            padding: '2px 7px',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          ⚙
+        </button>
       </div>
 
       {/* ── Page content ─────────────────────────────────────────── */}
@@ -151,6 +172,8 @@ export function App() {
         )}
         {view === 'fluid' && <FluidTest />}
       </div>
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} office={office} />}
     </div>
   )
 }

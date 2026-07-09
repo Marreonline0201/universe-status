@@ -79,7 +79,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
       <div style={{
         padding: '6px 10px',
         borderBottom: '1px solid rgba(0,180,255,0.1)',
-        fontSize: 9,
+        fontSize: 'calc(9px * var(--font-scale, 1))',
         fontWeight: 700,
         color: 'rgba(0,180,255,0.5)',
         letterSpacing: 2,
@@ -96,7 +96,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
             border: `1px solid ${autoExperimentActive ? 'rgba(255,60,60,0.3)' : 'rgba(0,180,255,0.2)'}`,
             borderRadius: 3,
             padding: '2px 8px',
-            fontSize: 8,
+            fontSize: 'calc(8px * var(--font-scale, 1))',
             letterSpacing: 1,
             color: autoExperimentActive ? '#ff6666' : 'rgba(0,180,255,0.5)',
             cursor: disabled ? 'default' : 'pointer',
@@ -112,7 +112,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
         flex: 1,
         overflowY: 'auto',
         padding: 8,
-        fontSize: 10,
+        fontSize: 'calc(10px * var(--font-scale, 1))',
         lineHeight: 1.6,
         display: 'flex',
         flexDirection: 'column',
@@ -121,7 +121,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
         {disabled && messages.length === 0 && (
           <div style={{
             color: 'rgba(100,150,200,0.35)',
-            fontSize: 9,
+            fontSize: 'calc(9px * var(--font-scale, 1))',
             textAlign: 'center',
             padding: '16px 8px',
             lineHeight: 1.8,
@@ -148,7 +148,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
           }}>
             <span style={{
               fontWeight: 600,
-              fontSize: 8,
+              fontSize: 'calc(8px * var(--font-scale, 1))',
               letterSpacing: 1,
               color: msg.role === 'user'
                 ? 'rgba(0,180,255,0.6)'
@@ -167,7 +167,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
         {loading && (
           <div style={{
             color: 'rgba(0,180,255,0.4)',
-            fontSize: 9,
+            fontSize: 'calc(9px * var(--font-scale, 1))',
             letterSpacing: 1,
             padding: '4px 8px',
           }}>
@@ -196,7 +196,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
             borderRadius: 3,
             padding: '4px 8px',
             color: '#c0d0e0',
-            fontSize: 10,
+            fontSize: 'calc(10px * var(--font-scale, 1))',
             fontFamily: 'inherit',
             outline: 'none',
           }}
@@ -210,7 +210,7 @@ export function AIChatPanel({ onSpawnMaterial, onSetTemperature, autoExperimentA
             borderRadius: 3,
             padding: '4px 10px',
             color: disabled ? 'rgba(100,150,200,0.3)' : 'rgba(0,180,255,0.6)',
-            fontSize: 9,
+            fontSize: 'calc(9px * var(--font-scale, 1))',
             fontFamily: 'inherit',
             letterSpacing: 1,
             cursor: disabled ? 'default' : 'pointer',

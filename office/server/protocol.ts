@@ -71,6 +71,8 @@ export interface PoolState {
   usagePct: number | null     // 5-hour window utilization, 0-100
   weeklyPct: number | null    // 7-day window utilization, 0-100
   usageMonitorOk: boolean     // false → guard is blind (creds/endpoint problem)
+  sessionThresholdPct: number // owner-set: rest when session usage ≥ this
+  weeklyThresholdPct: number  // owner-set: rest when weekly usage ≥ this
 }
 
 // ── Owner requests: agents file them; the owner approves/denies in the UI; ──

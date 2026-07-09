@@ -56,3 +56,8 @@ export async function denyRequest(id: string, reason?: string): Promise<void> {
 export async function killRequest(id: string): Promise<void> {
   await req('POST', '/api/request/kill', { id })
 }
+
+/** Owner-only: set the office's usage nap thresholds (% of the 5-hour / 7-day windows). */
+export async function setUsageLimits(session: number, weekly: number): Promise<void> {
+  await req('POST', '/api/settings', { session, weekly })
+}

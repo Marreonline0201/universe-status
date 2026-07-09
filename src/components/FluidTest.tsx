@@ -770,7 +770,7 @@ export function FluidTest() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{
-            fontSize: 12,
+            fontSize: 'calc(12px * var(--font-scale, 1))',
             fontWeight: 700,
             color: '#00d4ff',
             letterSpacing: 2,
@@ -778,7 +778,7 @@ export function FluidTest() {
             GPU MLS-MPM FLUID
           </span>
           <span style={{
-            fontSize: 9,
+            fontSize: 'calc(9px * var(--font-scale, 1))',
             color: 'rgba(100,150,200,0.5)',
             letterSpacing: 1,
           }}>
@@ -788,7 +788,7 @@ export function FluidTest() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {fpsWarning && (
             <span style={{
-              fontSize: 9,
+              fontSize: 'calc(9px * var(--font-scale, 1))',
               color: '#ffaa00',
               letterSpacing: 1,
               animation: 'blockedPulse 1.2s ease-in-out infinite',
@@ -797,7 +797,7 @@ export function FluidTest() {
             </span>
           )}
           <span style={{
-            fontSize: 10,
+            fontSize: 'calc(10px * var(--font-scale, 1))',
             color: fps >= 50 ? '#00ff88' : fps >= 30 ? '#ffaa00' : '#ff4444',
             letterSpacing: 1,
           }}>
@@ -805,7 +805,7 @@ export function FluidTest() {
           </span>
           {gpuReady && (
             <span style={{
-              fontSize: 8,
+              fontSize: 'calc(8px * var(--font-scale, 1))',
               fontWeight: 700,
               color: '#000',
               background: '#00ff88',
@@ -817,7 +817,7 @@ export function FluidTest() {
             </span>
           )}
           <span style={{
-            fontSize: 10,
+            fontSize: 'calc(10px * var(--font-scale, 1))',
             color: 'rgba(100,150,200,0.6)',
             letterSpacing: 1,
           }}>
@@ -845,7 +845,7 @@ export function FluidTest() {
               top: '50%',
               left: '50%',
               transform: 'translate(-50%, -50%)',
-              fontSize: 13,
+              fontSize: 'calc(13px * var(--font-scale, 1))',
               color: 'rgba(0,180,255,0.35)',
               letterSpacing: 2,
               pointerEvents: 'none',
@@ -854,7 +854,7 @@ export function FluidTest() {
             }}>
               INITIALIZING GPU...
               <br />
-              <span style={{ fontSize: 10, opacity: 0.6 }}>
+              <span style={{ fontSize: 'calc(10px * var(--font-scale, 1))', opacity: 0.6 }}>
                 Setting up WebGPU compute + SSFR render
               </span>
             </div>
@@ -900,7 +900,7 @@ export function FluidTest() {
                   borderRadius: 3,
                   padding: '4px 8px',
                   color: '#c0d0e0',
-                  fontSize: 9,
+                  fontSize: 'calc(9px * var(--font-scale, 1))',
                   fontFamily: 'inherit',
                   outline: 'none',
                 }}
@@ -916,7 +916,7 @@ export function FluidTest() {
                   borderRadius: 3,
                   padding: '4px 8px',
                   color: 'rgba(0,255,136,0.6)',
-                  fontSize: 8,
+                  fontSize: 'calc(8px * var(--font-scale, 1))',
                   fontFamily: 'inherit',
                   letterSpacing: 1,
                   cursor: 'pointer',

@@ -127,6 +127,8 @@ export class Scheduler {
       usagePct: this.usage?.sessionPct ?? null,
       weeklyPct: this.usage?.weeklyPct ?? null,
       usageMonitorOk: this.usage?.ok ?? false,
+      sessionThresholdPct: this.cfg.usageRest?.sessionThresholdPct ?? 90,
+      weeklyThresholdPct: this.cfg.usageRest?.weeklyThresholdPct ?? 95,
     }
   }
 

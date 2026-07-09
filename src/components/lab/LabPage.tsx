@@ -146,7 +146,7 @@ export function LabPage({ office, focusRequestId }: {
       onClick={onClick}
       style={{
         background: active ? 'rgba(0,180,255,0.12)' : 'transparent', border: '1px solid #00d4ff55',
-        color: '#00d4ff', fontFamily: 'inherit', fontSize: 9, letterSpacing: 1,
+        color: '#00d4ff', fontFamily: 'inherit', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1,
         padding: '3px 10px', borderRadius: 3, cursor: 'pointer',
       }}
     >{label}</button>
@@ -162,14 +162,14 @@ export function LabPage({ office, focusRequestId }: {
         borderRight: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.92)',
       }}>
         <div style={{ padding: '10px 12px 4px', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 9, letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>LABORATORY</span>
+          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>LABORATORY</span>
           <span style={{ marginLeft: 'auto' }}>{toolbarBtn('⟳ REFRESH', refresh)}</span>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px 24px' }}>
-          <div style={{ color: '#5c6a8a', fontSize: 9, letterSpacing: 2, margin: '8px 0 6px', fontWeight: 700 }}>EXPERIMENTS</div>
-          {listErr && <div style={{ color: '#ff8787', fontSize: 9, padding: 4 }}>✗ {listErr} {toolbarBtn('RETRY', refresh)}</div>}
+          <div style={{ color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, margin: '8px 0 6px', fontWeight: 700 }}>EXPERIMENTS</div>
+          {listErr && <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', padding: 4 }}>✗ {listErr} {toolbarBtn('RETRY', refresh)}</div>}
           {!listErr && experiments.length === 0 && (
-            <div style={{ color: '#3a4157', fontSize: 10, padding: 4 }}>
+            <div style={{ color: '#3a4157', fontSize: 'calc(10px * var(--font-scale, 1))', padding: 4 }}>
               No experiments yet — agents write company/lab/&lt;name&gt;/scenario.json
             </div>
           )}
@@ -183,8 +183,8 @@ export function LabPage({ office, focusRequestId }: {
                 background: selected?.id === exp.id ? 'rgba(0,180,255,0.06)' : 'transparent',
               }}
             >
-              <div style={{ color: '#cfe3ff', fontSize: 11 }}>{exp.name}</div>
-              <div style={{ display: 'flex', gap: 6, fontSize: 8, marginTop: 2 }}>
+              <div style={{ color: '#cfe3ff', fontSize: 'calc(11px * var(--font-scale, 1))' }}>{exp.name}</div>
+              <div style={{ display: 'flex', gap: 6, fontSize: 'calc(8px * var(--font-scale, 1))', marginTop: 2 }}>
                 {exp.hasScenario && <span style={{ color: '#00ff88', border: '1px solid #00ff8844', borderRadius: 2, padding: '0 4px' }}>SCEN</span>}
                 {exp.hasNotes && <span style={{ color: '#ffd700', border: '1px solid #ffd70044', borderRadius: 2, padding: '0 4px' }}>NOTES</span>}
                 <span style={{ color: '#3a4157', marginLeft: 'auto' }}>{age(exp.updatedAt)}</span>
@@ -194,7 +194,7 @@ export function LabPage({ office, focusRequestId }: {
 
           {liveRuns.length > 0 && (
             <>
-              <div style={{ color: '#ff6b35', fontSize: 9, letterSpacing: 2, margin: '14px 0 6px', fontWeight: 700 }}>LIVE RUNS</div>
+              <div style={{ color: '#ff6b35', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, margin: '14px 0 6px', fontWeight: 700 }}>LIVE RUNS</div>
               {liveRuns.map(r => (
                 <div
                   key={r.id}
@@ -204,11 +204,11 @@ export function LabPage({ office, focusRequestId }: {
                     background: consoleId === r.id ? 'rgba(255,107,53,0.08)' : 'rgba(8,12,24,0.5)',
                   }}
                 >
-                  <div style={{ fontSize: 9 }}>
+                  <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))' }}>
                     <span style={{ color: '#ff6b35', fontWeight: 700 }}>{r.status.toUpperCase()}</span>
                     <span style={{ color: '#5c6a8a' }}> · {r.requestedBy}</span>
                   </div>
-                  <div style={{ color: '#a9c1e8', fontSize: 10 }}>{r.title}</div>
+                  <div style={{ color: '#a9c1e8', fontSize: 'calc(10px * var(--font-scale, 1))' }}>{r.title}</div>
                 </div>
               ))}
             </>
@@ -222,12 +222,12 @@ export function LabPage({ office, focusRequestId }: {
           height: 36, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px',
           borderBottom: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.9)',
         }}>
-          <span style={{ fontSize: 11, color: '#e8f4ff' }}>{selected ? selected.name : 'select an experiment'}</span>
+          <span style={{ fontSize: 'calc(11px * var(--font-scale, 1))', color: '#e8f4ff' }}>{selected ? selected.name : 'select an experiment'}</span>
           {selected?.hasScenario && scenario && toolbarBtn('▶ RE-RUN', () => setRunNonce(n => n + 1))}
           {selected?.hasNotes && toolbarBtn('NOTES', () => setNotesOpen(o => !o), notesOpen)}
-          <span style={{ marginLeft: 'auto', fontSize: 9, color: stats.fps >= 30 ? '#00ff88' : '#ffd700' }}>{stats.fps} FPS</span>
-          <span style={{ fontSize: 9, color: '#8a97b8' }}>{stats.count.toLocaleString()} particles</span>
-          <span style={{ fontSize: 9, color: webgpu ? '#00ff88' : '#ff4444' }}>{webgpu ? 'WEBGPU' : 'NO WEBGPU'}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 'calc(9px * var(--font-scale, 1))', color: stats.fps >= 30 ? '#00ff88' : '#ffd700' }}>{stats.fps} FPS</span>
+          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: '#8a97b8' }}>{stats.count.toLocaleString()} particles</span>
+          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: webgpu ? '#00ff88' : '#ff4444' }}>{webgpu ? 'WEBGPU' : 'NO WEBGPU'}</span>
         </div>
 
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
@@ -235,12 +235,12 @@ export function LabPage({ office, focusRequestId }: {
             ? <LabSim scenario={scenario} runNonce={runNonce} onStats={setStats} onEngine={onLabEngine} onLoaded={onLabLoaded} />
             : (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 }}>
-                <div style={{ color: '#ff8787', fontSize: 12, letterSpacing: 1 }}>WEBGPU UNAVAILABLE</div>
-                <div style={{ color: '#8a97b8', fontSize: 10, textAlign: 'center', maxWidth: 420 }}>
+                <div style={{ color: '#ff8787', fontSize: 'calc(12px * var(--font-scale, 1))', letterSpacing: 1 }}>WEBGPU UNAVAILABLE</div>
+                <div style={{ color: '#8a97b8', fontSize: 'calc(10px * var(--font-scale, 1))', textAlign: 'center', maxWidth: 420 }}>
                   The lab sim needs a WebGPU browser (Chrome/Edge). The scenario definition is shown below; notes are still readable.
                 </div>
                 {scenarioRaw && (
-                  <pre style={{ background: '#05070f', borderRadius: 4, padding: 12, fontSize: 10, color: '#a9c1e8', maxWidth: '80%', maxHeight: '50%', overflow: 'auto' }}>
+                  <pre style={{ background: '#05070f', borderRadius: 4, padding: 12, fontSize: 'calc(10px * var(--font-scale, 1))', color: '#a9c1e8', maxWidth: '80%', maxHeight: '50%', overflow: 'auto' }}>
                     {scenarioRaw}
                   </pre>
                 )}
@@ -251,7 +251,7 @@ export function LabPage({ office, focusRequestId }: {
             <div style={{
               position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 5,
               background: 'rgba(120,10,10,0.92)', border: '1px solid #ff4444', borderRadius: 4,
-              padding: '6px 14px', color: '#ffdddd', fontSize: 10, maxWidth: '80%',
+              padding: '6px 14px', color: '#ffdddd', fontSize: 'calc(10px * var(--font-scale, 1))', maxWidth: '80%',
             }}>
               ✗ scenario invalid: {scenarioErr}
             </div>
@@ -260,7 +260,7 @@ export function LabPage({ office, focusRequestId }: {
             <div style={{
               position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 5,
               background: 'rgba(110,85,10,0.92)', border: '1px solid #ffd700', borderRadius: 4,
-              padding: '4px 12px', color: '#fff3cc', fontSize: 9,
+              padding: '4px 12px', color: '#fff3cc', fontSize: 'calc(9px * var(--font-scale, 1))',
             }}>
               ⚠ {scenarioWarn}
             </div>
@@ -284,7 +284,7 @@ export function LabPage({ office, focusRequestId }: {
       {webgpu && labController && (
         <div style={{ width: 264, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.92)' }}>
           <div style={{ padding: '10px 12px 2px' }}>
-            <span style={{ fontSize: 9, letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>CONTROLS</span>
+            <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>CONTROLS</span>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <FluidControls controller={labController} />
