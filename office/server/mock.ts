@@ -222,6 +222,8 @@ export function runMock(ctx: MockCtx) {
         usagePct,
         weeklyPct: 18,
         usageMonitorOk: true,
+        sessionThresholdPct: 90,
+        weeklyThresholdPct: 95,
       },
     })
   }, 4000)

@@ -61,6 +61,8 @@ export interface PoolState {
   usagePct: number | null
   weeklyPct: number | null
   usageMonitorOk: boolean
+  sessionThresholdPct: number // owner-set nap threshold for the 5-hour window
+  weeklyThresholdPct: number  // owner-set nap threshold for the 7-day window
 }
 
 export interface AgentDetail {
@@ -172,6 +174,7 @@ const INITIAL: OfficeState = {
     cap: 0, active: [], queued: [], paused: false,
     resting: false, restReason: null, restResumeAt: null,
     usagePct: null, weeklyPct: null, usageMonitorOk: false,
+    sessionThresholdPct: 90, weeklyThresholdPct: 95,
   },
   detail: null,
 }

@@ -67,6 +67,15 @@ export class UsageMonitor {
 
   snapshot(): UsageState { return { ...this.state } }
 
+  /** Owner changed the rest thresholds at runtime — apply live so the next
+   *  shouldRest() uses the new numbers without a restart. */
+  setConfig(cfg: UsageRestConfig) {
+    const pollChanged = cfg.pollSeconds !== this.cfg.pollSeconds
+    this.cfg = cfg
+    if (pollChanged && this.timer) { clearInterval(this.timer); this.start() }
+    this.emit() // re-evaluate rest decision + broadcast with the new thresholds
+  }
+
   shouldRest(): RestDecision {
     const now = Date.now()
     const fresh = this.state.ok || (this.lastOkAt > 0 && now - this.lastOkAt < STALE_MS)

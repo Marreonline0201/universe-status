@@ -173,7 +173,7 @@ export function App() {
         {view === 'fluid' && <FluidTest />}
       </div>
 
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} office={office} />}
     </div>
   )
 }

@@ -78,6 +78,8 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
       cap: cfg.maxConcurrent, active: [], queued: [], paused: false,
       resting: false, restReason: null, restResumeAt: null,
       usagePct: null, weeklyPct: null, usageMonitorOk: false,
+      sessionThresholdPct: cfg.usageRest?.sessionThresholdPct ?? 90,
+      weeklyThresholdPct: cfg.usageRest?.weeklyThresholdPct ?? 95,
     }
     const reports = loadReports(paths)
     return {
@@ -139,6 +141,24 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
     killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
     runOutput: (id) => runner?.output(id) ?? null,
+    setUsageLimits: ({ session, weekly }) => {
+      const clampPct = (v: number) => Number.isFinite(v) ? Math.min(100, Math.max(10, Math.round(v))) : null
+      const s = clampPct(session), w = clampPct(weekly)
+      if (s === null || w === null) return { ok: false, error: 'session and weekly must be numbers 10–100' }
+      // Persist to office.json (survives restart)…
+      const cfgFile = path.join(repoRoot, 'office', 'config', 'office.json')
+      try {
+        const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
+        j.usageRest = { ...(j.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w }
+        fs.writeFileSync(cfgFile, JSON.stringify(j, null, 2) + '\n')
+      } catch { return { ok: false, error: 'could not write office.json' } }
+      // …then apply live: mutate the shared cfg (poolState reads it) + push into the monitor.
+      cfg.usageRest = { ...(cfg.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w }
+      usage?.setConfig({ sessionThresholdPct: s, weeklyThresholdPct: w, pollSeconds: cfg.usageRest?.pollSeconds ?? 60 })
+      ws.broadcast({ type: 'POOL_STATE', pool: scheduler.poolState() })
+      log(`usage limits set by owner → session ${s}% / weekly ${w}%`)
+      return { ok: true }
+    },
   }, wsAuth, staticDir, log)
 
   const pushChat = (msg: ChatMsg) => {

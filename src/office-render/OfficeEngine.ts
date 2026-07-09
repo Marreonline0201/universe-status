@@ -282,12 +282,12 @@ export class OfficeEngine {
   private drawBubble(x: number, y: number, text: string, kind: string, alpha: number) {
     const { ctx } = this
     const fs = this.fontScale
-    const fpx = 13 * fs            // balloon font: bigger base (13px, was 10) × global scale
+    const fpx = 16 * fs            // balloon font: 16px base (owner's floor) × global scale
     ctx.save()
     ctx.globalAlpha = alpha
     ctx.font = `${fpx}px "IBM Plex Mono", monospace`
     const pad = 12 * fs
-    const w = Math.min(240 * fs, ctx.measureText(text).width + pad)
+    const w = Math.min(340 * fs, ctx.measureText(text).width + pad)
     const h = Math.round(fpx + 8 * fs)
     const bx = x - w / 2, by = y - h - 8
     ctx.fillStyle = 'rgba(8,12,24,0.92)'
