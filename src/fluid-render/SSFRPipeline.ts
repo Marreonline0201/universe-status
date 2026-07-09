@@ -620,7 +620,7 @@ export class SSFRPipeline {
           view: outputView,
           loadOp: 'clear',  // start fresh — composite reads scene from texture
           storeOp: 'store',
-          clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 }, // match scene bg 0x060810
+          clearValue: { r: 0.694, g: 0.702, b: 0.400, a: 1 }, // match scene bg 0xb1b366 (olive)
         }],
       })
       pass.setPipeline(this.compositePipeline)

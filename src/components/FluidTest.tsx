@@ -300,7 +300,7 @@ export function FluidTest() {
       }
 
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0x060810)
+      scene.background = new THREE.Color(0xb1b366)
 
       const camera = new THREE.PerspectiveCamera(
         50,
@@ -755,7 +755,7 @@ export function FluidTest() {
       height: '100%',
       display: 'flex',
       flexDirection: 'column',
-      background: '#060810',
+      background: '#060810',   // page chrome stays dark; the olive scene bg comes from the canvas (SSFR shader + scene.background)
       color: '#c0d0e0',
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     }}>

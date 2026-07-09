@@ -57,7 +57,7 @@ export class LabFluidEngine {
     if (!navigator.gpu) return false
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x060810)
+    scene.background = new THREE.Color(0xb1b366)
     const camera = new THREE.PerspectiveCamera(50, this.container.clientWidth / this.container.clientHeight, 0.1, 50)
     camera.position.set(2.0, 1.5, 2.0)
     camera.lookAt(0.5, 0.5, 0.5)

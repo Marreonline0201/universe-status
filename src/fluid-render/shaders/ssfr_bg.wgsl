@@ -74,8 +74,8 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     let camPos = getCameraPos();
     let rayDir = getRayDir(in.uv);
 
-    // Dark blue-black background (like deep space / dark room)
-    var bgColor = vec3<f32>(0.024, 0.031, 0.063);
+    // Olive backdrop (#b1b366) — owner-chosen; brighter than the old near-black navy.
+    var bgColor = vec3<f32>(0.694, 0.702, 0.400);
     // Track nearest solid hit so later primitives can occlude farther ones.
     var nearestT = 1e9;
 
@@ -94,9 +94,9 @@ fn fs_main(in: VertexOutput) -> FragOutput {
                 let isLineZ = abs(fract(hitPos.z / gridSize + 0.5) - 0.5) < lineWidth / gridSize;
 
                 if (isLineX || isLineZ) {
-                    bgColor = vec3<f32>(0.08, 0.12, 0.20); // subtle blue grid
+                    bgColor = vec3<f32>(0.50, 0.51, 0.24); // darker olive grid line (readable on the light base)
                 } else {
-                    bgColor = vec3<f32>(0.035, 0.045, 0.08); // slightly lighter floor
+                    bgColor = vec3<f32>(0.694, 0.702, 0.400); // floor = olive base → uniform, no dark square
                 }
                 nearestT = t;
             }
