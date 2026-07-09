@@ -3,13 +3,14 @@
 // Layout: Left = major section nav, Center = scrollable content, Right = "on this page" sub-nav.
 // Inspired by docs.anthropic.com / Claude documentation layout.
 
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 // @ts-ignore — Vite raw import
 import publicMd from '../../structure-public.md?raw'
 // @ts-ignore
 import fullMd from '../../structure.md?raw'
 import { parseToc, parseBlocks, RenderBlock, type TocEntry } from '../lib/markdown'
 import { PasswordModal } from './common/PasswordModal'
+import { ResizeHandle } from './common/ResizeHandle'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 // Simple password gate: public visitors see structure-public.md,
@@ -51,68 +52,6 @@ function useAuth() {
 
 // (The password modal now lives in ./common/PasswordModal and is shared with the
 //  office owner unlock, so both look identical.)
-
-// ── Resize Handle ─────────────────────────────────────────────────────────────
-
-function ResizeHandle({ onDrag, side }: { onDrag: (delta: number) => void; side: 'left' | 'right' }) {
-  const dragging = useRef(false)
-  const lastX = useRef(0)
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    dragging.current = true
-    lastX.current = e.clientX
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!dragging.current) return
-      const delta = ev.clientX - lastX.current
-      lastX.current = ev.clientX
-      onDrag(side === 'left' ? delta : -delta)
-    }
-
-    const onMouseUp = () => {
-      dragging.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-  }, [onDrag, side])
-
-  const [hovered, setHovered] = useState(false)
-
-  return (
-    <div
-      onMouseDown={onMouseDown}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        width: 6,
-        flexShrink: 0,
-        cursor: 'col-resize',
-        background: 'transparent',
-        position: 'relative',
-        zIndex: 20,
-      }}
-    >
-      <div style={{
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 2,
-        width: hovered ? 2 : 1,
-        background: hovered ? 'rgba(0,180,255,0.5)' : 'rgba(0,180,255,0.1)',
-        transition: 'all 0.15s',
-        borderRadius: 1,
-      }} />
-    </div>
-  )
-}
 
 // ── Build section hierarchy for left nav ──────────────────────────────────────
 

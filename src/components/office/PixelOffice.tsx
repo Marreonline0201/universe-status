@@ -4,9 +4,19 @@ import { useEffect, useRef, useState } from 'react'
 import { OfficeEngine } from '../../office-render/OfficeEngine'
 import type { OfficeSocket, TaskSummary } from '../../hooks/useOfficeSocket'
 import { PasswordModal } from '../common/PasswordModal'
+import { ResizeHandle } from '../common/ResizeHandle'
 import { useSettings } from '../../settings/SettingsContext'
 
 const MONO = '"IBM Plex Mono", monospace'
+
+// Panel widths are a personal layout preference — persisted per-browser (separate
+// localStorage keys, kept out of SettingsContext which is font-scale only).
+const SIDEBAR_W_KEY = 'universe-office-sidebar-w'
+const DETAIL_W_KEY = 'universe-office-detail-w'
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+const readW = (key: string, fallback: number): number => {
+  try { const v = parseFloat(localStorage.getItem(key) ?? ''); return Number.isFinite(v) ? v : fallback } catch { return fallback }
+}
 
 const KIND_COLORS: Record<string, string> = {
   fyi: '#5c6a8a',
@@ -32,8 +42,16 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showUnlock, setShowUnlock] = useState(false)
   const [tab, setTab] = useState<'feed' | 'tasks' | 'reports'>('feed')
+  // Team focus (multi-select) — session-only; a persisted selection would silently
+  // dim most of the office on every reload. Drives the canvas spotlight override.
+  const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set())
+  const [sidebarWidth, setSidebarWidth] = useState(() => readW(SIDEBAR_W_KEY, 300))
+  const [detailWidth, setDetailWidth] = useState(() => readW(DETAIL_W_KEY, 340))
   const { state } = office
   const { scale: fontScale } = useSettings()
+
+  const toggleTeam = (id: string) =>
+    setSelectedTeams(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -74,9 +92,26 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
     engineRef.current?.setFontScale(fontScale)
   }, [fontScale])
 
+  // Focused teams override the engine's auto working-spotlight (empty → auto).
+  useEffect(() => {
+    engineRef.current?.setSelectedTeams([...selectedTeams])
+  }, [selectedTeams])
+
+  useEffect(() => { try { localStorage.setItem(SIDEBAR_W_KEY, String(sidebarWidth)) } catch { /* storage off */ } }, [sidebarWidth])
+  useEffect(() => { try { localStorage.setItem(DETAIL_W_KEY, String(detailWidth)) } catch { /* storage off */ } }, [detailWidth])
+
   const selected = state.agents.find(a => a.id === selectedId) ?? null
   const detail = state.detail?.id === selectedId ? state.detail : null
   const openTasks = state.tasks.filter(t => t.status !== 'done' && t.status !== 'archived')
+
+  // Which teams are "working" — same predicate the engine uses for its room spotlight
+  // (any agent with a live session OR a non-idle/offline status). Drives chip brightness.
+  const activeSet = new Set(state.pool.active)
+  const workingTeams = new Set(
+    state.teams.filter(t => state.agents.some(a =>
+      a.team === t.id && (activeSet.has(a.id) || (a.status !== 'idle' && a.status !== 'offline')))
+    ).map(t => t.id)
+  )
 
   return (
     <div style={{ display: 'flex', height: '100%', fontFamily: MONO, color: '#cfe3ff' }}>
@@ -187,28 +222,51 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           />
         )}
 
-        {/* team legend */}
+        {/* team legend — click a chip to focus that team (spotlights its room; multi-select).
+            Brightness + pulsing dot show which teams are currently working. Container stays
+            click-through so canvas panning still works between chips; only the chips capture. */}
         <div style={{
           position: 'absolute', bottom: 8, left: 8, display: 'flex', gap: 6, flexWrap: 'wrap',
           pointerEvents: 'none', maxWidth: '70%',
         }}>
-          {state.teams.map(t => (
-            <span key={t.id} style={{
-              fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, padding: '2px 6px', borderRadius: 3,
-              background: 'rgba(8,12,24,0.85)', border: `1px solid ${t.color}55`, color: t.color,
-            }}>
-              ■ {t.name.toUpperCase()}
-            </span>
-          ))}
+          {state.teams.map(t => {
+            const working = workingTeams.has(t.id)
+            const chosen = selectedTeams.has(t.id)
+            return (
+              <button
+                key={t.id}
+                onClick={() => toggleTeam(t.id)}
+                title={chosen ? 'Focused — click to unfocus' : 'Click to focus this team'}
+                style={{
+                  pointerEvents: 'auto', cursor: 'pointer', fontFamily: MONO,
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, padding: '2px 6px', borderRadius: 3,
+                  background: chosen ? 'rgba(20,28,44,0.95)' : 'rgba(8,12,24,0.85)',
+                  border: chosen ? '1px solid #e8f0ff' : `1px solid ${t.color}55`,
+                  boxShadow: chosen ? '0 0 0 2px rgba(232,240,255,0.35)' : 'none',
+                  color: t.color, opacity: working ? 1 : 0.42, transition: 'opacity 0.2s',
+                }}
+              >
+                <span>■</span>
+                {t.name.toUpperCase()}
+                {working && <span style={{
+                  width: 5, height: 5, borderRadius: '50%', background: t.color,
+                  animation: 'workingPulse 1.4s ease-in-out infinite',
+                }} />}
+              </button>
+            )
+          })}
         </div>
 
-        {/* agent detail panel */}
+        {/* agent detail panel — drag its left edge to resize (width persists) */}
         {selected && (
           <div style={{
-            position: 'absolute', top: 40, right: 8, width: 340, maxHeight: 'calc(100% - 60px)',
-            overflowY: 'auto', background: 'rgba(6,10,22,0.96)', border: '1px solid rgba(0,180,255,0.35)',
-            borderRadius: 4, padding: 12, fontSize: 'calc(11px * var(--font-scale, 1))',
+            position: 'absolute', top: 40, right: 8, width: detailWidth, maxHeight: 'calc(100% - 60px)',
+            display: 'flex', background: 'rgba(6,10,22,0.96)', border: '1px solid rgba(0,180,255,0.35)',
+            borderRadius: 4,
           }}>
+            <ResizeHandle side="right" onDrag={d => setDetailWidth(w => clamp(w + d, 260, 600))} />
+            <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: 12, fontSize: 'calc(11px * var(--font-scale, 1))' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ color: '#00d4ff', fontWeight: 600, letterSpacing: 1 }}>{selected.name}</span>
               <button
@@ -248,13 +306,15 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
                 ))}
               </Section>
             )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* ── Sidebar ───────────────────────────────────────────── */}
+      {/* ── Sidebar (drag the gutter to resize) ───────────────── */}
+      <ResizeHandle side="right" onDrag={d => setSidebarWidth(w => clamp(w + d, 220, 560))} />
       <div style={{
-        width: 300, flexShrink: 0, borderLeft: '1px solid rgba(0,180,255,0.15)',
+        width: sidebarWidth, flexShrink: 0, borderLeft: '1px solid rgba(0,180,255,0.15)',
         display: 'flex', flexDirection: 'column', background: 'rgba(4,8,18,0.92)',
       }}>
         <div style={{ display: 'flex', borderBottom: '1px solid rgba(0,180,255,0.15)' }}>
