@@ -42,6 +42,7 @@ export class OfficeEngine {
   private selected: string | null = null
   private offline = true
   private fontScale = 1
+  private activeIds = new Set<string>() // agent ids with a live session (pool.active) → their team's room is lit
   onAgentClick: (id: string | null) => void = () => {}
 
   constructor(canvas: HTMLCanvasElement) {
@@ -81,9 +82,13 @@ export class OfficeEngine {
       case 'OFFICE_SNAPSHOT':
         this.offline = false
         this.setWorld(msg.teams, msg.agents)
+        this.activeIds = new Set(msg.pool.active)
         break
       case 'AGENT_STATUS':
         this.sprites.get(msg.id)?.setStatus(msg.status)
+        break
+      case 'POOL_STATE':
+        this.activeIds = new Set(msg.pool.active)
         break
       case 'CHAT': {
         const from = this.sprites.get(msg.msg.from)
@@ -209,6 +214,14 @@ export class OfficeEngine {
     this.raf = requestAnimationFrame(this.tick)
   }
 
+  /** A team's room is "lit" if any of its agents has a live session or a non-idle status. */
+  private teamWorking(teamId: string): boolean {
+    for (const s of this.sprites.values()) {
+      if (s.team === teamId && (this.activeIds.has(s.id) || (s.status !== 'idle' && s.status !== 'offline'))) return true
+    }
+    return false
+  }
+
   private draw(t: number) {
     const { ctx, canvas, cam } = this
     ctx.imageSmoothingEnabled = false
@@ -221,6 +234,20 @@ export class OfficeEngine {
     ctx.translate(-cam.x, -cam.y)
 
     ctx.drawImage(this.mapLayer, 0, 0)
+
+    // Spotlight the working team: dim the floor of rooms whose team has no active agent.
+    // Only when SOMETHING is working (an idle office stays normally lit — the dim exists
+    // only to contrast an active team). Sprites draw later → stay bright; the commons is
+    // not a zone → always lit.
+    const workingTeams = new Set(this.map.zones.filter(z => this.teamWorking(z.teamId)).map(z => z.teamId))
+    if (workingTeams.size > 0) {
+      for (const z of this.map.zones) {
+        const rx = z.rect.x * TILE, ry = z.rect.y * TILE, rw = z.rect.w * TILE, rh = z.rect.h * TILE
+        // working room: a soft light wash (brighter); idle rooms: a heavy dark veil.
+        ctx.fillStyle = workingTeams.has(z.teamId) ? 'rgba(150,180,230,0.12)' : 'rgba(4,6,12,0.72)'
+        ctx.fillRect(rx, ry, rw, rh)
+      }
+    }
 
     // zone labels on the floor
     ctx.font = `bold ${10 * this.fontScale}px "IBM Plex Mono", monospace`
@@ -240,9 +267,13 @@ export class OfficeEngine {
       if (s.status === 'offline') ctx.globalAlpha = 0.25
       ctx.drawImage(frame, Math.round(px), Math.round(py))
       ctx.globalAlpha = 1
-      // status dot
+      // status light above the head — a glowing dot colored by status
+      const lx = Math.round(px) + 8, ly = Math.round(py) - 2
       ctx.fillStyle = s.dotColor()
-      ctx.fillRect(Math.round(px) + 6, Math.round(py) - 3, 4, 4)
+      ctx.globalAlpha = 0.35
+      ctx.beginPath(); ctx.arc(lx, ly, 5.5, 0, Math.PI * 2); ctx.fill() // soft glow
+      ctx.globalAlpha = 1
+      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill()   // core
       // selection ring
       if (s.id === this.selected) {
         ctx.strokeStyle = '#00d4ff'
