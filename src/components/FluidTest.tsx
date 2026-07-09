@@ -755,7 +755,7 @@ export function FluidTest() {
       height: '100%',
       display: 'flex',
       flexDirection: 'column',
-      background: '#b1b366',
+      background: '#060810',   // page chrome stays dark; the olive scene bg comes from the canvas (SSFR shader + scene.background)
       color: '#c0d0e0',
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     }}>
