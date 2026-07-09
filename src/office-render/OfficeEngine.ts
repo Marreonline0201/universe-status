@@ -43,6 +43,7 @@ export class OfficeEngine {
   private offline = true
   private fontScale = 1
   private activeIds = new Set<string>() // agent ids with a live session (pool.active) → their team's room is lit
+  private selectedTeams = new Set<string>() // owner-focused teams → override the auto working-spotlight
   onAgentClick: (id: string | null) => void = () => {}
 
   constructor(canvas: HTMLCanvasElement) {
@@ -214,6 +215,10 @@ export class OfficeEngine {
     this.raf = requestAnimationFrame(this.tick)
   }
 
+  /** Owner-focused teams (from the legend). Non-empty → these rooms are lit and all
+      others dim, overriding the automatic working-spotlight. Empty → auto behavior. */
+  setSelectedTeams(ids: string[]) { this.selectedTeams = new Set(ids) }
+
   /** A team's room is "lit" if any of its agents has a live session or a non-idle status. */
   private teamWorking(teamId: string): boolean {
     for (const s of this.sprites.values()) {
@@ -235,16 +240,19 @@ export class OfficeEngine {
 
     ctx.drawImage(this.mapLayer, 0, 0)
 
-    // Spotlight the working team: dim the floor of rooms whose team has no active agent.
-    // Only when SOMETHING is working (an idle office stays normally lit — the dim exists
-    // only to contrast an active team). Sprites draw later → stay bright; the commons is
-    // not a zone → always lit.
-    const workingTeams = new Set(this.map.zones.filter(z => this.teamWorking(z.teamId)).map(z => z.teamId))
-    if (workingTeams.size > 0) {
+    // Spotlight the lit teams: dim the floor of every other room. Owner-focused teams
+    // (the legend selection) win when present; otherwise fall back to the auto working-
+    // spotlight (rooms with an active agent). Only dim when SOMETHING is lit — an idle,
+    // unfocused office stays normally lit. Sprites draw later → stay bright; the commons
+    // is not a zone → always lit.
+    const litTeams = this.selectedTeams.size > 0
+      ? this.selectedTeams
+      : new Set(this.map.zones.filter(z => this.teamWorking(z.teamId)).map(z => z.teamId))
+    if (litTeams.size > 0) {
       for (const z of this.map.zones) {
         const rx = z.rect.x * TILE, ry = z.rect.y * TILE, rw = z.rect.w * TILE, rh = z.rect.h * TILE
-        // working room: a soft light wash (brighter); idle rooms: a heavy dark veil.
-        ctx.fillStyle = workingTeams.has(z.teamId) ? 'rgba(150,180,230,0.12)' : 'rgba(4,6,12,0.72)'
+        // lit room: a soft light wash (brighter); other rooms: a heavy dark veil.
+        ctx.fillStyle = litTeams.has(z.teamId) ? 'rgba(150,180,230,0.12)' : 'rgba(4,6,12,0.72)'
         ctx.fillRect(rx, ry, rw, rh)
       }
     }
