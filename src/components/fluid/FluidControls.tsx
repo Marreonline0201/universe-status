@@ -54,7 +54,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
                 display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', cursor: 'pointer',
                 background: selectedComposition === comp.id ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.03)',
                 border: `1px solid ${selectedComposition === comp.id ? 'rgba(0,180,255,0.4)' : 'rgba(0,180,255,0.1)'}`,
-                borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit', fontSize: 10, textAlign: 'left', width: '100%',
+                borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', textAlign: 'left', width: '100%',
               }}
             >
               <div style={{
@@ -67,7 +67,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
               <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {comp.name}
               </div>
-              <span style={{ fontSize: 8, color: 'rgba(100,150,200,0.4)', flexShrink: 0 }}>{comp.formula}</span>
+              <span style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.4)', flexShrink: 0 }}>{comp.formula}</span>
             </button>
           ))}
         </div>
@@ -82,7 +82,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
             background: gpuReady ? 'rgba(0,180,255,0.1)' : 'rgba(0,180,255,0.03)',
             border: '1px solid rgba(0,180,255,0.3)', borderRadius: 3,
             color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
-            fontSize: 10, fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
+            fontSize: 'calc(10px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
           }}
         >+10K</button>
         <button
@@ -92,7 +92,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
             background: gpuReady ? 'rgba(0,140,255,0.15)' : 'rgba(0,180,255,0.03)',
             border: '1px solid rgba(0,180,255,0.3)', borderRadius: 3,
             color: gpuReady ? '#00d4ff' : 'rgba(100,150,200,0.3)',
-            fontSize: 10, fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
+            fontSize: 'calc(10px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
           }}
         >+50K</button>
       </div>
@@ -106,7 +106,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
           border: `1px solid ${ballActive ? 'rgba(255,160,0,0.4)' : 'rgba(180,180,180,0.3)'}`,
           borderRadius: 3,
           color: gpuReady ? (ballActive ? '#ffaa00' : '#aaaaaa') : 'rgba(100,150,200,0.3)',
-          fontSize: 10, fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
+          fontSize: 'calc(10px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: gpuReady ? 'pointer' : 'default', transition: 'all 0.15s',
         }}
       >{ballActive ? 'REMOVE BALL' : 'DROP BALL'}</button>
 
@@ -131,7 +131,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
         onClick={controller.reset}
         style={{
           padding: '7px 0', background: 'rgba(255,60,60,0.1)', border: '1px solid rgba(255,60,60,0.3)',
-          borderRadius: 3, color: '#ff6666', fontSize: 10, fontFamily: 'inherit', letterSpacing: 2, cursor: 'pointer', transition: 'all 0.15s',
+          borderRadius: 3, color: '#ff6666', fontSize: 'calc(10px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: 'pointer', transition: 'all 0.15s',
         }}
       >RESET</button>
 
@@ -141,15 +141,15 @@ export function FluidControls({ controller }: { controller: FluidController }) {
       <div>
         <button
           onClick={() => setShowInfo(!showInfo)}
-          style={{ background: 'none', border: 'none', color: 'rgba(0,180,255,0.5)', fontSize: 9, letterSpacing: 2, cursor: 'pointer', fontFamily: 'inherit', padding: 0, marginBottom: 8 }}
+          style={{ background: 'none', border: 'none', color: 'rgba(0,180,255,0.5)', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, cursor: 'pointer', fontFamily: 'inherit', padding: 0, marginBottom: 8 }}
         >{showInfo ? '[-] MATERIAL INFO' : '[+] MATERIAL INFO'}</button>
 
         {showInfo && selectedComp && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 10, lineHeight: 1.6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: `rgb(${Math.round(selectedComp.props.color[0] * 255)},${Math.round(selectedComp.props.color[1] * 255)},${Math.round(selectedComp.props.color[2] * 255)})` }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'calc(10px * var(--font-scale, 1))', lineHeight: 1.6 }}>
+            <div style={{ fontSize: 'calc(12px * var(--font-scale, 1))', fontWeight: 700, color: `rgb(${Math.round(selectedComp.props.color[0] * 255)},${Math.round(selectedComp.props.color[1] * 255)},${Math.round(selectedComp.props.color[2] * 255)})` }}>
               {selectedComp.name}
             </div>
-            <div style={{ color: 'rgba(100,150,200,0.55)', fontSize: 9 }}>{selectedComp.formula}</div>
+            <div style={{ color: 'rgba(100,150,200,0.55)', fontSize: 'calc(9px * var(--font-scale, 1))' }}>{selectedComp.formula}</div>
             <div style={{ marginTop: 4 }}>
               <InfoRow label="Density" value={`${selectedComp.props.density.toFixed(0)} kg/m3`} symbol={'ρ'} />
               <InfoRow label="Viscosity" value={`${selectedComp.props.viscosity.toFixed(4)} Pa·s`} symbol={'μ'} />
@@ -160,7 +160,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
               <InfoRow label="F0" value={selectedComp.props.F0.toFixed(3)} symbol={'F'} />
               <InfoRow label="IOR" value={selectedComp.props.IOR.toFixed(3)} symbol={'n'} />
             </div>
-            <div style={{ marginTop: 8, padding: '6px 8px', background: 'rgba(0,180,255,0.05)', border: '1px solid rgba(0,180,255,0.1)', borderRadius: 3, fontSize: 9, color: 'rgba(100,150,200,0.5)', lineHeight: 1.8 }}>
+            <div style={{ marginTop: 8, padding: '6px 8px', background: 'rgba(0,180,255,0.05)', border: '1px solid rgba(0,180,255,0.1)', borderRadius: 3, fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.5)', lineHeight: 1.8 }}>
               <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>GPU MLS-MPM</div>
               <div>Solver: WebGPU compute</div>
               <div>Substeps: 2 per frame</div>
@@ -178,18 +178,18 @@ export function FluidControls({ controller }: { controller: FluidController }) {
 
 // ── Shared styles (moved from FluidTest) ──────────────────────────────────────
 const labelStyle: React.CSSProperties = {
-  display: 'block', fontSize: 9, letterSpacing: 2, color: 'rgba(0,180,255,0.5)', marginBottom: 6,
+  display: 'block', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, color: 'rgba(0,180,255,0.5)', marginBottom: 6,
 }
 const sliderStyle: React.CSSProperties = {
   width: '100%', height: 4, appearance: 'none' as const, background: 'rgba(0,180,255,0.15)', borderRadius: 2, outline: 'none', cursor: 'pointer',
 }
 const valueStyle: React.CSSProperties = {
-  fontSize: 10, color: 'rgba(100,150,200,0.6)', marginTop: 4, textAlign: 'right',
+  fontSize: 'calc(10px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.6)', marginTop: 4, textAlign: 'right',
 }
 
 function InfoRow({ label, value, symbol }: { label: string; value: string; symbol: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', fontSize: 10 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', fontSize: 'calc(10px * var(--font-scale, 1))' }}>
       <span style={{ color: 'rgba(100,150,200,0.5)' }}>
         <span style={{ color: 'rgba(0,180,255,0.5)', marginRight: 4 }}>{symbol}</span>
         {label}

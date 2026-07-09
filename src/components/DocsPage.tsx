@@ -289,7 +289,7 @@ export function DocsPage() {
           flexShrink: 0,
         }}>
           <div style={{
-            fontSize: 9, letterSpacing: 3,
+            fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 3,
             color: 'rgba(0,180,255,0.35)',
             marginBottom: 8,
           }}>
@@ -306,7 +306,7 @@ export function DocsPage() {
               border: '1px solid rgba(0,180,255,0.15)',
               borderRadius: 3,
               padding: '5px 8px',
-              fontSize: 11,
+              fontSize: 'calc(11px * var(--font-scale, 1))',
               color: 'rgba(200,230,255,0.8)',
               fontFamily: 'inherit',
               outline: 'none',
@@ -339,7 +339,7 @@ export function DocsPage() {
                     border: 'none',
                     borderLeft: `2px solid ${isActiveGroup ? '#00d4ff' : 'transparent'}`,
                     color: isActiveGroup ? '#00d4ff' : 'rgba(160,200,255,0.6)',
-                    fontSize: 11,
+                    fontSize: 'calc(11px * var(--font-scale, 1))',
                     fontFamily: 'inherit',
                     fontWeight: 600,
                     cursor: 'pointer',
@@ -363,7 +363,7 @@ export function DocsPage() {
                   {/* Expand arrow */}
                   {group.children.length > 0 && (
                     <span style={{
-                      fontSize: 8,
+                      fontSize: 'calc(8px * var(--font-scale, 1))',
                       color: 'rgba(0,180,255,0.3)',
                       transition: 'transform 0.15s',
                       transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -402,7 +402,7 @@ export function DocsPage() {
                             background: isActiveChild ? 'rgba(0,180,255,0.04)' : 'transparent',
                             border: 'none',
                             color: isActiveChild ? 'rgba(0,212,255,0.8)' : 'rgba(110,155,210,0.45)',
-                            fontSize: 10,
+                            fontSize: 'calc(10px * var(--font-scale, 1))',
                             fontFamily: 'inherit',
                             fontWeight: 400,
                             cursor: 'pointer',
@@ -435,7 +435,7 @@ export function DocsPage() {
         <div style={{
           padding: '8px 14px',
           borderTop: '1px solid rgba(0,180,255,0.08)',
-          fontSize: 9,
+          fontSize: 'calc(9px * var(--font-scale, 1))',
           color: 'rgba(0,180,255,0.25)',
           letterSpacing: 1,
           flexShrink: 0,
@@ -450,7 +450,7 @@ export function DocsPage() {
               title="Switch to public view"
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
-                color: 'rgba(0,255,136,0.4)', fontSize: 9, fontFamily: 'inherit',
+                color: 'rgba(0,255,136,0.4)', fontSize: 'calc(9px * var(--font-scale, 1))', fontFamily: 'inherit',
                 letterSpacing: 1, padding: '2px 6px',
               }}
               onMouseEnter={e => e.currentTarget.style.color = 'rgba(0,255,136,0.8)'}
@@ -464,7 +464,7 @@ export function DocsPage() {
               title="Admin login for full document"
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
-                color: 'rgba(0,180,255,0.25)', fontSize: 9, fontFamily: 'inherit',
+                color: 'rgba(0,180,255,0.25)', fontSize: 'calc(9px * var(--font-scale, 1))', fontFamily: 'inherit',
                 letterSpacing: 1, padding: '2px 6px',
               }}
               onMouseEnter={e => e.currentTarget.style.color = 'rgba(0,180,255,0.6)'}
@@ -510,7 +510,7 @@ export function DocsPage() {
           flexShrink: 0,
         }}>
           <div style={{
-            fontSize: 9, letterSpacing: 2,
+            fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2,
             color: 'rgba(0,180,255,0.3)',
             marginBottom: 4,
           }}>
@@ -522,7 +522,7 @@ export function DocsPage() {
           {pageHeadings.length === 0 && (
             <div style={{
               padding: '8px 14px',
-              fontSize: 10,
+              fontSize: 'calc(10px * var(--font-scale, 1))',
               color: 'rgba(80,120,180,0.3)',
               fontStyle: 'italic',
             }}>

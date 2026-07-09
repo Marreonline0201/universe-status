@@ -53,7 +53,7 @@ export function ApprovalCard({ req, mock, onWatch }: {
       disabled={busy}
       style={{
         background: solid ? `${color}26` : 'transparent', border: `1px solid ${color}88`, color,
-        fontFamily: 'inherit', fontSize: 10, letterSpacing: 1, padding: '4px 10px', borderRadius: 3,
+        fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 1, padding: '4px 10px', borderRadius: 3,
         cursor: busy ? 'wait' : 'pointer', fontWeight: 700,
       }}
     >{label}</button>
@@ -64,7 +64,7 @@ export function ApprovalCard({ req, mock, onWatch }: {
       border: `1px solid ${pending ? 'rgba(255,215,0,0.4)' : 'rgba(90,110,150,0.25)'}`,
       borderRadius: 4, padding: 10, marginBottom: 8, background: 'rgba(8,12,24,0.7)',
     }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 9, letterSpacing: 1 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>
         <span style={{ color: kindColor, fontWeight: 700 }}>{req.kind.toUpperCase()}</span>
         <span style={{ color: statusColor, fontWeight: 700 }}>
           {req.status.toUpperCase()}
@@ -74,19 +74,19 @@ export function ApprovalCard({ req, mock, onWatch }: {
         <span style={{ marginLeft: 'auto', color: '#5c6a8a' }}>{age(req.createdAt)}</span>
       </div>
 
-      <div style={{ color: '#cfe3ff', fontSize: 12, margin: '6px 0' }}>{req.title}</div>
+      <div style={{ color: '#cfe3ff', fontSize: 'calc(12px * var(--font-scale, 1))', margin: '6px 0' }}>{req.title}</div>
 
       {req.command && (
         <pre style={{
-          background: '#05070f', borderRadius: 3, padding: 6, fontSize: 10, margin: '6px 0',
+          background: '#05070f', borderRadius: 3, padding: 6, fontSize: 'calc(10px * var(--font-scale, 1))', margin: '6px 0',
           whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#a9c1e8',
         }}>
           {`$ ${req.command.join(' ')}`}
           <span style={{ color: '#5c6a8a' }}>{`\ncwd: ${req.cwd}${req.runsIn === 'worktree' ? '  (runs on lab/agent-experiments — main untouched)' : ''}`}</span>
         </pre>
       )}
-      {req.warn && <div style={{ color: '#ffd700', fontSize: 9, margin: '4px 0' }}>⚠ {req.warn}</div>}
-      {!req.valid && <div style={{ color: '#ff8787', fontSize: 9, margin: '4px 0' }}>✗ not approvable: {req.invalidReason}</div>}
+      {req.warn && <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0' }}>⚠ {req.warn}</div>}
+      {!req.valid && <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0' }}>✗ not approvable: {req.invalidReason}</div>}
 
       {pending && req.valid && confirm === 'none' && (
         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -96,7 +96,7 @@ export function ApprovalCard({ req, mock, onWatch }: {
       )}
       {pending && confirm === 'approve' && (
         <div style={{ marginTop: 6 }}>
-          <div style={{ color: '#ffd700', fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+          <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
             {req.kind === 'run'
               ? `CONFIRM — will execute the command above in ${req.cwd}${mock ? ' (MOCK)' : ''}`
               : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
@@ -109,7 +109,7 @@ export function ApprovalCard({ req, mock, onWatch }: {
       )}
       {pending && confirm === 'deny' && (
         <div style={{ marginTop: 6 }}>
-          <div style={{ color: '#ff8787', fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+          <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
             CONFIRM DENY — the agent will be told this was denied{mock ? ' (MOCK)' : ''}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -127,20 +127,20 @@ export function ApprovalCard({ req, mock, onWatch }: {
       )}
       {(req.status === 'done' || req.status === 'failed') && (
         <div style={{ marginTop: 6 }}>
-          <div style={{ fontSize: 9, color: statusColor }}>
+          <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: statusColor }}>
             {req.exitCode !== null ? `exit ${req.exitCode}` : ''}
             {req.durationMs !== null ? ` · ${(req.durationMs / 1000).toFixed(1)}s` : ''}
           </div>
           {req.resultTail && (
             <pre style={{
-              background: '#05070f', borderRadius: 3, padding: 6, fontSize: 9, margin: '4px 0 0',
+              background: '#05070f', borderRadius: 3, padding: 6, fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0 0',
               whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#7d92b8', maxHeight: 120, overflowY: 'auto',
             }}>{req.resultTail}</pre>
           )}
         </div>
       )}
 
-      {err && <div style={{ color: '#ff8787', fontSize: 9, marginTop: 4 }}>✗ {err}</div>}
+      {err && <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', marginTop: 4 }}>✗ {err}</div>}
     </div>
   )
 }

@@ -41,6 +41,7 @@ export class OfficeEngine {
   private moved = false
   private selected: string | null = null
   private offline = true
+  private fontScale = 1
   onAgentClick: (id: string | null) => void = () => {}
 
   constructor(canvas: HTMLCanvasElement) {
@@ -174,6 +175,9 @@ export class OfficeEngine {
     if (this.map) this.fitCamera()
   }
 
+  /** Global UI text scale (from SettingsProvider) — scales canvas labels + bubbles. */
+  setFontScale(s: number) { this.fontScale = s }
+
   // ── rendering ────────────────────────────────────────────────────────────
   private prerenderMap() {
     if (!this.map) return
@@ -219,7 +223,7 @@ export class OfficeEngine {
     ctx.drawImage(this.mapLayer, 0, 0)
 
     // zone labels on the floor
-    ctx.font = 'bold 10px "IBM Plex Mono", monospace'
+    ctx.font = `bold ${10 * this.fontScale}px "IBM Plex Mono", monospace`
     ctx.textAlign = 'left'
     for (const z of this.map.zones) {
       ctx.fillStyle = z.color + '99'
@@ -253,7 +257,7 @@ export class OfficeEngine {
       const sx = (s.x * TILE + TILE / 2 - cam.x) * cam.scale
       const sy = (s.y * TILE - 8 - cam.y) * cam.scale
       if (s.id === this.selected) {
-        ctx.font = '10px "IBM Plex Mono", monospace'
+        ctx.font = `${10 * this.fontScale}px "IBM Plex Mono", monospace`
         ctx.textAlign = 'center'
         ctx.fillStyle = '#00d4ff'
         ctx.fillText(`${s.name} · ${s.id}`, sx, sy - 18)
@@ -268,7 +272,7 @@ export class OfficeEngine {
     if (this.offline) {
       ctx.fillStyle = 'rgba(5,7,15,0.55)'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
-      ctx.font = 'bold 16px "IBM Plex Mono", monospace'
+      ctx.font = `bold ${16 * this.fontScale}px "IBM Plex Mono", monospace`
       ctx.textAlign = 'center'
       ctx.fillStyle = '#ff4444'
       ctx.fillText('OFFICE OFFLINE — run `npm run office` locally', canvas.width / 2, canvas.height / 2)
@@ -277,11 +281,14 @@ export class OfficeEngine {
 
   private drawBubble(x: number, y: number, text: string, kind: string, alpha: number) {
     const { ctx } = this
+    const fs = this.fontScale
+    const fpx = 13 * fs            // balloon font: bigger base (13px, was 10) × global scale
     ctx.save()
     ctx.globalAlpha = alpha
-    ctx.font = '10px "IBM Plex Mono", monospace'
-    const w = Math.min(240, ctx.measureText(text).width + 12)
-    const h = 18
+    ctx.font = `${fpx}px "IBM Plex Mono", monospace`
+    const pad = 12 * fs
+    const w = Math.min(240 * fs, ctx.measureText(text).width + pad)
+    const h = Math.round(fpx + 8 * fs)
     const bx = x - w / 2, by = y - h - 8
     ctx.fillStyle = 'rgba(8,12,24,0.92)'
     ctx.strokeStyle = (STATUS_COLORS.talking ?? '#00ff88') + 'aa'
@@ -289,26 +296,27 @@ export class OfficeEngine {
     if (kind === 'handoff') ctx.strokeStyle = '#ff6b35aa'
     if (kind === 'activity') ctx.strokeStyle = '#4d9fff77'
     ctx.beginPath()
-    ctx.roundRect(bx, by, w, h, kind === 'activity' ? 8 : 4)
+    ctx.roundRect(bx, by, w, h, (kind === 'activity' ? 8 : 4) * fs)
     ctx.fill()
     ctx.stroke()
     if (kind === 'activity') {
       // thought-cloud tail: shrinking circles
       for (const [r, oy] of [[2.5, 3], [1.5, 8]] as const) {
         ctx.beginPath()
-        ctx.arc(x, by + h + oy, r, 0, Math.PI * 2)
+        ctx.arc(x, by + h + oy * fs, r * fs, 0, Math.PI * 2)
         ctx.fill()
         ctx.stroke()
       }
     } else {
       // speech tail
       ctx.beginPath()
-      ctx.moveTo(x - 3, by + h); ctx.lineTo(x + 3, by + h); ctx.lineTo(x, by + h + 5)
+      ctx.moveTo(x - 3 * fs, by + h); ctx.lineTo(x + 3 * fs, by + h); ctx.lineTo(x, by + h + 5 * fs)
       ctx.closePath(); ctx.fill()
     }
     ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : '#cfe3ff'
     ctx.textAlign = 'center'
-    ctx.fillText(text, x, by + 12, w - 10)
+    ctx.textBaseline = 'middle'
+    ctx.fillText(text, x, by + h / 2, w - pad)
     ctx.restore()
   }
 }

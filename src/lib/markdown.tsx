@@ -459,7 +459,7 @@ function CodeBlockContent({ lines }: { lines: string[] }) {
                 if (isHeader) {
                   return (
                     <div key={li} style={{
-                      fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
+                      fontSize: 'calc(10px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 1.5,
                       color: 'rgba(0,200,255,0.55)', marginTop: 12, marginBottom: 4,
                       paddingLeft: Math.max(0, indent / 2 - 1) * 8,
                     }}>
@@ -470,7 +470,7 @@ function CodeBlockContent({ lines }: { lines: string[] }) {
 
                 return (
                   <p key={li} style={{
-                    margin: '1px 0', fontSize: 11.5, lineHeight: 1.75,
+                    margin: '1px 0', fontSize: 'calc(11.5px * var(--font-scale, 1))', lineHeight: 1.75,
                     color: 'rgba(165,200,240,0.72)',
                     paddingLeft: Math.max(0, indent / 2 - 1) * 8,
                     fontFamily: 'inherit',
@@ -493,7 +493,7 @@ function CodeBlockContent({ lines }: { lines: string[] }) {
                 border: '1px solid rgba(0,180,255,0.12)',
               }}>
                 <table style={{
-                  borderCollapse: 'collapse', fontSize: 11.5, lineHeight: 1.65,
+                  borderCollapse: 'collapse', fontSize: 'calc(11.5px * var(--font-scale, 1))', lineHeight: 1.65,
                   minWidth: '100%',
                 }}>
                   <thead>
@@ -501,7 +501,7 @@ function CodeBlockContent({ lines }: { lines: string[] }) {
                       {(headers as string[]).map((h: string, hi: number) => (
                         <th key={hi} style={{
                           padding: '8px 14px', textAlign: 'left',
-                          color: '#7dd3fc', fontSize: 10.5, letterSpacing: 0.8,
+                          color: '#7dd3fc', fontSize: 'calc(10.5px * var(--font-scale, 1))', letterSpacing: 0.8,
                           fontWeight: 600,
                           background: 'rgba(0,30,70,0.5)',
                           borderBottom: '1px solid rgba(0,180,255,0.15)',
@@ -540,13 +540,13 @@ function CodeBlockContent({ lines }: { lines: string[] }) {
               </div>
             )
           } catch {
-            return <pre key={gi} style={{ margin: 0, fontSize: 11, lineHeight: 1.7, color: 'rgba(200,230,255,0.8)', whiteSpace: 'pre', fontFamily: 'inherit' }}>{group.lines.join('\n')}</pre>
+            return <pre key={gi} style={{ margin: 0, fontSize: 'calc(11px * var(--font-scale, 1))', lineHeight: 1.7, color: 'rgba(200,230,255,0.8)', whiteSpace: 'pre', fontFamily: 'inherit' }}>{group.lines.join('\n')}</pre>
           }
         }
 
         return (
           <pre key={gi} style={{
-            margin: 0, fontSize: 11, lineHeight: 1.7,
+            margin: 0, fontSize: 'calc(11px * var(--font-scale, 1))', lineHeight: 1.7,
             color: 'rgba(200,230,255,0.8)',
             whiteSpace: 'pre', fontFamily: 'inherit',
           }}>
@@ -566,7 +566,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
     case 'h1':
       return (
         <h1 id={block.id} key={idx} style={{
-          fontSize: 20, fontWeight: 700, color: '#e8f4ff',
+          fontSize: 'calc(20px * var(--font-scale, 1))', fontWeight: 700, color: '#e8f4ff',
           marginTop: 32, marginBottom: 12,
           paddingBottom: 10,
           borderBottom: '1px solid rgba(0,180,255,0.2)',
@@ -579,7 +579,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
     case 'h2':
       return (
         <h2 id={block.id} key={idx} style={{
-          fontSize: 15, fontWeight: 700, color: '#00d4ff',
+          fontSize: 'calc(15px * var(--font-scale, 1))', fontWeight: 700, color: '#00d4ff',
           marginTop: 40, marginBottom: 10,
           paddingBottom: 8,
           borderBottom: '1px solid rgba(0,180,255,0.15)',
@@ -593,7 +593,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
     case 'h3':
       return (
         <h3 id={block.id} key={idx} style={{
-          fontSize: 12, fontWeight: 700, color: 'rgba(150,210,255,0.9)',
+          fontSize: 'calc(12px * var(--font-scale, 1))', fontWeight: 700, color: 'rgba(150,210,255,0.9)',
           marginTop: 28, marginBottom: 8,
           letterSpacing: 1.5,
           textTransform: 'uppercase',
@@ -605,7 +605,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
     case 'h4':
       return (
         <h4 id={block.id} key={idx} style={{
-          fontSize: 11, fontWeight: 600, color: 'rgba(100,180,255,0.75)',
+          fontSize: 'calc(11px * var(--font-scale, 1))', fontWeight: 600, color: 'rgba(100,180,255,0.75)',
           marginTop: 20, marginBottom: 6,
           letterSpacing: 1,
           textTransform: 'uppercase',
@@ -617,7 +617,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
     case 'h5':
       return (
         <h5 id={block.id} key={idx} style={{
-          fontSize: 10, fontWeight: 600, color: 'rgba(80,150,220,0.65)',
+          fontSize: 'calc(10px * var(--font-scale, 1))', fontWeight: 600, color: 'rgba(80,150,220,0.65)',
           marginTop: 16, marginBottom: 4,
           letterSpacing: 0.5,
           textTransform: 'uppercase',
@@ -649,7 +649,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
         }}>
           {block.lang && (
             <div style={{
-              fontSize: 9, letterSpacing: 2, color: 'rgba(0,180,255,0.35)',
+              fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, color: 'rgba(0,180,255,0.35)',
               marginBottom: 8, textTransform: 'uppercase',
             }}>
               {block.lang}
@@ -664,7 +664,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
         <div key={idx} style={{ overflowX: 'auto', margin: '14px 0' }}>
           <table style={{
             borderCollapse: 'collapse',
-            fontSize: 11, lineHeight: 1.6,
+            fontSize: 'calc(11px * var(--font-scale, 1))', lineHeight: 1.6,
             minWidth: '100%',
           }}>
             <thead>
@@ -674,7 +674,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
                     padding: '6px 14px',
                     textAlign: 'left',
                     color: '#00d4ff',
-                    fontSize: 10,
+                    fontSize: 'calc(10px * var(--font-scale, 1))',
                     letterSpacing: 1,
                     fontWeight: 600,
                     textTransform: 'uppercase',
@@ -721,7 +721,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
               display: 'flex',
               gap: 10,
               padding: '3px 0',
-              fontSize: 12,
+              fontSize: 'calc(12px * var(--font-scale, 1))',
               color: 'rgba(180,210,255,0.72)',
               lineHeight: 1.7,
             }}>
@@ -752,7 +752,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
           {block.lines.map((line, li) => (
             <p key={li} style={{
               margin: '4px 0',
-              fontSize: 12,
+              fontSize: 'calc(12px * var(--font-scale, 1))',
               color: 'rgba(160,200,240,0.8)',
               lineHeight: 1.7,
               fontStyle: 'italic',
@@ -767,7 +767,7 @@ export function RenderBlock({ block, idx }: { block: Block; idx: number }) {
       return (
         <p key={idx} style={{
           margin: '8px 0',
-          fontSize: 12,
+          fontSize: 'calc(12px * var(--font-scale, 1))',
           color: 'rgba(180,210,255,0.72)',
           lineHeight: 1.8,
         }}>

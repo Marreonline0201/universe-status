@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { OfficeEngine } from '../../office-render/OfficeEngine'
 import type { OfficeSocket, TaskSummary } from '../../hooks/useOfficeSocket'
 import { PasswordModal } from '../common/PasswordModal'
+import { useSettings } from '../../settings/SettingsContext'
 
 const MONO = '"IBM Plex Mono", monospace'
 
@@ -32,12 +33,14 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
   const [showUnlock, setShowUnlock] = useState(false)
   const [tab, setTab] = useState<'feed' | 'tasks' | 'reports'>('feed')
   const { state } = office
+  const { scale: fontScale } = useSettings()
 
   useEffect(() => {
     const canvas = canvasRef.current!
     const wrap = wrapRef.current!
     const engine = new OfficeEngine(canvas)
     engineRef.current = engine
+    engine.setFontScale(fontScale)
     engine.onAgentClick = (id) => {
       setSelectedId(id)
       office.requestDetail(id)
@@ -67,6 +70,10 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
     engineRef.current?.setOffline(!state.connected)
   }, [state.connected])
 
+  useEffect(() => {
+    engineRef.current?.setFontScale(fontScale)
+  }, [fontScale])
+
   const selected = state.agents.find(a => a.id === selectedId) ?? null
   const detail = state.detail?.id === selectedId ? state.detail : null
   const openTasks = state.tasks.filter(t => t.status !== 'done' && t.status !== 'archived')
@@ -83,10 +90,10 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
             position: 'absolute', top: 34, left: '50%', transform: 'translateX(-50%)',
             zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
             background: 'rgba(120,10,10,0.92)', border: '2px solid #ff4444',
-            color: '#ffdddd', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+            color: '#ffdddd', fontSize: 'calc(13px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 2, textAlign: 'center',
           }}>
             ⚠ MOCK MODE — scripted demo, real agents are NOT running
-            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ff9999' }}>
+            <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ff9999' }}>
               start the real company with: npm run office
             </div>
           </div>
@@ -99,10 +106,10 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
             position: 'absolute', top: 34, left: '50%', transform: 'translateX(-50%)',
             zIndex: 11, pointerEvents: 'none', padding: '10px 20px', borderRadius: 4,
             background: 'rgba(70,70,80,0.95)', border: '2px solid #ff6b6b',
-            color: '#ffe0e0', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+            color: '#ffe0e0', fontSize: 'calc(13px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 2, textAlign: 'center',
           }}>
             ⏻ OFFICE OFFLINE — can't reach the orchestrator
-            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffb3b3' }}>
+            <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffb3b3' }}>
               the office isn't running (or the session hosting it ended). start it in a terminal:&nbsp;
               <span style={{ fontFamily: MONO, color: '#ffd4d4' }}>npm run office</span>
             </div>
@@ -115,13 +122,13 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
             position: 'absolute', top: state.mock ? 96 : 34, left: '50%', transform: 'translateX(-50%)',
             zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
             background: 'rgba(110,85,10,0.92)', border: '2px solid #ffd700',
-            color: '#fff3cc', fontSize: 13, fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+            color: '#fff3cc', fontSize: 'calc(13px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 2, textAlign: 'center',
           }}>
             😴 RESTING — {state.pool.restReason === 'weekly'
               ? `weekly limit at ${Math.round(state.pool.weeklyPct ?? 0)}%`
               : `session limit at ${Math.round(state.pool.usagePct ?? 0)}%`}
             {state.pool.restResumeAt && ` · resumes ~${new Date(state.pool.restResumeAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
-            <div style={{ fontSize: 9, fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffe699' }}>
+            <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffe699' }}>
               in-flight agents finish their turn — no new sessions until the usage window resets
             </div>
           </div>
@@ -164,7 +171,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
             style={{
               position: 'absolute', top: 8, right: 8, zIndex: 12, pointerEvents: 'auto',
               background: 'rgba(8,12,24,0.9)', border: `1px solid ${state.owner ? '#00ff88' : '#ffd700'}88`,
-              color: state.owner ? '#00ff88' : '#ffd700', fontFamily: MONO, fontSize: 9, letterSpacing: 1,
+              color: state.owner ? '#00ff88' : '#ffd700', fontFamily: MONO, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1,
               padding: '3px 9px', borderRadius: 3, cursor: 'pointer', fontWeight: 700,
             }}
           >
@@ -187,7 +194,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
         }}>
           {state.teams.map(t => (
             <span key={t.id} style={{
-              fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 3,
+              fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, padding: '2px 6px', borderRadius: 3,
               background: 'rgba(8,12,24,0.85)', border: `1px solid ${t.color}55`, color: t.color,
             }}>
               ■ {t.name.toUpperCase()}
@@ -200,7 +207,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           <div style={{
             position: 'absolute', top: 40, right: 8, width: 340, maxHeight: 'calc(100% - 60px)',
             overflowY: 'auto', background: 'rgba(6,10,22,0.96)', border: '1px solid rgba(0,180,255,0.35)',
-            borderRadius: 4, padding: 12, fontSize: 11,
+            borderRadius: 4, padding: 12, fontSize: 'calc(11px * var(--font-scale, 1))',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ color: '#00d4ff', fontWeight: 600, letterSpacing: 1 }}>{selected.name}</span>
@@ -255,19 +262,19 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
             <button key={t} onClick={() => setTab(t)} style={{
               flex: 1, padding: '8px 0', background: tab === t ? 'rgba(0,180,255,0.08)' : 'none',
               border: 'none', borderBottom: tab === t ? '2px solid #00d4ff' : '2px solid transparent',
-              color: tab === t ? '#00d4ff' : '#5c6a8a', fontFamily: MONO, fontSize: 10,
+              color: tab === t ? '#00d4ff' : '#5c6a8a', fontFamily: MONO, fontSize: 'calc(10px * var(--font-scale, 1))',
               letterSpacing: 2, cursor: 'pointer', textTransform: 'uppercase',
             }}>{t}</button>
           ))}
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 8, fontSize: 10.5 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 8, fontSize: 'calc(10.5px * var(--font-scale, 1))' }}>
           {tab === 'feed' && [...state.chat].reverse().map((m, i) => (
             <div key={i} style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(100,150,200,0.08)' }}>
               <div>
                 <span style={{ color: '#00d4ff' }}>{m.from}</span>
                 {m.to && <span style={{ color: '#5c6a8a' }}> → {m.to}</span>}
-                <span style={{ float: 'right', color: KIND_COLORS[m.kind] ?? '#5c6a8a', fontSize: 9 }}>{m.kind}</span>
+                <span style={{ float: 'right', color: KIND_COLORS[m.kind] ?? '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))' }}>{m.kind}</span>
               </div>
               <div style={{ color: '#a9c1e8', marginTop: 2 }}>{m.subject}</div>
             </div>
@@ -286,7 +293,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
                 <span style={{ float: 'right', color: '#5c6a8a' }}>{r.team}</span>
               </div>
               <div style={{ color: '#cfe3ff', marginTop: 2 }}>{r.title}</div>
-              <div style={{ color: '#5c6a8a', marginTop: 2, fontSize: 9 }}>{r.path}{r.reviewedBy ? ` · reviewed by ${r.reviewedBy}` : ''}</div>
+              <div style={{ color: '#5c6a8a', marginTop: 2, fontSize: 'calc(9px * var(--font-scale, 1))' }}>{r.path}{r.reviewedBy ? ` · reviewed by ${r.reviewedBy}` : ''}</div>
             </div>
           ))}
           {tab === 'reports' && state.reports.length === 0 && <Empty text="No reports yet." />}
@@ -299,7 +306,7 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
 function Hud({ label, color }: { label: string; color: string }) {
   return (
     <span style={{
-      fontSize: 9, letterSpacing: 1.5, padding: '3px 8px', borderRadius: 3,
+      fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1.5, padding: '3px 8px', borderRadius: 3,
       background: 'rgba(8,12,24,0.85)', border: `1px solid ${color}44`, color,
     }}>{label}</span>
   )
@@ -308,7 +315,7 @@ function Hud({ label, color }: { label: string; color: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{ marginTop: 10 }}>
-      <div style={{ color: '#5c6a8a', fontSize: 9, letterSpacing: 2, marginBottom: 4 }}>{title}</div>
+      <div style={{ color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, marginBottom: 4 }}>{title}</div>
       {children}
     </div>
   )
@@ -322,7 +329,7 @@ function StatusChip({ status }: { status: string }) {
   const c = colors[status] ?? '#5c6a8a'
   return (
     <span style={{
-      fontSize: 9, letterSpacing: 1.5, padding: '2px 8px', borderRadius: 3,
+      fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1.5, padding: '2px 8px', borderRadius: 3,
       border: `1px solid ${c}66`, color: c, textTransform: 'uppercase',
     }}>{status}</span>
   )
@@ -333,12 +340,12 @@ function TaskRow({ task }: { task: TaskSummary }) {
   return (
     <div style={{ marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid rgba(100,150,200,0.08)' }}>
       <div>
-        <span style={{ color: c, fontSize: 9, letterSpacing: 1 }}>{task.status.toUpperCase()}</span>
-        {task.priority === 'high' && <span style={{ color: '#ff4444', fontSize: 9, marginLeft: 6 }}>HIGH</span>}
-        <span style={{ float: 'right', color: '#5c6a8a', fontSize: 9 }}>{task.team}</span>
+        <span style={{ color: c, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>{task.status.toUpperCase()}</span>
+        {task.priority === 'high' && <span style={{ color: '#ff4444', fontSize: 'calc(9px * var(--font-scale, 1))', marginLeft: 6 }}>HIGH</span>}
+        <span style={{ float: 'right', color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))' }}>{task.team}</span>
       </div>
       <div style={{ color: '#cfe3ff', marginTop: 2 }}>{task.title}</div>
-      <div style={{ color: '#5c6a8a', marginTop: 2, fontSize: 9 }}>
+      <div style={{ color: '#5c6a8a', marginTop: 2, fontSize: 'calc(9px * var(--font-scale, 1))' }}>
         {task.assignee ? `→ ${task.assignee}` : 'unassigned'}{task.parent ? ` · sub of ${task.parent}` : ''}
       </div>
     </div>

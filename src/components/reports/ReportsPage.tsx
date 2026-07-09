@@ -11,7 +11,7 @@ const TASK_STATUS_COLORS: Record<string, string> = { done: '#00ff88', archived: 
 
 function SectionHeader({ label, color }: { label: string; color: string }) {
   return (
-    <div style={{ color, fontSize: 9, letterSpacing: 2, fontWeight: 700, margin: '14px 0 6px', opacity: 0.9 }}>
+    <div style={{ color, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, fontWeight: 700, margin: '14px 0 6px', opacity: 0.9 }}>
       {label}
     </div>
   )
@@ -29,14 +29,14 @@ function ReportRow({ r, selected, onClick, teamColor }: {
         background: selected ? 'rgba(0,180,255,0.06)' : 'transparent',
       }}
     >
-      <div style={{ display: 'flex', gap: 8, fontSize: 9, letterSpacing: 1 }}>
+      <div style={{ display: 'flex', gap: 8, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>
         <span style={{ color: r.status === 'approved' ? '#00ff88' : '#ffd700', fontWeight: 700 }}>
           {r.status === 'approved' ? '✓ APPROVED' : '… DRAFT'}
         </span>
         <span style={{ marginLeft: 'auto', color: teamColor }}>{r.team}</span>
       </div>
-      <div style={{ color: '#cfe3ff', fontSize: 11, marginTop: 2 }}>{r.title}</div>
-      <div style={{ color: '#3a4157', fontSize: 8, marginTop: 2 }}>{r.date}{r.reviewedBy ? ` · reviewed by ${r.reviewedBy}` : ''}</div>
+      <div style={{ color: '#cfe3ff', fontSize: 'calc(11px * var(--font-scale, 1))', marginTop: 2 }}>{r.title}</div>
+      <div style={{ color: '#3a4157', fontSize: 'calc(8px * var(--font-scale, 1))', marginTop: 2 }}>{r.date}{r.reviewedBy ? ` · reviewed by ${r.reviewedBy}` : ''}</div>
     </div>
   )
 }
@@ -44,12 +44,12 @@ function ReportRow({ r, selected, onClick, teamColor }: {
 function FinishedTaskRow({ t }: { t: TaskSummary }) {
   return (
     <div style={{ padding: '5px 8px', marginBottom: 3, borderRadius: 3, background: 'rgba(8,12,24,0.5)' }}>
-      <div style={{ display: 'flex', gap: 8, fontSize: 9, letterSpacing: 1 }}>
+      <div style={{ display: 'flex', gap: 8, fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>
         <span style={{ color: TASK_STATUS_COLORS[t.status] ?? '#8a97b8', fontWeight: 700 }}>{t.status.toUpperCase()}</span>
         <span style={{ marginLeft: 'auto', color: '#5c6a8a' }}>{t.team}</span>
       </div>
-      <div style={{ color: '#a9c1e8', fontSize: 10, marginTop: 2 }}>{t.title}</div>
-      {t.assignee && <div style={{ color: '#3a4157', fontSize: 8 }}>→ {t.assignee}</div>}
+      <div style={{ color: '#a9c1e8', fontSize: 'calc(10px * var(--font-scale, 1))', marginTop: 2 }}>{t.title}</div>
+      {t.assignee && <div style={{ color: '#3a4157', fontSize: 'calc(8px * var(--font-scale, 1))' }}>→ {t.assignee}</div>}
     </div>
   )
 }
@@ -96,8 +96,8 @@ export function ReportsPage({ office, onWatchRun }: {
         borderRight: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.92)',
       }}>
         <div style={{ padding: '10px 12px 4px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontSize: 9, letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>REPORTS &amp; APPROVALS</span>
-          {!state.connected && <span style={{ fontSize: 8, color: '#ff4444', letterSpacing: 1 }}>● OFFICE OFFLINE</span>}
+          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 3, color: 'rgba(0,180,255,0.5)' }}>REPORTS &amp; APPROVALS</span>
+          {!state.connected && <span style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: '#ff4444', letterSpacing: 1 }}>● OFFICE OFFLINE</span>}
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 24px' }}>
           {(pending.length > 0 || inFlight.length > 0 || settled.length > 0) && (
@@ -125,7 +125,7 @@ export function ReportsPage({ office, onWatchRun }: {
             </div>
           ))}
           {state.reports.length === 0 && (
-            <div style={{ color: '#3a4157', fontSize: 10, padding: 8 }}>
+            <div style={{ color: '#3a4157', fontSize: 'calc(10px * var(--font-scale, 1))', padding: 8 }}>
               No reports yet — the company writes them into company/reports/&lt;team&gt;/.
             </div>
           )}

@@ -41,7 +41,7 @@ export function PasswordModal({ title, onSubmit, onClose }: {
         boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
       }}>
         <div style={{
-          fontSize: 10, letterSpacing: 3, color: 'rgba(0,180,255,0.4)',
+          fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 3, color: 'rgba(0,180,255,0.4)',
           marginBottom: 16,
         }}>
           {title}
@@ -56,14 +56,14 @@ export function PasswordModal({ title, onSubmit, onClose }: {
             width: '100%', padding: '8px 12px',
             background: 'rgba(0,20,50,0.6)',
             border: `1px solid ${error ? 'rgba(255,80,80,0.5)' : 'rgba(0,180,255,0.2)'}`,
-            borderRadius: 4, fontSize: 13,
+            borderRadius: 4, fontSize: 'calc(13px * var(--font-scale, 1))',
             color: 'rgba(220,240,255,0.9)',
             fontFamily: 'inherit', outline: 'none',
             boxSizing: 'border-box',
           }}
         />
         {error && (
-          <div style={{ fontSize: 10, color: 'rgba(255,80,80,0.7)', marginTop: 6 }}>
+          <div style={{ fontSize: 'calc(10px * var(--font-scale, 1))', color: 'rgba(255,80,80,0.7)', marginTop: 6 }}>
             Incorrect password
           </div>
         )}
@@ -72,7 +72,7 @@ export function PasswordModal({ title, onSubmit, onClose }: {
           background: pw ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.05)',
           border: '1px solid rgba(0,180,255,0.3)',
           borderRadius: 4, color: '#00d4ff',
-          fontSize: 10, letterSpacing: 2,
+          fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 2,
           fontFamily: 'inherit', cursor: pw ? 'pointer' : 'default',
         }}>
           {loading ? 'CHECKING...' : 'UNLOCK'}

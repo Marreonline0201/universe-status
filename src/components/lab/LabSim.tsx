@@ -55,7 +55,7 @@ export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
       {!ready && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#5c6a8a', fontSize: 11, letterSpacing: 2, pointerEvents: 'none',
+          color: '#5c6a8a', fontSize: 'calc(11px * var(--font-scale, 1))', letterSpacing: 2, pointerEvents: 'none',
         }}>
           INITIALIZING WEBGPU…
         </div>

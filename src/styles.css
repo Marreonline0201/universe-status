@@ -13,6 +13,7 @@
   --text:         rgba(255, 255, 255, 0.85);
   --text-dim:     rgba(150, 185, 220, 0.55);
   --text-muted:   rgba(80, 120, 180, 0.35);
+  --font-scale:   1;   /* global UI text scale, driven by SettingsProvider */
 }
 
 html, body, #root {
