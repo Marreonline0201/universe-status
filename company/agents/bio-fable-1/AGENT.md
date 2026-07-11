@@ -3,7 +3,7 @@ id: bio-fable-1
 name: Dmitri Sokolov
 team: bio
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Dmitri Sokolov — Senior Researcher
 

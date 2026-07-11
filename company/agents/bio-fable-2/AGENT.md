@@ -3,7 +3,7 @@ id: bio-fable-2
 name: Ines Duarte
 team: bio
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Ines Duarte — Senior Researcher
 

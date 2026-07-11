@@ -3,7 +3,7 @@ id: rendering-fable-3
 name: Owen Gallagher
 team: rendering
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Owen Gallagher — Senior Researcher
 

@@ -3,7 +3,7 @@ id: fluid-fable-3
 name: Clara Novak
 team: fluid
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Clara Novak — Senior Researcher
 

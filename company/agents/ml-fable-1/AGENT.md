@@ -3,7 +3,7 @@ id: ml-fable-1
 name: Iris Papadaki
 team: ml
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Iris Papadaki — Senior Researcher
 

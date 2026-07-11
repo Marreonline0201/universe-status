@@ -3,7 +3,7 @@ id: game-fable-2
 name: Aisha Bakr
 team: game
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Aisha Bakr — Senior Researcher
 

@@ -3,7 +3,7 @@ id: chemistry-fable-2
 name: Hana Kobayashi
 team: chemistry
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Hana Kobayashi — Senior Researcher
 

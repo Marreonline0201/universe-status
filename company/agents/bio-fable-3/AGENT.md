@@ -3,7 +3,7 @@ id: bio-fable-3
 name: Ravi Chandra
 team: bio
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Ravi Chandra — Senior Researcher
 

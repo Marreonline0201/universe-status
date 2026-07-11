@@ -3,7 +3,7 @@ id: fluid-fable-1
 name: Sofia Marino
 team: fluid
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Sofia Marino — Senior Researcher
 

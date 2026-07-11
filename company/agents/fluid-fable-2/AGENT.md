@@ -3,7 +3,7 @@ id: fluid-fable-2
 name: Abel Tesfaye
 team: fluid
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Abel Tesfaye — Senior Researcher
 

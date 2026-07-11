@@ -3,7 +3,7 @@ id: ml-fable-3
 name: Anya Sharma
 team: ml
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Anya Sharma — Senior Researcher
 

@@ -3,7 +3,7 @@ id: chemistry-fable-1
 name: Lucia Ferreira
 team: chemistry
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Lucia Ferreira — Senior Researcher
 
