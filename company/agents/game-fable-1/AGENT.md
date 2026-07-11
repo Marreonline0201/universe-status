@@ -3,7 +3,7 @@ id: game-fable-1
 name: Emil Janssen
 team: game
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Emil Janssen — Senior Researcher
 

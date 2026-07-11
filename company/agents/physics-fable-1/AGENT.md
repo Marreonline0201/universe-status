@@ -3,7 +3,7 @@ id: physics-fable-1
 name: Kenji Sato
 team: physics
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Kenji Sato — Senior Researcher
 

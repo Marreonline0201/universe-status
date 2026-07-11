@@ -3,7 +3,7 @@ id: game-fable-3
 name: Viktor Hale
 team: game
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Viktor Hale — Senior Researcher
 

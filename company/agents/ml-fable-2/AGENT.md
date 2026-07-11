@@ -3,7 +3,7 @@ id: ml-fable-2
 name: Sam Whitfield
 team: ml
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Sam Whitfield — Senior Researcher
 

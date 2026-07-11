@@ -3,7 +3,7 @@ id: rendering-fable-1
 name: Hugo Andrade
 team: rendering
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Hugo Andrade — Senior Researcher
 

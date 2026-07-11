@@ -19,9 +19,11 @@ export interface RoleSpec {
 
 export const TEAM_ROLES: RoleSpec[] = [
   { suffix: 'lead',     role: 'Team Lead',         model: MODELS.opus,   duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
-  { suffix: 'fable-1',  role: 'Senior Researcher', model: MODELS.fable,  duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-2',  role: 'Senior Researcher', model: MODELS.fable,  duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-3',  role: 'Senior Researcher', model: MODELS.fable,  duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  // TEMP: Fable 5 left the subscription 2026-07-12 (usage-credit billing). Researchers run on Opus
+  // to stay in-plan. Revert model to MODELS.fable when Fable returns to the subscription.
+  { suffix: 'fable-1',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'fable-2',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'fable-3',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
   { suffix: 'reviewer', role: 'Reviewer / Editor', model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
   { suffix: 'engineer', role: 'Research Engineer', model: MODELS.sonnet, duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
   { suffix: 'liaison',  role: 'Liaison / Scribe',  model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },

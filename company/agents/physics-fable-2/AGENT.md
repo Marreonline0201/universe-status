@@ -3,7 +3,7 @@ id: physics-fable-2
 name: Priya Raman
 team: physics
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Priya Raman — Senior Researcher
 

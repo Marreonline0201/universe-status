@@ -3,7 +3,7 @@ id: rendering-fable-2
 name: Sena Yildiz
 team: rendering
 role: Senior Researcher
-model: claude-fable-5
+model: claude-opus-4-8
 ---
 # Sena Yildiz — Senior Researcher
 
