@@ -52,6 +52,7 @@ interface Runnable {
   reason: string
   priority: number // lower = first
   task: TaskSummary | null
+  sig: string // "work signature" — same value two wakes in a row ⇒ nothing new to do
 }
 
 const STATUS_PRIORITY: Record<string, number> = {
@@ -61,6 +62,16 @@ const STATUS_PRIORITY: Record<string, number> = {
   'in-progress': 3,
 }
 
+// Cap for the escalating no-progress backoff. A task blocked on an external gate (e.g. a
+// survey waiting on the owner's lab runs) leaves its agent perpetually "runnable" — an
+// in-progress task never leaves the runnable set. Without this, the agent re-wakes every
+// cooldown, burns a full session re-verifying an unchanged blocker, and appends another
+// identical "hold" log line (which counts as wroteFiles, defeating the plain no-progress
+// backoff). The fix: when we re-wake an agent on the SAME work signature, escalate the
+// backoff up to this cap so a stuck agent settles to one heartbeat wake per ~30 min. Any
+// real change (new mail, task status change, new task) resets it → instant wake.
+const SPIN_BACKOFF_CAP_MS = 30 * 60_000
+
 export class Scheduler {
   paused = false
   private usage: UsageState | null = null
@@ -68,6 +79,8 @@ export class Scheduler {
   private live = new Map<string, Activation>()
   private lastEnd = new Map<string, number>()     // agentId → ts of last activation end
   private backoffUntil = new Map<string, number>() // agentId → ts before which not runnable
+  private lastSig = new Map<string, string>()     // agentId → work signature at last activation
+  private spinCount = new Map<string, number>()   // consecutive re-wakes on an unchanged signature
   private queued: Runnable[] = []
   private sessions: SessionStore
   private scanTimer: ReturnType<typeof setInterval> | null = null
@@ -141,8 +154,6 @@ export class Scheduler {
 
     for (const agent of this.roster) {
       if (this.live.has(agent.id)) continue
-      if ((this.backoffUntil.get(agent.id) ?? 0) > now) continue
-      if (now - (this.lastEnd.get(agent.id) ?? 0) < this.cfg.agentCooldownMs) continue
 
       const myTasks = tasks
         .filter(t => t.assignee === agent.id && t.status in STATUS_PRIORITY)
@@ -156,9 +167,25 @@ export class Scheduler {
 
       if (myTasks.length === 0 && inbox.length === 0) continue
       const top = myTasks[0] ?? null
+
+      // Does this agent actually have anything NEW since we last woke it? Same top task +
+      // status + unread-mail count ⇒ nothing changed. Fresh/changed work clears any active
+      // backoff (wake now); unchanged work must serve out its escalating backoff so a task
+      // blocked on an external gate can't spin. (loadInbox already excludes archived mail,
+      // so inbox.length is the genuine unread count.)
+      const sig = this.workSig(top, inbox.length)
+      if (sig !== this.lastSig.get(agent.id)) {
+        this.backoffUntil.delete(agent.id)
+      } else if ((this.backoffUntil.get(agent.id) ?? 0) > now) {
+        continue
+      }
+      // Always honor the minimum inter-activation cooldown.
+      if (now - (this.lastEnd.get(agent.id) ?? 0) < this.cfg.agentCooldownMs) continue
+
       runnable.push({
         agent,
         task: top,
+        sig,
         reason: [
           inbox.length ? `${inbox.length} unread mail` : '',
           top ? `task ${top.id} (${top.status})` : '',
@@ -186,10 +213,22 @@ export class Scheduler {
     this.emitPool()
   }
 
+  /** A cheap fingerprint of an agent's runnable state. Two wakes with the same signature
+   *  mean nothing actionable changed in between (same top task + status, same unread-mail
+   *  count) — the trigger for the escalating spin backoff. */
+  private workSig(top: TaskSummary | null, unreadMail: number): string {
+    return `${top?.id ?? '-'}:${top?.status ?? '-'}|mail:${unreadMail}`
+  }
+
   private activate(r: Runnable) {
     const { agent } = r
     const inbox = loadInbox(this.paths, agent.id)
     const resume = this.sessions.get(agent.id)
+
+    // Count consecutive wakes on an unchanged work signature (reset when it changes).
+    const spins = r.sig === this.lastSig.get(agent.id) ? (this.spinCount.get(agent.id) ?? 0) + 1 : 0
+    this.lastSig.set(agent.id, r.sig)
+    this.spinCount.set(agent.id, spins)
     const lines = [
       `Office activation for ${agent.id} (${agent.role}).`,
       inbox.length
@@ -242,19 +281,24 @@ export class Scheduler {
             this.sessions.set(agent.id, res.sessionId)
           }
         }
+        // Escalating no-progress backoff: doubles each consecutive wake on an unchanged
+        // signature, capped, so a blocked or repeatedly-failing agent settles to a heartbeat
+        // instead of spinning. spins === 0 (fresh work) keeps the original single interval.
+        const backoff = Math.min(this.cfg.noProgressBackoffMs * 2 ** Math.min(spins, 4), SPIN_BACKOFF_CAP_MS)
         if (!res.ok) {
           if (res.limitHit) this.events.onLimitHit()
           // A failed resume is the most common failure: drop the session and retry fresh later.
           if (res.error && /resume|session/i.test(res.error)) this.sessions.clear(agent.id)
           this.events.onStatus(agent.id, 'blocked', r.task)
           this.events.log(`✗ ${agent.id} activation failed: ${res.error?.slice(0, 200)}`)
-          this.backoffUntil.set(agent.id, Date.now() + this.cfg.noProgressBackoffMs)
+          this.backoffUntil.set(agent.id, Date.now() + backoff)
         } else {
           this.events.onStatus(agent.id, 'idle')
-          if (!res.wroteFiles) {
-            // No file changes: fine for pure routing turns, but back off so an agent
-            // that keeps "finishing" without output doesn't spin.
-            this.backoffUntil.set(agent.id, Date.now() + this.cfg.noProgressBackoffMs)
+          if (!res.wroteFiles || spins > 0) {
+            // Nothing genuinely new this turn — either no writes at all, or a re-wake on the
+            // same work state (a task blocked on an external gate). Back off (escalating).
+            this.backoffUntil.set(agent.id, Date.now() + backoff)
+            if (spins > 0) this.events.log(`⏸ ${agent.id} nothing new on ${r.task?.status ?? 'inbox'} (spin ${spins}) — next check in ~${Math.round(backoff / 60000)}m`)
           }
         }
         this.poke()
