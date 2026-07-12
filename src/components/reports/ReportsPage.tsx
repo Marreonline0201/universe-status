@@ -1,13 +1,22 @@
 // Top-level REPORTS tab: owner approvals inbox + team reports (readable) +
 // finished tasks. List pane left, rendered-markdown reader right.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { OfficeSocket, ReportMeta, TaskSummary } from '../../hooks/useOfficeSocket'
 import { MockBanner } from '../common/MockBanner'
+import { ResizeHandle } from '../common/ResizeHandle'
 import { ApprovalCard } from './ApprovalCard'
 import { ReportReader } from './ReportReader'
 
 const MONO = '"IBM Plex Mono", monospace'
 const TASK_STATUS_COLORS: Record<string, string> = { done: '#00ff88', archived: '#3a4157' }
+
+// List-pane width is a personal layout preference — persisted per-browser, same
+// pattern as the office panels.
+const LIST_W_KEY = 'universe-reports-list-w'
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+const readW = (key: string, fallback: number): number => {
+  try { const v = parseFloat(localStorage.getItem(key) ?? ''); return Number.isFinite(v) ? v : fallback } catch { return fallback }
+}
 
 function SectionHeader({ label, color }: { label: string; color: string }) {
   return (
@@ -60,6 +69,8 @@ export function ReportsPage({ office, onWatchRun }: {
 }) {
   const { state } = office
   const [selected, setSelected] = useState<string | null>(null)
+  const [listWidth, setListWidth] = useState(() => readW(LIST_W_KEY, 380))
+  useEffect(() => { try { localStorage.setItem(LIST_W_KEY, String(listWidth)) } catch { /* storage off */ } }, [listWidth])
 
   const pending = state.requests.filter(r => r.status === 'pending')
   const inFlight = state.requests.filter(r => r.status === 'approved' || r.status === 'running')
@@ -90,9 +101,9 @@ export function ReportsPage({ office, onWatchRun }: {
     <div style={{ display: 'flex', height: '100%', fontFamily: MONO, color: '#cfe3ff', position: 'relative' }}>
       {state.mock && state.connected && <MockBanner sub="approvals and reports below are scripted demo data" />}
 
-      {/* ── list pane ── */}
+      {/* ── list pane (drag its right edge to resize) ── */}
       <div style={{
-        width: 380, flexShrink: 0, display: 'flex', flexDirection: 'column',
+        width: listWidth, flexShrink: 0, display: 'flex', flexDirection: 'column',
         borderRight: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.92)',
       }}>
         <div style={{ padding: '10px 12px 4px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -104,9 +115,9 @@ export function ReportsPage({ office, onWatchRun }: {
             <>
               <SectionHeader label={`OWNER APPROVALS${pending.length ? ` (${pending.length})` : ''}`} color="#ffd700" />
               {[...pending].sort((a, b) => a.createdAt - b.createdAt).map(r =>
-                <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} />)}
-              {inFlight.map(r => <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} />)}
-              {settled.map(r => <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} />)}
+                <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} onOpen={setSelected} />)}
+              {inFlight.map(r => <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} onOpen={setSelected} />)}
+              {settled.map(r => <ApprovalCard key={r.id} req={r} mock={state.mock} onWatch={onWatchRun} onOpen={setSelected} />)}
             </>
           )}
 
@@ -138,6 +149,8 @@ export function ReportsPage({ office, onWatchRun }: {
           )}
         </div>
       </div>
+
+      <ResizeHandle side="left" onDrag={d => setListWidth(w => clamp(w + d, 280, 720))} />
 
       {/* ── reader pane ── */}
       <ReportReader path={selected} office={office} />

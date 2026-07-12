@@ -54,7 +54,7 @@ export function BlobImage({ path, maxHeight = 180 }: { path: string; maxHeight?:
       src={url}
       alt={path.split('/').pop() ?? 'lab frame'}
       title={`${path} — click to open full size`}
-      onClick={() => window.open(url, '_blank', 'noopener')}
+      onClick={(e) => { e.stopPropagation(); window.open(url, '_blank', 'noopener') }}
       style={{
         maxHeight, maxWidth: '100%', borderRadius: 3, cursor: 'zoom-in',
         border: '1px solid rgba(90,110,150,0.35)', display: 'block',

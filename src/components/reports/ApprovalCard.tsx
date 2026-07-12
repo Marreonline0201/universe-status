@@ -5,34 +5,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { OwnerRequest } from '../../hooks/useOfficeSocket'
 import { approveRequest, denyRequest, killRequest, fetchCompanyFile } from '../../lib/officeApi'
-import { Markdown, stripFrontmatter } from '../../lib/markdown'
-import { BlobImage } from '../common/BlobImage'
+import { stripFrontmatter } from '../../lib/markdown'
+import { splitBodyImages } from '../../lib/companyImages'
 
 const KIND_COLORS: Record<string, string> = { run: '#ff6b35', decision: '#00d4ff', access: '#00d4ff' }
 const STATUS_COLORS: Record<string, string> = {
   pending: '#ffd700', approved: '#00d4ff', running: '#ff6b35',
   done: '#00ff88', failed: '#ff4444', denied: '#3a4157',
-}
-
-// Images referenced from a request body render ONLY if they are company/-relative
-// raster files — never external URLs (agent content must not beacon out from the
-// owner's browser). The server's /api/blob route enforces the same boundary.
-const BODY_IMAGE_RE = /!\[[^\]]*\]\((company\/[A-Za-z0-9_\-./]+\.(?:png|jpe?g|webp))\)/g
-
-/** Split a request body into displayable markdown + the referenced company images. */
-function extractBodyImages(raw: string): { body: string; images: string[] } {
-  const { body } = stripFrontmatter(raw)
-  const images: string[] = []
-  for (const m of body.matchAll(BODY_IMAGE_RE)) {
-    const p = m[1]
-    if (!p.includes('..') && !images.includes(p)) images.push(p)
-  }
-  const cleaned = body
-    .split('\n')
-    .filter(line => { BODY_IMAGE_RE.lastIndex = 0; return !BODY_IMAGE_RE.test(line.trim()) })
-    .join('\n')
-    .trim()
-  return { body: cleaned, images }
 }
 
 function age(ts: number): string {
@@ -42,10 +21,12 @@ function age(ts: number): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`
 }
 
-export function ApprovalCard({ req, mock, onWatch }: {
+export function ApprovalCard({ req, mock, onWatch, onOpen }: {
   req: OwnerRequest
   mock: boolean
   onWatch?: (id: string) => void
+  /** Clicking the card (not its buttons) opens the full request file in the reader pane. */
+  onOpen?: (path: string) => void
 }) {
   const [confirm, setConfirm] = useState<'none' | 'approve' | 'deny'>('none')
   const [busy, setBusy] = useState(false)
@@ -73,7 +54,7 @@ export function ApprovalCard({ req, mock, onWatch }: {
     fetchCompanyFile(req.path)
       .then(raw => {
         if (cancelled) return
-        const { body: b, images: imgs } = extractBodyImages(raw)
+        const { body: b, images: imgs } = splitBodyImages(stripFrontmatter(raw).body)
         setBody(b || null)
         setImages(imgs)
       })
@@ -96,9 +77,11 @@ export function ApprovalCard({ req, mock, onWatch }: {
   const kindColor = KIND_COLORS[req.kind] ?? '#8a97b8'
   const statusColor = STATUS_COLORS[req.status] ?? '#8a97b8'
 
+  // Buttons live inside a clickable card — stop the bubble so acting on a request
+  // doesn't ALSO open it in the reader.
   const btn = (label: string, color: string, onClick: () => void, solid = false): React.ReactElement => (
     <button
-      onClick={onClick}
+      onClick={(e) => { e.stopPropagation(); onClick() }}
       disabled={busy}
       style={{
         background: solid ? `${color}26` : 'transparent', border: `1px solid ${color}88`, color,
@@ -109,10 +92,14 @@ export function ApprovalCard({ req, mock, onWatch }: {
   )
 
   return (
-    <div style={{
-      border: `1px solid ${pending ? 'rgba(255,215,0,0.4)' : 'rgba(90,110,150,0.25)'}`,
-      borderRadius: 4, padding: 10, marginBottom: 8, background: 'rgba(8,12,24,0.7)',
-    }}>
+    <div
+      onClick={() => onOpen?.(req.path)}
+      title="click to open the full request in the reader"
+      style={{
+        border: `1px solid ${pending ? 'rgba(255,215,0,0.4)' : 'rgba(90,110,150,0.25)'}`,
+        borderRadius: 4, padding: 10, marginBottom: 8, background: 'rgba(8,12,24,0.7)',
+        cursor: onOpen ? 'pointer' : 'default',
+      }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>
         <span style={{ color: kindColor, fontWeight: 700 }}>{req.kind.toUpperCase()}</span>
         <span style={{ color: statusColor, fontWeight: 700 }}>
@@ -125,17 +112,11 @@ export function ApprovalCard({ req, mock, onWatch }: {
 
       <div style={{ color: '#cfe3ff', fontSize: 'calc(12px * var(--font-scale, 1))', margin: '6px 0' }}>{req.title}</div>
 
-      {body && (
-        <div style={{
-          maxHeight: 160, overflowY: 'auto', margin: '6px 0', padding: '6px 8px',
-          background: 'rgba(5,7,15,0.6)', borderRadius: 3, fontSize: 'calc(10px * var(--font-scale, 1))',
-        }}>
-          <Markdown md={body} />
-        </div>
-      )}
-      {images.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0' }}>
-          {images.map(p => <BlobImage key={p} path={p} maxHeight={180} />)}
+      {(body || images.length > 0) && (
+        // The card stays a SUMMARY — the question body + screenshots render full-size
+        // in the reader pane when the card is clicked (owner decision 2026-07-13).
+        <div style={{ color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0', letterSpacing: 1 }}>
+          {images.length > 0 ? `📷 ${images.length} screenshot${images.length > 1 ? 's' : ''} · ` : ''}click card for details →
         </div>
       )}
 

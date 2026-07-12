@@ -1,11 +1,19 @@
 // Right pane of the REPORTS page: fetches a company/ markdown file and renders
-// it with the shared markdown engine, frontmatter as a header card.
+// it with the shared markdown engine, frontmatter as a header card. Also used to
+// open full owner-request files (click an approval card) — embedded company
+// images (lab frames) render through the authenticated BlobImage.
 import { useEffect, useRef, useState } from 'react'
 import type { OfficeSocket } from '../../hooks/useOfficeSocket'
 import { fetchCompanyFile } from '../../lib/officeApi'
 import { Markdown, stripFrontmatter } from '../../lib/markdown'
+import { splitBodyImages } from '../../lib/companyImages'
+import { BlobImage } from '../common/BlobImage'
 
 const STATUS_COLORS: Record<string, string> = { approved: '#00ff88', draft: '#ffd700' }
+
+// Request files mutate in place (approve/deny appends ## Decision, runs append
+// ## Result) — never serve them from the cache or a click would show stale state.
+const isRequestPath = (p: string) => p.replace(/\\/g, '/').startsWith('company/requests/')
 
 export function ReportReader({ path, office }: { path: string | null; office: OfficeSocket }) {
   const [body, setBody] = useState<string | null>(null)
@@ -28,7 +36,7 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
     let cancelled = false
     setErr(null)
     const cached = cache.current.get(path)
-    if (cached !== undefined && nonce === 0) {
+    if (cached !== undefined && nonce === 0 && !isRequestPath(path)) {
       const { meta: m, body: b } = stripFrontmatter(cached)
       setMeta(m); setBody(b)
       return
@@ -37,7 +45,7 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
     fetchCompanyFile(path.replace(/\\/g, '/'))
       .then(text => {
         if (cancelled) return
-        cache.current.set(path, text)
+        if (!isRequestPath(path)) cache.current.set(path, text)
         const { meta: m, body: b } = stripFrontmatter(text)
         setMeta(m); setBody(b)
       })
@@ -68,6 +76,7 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
   }
 
   const status = (meta.status ?? '').toLowerCase()
+  const { body: text, images } = splitBodyImages(body)
   return (
     <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
       <div style={{ padding: '20px 40px 0' }}>
@@ -83,7 +92,17 @@ export function ReportReader({ path, office }: { path: string | null; office: Of
         <div style={{ borderBottom: '1px solid rgba(0,180,255,0.15)', marginTop: 12 }} />
       </div>
       <div style={{ padding: '16px 40px 80px' }}>
-        <Markdown md={body} />
+        <Markdown md={text} />
+        {images.length > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <div style={{ color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 2, fontWeight: 700, marginBottom: 8 }}>
+              IMAGES ({images.length})
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {images.map(p => <BlobImage key={p} path={p} maxHeight={320} />)}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
