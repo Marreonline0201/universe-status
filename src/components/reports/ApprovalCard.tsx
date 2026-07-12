@@ -1,13 +1,38 @@
 // One owner-request card: shows EXACTLY what will run before any click, with a
-// two-click confirm for both approve and deny.
+// two-click confirm for both approve and deny. Pending decision cards also show the
+// request BODY (the agent's actual question) plus any referenced lab screenshots, so
+// a visual check ("does the water look right?") is answerable at a glance.
 import { useEffect, useRef, useState } from 'react'
 import type { OwnerRequest } from '../../hooks/useOfficeSocket'
-import { approveRequest, denyRequest, killRequest } from '../../lib/officeApi'
+import { approveRequest, denyRequest, killRequest, fetchCompanyFile } from '../../lib/officeApi'
+import { Markdown, stripFrontmatter } from '../../lib/markdown'
+import { BlobImage } from '../common/BlobImage'
 
 const KIND_COLORS: Record<string, string> = { run: '#ff6b35', decision: '#00d4ff', access: '#00d4ff' }
 const STATUS_COLORS: Record<string, string> = {
   pending: '#ffd700', approved: '#00d4ff', running: '#ff6b35',
   done: '#00ff88', failed: '#ff4444', denied: '#3a4157',
+}
+
+// Images referenced from a request body render ONLY if they are company/-relative
+// raster files — never external URLs (agent content must not beacon out from the
+// owner's browser). The server's /api/blob route enforces the same boundary.
+const BODY_IMAGE_RE = /!\[[^\]]*\]\((company\/[A-Za-z0-9_\-./]+\.(?:png|jpe?g|webp))\)/g
+
+/** Split a request body into displayable markdown + the referenced company images. */
+function extractBodyImages(raw: string): { body: string; images: string[] } {
+  const { body } = stripFrontmatter(raw)
+  const images: string[] = []
+  for (const m of body.matchAll(BODY_IMAGE_RE)) {
+    const p = m[1]
+    if (!p.includes('..') && !images.includes(p)) images.push(p)
+  }
+  const cleaned = body
+    .split('\n')
+    .filter(line => { BODY_IMAGE_RE.lastIndex = 0; return !BODY_IMAGE_RE.test(line.trim()) })
+    .join('\n')
+    .trim()
+  return { body: cleaned, images }
 }
 
 function age(ts: number): string {
@@ -25,6 +50,8 @@ export function ApprovalCard({ req, mock, onWatch }: {
   const [confirm, setConfirm] = useState<'none' | 'approve' | 'deny'>('none')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [body, setBody] = useState<string | null>(null)
+  const [images, setImages] = useState<string[]>([])
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -34,6 +61,28 @@ export function ApprovalCard({ req, mock, onWatch }: {
     }
   }, [confirm])
   useEffect(() => { setConfirm('none'); setErr(null) }, [req.status])
+
+  // Pending decision cards show the agent's actual question (the REQ body) + screenshots.
+  // Mock requests have no backing file — fetch failure just means no body section.
+  useEffect(() => {
+    if (req.kind !== 'decision' || req.status !== 'pending' || mock) {
+      setBody(null); setImages([])
+      return
+    }
+    let cancelled = false
+    fetchCompanyFile(req.path)
+      .then(raw => {
+        if (cancelled) return
+        const { body: b, images: imgs } = extractBodyImages(raw)
+        setBody(b || null)
+        setImages(imgs)
+      })
+      .catch(() => { if (!cancelled) { setBody(null); setImages([]) } })
+    return () => { cancelled = true }
+  }, [req.kind, req.status, req.path, mock])
+
+  // A pending decision that carries screenshots is a visual check — the buttons say so.
+  const visualCheck = req.kind === 'decision' && images.length > 0
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true)
@@ -76,6 +125,20 @@ export function ApprovalCard({ req, mock, onWatch }: {
 
       <div style={{ color: '#cfe3ff', fontSize: 'calc(12px * var(--font-scale, 1))', margin: '6px 0' }}>{req.title}</div>
 
+      {body && (
+        <div style={{
+          maxHeight: 160, overflowY: 'auto', margin: '6px 0', padding: '6px 8px',
+          background: 'rgba(5,7,15,0.6)', borderRadius: 3, fontSize: 'calc(10px * var(--font-scale, 1))',
+        }}>
+          <Markdown md={body} />
+        </div>
+      )}
+      {images.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0' }}>
+          {images.map(p => <BlobImage key={p} path={p} maxHeight={180} />)}
+        </div>
+      )}
+
       {req.command && (
         <pre style={{
           background: '#05070f', borderRadius: 3, padding: 6, fontSize: 'calc(10px * var(--font-scale, 1))', margin: '6px 0',
@@ -90,8 +153,8 @@ export function ApprovalCard({ req, mock, onWatch }: {
 
       {pending && req.valid && confirm === 'none' && (
         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-          {btn('APPROVE', '#00ff88', () => setConfirm('approve'))}
-          {btn('DENY', '#ff4444', () => setConfirm('deny'))}
+          {btn(visualCheck ? '✓ LOOKS RIGHT' : 'APPROVE', '#00ff88', () => setConfirm('approve'))}
+          {btn(visualCheck ? '✗ NOT RIGHT' : 'DENY', '#ff4444', () => setConfirm('deny'))}
         </div>
       )}
       {pending && confirm === 'approve' && (
@@ -99,10 +162,12 @@ export function ApprovalCard({ req, mock, onWatch }: {
           <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
             {req.kind === 'run'
               ? `CONFIRM — will execute the command above in ${req.cwd}${mock ? ' (MOCK)' : ''}`
-              : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
+              : visualCheck
+                ? `CONFIRM — the agent will record this as "looks right"${mock ? ' (MOCK)' : ''}`
+                : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {btn('✓ CONFIRM APPROVE', '#00ff88', () => void act(() => approveRequest(req.id)), true)}
+            {btn(visualCheck ? '✓ CONFIRM LOOKS RIGHT' : '✓ CONFIRM APPROVE', '#00ff88', () => void act(() => approveRequest(req.id)), true)}
             {btn('CANCEL', '#8a97b8', () => setConfirm('none'))}
           </div>
         </div>
@@ -110,10 +175,12 @@ export function ApprovalCard({ req, mock, onWatch }: {
       {pending && confirm === 'deny' && (
         <div style={{ marginTop: 6 }}>
           <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
-            CONFIRM DENY — the agent will be told this was denied{mock ? ' (MOCK)' : ''}
+            {visualCheck
+              ? `CONFIRM — the agent will record this as "NOT right"${mock ? ' (MOCK)' : ''}`
+              : `CONFIRM DENY — the agent will be told this was denied${mock ? ' (MOCK)' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {btn('✗ CONFIRM DENY', '#ff4444', () => void act(() => denyRequest(req.id)), true)}
+            {btn(visualCheck ? '✗ CONFIRM NOT RIGHT' : '✗ CONFIRM DENY', '#ff4444', () => void act(() => denyRequest(req.id)), true)}
             {btn('CANCEL', '#8a97b8', () => setConfirm('none'))}
           </div>
         </div>

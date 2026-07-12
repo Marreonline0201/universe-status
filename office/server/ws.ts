@@ -32,6 +32,7 @@ export interface WsHandlers {
   status: () => unknown
   requests: () => OwnerRequest[]
   file: (repoRelPath: unknown) => { ok: true; path: string; content: string; mtimeMs: number } | { ok: false; error: string; code: 400 | 403 | 404 | 413 }
+  blob: (repoRelPath: unknown) => { ok: true; buf: Buffer; contentType: string } | { ok: false; error: string; code: 400 | 403 | 404 | 413 }
   lab: () => LabExperiment[]
   approveRequest: (id: string) => { ok: boolean; error?: string }
   denyRequest: (id: string, reason?: string) => { ok: boolean; error?: string }
@@ -254,6 +255,23 @@ export class OfficeWs {
     if (req.method === 'GET' && route === '/api/requests') {
       if (!owner) return requireOwner()
       return json(200, { requests: this.handlers.requests() })
+    }
+    if (req.method === 'GET' && route === '/api/blob') {
+      // Binary company images (lab screenshots). Owner-only by design: the sole consumer
+      // is the approval card, an owner-only surface — no reason to expose a public binary
+      // endpoint on the tunnel. NOTE: the json() helper isn't used here, so CORS headers
+      // must be spread into writeHead manually.
+      if (!owner) return requireOwner()
+      const result = this.handlers.blob(params.get('path') ?? undefined)
+      if (!result.ok) return json(result.code, { error: result.error })
+      res.writeHead(200, {
+        'Content-Type': result.contentType,
+        'Content-Length': result.buf.length,
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'private, max-age=300',
+        ...cors,
+      })
+      return res.end(result.buf)
     }
     if (req.method === 'GET' && route === '/api/run-output') {
       if (!owner) return requireOwner()

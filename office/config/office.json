@@ -11,8 +11,8 @@
   "autoCommitBranch": "agent-office",
   "autoCommitIntervalMs": 120000,
   "usageRest": {
-    "sessionThresholdPct": 90,
-    "weeklyThresholdPct": 95,
+    "sessionThresholdPct": 85,
+    "weeklyThresholdPct": 90,
     "pollSeconds": 60
   },
   "session": {
@@ -35,14 +35,48 @@
       "baseRepo": "../universe-engine"
     },
     "commands": [
-      { "bin": "cargo", "subcommands": ["check", "build", "test", "clippy", "fmt", "bench"], "cwds": ["universe-engine"], "maxArgs": 12 },
-      { "bin": "cargo", "subcommands": ["run"], "cwds": ["universe-engine"], "maxArgs": 12,
-        "warn": "cargo run launches the app window on your machine and holds the run slot until it exits or times out" },
-      { "bin": "node", "firstArgPattern": "^(office/spikes|scripts)/[A-Za-z0-9_\\-./]+\\.(mjs|js)$", "cwds": ["universe-status"], "maxArgs": 8 }
+      {
+        "bin": "cargo",
+        "subcommands": [
+          "check",
+          "build",
+          "test",
+          "clippy",
+          "fmt",
+          "bench"
+        ],
+        "cwds": [
+          "universe-engine"
+        ],
+        "maxArgs": 12
+      },
+      {
+        "bin": "cargo",
+        "subcommands": [
+          "run"
+        ],
+        "cwds": [
+          "universe-engine"
+        ],
+        "maxArgs": 12,
+        "warn": "cargo run launches the app window on your machine and holds the run slot until it exits or times out"
+      },
+      {
+        "bin": "node",
+        "firstArgPattern": "^(office/spikes|scripts)/[A-Za-z0-9_\\-./]+\\.(mjs|js)$",
+        "cwds": [
+          "universe-status"
+        ],
+        "maxArgs": 8,
+        "warn": "script content is not verified by the whitelist — check `git diff scripts/ office/spikes/` before approving; run-lab.mjs opens a Chrome window on your machine for ~30-60s"
+      }
     ]
   },
   "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research",
   "publicShare": {
-    "allowedOrigins": ["https://universe-status.vercel.app", "https://universe-status-*-pioneer2026.vercel.app"]
+    "allowedOrigins": [
+      "https://universe-status.vercel.app",
+      "https://universe-status-*-pioneer2026.vercel.app"
+    ]
   }
 }
