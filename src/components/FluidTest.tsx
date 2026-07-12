@@ -10,6 +10,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
+import { BG_BASE, readBgBrightness, writeBgBrightness } from '../fluid-render/bgBrightness'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { ContactProcessor } from '../composition/ContactProcessor'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
@@ -40,6 +41,7 @@ export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
   const [gravityVal, setGravityVal] = useState(0.5)
+  const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
@@ -211,6 +213,15 @@ export function FluidTest() {
   useEffect(() => {
     if (simRef.current) simRef.current.temperature = temperatureVal
   }, [temperatureVal])
+  useEffect(() => {
+    // Brightness scales the fixed olive hue on BOTH paint paths (SSFR + fallback);
+    // persisted so the Lab page (and reloads) share the preference.
+    writeBgBrightness(bgBrightVal)
+    if (simRef.current) {
+      simRef.current.scene.background = new THREE.Color(BG_BASE.r * bgBrightVal, BG_BASE.g * bgBrightVal, BG_BASE.b * bgBrightVal)
+      simRef.current.ssfrPipeline?.setBgBrightness(bgBrightVal)
+    }
+  }, [bgBrightVal])
 
   // ── AI: Update MaterialGenerator when API key changes ─────────────────────
   useEffect(() => {
@@ -300,7 +311,9 @@ export function FluidTest() {
       }
 
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(0xb1b366)
+      // Base olive × the persisted brightness preference.
+      const bb = readBgBrightness()
+      scene.background = new THREE.Color(BG_BASE.r * bb, BG_BASE.g * bb, BG_BASE.b * bb)
 
       const camera = new THREE.PerspectiveCamera(
         50,
@@ -486,6 +499,7 @@ export function FluidTest() {
           absorptionScale: 0.6,
         })
         await ssfr.init(device, container.clientWidth, container.clientHeight)
+        ssfr.setBgBrightness(readBgBrightness()) // persisted background brightness
         ssfrPipeline = ssfr
         console.log('SSFR pipeline active — real fluid rendering')
       } catch (e) {
@@ -746,6 +760,7 @@ export function FluidTest() {
     ballActive, dropBall, removeBall,
     gravity: gravityVal, setGravity: setGravityVal,
     temperature: temperatureVal, setTemperature: setTemperatureVal,
+    bgBrightness: bgBrightVal, setBgBrightness: setBgBrightVal,
     reset: resetSim,
   }
 

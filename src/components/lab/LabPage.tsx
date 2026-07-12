@@ -11,6 +11,7 @@ import { MockBanner } from '../common/MockBanner'
 import { LabSim } from './LabSim'
 import { RunConsole } from './RunConsole'
 import { FluidControls, type FluidController } from '../fluid/FluidControls'
+import { readBgBrightness, writeBgBrightness } from '../../fluid-render/bgBrightness'
 import type { LabFluidEngine } from '../../lab/LabFluidEngine'
 import type { NamedComposition } from '../../composition/CompositionTable'
 
@@ -52,6 +53,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
   const [gravityVal, setGravityVal] = useState(0.3)
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [ballActive, setBallActive] = useState(false)
+  const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
 
   const webgpu = typeof navigator !== 'undefined' && !!navigator.gpu
 
@@ -151,6 +153,8 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     setGravity: (g) => { engine.setGravity(g); setGravityVal(g) },
     temperature: temperatureVal,
     setTemperature: (t) => { engine.setTemperature(t); setTemperatureVal(t) },
+    bgBrightness: bgBrightVal,
+    setBgBrightness: (b) => { engine.setBgBrightness(b); setBgBrightVal(b); writeBgBrightness(b) },
     reset: () => { engine.reset(); setCompositions(engine.getCompositions()); setBallActive(engine.ballActive); setGravityVal(engine.gravity) },
   } : null
 
