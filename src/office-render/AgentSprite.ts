@@ -1,7 +1,7 @@
 // Per-agent visual state machine: sitting, typing, walking (BFS paths), talking.
 // Protocol statuses drive *goals*; this class turns them into movement + animation.
 import { characterSheet, STATUS_COLORS, type CharacterSheet, type CharFrame } from './assets'
-import { findPath, type Point } from './pathfind'
+import { findPath, naturalizePath, type Point } from './pathfind'
 import type { AgentVisualStatus } from '../hooks/useOfficeSocket'
 import type { OfficeMapData } from './officeMap'
 
@@ -32,6 +32,7 @@ export class AgentSprite {
   private animT = 0
   private wanderT: number
   private returnHome = false
+  private speed: number // per-agent pace (tiles/s) — small spread so nobody marches in lockstep
   /** where this agent belongs when not doing anything special */
   home: Point
 
@@ -54,6 +55,7 @@ export class AgentSprite {
     this.y = this.home.y
     // First stroll is pushed well out (and spread per-agent) so the office doesn't swarm on load.
     this.wanderT = 45 + (hashCode(id) % 90)
+    this.speed = WALK_SPEED * (0.82 + (hashCode(id + 'spd') % 37) / 100) // ~0.82×–1.18× base
   }
 
   get tile(): Point { return { x: Math.round(this.x), y: Math.round(this.y) } }
@@ -97,7 +99,8 @@ export class AgentSprite {
   goTo(dest: Point) {
     const from = this.tile
     this.x = from.x; this.y = from.y
-    this.path = findPath(this.map.walkable, this.map.width, this.map.height, from, dest)
+    const raw = findPath(this.map.walkable, this.map.width, this.map.height, from, dest)
+    this.path = naturalizePath(this.map.walkable, from, raw)
   }
 
   update(dt: number, now: number) {
@@ -108,7 +111,7 @@ export class AgentSprite {
       const next = this.path[0]
       const dx = next.x - this.x, dy = next.y - this.y
       const dist = Math.hypot(dx, dy)
-      const step = WALK_SPEED * dt
+      const step = this.speed * dt
       this.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U')
       if (dist <= step) {
         this.x = next.x; this.y = next.y
