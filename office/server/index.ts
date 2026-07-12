@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   resolvePaths, loadRoster, loadTeams, loadTasks, loadReports, buildAgents, createTaskFile,
-  readCompanyFile, listLab, loadRequests,
+  readCompanyFile, readCompanyBlob, listLab, loadRequests,
 } from './store.ts'
 import { Scheduler, type OfficeConfig } from './scheduler.ts'
 import { Runner } from './runner.ts'
@@ -136,6 +136,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
       }
       return readCompanyFile(paths, p)
     },
+    blob: (p) => readCompanyBlob(paths, p),
     lab: () => mockLab ?? listLab(paths),
     approveRequest: (id) => runner?.approve(id) ?? { ok: false, error: 'runner not ready' },
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },

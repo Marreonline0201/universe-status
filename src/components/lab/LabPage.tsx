@@ -23,9 +23,11 @@ function age(ts: number): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`
 }
 
-export function LabPage({ office, focusRequestId }: {
+export function LabPage({ office, focusRequestId, initialExperimentId = null }: {
   office: OfficeSocket
   focusRequestId: string | null
+  /** From the ?exp= deep-link — auto-selected once when the list first contains it. */
+  initialExperimentId?: string | null
 }) {
   const { state } = office
   const [experiments, setExperiments] = useState<LabExperiment[]>([])
@@ -108,6 +110,17 @@ export function LabPage({ office, focusRequestId }: {
       }
     }
   }, [])
+
+  // Deep-link auto-select: consume-once. Fires on the first experiments load that CONTAINS
+  // the id; if the list loads non-empty without it, consume anyway (never retry on the 30s
+  // poll / LAB_UPDATED refreshes, never fight the owner's own clicks).
+  const deepLinkPending = useRef(!!initialExperimentId)
+  useEffect(() => {
+    if (!deepLinkPending.current || !initialExperimentId || experiments.length === 0) return
+    deepLinkPending.current = false
+    const exp = experiments.find(e => e.id === initialExperimentId)
+    if (exp) select(exp)
+  }, [experiments, initialExperimentId, select])
 
   const liveRuns = state.requests.filter(r => r.kind === 'run' && (r.status === 'running' || r.status === 'approved'))
 
@@ -222,12 +235,12 @@ export function LabPage({ office, focusRequestId }: {
           height: 36, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px',
           borderBottom: '1px solid rgba(0,180,255,0.15)', background: 'rgba(4,8,18,0.9)',
         }}>
-          <span style={{ fontSize: 'calc(11px * var(--font-scale, 1))', color: '#e8f4ff' }}>{selected ? selected.name : 'select an experiment'}</span>
+          <span data-testid="lab-experiment-name" style={{ fontSize: 'calc(11px * var(--font-scale, 1))', color: '#e8f4ff' }}>{selected ? selected.name : 'select an experiment'}</span>
           {selected?.hasScenario && scenario && toolbarBtn('▶ RE-RUN', () => setRunNonce(n => n + 1))}
           {selected?.hasNotes && toolbarBtn('NOTES', () => setNotesOpen(o => !o), notesOpen)}
-          <span style={{ marginLeft: 'auto', fontSize: 'calc(9px * var(--font-scale, 1))', color: stats.fps >= 30 ? '#00ff88' : '#ffd700' }}>{stats.fps} FPS</span>
-          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: '#8a97b8' }}>{stats.count.toLocaleString()} particles</span>
-          <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: webgpu ? '#00ff88' : '#ff4444' }}>{webgpu ? 'WEBGPU' : 'NO WEBGPU'}</span>
+          <span data-testid="lab-fps" style={{ marginLeft: 'auto', fontSize: 'calc(9px * var(--font-scale, 1))', color: stats.fps >= 30 ? '#00ff88' : '#ffd700' }}>{stats.fps} FPS</span>
+          <span data-testid="lab-particles" style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: '#8a97b8' }}>{stats.count.toLocaleString()} particles</span>
+          <span data-testid="lab-webgpu" style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: webgpu ? '#00ff88' : '#ff4444' }}>{webgpu ? 'WEBGPU' : 'NO WEBGPU'}</span>
         </div>
 
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>

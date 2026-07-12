@@ -1,8 +1,12 @@
 // One owner-request card: shows EXACTLY what will run before any click, with a
-// two-click confirm for both approve and deny.
+// two-click confirm for both approve and deny. Pending decision cards also show the
+// request BODY (the agent's actual question) plus any referenced lab screenshots, so
+// a visual check ("does the water look right?") is answerable at a glance.
 import { useEffect, useRef, useState } from 'react'
 import type { OwnerRequest } from '../../hooks/useOfficeSocket'
-import { approveRequest, denyRequest, killRequest } from '../../lib/officeApi'
+import { approveRequest, denyRequest, killRequest, fetchCompanyFile } from '../../lib/officeApi'
+import { stripFrontmatter } from '../../lib/markdown'
+import { splitBodyImages } from '../../lib/companyImages'
 
 const KIND_COLORS: Record<string, string> = { run: '#ff6b35', decision: '#00d4ff', access: '#00d4ff' }
 const STATUS_COLORS: Record<string, string> = {
@@ -17,14 +21,18 @@ function age(ts: number): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`
 }
 
-export function ApprovalCard({ req, mock, onWatch }: {
+export function ApprovalCard({ req, mock, onWatch, onOpen }: {
   req: OwnerRequest
   mock: boolean
   onWatch?: (id: string) => void
+  /** Clicking the card (not its buttons) opens the full request file in the reader pane. */
+  onOpen?: (path: string) => void
 }) {
   const [confirm, setConfirm] = useState<'none' | 'approve' | 'deny'>('none')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [body, setBody] = useState<string | null>(null)
+  const [images, setImages] = useState<string[]>([])
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -34,6 +42,28 @@ export function ApprovalCard({ req, mock, onWatch }: {
     }
   }, [confirm])
   useEffect(() => { setConfirm('none'); setErr(null) }, [req.status])
+
+  // Pending decision cards show the agent's actual question (the REQ body) + screenshots.
+  // Mock requests have no backing file — fetch failure just means no body section.
+  useEffect(() => {
+    if (req.kind !== 'decision' || req.status !== 'pending' || mock) {
+      setBody(null); setImages([])
+      return
+    }
+    let cancelled = false
+    fetchCompanyFile(req.path)
+      .then(raw => {
+        if (cancelled) return
+        const { body: b, images: imgs } = splitBodyImages(stripFrontmatter(raw).body)
+        setBody(b || null)
+        setImages(imgs)
+      })
+      .catch(() => { if (!cancelled) { setBody(null); setImages([]) } })
+    return () => { cancelled = true }
+  }, [req.kind, req.status, req.path, mock])
+
+  // A pending decision that carries screenshots is a visual check — the buttons say so.
+  const visualCheck = req.kind === 'decision' && images.length > 0
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true)
@@ -47,9 +77,11 @@ export function ApprovalCard({ req, mock, onWatch }: {
   const kindColor = KIND_COLORS[req.kind] ?? '#8a97b8'
   const statusColor = STATUS_COLORS[req.status] ?? '#8a97b8'
 
+  // Buttons live inside a clickable card — stop the bubble so acting on a request
+  // doesn't ALSO open it in the reader.
   const btn = (label: string, color: string, onClick: () => void, solid = false): React.ReactElement => (
     <button
-      onClick={onClick}
+      onClick={(e) => { e.stopPropagation(); onClick() }}
       disabled={busy}
       style={{
         background: solid ? `${color}26` : 'transparent', border: `1px solid ${color}88`, color,
@@ -60,10 +92,14 @@ export function ApprovalCard({ req, mock, onWatch }: {
   )
 
   return (
-    <div style={{
-      border: `1px solid ${pending ? 'rgba(255,215,0,0.4)' : 'rgba(90,110,150,0.25)'}`,
-      borderRadius: 4, padding: 10, marginBottom: 8, background: 'rgba(8,12,24,0.7)',
-    }}>
+    <div
+      onClick={() => onOpen?.(req.path)}
+      title="click to open the full request in the reader"
+      style={{
+        border: `1px solid ${pending ? 'rgba(255,215,0,0.4)' : 'rgba(90,110,150,0.25)'}`,
+        borderRadius: 4, padding: 10, marginBottom: 8, background: 'rgba(8,12,24,0.7)',
+        cursor: onOpen ? 'pointer' : 'default',
+      }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>
         <span style={{ color: kindColor, fontWeight: 700 }}>{req.kind.toUpperCase()}</span>
         <span style={{ color: statusColor, fontWeight: 700 }}>
@@ -75,6 +111,14 @@ export function ApprovalCard({ req, mock, onWatch }: {
       </div>
 
       <div style={{ color: '#cfe3ff', fontSize: 'calc(12px * var(--font-scale, 1))', margin: '6px 0' }}>{req.title}</div>
+
+      {(body || images.length > 0) && (
+        // The card stays a SUMMARY — the question body + screenshots render full-size
+        // in the reader pane when the card is clicked (owner decision 2026-07-13).
+        <div style={{ color: '#5c6a8a', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0', letterSpacing: 1 }}>
+          {images.length > 0 ? `📷 ${images.length} screenshot${images.length > 1 ? 's' : ''} · ` : ''}click card for details →
+        </div>
+      )}
 
       {req.command && (
         <pre style={{
@@ -90,8 +134,8 @@ export function ApprovalCard({ req, mock, onWatch }: {
 
       {pending && req.valid && confirm === 'none' && (
         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-          {btn('APPROVE', '#00ff88', () => setConfirm('approve'))}
-          {btn('DENY', '#ff4444', () => setConfirm('deny'))}
+          {btn(visualCheck ? '✓ LOOKS RIGHT' : 'APPROVE', '#00ff88', () => setConfirm('approve'))}
+          {btn(visualCheck ? '✗ NOT RIGHT' : 'DENY', '#ff4444', () => setConfirm('deny'))}
         </div>
       )}
       {pending && confirm === 'approve' && (
@@ -99,10 +143,12 @@ export function ApprovalCard({ req, mock, onWatch }: {
           <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
             {req.kind === 'run'
               ? `CONFIRM — will execute the command above in ${req.cwd}${mock ? ' (MOCK)' : ''}`
-              : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
+              : visualCheck
+                ? `CONFIRM — the agent will record this as "looks right"${mock ? ' (MOCK)' : ''}`
+                : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {btn('✓ CONFIRM APPROVE', '#00ff88', () => void act(() => approveRequest(req.id)), true)}
+            {btn(visualCheck ? '✓ CONFIRM LOOKS RIGHT' : '✓ CONFIRM APPROVE', '#00ff88', () => void act(() => approveRequest(req.id)), true)}
             {btn('CANCEL', '#8a97b8', () => setConfirm('none'))}
           </div>
         </div>
@@ -110,10 +156,12 @@ export function ApprovalCard({ req, mock, onWatch }: {
       {pending && confirm === 'deny' && (
         <div style={{ marginTop: 6 }}>
           <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
-            CONFIRM DENY — the agent will be told this was denied{mock ? ' (MOCK)' : ''}
+            {visualCheck
+              ? `CONFIRM — the agent will record this as "NOT right"${mock ? ' (MOCK)' : ''}`
+              : `CONFIRM DENY — the agent will be told this was denied${mock ? ' (MOCK)' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {btn('✗ CONFIRM DENY', '#ff4444', () => void act(() => denyRequest(req.id)), true)}
+            {btn(visualCheck ? '✗ CONFIRM NOT RIGHT' : '✗ CONFIRM DENY', '#ff4444', () => void act(() => denyRequest(req.id)), true)}
             {btn('CANCEL', '#8a97b8', () => setConfirm('none'))}
           </div>
         </div>

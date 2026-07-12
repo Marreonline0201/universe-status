@@ -20,10 +20,30 @@ const VIEWS: { id: View; label: string }[] = [
   { id: 'fluid',       label: 'FLUID TEST' },
 ]
 
+// Deep-link support (?tab=lab&exp=survey-01-dam-break) — lets the lab-runner script
+// (scripts/run-lab.mjs) land directly on a preselected experiment. Values are validated;
+// anything unknown falls back to the default view. Read once at mount — tab state stays
+// in-memory afterwards (no history/router).
+function initialView(): View {
+  try {
+    const tab = new URLSearchParams(window.location.search).get('tab')
+    if (tab && VIEWS.some(v => v.id === tab)) return tab as View
+  } catch { /* SSR/parse — default */ }
+  return 'docs'
+}
+function initialExperiment(): string | null {
+  try {
+    const exp = new URLSearchParams(window.location.search).get('exp')
+    if (exp && /^[A-Za-z0-9_-]+$/.test(exp)) return exp
+  } catch { /* default */ }
+  return null
+}
+
 export function App() {
   const world = useStatusSocket()
   const office = useOfficeSocket()
-  const [view, setView] = useState<View>('docs')
+  const [view, setView] = useState<View>(initialView)
+  const [initialExp] = useState<string | null>(initialExperiment)
   const [labFocusRequest, setLabFocusRequest] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const hasBlocked = office.state.agents.some(a => a.status === 'blocked')
@@ -167,7 +187,7 @@ export function App() {
         )}
         {view === 'lab' && (
           <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
-            <LabPage office={office} focusRequestId={labFocusRequest} />
+            <LabPage office={office} focusRequestId={labFocusRequest} initialExperimentId={initialExp} />
           </div>
         )}
         {view === 'fluid' && <FluidTest />}

@@ -40,6 +40,18 @@ export async function fetchCompanyFile(path: string): Promise<string> {
   return content
 }
 
+/** Owner-only: fetch a binary company file (lab screenshots) as a Blob. A plain <img src>
+    can't carry the owner token or the ngrok-skip header, so images go through fetch →
+    object URL instead (see BlobImage). */
+export async function fetchCompanyBlob(path: string): Promise<Blob> {
+  const token = ownerToken()
+  const headers: Record<string, string> = { 'ngrok-skip-browser-warning': 'true' }
+  if (token) headers['x-office-token'] = token
+  const res = await fetch(`${OFFICE_HTTP}/api/blob?path=${encodeURIComponent(path)}`, { headers })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.blob()
+}
+
 export async function fetchLabExperiments(): Promise<LabExperiment[]> {
   const { experiments } = await req<{ experiments: LabExperiment[] }>('GET', '/api/lab')
   return experiments

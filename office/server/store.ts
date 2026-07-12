@@ -257,6 +257,35 @@ export function readCompanyFile(p: Paths, repoRelPath: unknown):
   return { ok: true, path: repoRelPath, content: fs.readFileSync(real, 'utf8'), mtimeMs: stat.mtimeMs }
 }
 
+const BLOB_EXT_ALLOW: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+}
+const BLOB_SIZE_CAP = 2 * 1024 * 1024
+
+/** Path-traversal-safe BINARY reader for company/** images (lab screenshots), for
+ *  GET /api/blob. Containment mirrors readCompanyFile exactly; only raster image
+ *  extensions are allowed and the stat happens BEFORE the read (no 2MB+ load-then-check). */
+export function readCompanyBlob(p: Paths, repoRelPath: unknown):
+  | { ok: true; buf: Buffer; contentType: string }
+  | { ok: false; error: string; code: 400 | 403 | 404 | 413 } {
+  if (typeof repoRelPath !== 'string' || repoRelPath.includes('\0')) return { ok: false, error: 'bad path', code: 400 }
+  if (/^[a-zA-Z]:/.test(repoRelPath) || repoRelPath.startsWith('/') || repoRelPath.startsWith('\\')) {
+    return { ok: false, error: 'absolute paths not allowed', code: 400 }
+  }
+  const abs = path.resolve(p.repoRoot, repoRelPath)
+  const rel = path.relative(p.companyDir, abs)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, error: 'outside company/', code: 403 }
+  const contentType = BLOB_EXT_ALLOW[path.extname(abs).toLowerCase()]
+  if (!contentType) return { ok: false, error: 'file type not allowed', code: 403 }
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return { ok: false, error: 'not found', code: 404 }
+  // Symlink escape: the realpath must still live under the real company dir.
+  const real = fs.realpathSync(abs)
+  const relReal = path.relative(fs.realpathSync(p.companyDir), real)
+  if (relReal.startsWith('..') || path.isAbsolute(relReal)) return { ok: false, error: 'outside company/', code: 403 }
+  if (fs.statSync(real).size > BLOB_SIZE_CAP) return { ok: false, error: 'file too large', code: 413 }
+  return { ok: true, buf: fs.readFileSync(real), contentType }
+}
+
 export function listLab(p: Paths): LabExperiment[] {
   const dir = path.join(p.companyDir, 'lab')
   if (!fs.existsSync(dir)) return []
