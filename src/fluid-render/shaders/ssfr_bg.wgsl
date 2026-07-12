@@ -9,7 +9,9 @@ struct RenderUniforms {
     invViewMatrix: mat4x4<f32>,
     screenSize: vec2<f32>,
     sphereRadius: f32,
-    _pad: f32,
+    // Owner-adjustable background brightness (1.0 = the base olive exactly).
+    // Reuses the old pad slot — buffer layout unchanged.
+    bgBrightness: f32,
     // Ball: center.xyz packed with its own radius in .w
     ballData: vec4<f32>,
     // Ball meta: .x = 1.0 if active, 0.0 otherwise. .yzw pad.
@@ -74,8 +76,9 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     let camPos = getCameraPos();
     let rayDir = getRayDir(in.uv);
 
-    // Olive backdrop (#b1b366) — owner-chosen; brighter than the old near-black navy.
-    var bgColor = vec3<f32>(0.694, 0.702, 0.400);
+    // Olive backdrop (#b1b366) — owner-chosen hue, scaled by the brightness slider.
+    // Only the BACKGROUND (backdrop/floor/grid) scales; box edges + ball stay put.
+    var bgColor = vec3<f32>(0.694, 0.702, 0.400) * uniforms.bgBrightness;
     // Track nearest solid hit so later primitives can occlude farther ones.
     var nearestT = 1e9;
 
@@ -94,9 +97,9 @@ fn fs_main(in: VertexOutput) -> FragOutput {
                 let isLineZ = abs(fract(hitPos.z / gridSize + 0.5) - 0.5) < lineWidth / gridSize;
 
                 if (isLineX || isLineZ) {
-                    bgColor = vec3<f32>(0.50, 0.51, 0.24); // darker olive grid line (readable on the light base)
+                    bgColor = vec3<f32>(0.50, 0.51, 0.24) * uniforms.bgBrightness; // darker olive grid line (readable on the light base)
                 } else {
-                    bgColor = vec3<f32>(0.694, 0.702, 0.400); // floor = olive base → uniform, no dark square
+                    bgColor = vec3<f32>(0.694, 0.702, 0.400) * uniforms.bgBrightness; // floor = olive base → uniform, no dark square
                 }
                 nearestT = t;
             }

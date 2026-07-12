@@ -24,12 +24,15 @@ export interface FluidController {
   setGravity: (g: number) => void
   temperature: number
   setTemperature: (t: number) => void
+  /** Background brightness: scales the fixed olive hue (1 = base #b1b366). Persisted, shared by both pages. */
+  bgBrightness: number
+  setBgBrightness: (b: number) => void
   reset: () => void
 }
 
 export function FluidControls({ controller }: { controller: FluidController }) {
   const [showInfo, setShowInfo] = useState(true)
-  const { compositions, selectedComposition, gpuReady, ballActive, gravity, temperature } = controller
+  const { compositions, selectedComposition, gpuReady, ballActive, gravity, temperature, bgBrightness } = controller
   const selectedComp = compositions[selectedComposition]
 
   return (
@@ -124,6 +127,14 @@ export function FluidControls({ controller }: { controller: FluidController }) {
         <input type="range" min={0} max={2.0} step={0.01} value={gravity}
           onChange={(e) => controller.setGravity(Number(e.target.value))} style={sliderStyle} />
         <div style={valueStyle}>{gravity.toFixed(2)}</div>
+      </div>
+
+      {/* Background brightness slider — hue stays the owner's olive; only brightness scales */}
+      <div>
+        <label style={labelStyle}>BG BRIGHTNESS</label>
+        <input type="range" min={0.2} max={1.5} step={0.01} value={bgBrightness}
+          onChange={(e) => controller.setBgBrightness(Number(e.target.value))} style={sliderStyle} />
+        <div style={valueStyle}>×{bgBrightness.toFixed(2)}</div>
       </div>
 
       {/* Reset button */}

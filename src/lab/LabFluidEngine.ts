@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
+import { BG_BASE, clampBrightness, readBgBrightness } from '../fluid-render/bgBrightness'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import { elementsAs, type LabScenario } from './scenario'
 
@@ -38,6 +39,7 @@ export class LabFluidEngine {
   private glassBox: THREE.Mesh | null = null
   private raycaster = new THREE.Raycaster()
   private currentGravity = 0.3
+  private currentBgBrightness = readBgBrightness()
   private animId = 0
   private lastTime = 0
   private fpsAccum = 0
@@ -57,7 +59,9 @@ export class LabFluidEngine {
     if (!navigator.gpu) return false
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xb1b366)
+    // Base olive × the persisted brightness preference (fallback/no-particle paint path).
+    const bb = this.currentBgBrightness
+    scene.background = new THREE.Color(BG_BASE.r * bb, BG_BASE.g * bb, BG_BASE.b * bb)
     const camera = new THREE.PerspectiveCamera(50, this.container.clientWidth / this.container.clientHeight, 0.1, 50)
     camera.position.set(2.0, 1.5, 2.0)
     camera.lookAt(0.5, 0.5, 0.5)
@@ -141,6 +145,7 @@ export class LabFluidEngine {
       })
       await ssfr.init(device, this.container.clientWidth, this.container.clientHeight)
       if (this.destroyed) return false
+      ssfr.setBgBrightness(bb) // persisted background brightness
       ssfrPipeline = ssfr
     } catch (e) {
       console.warn('[lab] SSFR init failed, using Points fallback:', e)
@@ -327,6 +332,16 @@ export class LabFluidEngine {
   get ballActive(): boolean { return this.ball.active }
   get gravity(): number { return this.currentGravity }
   setGravity(g: number) { this.currentGravity = g; this.gpuSim?.setGravity(g) }
+
+  get bgBrightness(): number { return this.currentBgBrightness }
+  /** Scale the olive background's brightness (hue fixed) — hits both paint paths:
+      the SSFR bg/composite passes and the Three fallback scene.background. */
+  setBgBrightness(b: number) {
+    this.currentBgBrightness = clampBrightness(b)
+    const v = this.currentBgBrightness
+    if (this.scene) this.scene.background = new THREE.Color(BG_BASE.r * v, BG_BASE.g * v, BG_BASE.b * v)
+    this.ssfrPipeline?.setBgBrightness(v)
+  }
 
   /** +N button: add `count` particles of the selected material in the center. */
   spawnBatch(count: number) {

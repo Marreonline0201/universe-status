@@ -11,6 +11,7 @@
 // Architecture: structure.md §3.2 "SSFR Integration Architecture"
 
 import bgShaderSrc from './shaders/ssfr_bg.wgsl?raw'
+import { BG_BASE, clampBrightness } from './bgBrightness'
 import depthShaderSrc from './shaders/ssfr_depth.wgsl?raw'
 import thicknessShaderSrc from './shaders/ssfr_thickness.wgsl?raw'
 import blurShaderSrc from './shaders/ssfr_blur.wgsl?raw'
@@ -37,6 +38,11 @@ export class SSFRPipeline {
   private config: SSFRConfig
   private width = 0
   private height = 0
+  // Owner-adjustable background brightness (1 = base olive). Live-updatable: the
+  // bg uniforms + both clearValues are rebuilt every frame in render().
+  private bgBrightness = 1
+
+  setBgBrightness(b: number) { this.bgBrightness = clampBrightness(b) }
 
   // Textures
   private bgTex!: GPUTexture         // background scene (for composite to sample)
@@ -420,7 +426,7 @@ export class SSFRPipeline {
       bgData[64] = w                  // screenSize.x
       bgData[65] = h                  // screenSize.y
       bgData[66] = this.config.particleRadius
-      // bgData[67] reserved pad
+      bgData[67] = this.bgBrightness  // background brightness (was the reserved pad)
       // Ball data: center.xyz + radius packed as vec4
       if (ball && ball.active) {
         bgData[68] = ball.center[0]
@@ -445,7 +451,9 @@ export class SSFRPipeline {
           {
             view: this.bgView,
             loadOp: 'clear', storeOp: 'store',
-            clearValue: { r: 0.024, g: 0.031, b: 0.063, a: 1 },
+            // Olive × brightness — matches the fullscreen bg draw that overwrites it,
+            // so a skipped/partial draw can never flash a different color.
+            clearValue: { r: BG_BASE.r * this.bgBrightness, g: BG_BASE.g * this.bgBrightness, b: BG_BASE.b * this.bgBrightness, a: 1 },
           },
           {
             // Clear to a far-away depth (well beyond any fluid particle).
@@ -620,7 +628,8 @@ export class SSFRPipeline {
           view: outputView,
           loadOp: 'clear',  // start fresh — composite reads scene from texture
           storeOp: 'store',
-          clearValue: { r: 0.694, g: 0.702, b: 0.400, a: 1 }, // match scene bg 0xb1b366 (olive)
+          // olive 0xb1b366 × the owner's brightness — matches scene.background
+          clearValue: { r: BG_BASE.r * this.bgBrightness, g: BG_BASE.g * this.bgBrightness, b: BG_BASE.b * this.bgBrightness, a: 1 },
         }],
       })
       pass.setPipeline(this.compositePipeline)
