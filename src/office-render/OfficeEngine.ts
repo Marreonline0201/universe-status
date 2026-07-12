@@ -8,6 +8,11 @@ import type { OfficeAgent, OfficeTeam, OfficeServerMsg } from '../hooks/useOffic
 
 interface Camera { x: number; y: number; scale: number }
 
+// How often a *casual* chat is delivered in person (a walk across the office) rather than
+// just a bubble. Handoffs & reviews always walk; everything else rolls against this. Kept
+// low so the floor doesn't read as a constant swarm of people marching in straight lines.
+const CASUAL_VISIT_CHANCE = 0.12
+
 /** Short human phrase for a live tool/text event — the agent's thought cloud. */
 function activityLabel(kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string): string | null {
   if (kind === 'text') return detail ? `“${detail}”` : null
@@ -97,7 +102,7 @@ export class OfficeEngine {
         if (from) {
           from.say(msg.msg.subject, msg.msg.kind)
           // handoffs & reviews are delivered in person — the visible communication
-          if (to && (msg.msg.kind === 'handoff' || msg.msg.kind === 'review-comment' || Math.random() < 0.4)) {
+          if (to && (msg.msg.kind === 'handoff' || msg.msg.kind === 'review-comment' || Math.random() < CASUAL_VISIT_CHANCE)) {
             from.visit(to)
           }
         }

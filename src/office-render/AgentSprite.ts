@@ -7,6 +7,11 @@ import type { OfficeMapData } from './officeMap'
 
 const WALK_SPEED = 3.2 // tiles per second
 const BUBBLE_MS = 4200
+// Idle "coffee stroll" pacing. Rare on purpose — with 50 agents, a short interval means
+// someone is always walking and the office looks like a swarm. min + up-to-jitter seconds
+// between an idle agent's strolls; raise these two to make the floor calmer still.
+const WANDER_MIN_S = 120
+const WANDER_JITTER_S = 150
 
 export interface Bubble { text: string; until: number; kind: string }
 
@@ -47,7 +52,8 @@ export class AgentSprite {
     this.home = spot ? spot.chair : map.lobby
     this.x = this.home.x
     this.y = this.home.y
-    this.wanderT = 8 + (hashCode(id) % 20)
+    // First stroll is pushed well out (and spread per-agent) so the office doesn't swarm on load.
+    this.wanderT = 45 + (hashCode(id) % 90)
   }
 
   get tile(): Point { return { x: Math.round(this.x), y: Math.round(this.y) } }
@@ -119,11 +125,11 @@ export class AgentSprite {
       return
     }
 
-    // Idle flavor: occasionally stroll to the coffee machine and back.
+    // Idle flavor: rarely stroll to the coffee machine and back.
     if (this.status === 'idle' && this.atHome) {
       this.wanderT -= dt
       if (this.wanderT <= 0) {
-        this.wanderT = 25 + (hashCode(this.id + String(now | 0)) % 40)
+        this.wanderT = WANDER_MIN_S + (hashCode(this.id + String(now | 0)) % WANDER_JITTER_S)
         const c = this.map.coffee
         const stand = { x: c.x, y: c.y + 1 }
         if (this.map.walkable(stand.x, stand.y)) {
