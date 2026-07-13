@@ -131,6 +131,11 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     engineRef.current = e
     setEngine(e)
     if (e) setCompositions(e.getCompositions())
+    // Motion-metrics hook for the lab runner (scripts/run-lab.mjs): a page.evaluate()
+    // has no path to the engine instance, so expose the sampler on window. Read-only
+    // GPU readback — nothing an attacker gains beyond what the public page already shows.
+    const w = window as unknown as { __labSampleMetrics?: (() => Promise<unknown>) | undefined }
+    w.__labSampleMetrics = e ? () => e.sampleMetrics() : undefined
   }, [])
   const onLabLoaded = useCallback(() => {
     const e = engineRef.current

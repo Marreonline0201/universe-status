@@ -17,6 +17,20 @@ const BALL_GRAVITY = 0.3 / 64 // shader gravity in [0,1] space (see FluidTest.ts
 
 export interface LabStats { fps: number; count: number }
 
+/** One motion-metrics sample from a GPU particle readback (sim [0,1]³ coords). */
+export interface LabMetricsSample {
+  count: number
+  meanSpeed: number
+  meanY: number
+  maxY: number
+  spreadX: [number, number]
+  spreadZ: [number, number]
+  materials: {
+    id: number; name: string; count: number
+    meanSpeed: number; meanY: number; maxY: number; comX: number; comZ: number
+  }[]
+}
+
 export class LabFluidEngine {
   private destroyed = false
   private renderer: any = null
@@ -332,6 +346,65 @@ export class LabFluidEngine {
   get ballActive(): boolean { return this.ball.active }
   get gravity(): number { return this.currentGravity }
   setGravity(g: number) { this.currentGravity = g; this.gpuSim?.setGravity(g) }
+
+  /** Objective motion metrics from a GPU particle readback — the Lab's "numbers instead of
+      eyes" channel for agent-run experiments. Positions are in the sim's [0,1]³ space.
+      Per-material groups let two-material scenarios (S4) be quantified even though the
+      renderer draws all particles alike. Returns null when the sim isn't running. */
+  async sampleMetrics(): Promise<LabMetricsSample | null> {
+    if (!this.gpuSim || this.gpuSim.particleCount === 0) return null
+    const sample = await this.gpuSim.readParticleSample()
+    if (!sample) return null
+    const { positions, velocities, compIds } = sample
+    const n = compIds.length
+
+    const nameById = new Map<number, string>()
+    for (const c of this.compositionTable.getAll()) nameById.set(c.id, c.name)
+
+    interface Acc { count: number; sumSpeed: number; sumY: number; sumX: number; sumZ: number; maxY: number }
+    const mk = (): Acc => ({ count: 0, sumSpeed: 0, sumY: 0, sumX: 0, sumZ: 0, maxY: 0 })
+    const total = mk()
+    const groups = new Map<number, Acc>()
+    let minX = 1, maxX = 0, minZ = 1, maxZ = 0
+
+    for (let i = 0; i < n; i++) {
+      const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2]
+      const speed = Math.hypot(velocities[i * 3], velocities[i * 3 + 1], velocities[i * 3 + 2])
+      const acc = (id: number): Acc => {
+        let g = groups.get(id)
+        if (!g) { g = mk(); groups.set(id, g) }
+        return g
+      }
+      for (const a of [total, acc(compIds[i])]) {
+        a.count++
+        a.sumSpeed += speed
+        a.sumY += y; a.sumX += x; a.sumZ += z
+        if (y > a.maxY) a.maxY = y
+      }
+      if (x < minX) minX = x; if (x > maxX) maxX = x
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z
+    }
+
+    const round = (v: number) => Math.round(v * 1000) / 1000
+    return {
+      count: n,
+      meanSpeed: round(total.sumSpeed / n),
+      meanY: round(total.sumY / n),
+      maxY: round(total.maxY),
+      spreadX: [round(minX), round(maxX)],
+      spreadZ: [round(minZ), round(maxZ)],
+      materials: [...groups.entries()].map(([id, g]) => ({
+        id,
+        name: nameById.get(id) ?? `comp-${id}`,
+        count: g.count,
+        meanSpeed: round(g.sumSpeed / g.count),
+        meanY: round(g.sumY / g.count),
+        maxY: round(g.maxY),
+        comX: round(g.sumX / g.count),
+        comZ: round(g.sumZ / g.count),
+      })),
+    }
+  }
 
   get bgBrightness(): number { return this.currentBgBrightness }
   /** Scale the olive background's brightness (hue fixed) — hits both paint paths:

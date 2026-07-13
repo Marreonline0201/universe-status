@@ -419,6 +419,45 @@ export class MpmGpuSimulator {
     return this.particleBuf
   }
 
+  /** Read positions / velocities / composition ids of all live particles back to the CPU.
+      Used by the Lab's motion metrics (agent-run experiments) — a few samples per run, so a
+      throwaway staging buffer per call is fine (≤16MB at the 200k lab cap). Returns null on
+      failure or when empty; never throws into the render loop. */
+  async readParticleSample(): Promise<{ positions: Float32Array; velocities: Float32Array; compIds: Uint32Array } | null> {
+    if (!this.initialized || this.numParticles === 0) return null
+    const n = this.numParticles
+    const byteSize = n * PARTICLE_STRIDE
+    let staging: GPUBuffer | null = null
+    try {
+      staging = this.device.createBuffer({ size: byteSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+      const encoder = this.device.createCommandEncoder()
+      encoder.copyBufferToBuffer(this.particleBuf, 0, staging, 0, byteSize)
+      this.device.queue.submit([encoder.finish()])
+      await staging.mapAsync(GPUMapMode.READ)
+      const f32 = new Float32Array(staging.getMappedRange())
+      const u32 = new Uint32Array(f32.buffer)
+      const positions = new Float32Array(n * 3)
+      const velocities = new Float32Array(n * 3)
+      const compIds = new Uint32Array(n)
+      for (let i = 0; i < n; i++) {
+        const o = i * FLOATS_PER_PARTICLE
+        positions[i * 3] = f32[o]
+        positions[i * 3 + 1] = f32[o + 1]
+        positions[i * 3 + 2] = f32[o + 2]
+        compIds[i] = u32[o + 3] // composition_id lives as u32 bits in the f32 slot
+        velocities[i * 3] = f32[o + 4]
+        velocities[i * 3 + 1] = f32[o + 5]
+        velocities[i * 3 + 2] = f32[o + 6]
+      }
+      staging.unmap()
+      return { positions, velocities, compIds }
+    } catch {
+      return null
+    } finally {
+      staging?.destroy()
+    }
+  }
+
   setGravity(g: number) { this.gravity = g }
   setTimestep(dt: number) { this.dt = dt }
   enableContactDetection(enabled: boolean) { this.contactDetectionEnabled = enabled }
