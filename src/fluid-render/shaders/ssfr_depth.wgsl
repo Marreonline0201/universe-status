@@ -91,6 +91,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 struct FragOutput {
     @builtin(frag_depth) depth: f32,
     @location(0) eyeDepth: f32,          // linear eye-space depth for bilateral blur
+    @location(1) compId: u32,            // NEW — per-pixel composition_id for the composite pass
 };
 
 @fragment
@@ -110,5 +111,6 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     var out: FragOutput;
     out.depth = ndcDepth;
     out.eyeDepth = -fragEyeZ; // store positive linear depth
+    out.compId = in.compId;   // NEW — already interpolated (flat) from vs_main, just carried through
     return out;
 }

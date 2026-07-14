@@ -93,9 +93,9 @@ export class SSFRPipeline {
   // Created once in init(); reused every frame. (Previously these were
   // created+destroyed per frame, causing "Buffer used in submit while
   // destroyed" warnings and black output because submit() ran after destroy.)
-  private dummyCompIdTex!: GPUTexture
-  private dummyCompIdView!: GPUTextureView
-  private dummyMatBuf!: GPUBuffer
+  private compIdTex!: GPUTexture
+  private compIdView!: GPUTextureView
+  private matBuf!: GPUBuffer
 
   constructor(config?: Partial<SSFRConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -167,16 +167,21 @@ export class SSFRPipeline {
 
     // Dummy comp-id texture (placeholder for per-pixel composition_id).
     // Created once here, reused every frame by the composite pass.
-    // NOTE: only created if not already created (resize() calls createTextures
-    // on existing pipeline — must not leak the dummies on every resize).
-    if (!this.dummyCompIdTex) {
-      this.dummyCompIdTex = this.device.createTexture({
-        size: [1, 1], format: 'r32uint',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      })
-      this.dummyCompIdView = this.dummyCompIdTex.createView()
-      this.dummyMatBuf = this.device.createBuffer({
-        size: 256 * 8 * 4,
+    // Real per-pixel composition_id texture, written by the depth pass's
+    // second fragment target. Screen-sized — MUST be recreated on resize()
+    // like the other per-size textures (unlike the old 1×1 dummy).
+    this.compIdTex = this.device.createTexture({
+      size: [w, h], format: 'r32uint',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    })
+    this.compIdView = this.compIdTex.createView()
+
+    // Real per-composition material buffer, uploaded via updateMaterialProps().
+    // Composition-count-sized (256*8 floats), NOT screen-sized — created once;
+    // resize() must not recreate it or it would drop the uploaded data.
+    if (!this.matBuf) {
+      this.matBuf = this.device.createBuffer({
+        size: 256 * 8 * 4,  // = CompositionTable.getRenderData() (2048 floats)
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       })
     }
@@ -252,7 +257,10 @@ export class SSFRPipeline {
       vertex: { module: depthModule, entryPoint: 'vs_main' },
       fragment: {
         module: depthModule, entryPoint: 'fs_main',
-        targets: [{ format: 'r32float' as GPUTextureFormat }],
+        targets: [
+          { format: 'r32float' as GPUTextureFormat },  // eyeDepth (unchanged)
+          { format: 'r32uint' as GPUTextureFormat },   // NEW — compId
+        ],
       },
       depthStencil: {
         format: 'depth32float',
@@ -378,8 +386,16 @@ export class SSFRPipeline {
     this.blurTempTex.destroy()
     this.thicknessTex.destroy()
     this.hwDepthTex.destroy()
+    this.compIdTex.destroy()   // screen-sized now; recreated by createTextures() below
 
     this.createTextures(width, height)
+  }
+
+  /** Upload per-composition rendering properties to GPU. Sibling of
+   *  MpmGpuSimulator.updateCompositionProps() — same call sites, same upload
+   *  pattern. Feed CompositionTable.getRenderData(). */
+  updateMaterialProps(data: Float32Array) {
+    this.device.queue.writeBuffer(this.matBuf, 0, data.buffer, data.byteOffset, data.byteLength)
   }
 
   /**
@@ -484,11 +500,18 @@ export class SSFRPipeline {
     // ── Pass 1: Depth ────────────────────────────────────────────────
     {
       const pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: this.depthView,
-          loadOp: 'clear', storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        }],
+        colorAttachments: [
+          {
+            view: this.depthView,
+            loadOp: 'clear', storeOp: 'store',
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          },
+          {
+            view: this.compIdView,   // compId 0 = first addDefaults() composition; harmless:
+            loadOp: 'clear', storeOp: 'store',   // hasFluid gate in composite discards
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },  // pixels where depth cleared to 0 (no particle)
+          },
+        ],
         depthStencilAttachment: {
           view: this.hwDepthView,
           depthLoadOp: 'clear', depthStoreOp: 'store',
@@ -616,8 +639,8 @@ export class SSFRPipeline {
           { binding: 1, resource: this.depthView },       // smoothed fluid depth
           { binding: 2, resource: this.thicknessView },    // thickness
           { binding: 3, resource: sceneView },             // scene color
-          { binding: 4, resource: this.dummyCompIdView },  // comp ID (placeholder)
-          { binding: 5, resource: { buffer: this.dummyMatBuf } },// materials
+          { binding: 4, resource: this.compIdView },          // comp ID (real per-pixel)
+          { binding: 5, resource: { buffer: this.matBuf } },  // materials (real, via updateMaterialProps)
           { binding: 6, resource: this.linearSampler },
           { binding: 7, resource: this.bgDepthView },      // bg eye-space depth
         ],
@@ -653,7 +676,7 @@ export class SSFRPipeline {
     this.blurUBO?.destroy()
     this.compositeUBO?.destroy()
     this.quadIndexBuf?.destroy()
-    this.dummyCompIdTex?.destroy()
-    this.dummyMatBuf?.destroy()
+    this.compIdTex?.destroy()
+    this.matBuf?.destroy()
   }
 }

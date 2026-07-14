@@ -116,6 +116,7 @@ export function FluidTest() {
 
     // Re-upload composition data
     gpuSim.updateCompositionProps(compositionTable.getGpuData())
+    simRef.current?.ssfrPipeline?.updateMaterialProps(compositionTable.getRenderData())
   }, [])
 
   const spawnParticlesAtClick = useCallback((worldPos: THREE.Vector3) => {
@@ -248,6 +249,7 @@ export function FluidTest() {
 
     // Update GPU composition data
     gpuSim.updateCompositionProps(compositionTable.getGpuData())
+    simRef.current?.ssfrPipeline?.updateMaterialProps(compositionTable.getRenderData())
 
     // Spawn 3000 particles of the new material
     const particles: GpuParticle[] = []
@@ -501,6 +503,7 @@ export function FluidTest() {
         await ssfr.init(device, container.clientWidth, container.clientHeight)
         ssfr.setBgBrightness(readBgBrightness()) // persisted background brightness
         ssfrPipeline = ssfr
+        ssfr.updateMaterialProps(compositionTable.getRenderData())
         console.log('SSFR pipeline active — real fluid rendering')
       } catch (e) {
         console.warn('SSFR init failed, using Points fallback:', e)
