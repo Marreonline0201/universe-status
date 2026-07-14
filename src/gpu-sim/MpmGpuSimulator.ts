@@ -203,13 +203,14 @@ export class MpmGpuSimulator {
       ],
     })
 
-    // p2g2: binding 0 = particles (read), 1 = grid (read_write), 2 = params
+    // p2g2: 0 = particles (read), 1 = grid (read_write), 2 = params, 3 = comp props
     this.p2g2BG = device.createBindGroup({
       layout: this.p2g2Pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.particleBuf } },
         { binding: 1, resource: { buffer: this.gridBuf } },
         { binding: 2, resource: { buffer: this.simParamsBuf } },
+        { binding: 3, resource: { buffer: this.compPropsBuf } },   // NEW — per-material props
       ],
     })
 
