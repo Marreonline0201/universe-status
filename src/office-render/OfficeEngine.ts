@@ -14,8 +14,11 @@ interface Camera { x: number; y: number; scale: number }
 const CASUAL_VISIT_CHANCE = 0.12
 
 /** Short human phrase for a live tool/text event — the agent's thought cloud. */
-function activityLabel(kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string): string | null {
+function activityLabel(kind: 'tool_use' | 'text' | 'thinking' | 'turn_end', tool?: string, detail?: string): string | null {
   if (kind === 'text') return detail ? `“${detail}”` : null
+  // Model reasoning: headless streams mark WHEN thinking happens (text is empty by
+  // design on Opus) — show a 💭 so the sprite doesn't look frozen mid-thought.
+  if (kind === 'thinking') return detail ? `💭 ${detail.slice(0, 40)}` : '💭 thinking…'
   if (kind !== 'tool_use' || !tool) return null
   const base = detail ? (detail.split(/[\\/]/).pop() ?? detail) : ''
   switch (tool) {
@@ -28,6 +31,8 @@ function activityLabel(kind: 'tool_use' | 'text' | 'turn_end', tool?: string, de
     case 'Glob': return detail ? `searches ${detail.slice(0, 36)}` : 'searches the repo'
     case 'WebSearch': return detail ? `web: ${detail.slice(0, 38)}` : 'searches the web'
     case 'WebFetch': return base ? `browses ${base.slice(0, 36)}` : 'browses the web'
+    case 'Task':
+    case 'Agent': return detail ? `delegates: ${detail.slice(0, 34)}` : 'delegates to a subagent'
     default: return `uses ${tool}`
   }
 }

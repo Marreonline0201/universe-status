@@ -357,6 +357,11 @@ ${roleBlocks[a.role] ?? ''}
 - Depth over volume. One insight worth reading beats five pages of filler. Do not send
   mail that says nothing; do not create tasks to look busy.
 - Cite the repo: every claim about the sim names a file or doc section.
+- **Delegate broad reading.** Reading more than ~2 large files, or any survey/sweep? Dispatch the
+  \`reader\` subagent (Agent tool) with the file list AND your question; consume its cited digest —
+  this keeps your own context lean (context overflows reset your session). Web sweeps → the
+  \`web-scout\` subagent. But verify FIRST-PERSON, in the original, anything you will assert in a
+  report or act on — digests are for orientation, not for judgment.
 - Finish your turn cleanly: task Log updated, mail archived, memory saved.
 `
 }

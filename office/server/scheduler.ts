@@ -39,7 +39,7 @@ export interface OfficeConfig {
 
 export interface SchedulerEvents {
   onStatus: (id: string, status: AgentVisualStatus, task?: TaskSummary | null) => void
-  onActivity: (id: string, kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string) => void
+  onActivity: (id: string, kind: 'tool_use' | 'text' | 'thinking' | 'turn_end', tool?: string, detail?: string) => void
   onTranscript: (id: string, line: string) => void
   onPool: (pool: PoolState) => void
   /** An activation was refused because the subscription limit is exhausted. */

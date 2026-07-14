@@ -9,7 +9,7 @@ import type { AgentProfile } from './store.ts'
 
 export interface ActivationEvents {
   onStatus: (status: 'working' | 'reading' | 'typing' | 'talking' | 'blocked') => void
-  onActivity: (kind: 'tool_use' | 'text' | 'turn_end', tool?: string, detail?: string) => void
+  onActivity: (kind: 'tool_use' | 'text' | 'thinking' | 'turn_end', tool?: string, detail?: string) => void
   onTranscript: (line: string) => void
   onEnd: (result: { ok: boolean; sessionId: string | null; wroteFiles: boolean; wroteMemory: boolean; contextTokens: number | null; limitHit: boolean; error?: string }) => void
 }
@@ -127,7 +127,9 @@ export class Activation {
       for (const block of content) {
         if (block.type === 'tool_use') {
           const tool = String(block.name ?? '')
-          const target = block.input?.file_path ?? block.input?.pattern ?? block.input?.url ?? ''
+          // Agent-tool dispatches carry their payload in description/subagent_type, not a path.
+          const target = block.input?.file_path ?? block.input?.pattern ?? block.input?.url
+            ?? block.input?.description ?? block.input?.subagent_type ?? ''
           if (WRITE_TOOLS.test(tool)) {
             this.wroteFiles = true; this.events.onStatus('typing')
             // Note when the agent saves its own notepad — a session reset is only safe after this.
@@ -141,6 +143,12 @@ export class Activation {
           this.events.onStatus('talking')
           this.events.onActivity('text', undefined, String(block.text).slice(0, 160))
           this.events.onTranscript(String(block.text).slice(0, 400))
+        } else if (block.type === 'thinking') {
+          // Headless Opus emits thinking blocks with EMPTY text (display=omitted) — the
+          // event still marks WHEN the agent reasons, so the sprite shows 💭 instead of
+          // looking frozen. If a future CLI exposes summaries, the text flows through.
+          this.events.onActivity('thinking', undefined, String(block.thinking ?? '').slice(0, 120))
+          this.events.onTranscript('[thinking]')
         }
       }
       return
