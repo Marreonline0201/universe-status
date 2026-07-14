@@ -2,7 +2,7 @@
   "port": 4571,
   "maxConcurrent": 8,
   "maxTurns": 30,
-  "activationTimeoutMs": 1200000,
+  "activationTimeoutMs": 2400000,
   "agentCooldownMs": 30000,
   "noProgressBackoffMs": 300000,
   "allowedTools": "Read,Glob,Grep,Write,Edit,WebSearch,WebFetch,Agent",
@@ -68,7 +68,7 @@
           "universe-status"
         ],
         "maxArgs": 8,
-        "warn": "script content is not verified by the whitelist — check `git diff scripts/ office/spikes/` before approving; run-lab.mjs opens a Chrome window on your machine for ~30-60s"
+        "warn": "script content is not verified by the whitelist - check `git diff scripts/ office/spikes/` before approving; run-lab.mjs opens a Chrome window on your machine for ~30-60s"
       }
     ]
   },
