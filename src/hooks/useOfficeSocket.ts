@@ -104,7 +104,7 @@ export interface RunLine { stream: 'stdout' | 'stderr'; line: string; ts: number
 export type OfficeServerMsg =
   | { type: 'OFFICE_SNAPSHOT'; mock?: boolean; owner?: boolean; teams: OfficeTeam[]; agents: OfficeAgent[]; tasks: TaskSummary[]; chat: ChatMsg[]; reports: ReportMeta[]; pool: PoolState; requests?: OwnerRequest[] }
   | { type: 'AGENT_STATUS'; id: string; status: AgentVisualStatus; task?: string | null; taskTitle?: string | null }
-  | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'turn_end'; tool?: string; detail?: string; ts: number }
+  | { type: 'AGENT_ACTIVITY'; id: string; kind: 'tool_use' | 'text' | 'thinking' | 'turn_end'; tool?: string; detail?: string; ts: number }
   | { type: 'CHAT'; msg: ChatMsg }
   | { type: 'TASK_UPDATE'; task: TaskSummary }
   | { type: 'REPORT_ADDED'; report: ReportMeta }

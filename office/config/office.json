@@ -5,14 +5,14 @@
   "activationTimeoutMs": 1200000,
   "agentCooldownMs": 30000,
   "noProgressBackoffMs": 300000,
-  "allowedTools": "Read,Glob,Grep,Write,Edit,WebSearch,WebFetch",
+  "allowedTools": "Read,Glob,Grep,Write,Edit,WebSearch,WebFetch,Agent",
   "fableFallbackModel": "claude-opus-4-8",
   "autoCommit": true,
   "autoCommitBranch": "agent-office",
   "autoCommitIntervalMs": 120000,
   "usageRest": {
-    "sessionThresholdPct": 85,
-    "weeklyThresholdPct": 90,
+    "sessionThresholdPct": 90,
+    "weeklyThresholdPct": 80,
     "pollSeconds": 60
   },
   "session": {
