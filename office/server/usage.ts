@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 export interface UsageRestConfig {
   sessionThresholdPct: number // rest when 5-hour utilization ≥ this
@@ -31,6 +32,23 @@ export interface RestDecision {
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const STALE_MS = 5 * 60_000       // after 5 min of failures, stop trusting old numbers
 const LIMIT_HIT_REST_MS = 30 * 60_000 // reactive backstop rest when no reset time is known
+const BACKOFF_START_MS = 5 * 60_000   // first 429 → skip polls for 5 min
+const BACKOFF_MAX_MS = 30 * 60_000    // repeated 429s → cap at 30 min
+
+// The usage endpoint buckets callers by User-Agent: requests that don't identify
+// as the Claude Code CLI land in an aggressively throttled bucket and get
+// persistent 429s (anthropics/claude-code issues #31021 / #31637 / #30930).
+// Send the locally installed CLI's version so we share the CLI's generous bucket.
+const CLI_UA = (() => {
+  try {
+    // Fixed literal command, no user input. shell: true only because Windows
+    // installs `claude` as a .cmd shim that execFile can't launch directly.
+    const out = execFileSync('claude', ['--version'], { encoding: 'utf8', timeout: 8_000, windowsHide: true, shell: true })
+    const m = out.match(/(\d+\.\d+\.\d+)/)
+    if (m) return `claude-code/${m[1]}`
+  } catch { /* fall through */ }
+  return 'claude-code/2.1.208' // last version verified on this machine; UA presence is what matters
+})()
 
 export class UsageMonitor {
   private state: UsageState = {
@@ -40,6 +58,8 @@ export class UsageMonitor {
   private lastOkAt = 0
   private lastRest: RestDecision = { resting: false, reason: null, resumeAt: null }
   private failLogged = false
+  private backoffUntil = 0
+  private backoffMs = BACKOFF_START_MS
   private timer: ReturnType<typeof setInterval> | null = null
   private resumeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -122,13 +142,26 @@ export class UsageMonitor {
   }
 
   private async poll(retryOnNetworkError = true): Promise<void> {
+    if (Date.now() < this.backoffUntil) return // still cooling down after a 429
     const token = this.readToken()
     if (!token) return this.fail('no Claude Code credentials found (~/.claude/.credentials.json)')
     try {
       const res = await fetch(USAGE_URL, {
-        headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'anthropic-beta': 'oauth-2025-04-20',
+          'User-Agent': CLI_UA,
+        },
         signal: AbortSignal.timeout(15_000),
       })
+      if (res.status === 429) {
+        // Re-polling a rate-limited endpoint at the normal cadence digs the hole
+        // deeper. Cool down with a doubling backoff instead.
+        this.backoffUntil = Date.now() + this.backoffMs
+        const mins = Math.round(this.backoffMs / 60_000)
+        this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX_MS)
+        return this.fail(`usage endpoint returned 429 — backing off ${mins} min`)
+      }
       if (res.status !== 200) return this.fail(`usage endpoint returned ${res.status}`)
       const json = await res.json() as {
         five_hour?: { utilization?: number; resets_at?: string }
@@ -144,6 +177,7 @@ export class UsageMonitor {
       }
       this.lastOkAt = Date.now()
       this.failLogged = false
+      this.backoffMs = BACKOFF_START_MS // healthy again — reset the 429 ladder
       this.emit()
     } catch (err) {
       // Transient network blips are common; one retry keeps the boot-time

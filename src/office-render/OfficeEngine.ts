@@ -4,6 +4,7 @@
 import { TILE, makeTile, STATUS_COLORS } from './assets'
 import { buildOfficeMap, type OfficeMapData } from './officeMap'
 import { AgentSprite } from './AgentSprite'
+import { Occupancy } from './occupancy'
 import type { OfficeAgent, OfficeTeam, OfficeServerMsg } from '../hooks/useOfficeSocket'
 
 interface Camera { x: number; y: number; scale: number }
@@ -12,6 +13,31 @@ interface Camera { x: number; y: number; scale: number }
 // just a bubble. Handoffs & reviews always walk; everything else rolls against this. Kept
 // low so the floor doesn't read as a constant swarm of people marching in straight lines.
 const CASUAL_VISIT_CHANCE = 0.12
+
+// ── Ambient small talk (canvas-only flavor, owner-requested) ─────────────────
+// Idle neighbors occasionally exchange a canned line. These are deliberately
+// scripted (the owner OK'd repeats), drawn in a muted 'casual' bubble style,
+// and NEVER written to the feed/transcripts — everything in the feed stays a
+// real agent event. Pace: one exchange every ~20-40 s office-wide, ≥3 min
+// between any one agent's chats.
+const CASUAL_GAP_MIN_MS = 18_000
+const CASUAL_GAP_JITTER_MS = 22_000
+const CASUAL_AGENT_COOLDOWN_MS = 180_000
+const CASUAL_RANGE_TILES = 5.5
+const CASUAL_OPENERS = [
+  'Coffee’s fresh ☕', 'How’s the report going?', 'Did you see the lab results?',
+  'The reviewer is strict today…', 'Lunch later?', 'New office looks amazing',
+  'I love these plants 🌿', 'Almost done with my draft', 'That sofa is calling me',
+  'Busy day, huh?', 'Any word from the director?', 'That meeting ran long…',
+  'Nice view today', 'I need more citations…', 'How’s your team’s task?',
+  'The espresso machine is elite', 'Deadline’s close…', 'Weekend plans?',
+]
+const CASUAL_REPLIES = [
+  'Haha, yeah', 'Totally.', 'Almost — one more pass.', 'Right? So good.',
+  'Tell me about it 😅', 'Soon, I hope!', 'Same here.', 'Good luck!',
+  '☕☕', 'For sure.', 'Deep in it right now.', 'Ask the liaison 😄',
+  'Don’t remind me…', 'One citation at a time.', 'After this task!',
+]
 
 /** Short human phrase for a live tool/text event — the agent's thought cloud. */
 function activityLabel(kind: 'tool_use' | 'text' | 'thinking' | 'turn_end', tool?: string, detail?: string): string | null {
@@ -54,6 +80,9 @@ export class OfficeEngine {
   private fontScale = 1
   private activeIds = new Set<string>() // agent ids with a live session (pool.active) → their team's room is lit
   private selectedTeams = new Set<string>() // owner-focused teams → override the auto working-spotlight
+  private occ = new Occupancy() // exclusive cell ownership — no two sprites ever overlap
+  private nextCasualAt = performance.now() + 20_000
+  private lastCasual = new Map<string, number>()
   onAgentClick: (id: string | null) => void = () => {}
 
   constructor(canvas: HTMLCanvasElement) {
@@ -79,9 +108,11 @@ export class OfficeEngine {
     this.map = buildOfficeMap(teams, agents)
     this.prerenderMap()
     this.sprites.clear()
+    this.occ.clear()
+    this.lastCasual.clear()
     for (const a of agents) {
       const color = teams.find(t => t.id === a.team)?.color ?? '#ffd700'
-      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map)
+      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map, this.occ)
       sprite.setStatus(a.status)
       this.sprites.set(a.id, sprite)
     }
@@ -305,8 +336,41 @@ export class OfficeEngine {
     const dt = Math.min(0.05, (t - this.lastT) / 1000 || 0.016)
     this.lastT = t
     for (const s of this.sprites.values()) s.update(dt, t)
+    this.casualTick(t)
     this.draw(t)
     this.raf = requestAnimationFrame(this.tick)
+  }
+
+  /** Ambient small talk: pick one idle pair standing/sitting near each other and
+      let them trade a canned line + reply. Canvas-only — never touches the feed. */
+  private casualTick(now: number) {
+    if (this.offline || now < this.nextCasualAt) return
+    this.nextCasualAt = now + CASUAL_GAP_MIN_MS + Math.random() * CASUAL_GAP_JITTER_MS
+    const candidates = [...this.sprites.values()].filter(s =>
+      s.status === 'idle' && !s.moving && !s.bubble &&
+      now - (this.lastCasual.get(s.id) ?? -Infinity) > CASUAL_AGENT_COOLDOWN_MS)
+    // shuffle so the same pair doesn't monopolize the floor
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+    }
+    for (const a of candidates) {
+      const b = candidates.find(o => o !== a && Math.hypot(o.x - a.x, o.y - a.y) <= CASUAL_RANGE_TILES)
+      if (!b) continue
+      a.say(CASUAL_OPENERS[Math.floor(Math.random() * CASUAL_OPENERS.length)], 'casual')
+      const reply = CASUAL_REPLIES[Math.floor(Math.random() * CASUAL_REPLIES.length)]
+      const bid = b.id
+      setTimeout(() => {
+        const s = this.sprites.get(bid)
+        if (s && s.status === 'idle') s.say(reply, 'casual')
+      }, 1400 + Math.random() * 900)
+      this.lastCasual.set(a.id, now)
+      this.lastCasual.set(b.id, now)
+      // verification hook: lets automated checks confirm chatter actually fires
+      ;(window as unknown as { __casualChats?: number }).__casualChats =
+        ((window as unknown as { __casualChats?: number }).__casualChats ?? 0) + 1
+      break // one exchange per beat keeps the floor calm
+    }
   }
 
   /** Owner-focused teams (from the legend). Non-empty → these rooms are lit and all
@@ -427,10 +491,10 @@ export class OfficeEngine {
 
   private drawBubble(x: number, y: number, text: string, kind: string, alpha: number) {
     const { ctx } = this
-    const fs = this.fontScale
+    const fs = this.fontScale * (kind === 'casual' ? 0.85 : 1) // small talk is literally smaller
     const fpx = 16 * fs            // balloon font: 16px base (owner's floor) × global scale
     ctx.save()
-    ctx.globalAlpha = alpha
+    ctx.globalAlpha = alpha * (kind === 'casual' ? 0.9 : 1)
     ctx.font = `${fpx}px "IBM Plex Mono", monospace`
     const pad = 12 * fs
     const w = Math.min(340 * fs, ctx.measureText(text).width + pad)
@@ -441,6 +505,9 @@ export class OfficeEngine {
     if (kind === 'review-comment') ctx.strokeStyle = '#ffd700aa'
     if (kind === 'handoff') ctx.strokeStyle = '#ff6b35aa'
     if (kind === 'activity') ctx.strokeStyle = '#4d9fff77'
+    // Ambient small talk: deliberately muted so REAL communication (mail, reviews,
+    // handoffs — always driven by actual events) stays visually louder.
+    if (kind === 'casual') ctx.strokeStyle = 'rgba(160,180,200,0.45)'
     ctx.beginPath()
     ctx.roundRect(bx, by, w, h, (kind === 'activity' ? 8 : 4) * fs)
     ctx.fill()
@@ -459,7 +526,7 @@ export class OfficeEngine {
       ctx.moveTo(x - 3 * fs, by + h); ctx.lineTo(x + 3 * fs, by + h); ctx.lineTo(x, by + h + 5 * fs)
       ctx.closePath(); ctx.fill()
     }
-    ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : '#cfe3ff'
+    ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : kind === 'casual' ? '#b7c4d6' : '#cfe3ff'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(text, x, by + h / 2, w - pad)
