@@ -171,7 +171,8 @@ export class OfficeEngine {
     const mx = e.clientX - rect.left, my = e.clientY - rect.top
     const before = { x: mx / this.cam.scale + this.cam.x, y: my / this.cam.scale + this.cam.y }
     const factor = e.deltaY < 0 ? 1.25 : 0.8
-    this.cam.scale = Math.min(6, Math.max(0.75, this.cam.scale * factor))
+    // 0.6 floor: the 82-tile (1312px) world must fit on panels narrower than ~984px.
+    this.cam.scale = Math.min(6, Math.max(0.6, this.cam.scale * factor))
     this.cam.x = before.x - mx / this.cam.scale
     this.cam.y = before.y - my / this.cam.scale
   }
@@ -180,7 +181,7 @@ export class OfficeEngine {
     if (!this.map) return
     const w = this.canvas.width, h = this.canvas.height
     const worldW = this.map.width * TILE, worldH = this.map.height * TILE
-    this.cam.scale = Math.max(0.75, Math.min(w / worldW, h / worldH) * 0.96)
+    this.cam.scale = Math.max(0.6, Math.min(w / worldW, h / worldH) * 0.96)
     this.cam.x = (worldW - w / this.cam.scale) / 2
     this.cam.y = (worldH - h / this.cam.scale) / 2
   }
@@ -214,6 +215,89 @@ export class OfficeEngine {
         g.drawImage(tile, x * TILE, y * TILE)
       }
     }
+
+    // ── baked decor passes ──────────────────────────────────────────────────
+    // All position-DEPENDENT art (shadows, team accents, lamp glow, window
+    // light) is painted here, once per snapshot, so makeTile stays position-
+    // independent and its `kind|checker|teamColor` cache key stays valid.
+    const map = this.map
+    const kindAt = (x: number, y: number) =>
+      x >= 0 && y >= 0 && x < map.width && y < map.height ? map.tiles[y][x] : 'void'
+    const WALL_LIKE = new Set<string>(['wall', 'whiteboard', 'windowWall', 'greenWall', 'glass', 'fridge'])
+    const FLOOR_LIKE = new Set<string>(['floor', 'zoneFloor', 'corridor', 'rug', 'chair'])
+    const FURNITURE = new Set<string>([
+      'desk', 'meetTable', 'kitchenCounter', 'sink', 'coffee',
+      'sofaW', 'sofaC', 'sofaE', 'armchair', 'loungeTable', 'plant', 'lamp',
+    ])
+
+    // A + B: drop shadows from walls (2-step) and furniture (contact) onto floor below
+    for (let y = 0; y < map.height - 1; y++) {
+      for (let x = 0; x < map.width; x++) {
+        if (!FLOOR_LIKE.has(kindAt(x, y + 1))) continue
+        const k = kindAt(x, y)
+        if (WALL_LIKE.has(k)) {
+          g.fillStyle = 'rgba(20,12,4,0.30)'; g.fillRect(x * TILE, (y + 1) * TILE, TILE, 4)
+          g.fillStyle = 'rgba(20,12,4,0.14)'; g.fillRect(x * TILE, (y + 1) * TILE + 4, TILE, 2)
+        } else if (FURNITURE.has(k)) {
+          g.fillStyle = 'rgba(20,12,4,0.18)'; g.fillRect(x * TILE, (y + 1) * TILE, TILE, 3)
+        }
+      }
+    }
+
+    // C: team accent strip along each room's corridor-side wall (doors skipped) —
+    // team identity stays readable even when the room is dimmed.
+    for (const z of map.zones) {
+      const wallY = z.rect.y < 14 ? z.rect.y + z.rect.h : z.rect.y - 1
+      g.globalAlpha = 0.55
+      g.fillStyle = z.color
+      for (let x = z.rect.x; x < z.rect.x + z.rect.w; x++) {
+        if (x === z.rect.x + 7 || x === z.rect.x + 8) continue
+        if (kindAt(x, wallY) !== 'wall') continue
+        g.fillRect(x * TILE, wallY * TILE, TILE, 3)
+      }
+      g.globalAlpha = 1
+    }
+
+    // F: gold border around the lounge rug
+    const rug = map.decor.rug
+    g.strokeStyle = 'rgba(201,185,138,0.9)'
+    g.lineWidth = 2
+    g.strokeRect(rug.x * TILE + 3, rug.y * TILE + 3, rug.w * TILE - 6, rug.h * TILE - 6)
+
+    // D: warm radial glow around each floor lamp
+    for (const p of map.decor.lamps) {
+      const cx = p.x * TILE + 8, cy = p.y * TILE + 5
+      const grad = g.createRadialGradient(cx, cy, 2, cx, cy, 56)
+      grad.addColorStop(0, 'rgba(255,205,120,0.30)')
+      grad.addColorStop(1, 'rgba(255,205,120,0)')
+      g.fillStyle = grad
+      g.beginPath(); g.arc(cx, cy, 56, 0, Math.PI * 2); g.fill()
+    }
+
+    // E: daylight pools under the windows
+    for (let x = 0; x < map.width; x++) {
+      if (kindAt(x, 0) === 'windowWall') {
+        const grad = g.createLinearGradient(0, TILE, 0, TILE + 40)
+        grad.addColorStop(0, 'rgba(255,238,200,0.10)')
+        grad.addColorStop(1, 'rgba(255,238,200,0)')
+        g.fillStyle = grad
+        g.fillRect(x * TILE, TILE, TILE, 40)
+      }
+      const by = map.height - 1
+      if (kindAt(x, by) === 'windowWall') {
+        const grad = g.createLinearGradient(0, by * TILE, 0, by * TILE - 40)
+        grad.addColorStop(0, 'rgba(255,238,200,0.08)')
+        grad.addColorStop(1, 'rgba(255,238,200,0)')
+        g.fillStyle = grad
+        g.fillRect(x * TILE, by * TILE - 40, TILE, 40)
+      }
+    }
+
+    // G: cool ambiance wash inside the glass meeting room
+    const gr = map.decor.glassRoom
+    g.fillStyle = 'rgba(190,225,235,0.06)'
+    g.fillRect((gr.x + 1) * TILE, (gr.y + 1) * TILE, (gr.w - 2) * TILE, (gr.h - 2) * TILE)
+
     this.mapLayer = layer
   }
 
@@ -261,8 +345,10 @@ export class OfficeEngine {
     if (litTeams.size > 0) {
       for (const z of this.map.zones) {
         const rx = z.rect.x * TILE, ry = z.rect.y * TILE, rw = z.rect.w * TILE, rh = z.rect.h * TILE
-        // lit room: a soft light wash (brighter); other rooms: a heavy dark veil.
-        ctx.fillStyle = litTeams.has(z.teamId) ? 'rgba(150,180,230,0.12)' : 'rgba(4,6,12,0.72)'
+        // lit room: a soft warm wash (reads right on wood floors); others: a dusk veil —
+        // dark enough to make the spotlight obvious, light enough that the luxury
+        // interiors stay visible in resting rooms.
+        ctx.fillStyle = litTeams.has(z.teamId) ? 'rgba(255,214,150,0.10)' : 'rgba(4,6,12,0.52)'
         ctx.fillRect(rx, ry, rw, rh)
       }
     }
@@ -275,13 +361,24 @@ export class OfficeEngine {
       ctx.fillText(z.name.toUpperCase(), (z.rect.x + 0.5) * TILE, (z.rect.y + 0.9) * TILE)
     }
     ctx.fillStyle = '#8a97b899'
-    ctx.fillText('COMMONS', 49.5 * TILE, 19 * TILE)
+    ctx.fillText('COMMONS', 61.5 * TILE, 18.9 * TILE)
+    ctx.font = `${8 * this.fontScale}px "IBM Plex Mono", monospace`
+    ctx.fillText('MEETING', 51 * TILE, 20.9 * TILE)
+    ctx.fillText('KITCHEN', 73 * TILE, 20.5 * TILE)
+    ctx.fillText('LOUNGE', 66.5 * TILE, 23.6 * TILE)
 
     // sprites, painter's order by y
     const sorted = [...this.sprites.values()].sort((a, b) => a.y - b.y)
     for (const s of sorted) {
       const frame = s.sheet.frames[s.frame()]
       const px = s.x * TILE, py = s.y * TILE - 6 // feet near tile bottom
+      if (s.status !== 'offline') {
+        // soft contact shadow under the sprite
+        ctx.fillStyle = 'rgba(10,6,2,0.30)'
+        ctx.beginPath()
+        ctx.ellipse(Math.round(px) + 8, Math.round(py) + 15, 5, 2, 0, 0, Math.PI * 2)
+        ctx.fill()
+      }
       if (s.status === 'offline') ctx.globalAlpha = 0.25
       ctx.drawImage(frame, Math.round(px), Math.round(py))
       ctx.globalAlpha = 1

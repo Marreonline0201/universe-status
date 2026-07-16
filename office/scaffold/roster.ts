@@ -1,4 +1,4 @@
-// Single source of truth for the company roster: 7 teams × 7 agents + 1 director = 50.
+// Single source of truth for the company roster: 8 teams × 7 agents + 1 director = 57.
 // Per team: 1 lead (opus), 3 Fable senior researchers (claude-fable-5), 1 reviewer (opus),
 // 1 research engineer (sonnet), 1 liaison/scribe (sonnet). Haiku is never used.
 // The scaffold generator writes company/ from this; the orchestrator loads the generated
@@ -94,6 +94,14 @@ export const TEAMS: TeamSpec[] = [
     mission: 'SSFR and beyond: make the universe look as real as it behaves, within browser GPU budgets.',
     sources: ['docs/superpowers/plans/2026-04-07-ssfr-threejs-migration.md', 'src/fluid-render/'],
     names: ['Talia Moreau', 'Hugo Andrade', 'Sena Yildiz', 'Owen Gallagher', 'Kira Volkova', 'Mateo Rios', 'Ingrid Falk'],
+  },
+  {
+    id: 'engine',
+    name: 'Engine Research',
+    color: '#a3e635',
+    mission: 'Game-engine subsystem research for the Rust/Bevy Universe Engine. For each subsystem (motion, collision, time control, thermal, instrumentation, …) produce a cited report proposing: the most physically precise method (exact published equations, real constants with sources — never third-party game-physics middleware, which trades accuracy for speed), the editor controls ("buttons") the subsystem needs, and the exact wiring into the engine loop. Every proposal must state how it will be verified against independent analytic references. f64 state; physics-shaped interfaces that expose full physical state, never convenience-shaped simplifications.',
+    sources: ['structure.md', 'VISION_REALIGNMENT.md'],
+    names: ['Iida Korhonen', 'Dario Bianchi', 'Yara Mansour', 'Callum Reid', 'Sachiko Endo', 'Lukas Meyer', 'Beatriz Anaya'],
   },
 ]
 
