@@ -61,7 +61,7 @@ const SKINS = ['#f2c6a0', '#d9a066', '#a5673f', '#7a4a2b']
 const HAIRS = ['#2b2b2b', '#5a3825', '#c9a227', '#8a8a8a', '#b23a48', '#3a5a8a']
 
 export type TileKind =
-  | 'void' | 'floor' | 'corridor' | 'wall' | 'desk' | 'chair' | 'meetTable'
+  | 'void' | 'floor' | 'corridor' | 'wall' | 'wallTop' | 'desk' | 'chair' | 'meetTable'
   | 'plant' | 'whiteboard' | 'coffee' | 'zoneFloor'
   | 'glass' | 'greenWall' | 'windowWall'
   | 'sofaW' | 'sofaC' | 'sofaE' | 'armchair' | 'loungeTable' | 'rug' | 'lamp'
@@ -140,6 +140,21 @@ export function makeTile(kind: TileKind, opts: { checker?: boolean; teamColor?: 
       px(g, 12, 11, 1, 1, opts.checker ? STONE_A : STONE_B)
       break
     case 'wall': wallBase(); break
+    case 'wallTop':
+      // Top surface of a wall run. Vertical segments (and junctions) show only
+      // the limestone cap from this viewing angle — repeating the south-facing
+      // cap+face art up a column reads as a striped ladder.
+      px(g, 0, 0, TILE, TILE, WALL_CAP)
+      px(g, 0, 0, 1, TILE, WALL_CAP_EDGE)
+      px(g, 15, 0, 1, TILE, WALL_CAP_EDGE)
+      px(g, 1, 0, 1, TILE, 'rgba(0,0,0,0.12)')
+      px(g, 14, 0, 1, TILE, 'rgba(0,0,0,0.12)')
+      if (opts.checker) {
+        px(g, 6, 4, 2, 1, '#b09b78'); px(g, 9, 12, 1, 1, '#8f7c5e')
+      } else {
+        px(g, 8, 7, 2, 1, '#b09b78'); px(g, 5, 2, 1, 1, '#8f7c5e')
+      }
+      break
     case 'windowWall':
       wallBase()
       px(g, 1, 5, 14, 9, GLASS_FRAME)

@@ -195,6 +195,18 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
   for (let x = 51; x <= 56; x++) set(x, MAP_H - 1, 'greenWall', true)
   for (const a of agents) if (a.team === 'company') desks.set(a.id, directorSpot)
 
+  // Wall orientation pass (after ALL wall placement): a wall tile with another
+  // wall-like tile directly below it is part of a vertical run or junction, so
+  // only its top surface is visible from this angle — repeating the south-facing
+  // cap+face art up a column reads as a striped ladder. Tiles with open space
+  // below keep the face; the bottom border row (nothing below) stays a face band.
+  const WALLISH = new Set<TileKind>(['wall', 'wallTop', 'windowWall', 'whiteboard', 'greenWall'])
+  for (let y = 0; y < MAP_H - 1; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      if (tiles[y][x] === 'wall' && WALLISH.has(tiles[y + 1][x])) tiles[y][x] = 'wallTop'
+    }
+  }
+
   const lobby: Point = { x: 55, y: 15 }
 
   const walkable = (x: number, y: number) =>

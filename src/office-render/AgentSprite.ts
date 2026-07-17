@@ -22,6 +22,13 @@ const WANDER_JITTER_S = 150
 // How long a blocked walker waits before re-pathing around the obstruction.
 // Staggered per agent so two head-on walkers don't re-path in the same frame.
 const BLOCK_REPATH_S = 1.2
+// Minimum body-to-body distance (tiles). Cell claims alone can't keep two
+// mid-step BODIES apart: two head-on walkers each stop at their shared cell
+// boundary (different cells, sprites fully overlapped), and a diagonal corner
+// cross can pass within ~0.3 tiles without ever sharing a cell. Sprites are
+// ~10px of a 16px tile wide, so 0.7 tiles keeps pixels from ever touching
+// while still letting agents pass in parallel corridor lanes (1.0 apart).
+const BODY_GAP = 0.7
 
 export interface Bubble { text: string; until: number; kind: string }
 
@@ -59,13 +66,20 @@ export class AgentSprite {
   role: string
   private map: OfficeMapData
 
-  constructor(id: string, name: string, team: string, role: string, teamColor: string, map: OfficeMapData, occ: Occupancy) {
+  /** shared live roster (engine's sprite map) — read-only, for body separation */
+  private peers: ReadonlyMap<string, AgentSprite>
+
+  constructor(
+    id: string, name: string, team: string, role: string, teamColor: string,
+    map: OfficeMapData, occ: Occupancy, peers: ReadonlyMap<string, AgentSprite>,
+  ) {
     this.id = id
     this.name = name
     this.team = team
     this.role = role
     this.map = map
     this.occ = occ
+    this.peers = peers
     this.sheet = characterSheet(hashCode(id), teamColor)
     const spot = map.desks.get(id)
     this.home = spot ? spot.chair : map.lobby
@@ -121,18 +135,42 @@ export class AgentSprite {
     }
   }
 
+  /** New paths start from the owned cell. The body is NEVER teleported to the
+      cell center — an ungated snap can move it half a tile INTO a colleague.
+      Off-center bodies get their own cell center as a first waypoint instead,
+      so the correcting step passes through the same separation gate as any
+      other movement. */
+  private setPath(waypoints: Point[]) {
+    const from = this.tile
+    const offCenter = Math.abs(this.x - from.x) + Math.abs(this.y - from.y) > 0.01
+    this.path = offCenter ? [from, ...waypoints] : waypoints
+    this.blockedT = 0
+    this.waiting = false
+  }
+
   goTo(dest: Point) {
     const from = this.tile
-    this.x = from.x; this.y = from.y
-    if (this.heldPrev) { // a mid-walk redirect snaps us into the current cell
+    if (this.heldPrev) { // a mid-walk redirect: the current cell is ours, drop the trailing claim
       this.occ.release(this.heldPrev.x, this.heldPrev.y, this.id)
       this.heldPrev = null
     }
     this.dest = dest
     const raw = findPath(this.map.walkable, this.map.width, this.map.height, from, dest)
-    this.path = naturalizePath(this.map.walkable, from, raw)
-    this.blockedT = 0
-    this.waiting = false
+    this.setPath(naturalizePath(this.map.walkable, from, raw))
+  }
+
+  /** True if stepping to (nx,ny) would put this body within BODY_GAP of a
+      colleague's body — unless the step opens the gap (escape moves are always
+      allowed so nobody gets pinned by someone brushing past behind them). */
+  private stepBlockedByBody(nx: number, ny: number): boolean {
+    for (const p of this.peers.values()) {
+      if (p === this) continue
+      const dNew = Math.hypot(nx - p.x, ny - p.y)
+      if (dNew >= BODY_GAP) continue
+      if (dNew > Math.hypot(this.x - p.x, this.y - p.y)) continue
+      return true
+    }
+    return false
   }
 
   /** Re-plan to the same destination treating currently held cells (except ours
@@ -158,8 +196,7 @@ export class AgentSprite {
       (this.occ.isFree(x, y, this.id) || (x === dest.x && y === dest.y))
     const raw = findPath(clear, this.map.width, this.map.height, from, dest)
     if (raw.length > 0) {
-      this.x = from.x; this.y = from.y
-      this.path = naturalizePath(clear, from, raw)
+      this.setPath(naturalizePath(clear, from, raw))
       return
     }
     // No route around (destination boxed in). Give up gracefully.
@@ -185,6 +222,20 @@ export class AgentSprite {
       // Tentative position for this frame.
       const nx = dist <= step ? next.x : this.x + (dx / dist) * step
       const ny = dist <= step ? next.y : this.y + (dy / dist) * step
+
+      // Body separation — checked before cell logic. Never step within
+      // BODY_GAP of a colleague's body: stop short like a person would,
+      // and if they don't move, re-path around their claimed cells.
+      if (this.stepBlockedByBody(nx, ny)) {
+        this.waiting = true
+        this.blockedT += dt
+        if (this.blockedT >= this.repathAfter) {
+          this.blockedT = 0
+          this.rePathAroundOccupied()
+        }
+        return
+      }
+
       const curCell = this.tile
       const newCell = { x: Math.round(nx), y: Math.round(ny) }
 

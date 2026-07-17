@@ -112,7 +112,7 @@ export class OfficeEngine {
     this.lastCasual.clear()
     for (const a of agents) {
       const color = teams.find(t => t.id === a.team)?.color ?? '#ffd700'
-      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map, this.occ)
+      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map, this.occ, this.sprites)
       sprite.setStatus(a.status)
       this.sprites.set(a.id, sprite)
     }
@@ -254,7 +254,7 @@ export class OfficeEngine {
     const map = this.map
     const kindAt = (x: number, y: number) =>
       x >= 0 && y >= 0 && x < map.width && y < map.height ? map.tiles[y][x] : 'void'
-    const WALL_LIKE = new Set<string>(['wall', 'whiteboard', 'windowWall', 'greenWall', 'glass', 'fridge'])
+    const WALL_LIKE = new Set<string>(['wall', 'wallTop', 'whiteboard', 'windowWall', 'greenWall', 'glass', 'fridge'])
     const FLOOR_LIKE = new Set<string>(['floor', 'zoneFloor', 'corridor', 'rug', 'chair'])
     const FURNITURE = new Set<string>([
       'desk', 'meetTable', 'kitchenCounter', 'sink', 'coffee',
@@ -272,6 +272,14 @@ export class OfficeEngine {
         } else if (FURNITURE.has(k)) {
           g.fillStyle = 'rgba(20,12,4,0.18)'; g.fillRect(x * TILE, (y + 1) * TILE, TILE, 3)
         }
+      }
+    }
+    // A2: light comes from the upper-left, so wall runs also throw a thin
+    // shadow onto floor to their east — anchors the flat-cap vertical runs.
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width - 1; x++) {
+        if (!WALL_LIKE.has(kindAt(x, y)) || !FLOOR_LIKE.has(kindAt(x + 1, y))) continue
+        g.fillStyle = 'rgba(20,12,4,0.16)'; g.fillRect((x + 1) * TILE, y * TILE, 3, TILE)
       }
     }
 
@@ -446,13 +454,15 @@ export class OfficeEngine {
       if (s.status === 'offline') ctx.globalAlpha = 0.25
       ctx.drawImage(frame, Math.round(px), Math.round(py))
       ctx.globalAlpha = 1
-      // status light above the head — a glowing dot colored by status
-      const lx = Math.round(px) + 8, ly = Math.round(py) - 2
+      // status light — a small badge at the head's shoulder, NOT a halo centered
+      // over the sprite: a head-sized glow above a seated agent reads as a second
+      // person crammed onto the same chair at overview zoom.
+      const lx = Math.round(px) + 13, ly = Math.round(py)
       ctx.fillStyle = s.dotColor()
-      ctx.globalAlpha = 0.35
-      ctx.beginPath(); ctx.arc(lx, ly, 5.5, 0, Math.PI * 2); ctx.fill() // soft glow
+      ctx.globalAlpha = 0.3
+      ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI * 2); ctx.fill() // soft glow
       ctx.globalAlpha = 1
-      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill()   // core
+      ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fill()   // core
       // selection ring
       if (s.id === this.selected) {
         ctx.strokeStyle = '#00d4ff'
