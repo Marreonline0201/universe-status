@@ -38,7 +38,7 @@ export interface WsHandlers {
   denyRequest: (id: string, reason?: string) => { ok: boolean; error?: string }
   killRequest: (id: string) => { ok: boolean; error?: string }
   runOutput: (id: string) => { requestId: string; lines: RunOutputLine[]; running: boolean } | null
-  setUsageLimits: (body: { session: number; weekly: number }) => { ok: boolean; error?: string }
+  setUsageLimits: (body: { session: number; weekly: number; allowWhenBlind?: boolean }) => { ok: boolean; error?: string }
 }
 
 function isLoopbackOrigin(origin: string | undefined): boolean {
@@ -288,7 +288,11 @@ export class OfficeWs {
     if (req.method === 'POST' && route === '/api/settings') {
       if (!owner) return requireOwner()
       return readBody(body => {
-        const result = this.handlers.setUsageLimits({ session: Number(body.session), weekly: Number(body.weekly) })
+        const result = this.handlers.setUsageLimits({
+          session: Number(body.session),
+          weekly: Number(body.weekly),
+          ...(typeof body.allowWhenBlind === 'boolean' ? { allowWhenBlind: body.allowWhenBlind } : {}),
+        })
         result.ok ? json(200, { ok: true }) : json(400, { error: result.error ?? 'invalid' })
       })
     }

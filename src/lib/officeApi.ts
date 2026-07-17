@@ -69,7 +69,13 @@ export async function killRequest(id: string): Promise<void> {
   await req('POST', '/api/request/kill', { id })
 }
 
-/** Owner-only: set the office's usage nap thresholds (% of the 5-hour / 7-day windows). */
-export async function setUsageLimits(session: number, weekly: number): Promise<void> {
-  await req('POST', '/api/settings', { session, weekly })
+/** Owner-only: set the office's usage nap thresholds (% of the 5-hour / 7-day windows)
+    and optionally whether spawning is allowed while the usage monitor is blind. */
+export async function setUsageLimits(session: number, weekly: number, allowWhenBlind?: boolean): Promise<void> {
+  await req('POST', '/api/settings', { session, weekly, ...(typeof allowWhenBlind === 'boolean' ? { allowWhenBlind } : {}) })
+}
+
+/** Owner-only: resume the office — clears a manual pause AND a usage hard-stop lock. */
+export async function resumeOffice(): Promise<void> {
+  await req('POST', '/api/resume')
 }

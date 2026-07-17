@@ -63,16 +63,25 @@ export interface PoolState {
   active: string[] // agent ids with live sessions
   queued: string[] // runnable agent ids waiting for a slot
   paused: boolean
+  // Money ceiling: fresh usage at/over hardStopPct killed the in-flight
+  // sessions and sticky-paused the office (survives restarts) until the
+  // OWNER resumes. paused is also true while this is.
+  hardStopped: boolean
+  // Monitor blind (no successful poll in >5 min) → new activations are held
+  // unless the owner set allowWhenBlind (safe only with extra-usage billing off).
+  holdingBlind: boolean
   // Usage-aware rest mode: office stops spawning agents near the subscription
   // limits (session window / weekly cap) and resumes when the window resets.
   resting: boolean
   restReason: 'session' | 'weekly' | null
   restResumeAt: string | null // ISO — when agents are expected to resume
-  usagePct: number | null     // 5-hour window utilization, 0-100
+  usagePct: number | null     // 5-hour window utilization, 0-100 (LAST GOOD poll — check usageAgeMs)
   weeklyPct: number | null    // 7-day window utilization, 0-100
   usageMonitorOk: boolean     // false → guard is blind (creds/endpoint problem)
+  usageAgeMs: number | null   // ms since the last successful usage poll (null = never)
   sessionThresholdPct: number // owner-set: rest when session usage ≥ this
   weeklyThresholdPct: number  // owner-set: rest when weekly usage ≥ this
+  allowWhenBlind: boolean     // owner-set: spawn even when the monitor is blind (extra-usage billing must be OFF)
 }
 
 // ── Owner requests: agents file them; the owner approves/denies in the UI; ──

@@ -76,10 +76,12 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
   const snapshot = (owner: boolean): ServerMsg => {
     const pool = scheduler?.poolState() ?? {
       cap: cfg.maxConcurrent, active: [], queued: [], paused: false,
+      hardStopped: false, holdingBlind: false,
       resting: false, restReason: null, restResumeAt: null,
-      usagePct: null, weeklyPct: null, usageMonitorOk: false,
+      usagePct: null, weeklyPct: null, usageMonitorOk: false, usageAgeMs: null,
       sessionThresholdPct: cfg.usageRest?.sessionThresholdPct ?? 90,
       weeklyThresholdPct: cfg.usageRest?.weeklyThresholdPct ?? 95,
+      allowWhenBlind: cfg.usageRest?.allowWhenBlind ?? false,
     }
     const reports = loadReports(paths)
     return {
@@ -142,22 +144,23 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
     killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
     runOutput: (id) => runner?.output(id) ?? null,
-    setUsageLimits: ({ session, weekly }) => {
+    setUsageLimits: ({ session, weekly, allowWhenBlind }) => {
       const clampPct = (v: number) => Number.isFinite(v) ? Math.min(100, Math.max(10, Math.round(v))) : null
       const s = clampPct(session), w = clampPct(weekly)
       if (s === null || w === null) return { ok: false, error: 'session and weekly must be numbers 10–100' }
+      const blind = typeof allowWhenBlind === 'boolean' ? { allowWhenBlind } : {}
       // Persist to office.json (survives restart)…
       const cfgFile = path.join(repoRoot, 'office', 'config', 'office.json')
       try {
         const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
-        j.usageRest = { ...(j.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w }
+        j.usageRest = { ...(j.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w, ...blind }
         fs.writeFileSync(cfgFile, JSON.stringify(j, null, 2) + '\n')
       } catch { return { ok: false, error: 'could not write office.json' } }
-      // …then apply live: mutate the shared cfg (poolState reads it) + push into the monitor.
-      cfg.usageRest = { ...(cfg.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w }
-      usage?.setConfig({ sessionThresholdPct: s, weeklyThresholdPct: w, pollSeconds: cfg.usageRest?.pollSeconds ?? 60 })
+      // …then apply live: mutate the shared cfg (poolState + blind-hold read it) + push into the monitor.
+      cfg.usageRest = { ...(cfg.usageRest ?? {}), sessionThresholdPct: s, weeklyThresholdPct: w, ...blind }
+      usage?.setConfig({ ...cfg.usageRest, sessionThresholdPct: s, weeklyThresholdPct: w, pollSeconds: cfg.usageRest?.pollSeconds ?? 60 })
       ws.broadcast({ type: 'POOL_STATE', pool: scheduler.poolState() })
-      log(`usage limits set by owner → session ${s}% / weekly ${w}%`)
+      log(`usage limits set by owner → session ${s}% / weekly ${w}%${'allowWhenBlind' in blind ? ` / allowWhenBlind ${blind.allowWhenBlind}` : ''}`)
       return { ok: true }
     },
   }, wsAuth, staticDir, log)
@@ -202,7 +205,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
       pollSeconds: 60,
       ...(cfg.usageRest ?? {}),
     },
-    (state, rest) => scheduler.setUsage(state, rest),
+    (state, rest, hard) => scheduler.setUsage(state, rest, hard),
     log,
   )
 

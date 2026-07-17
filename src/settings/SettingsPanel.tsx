@@ -26,19 +26,20 @@ export function SettingsPanel({ onClose, office }: { onClose: () => void; office
   const pool = office.state.pool
   const [sMax, setSMax] = useState(pool.sessionThresholdPct)
   const [wMax, setWMax] = useState(pool.weeklyThresholdPct)
+  const [blindOk, setBlindOk] = useState(pool.allowWhenBlind)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
   // Re-sync the inputs whenever the office broadcasts new thresholds (e.g. after a save).
   useEffect(() => {
-    setSMax(pool.sessionThresholdPct); setWMax(pool.weeklyThresholdPct)
-  }, [pool.sessionThresholdPct, pool.weeklyThresholdPct])
+    setSMax(pool.sessionThresholdPct); setWMax(pool.weeklyThresholdPct); setBlindOk(pool.allowWhenBlind)
+  }, [pool.sessionThresholdPct, pool.weeklyThresholdPct, pool.allowWhenBlind])
 
-  const dirty = sMax !== pool.sessionThresholdPct || wMax !== pool.weeklyThresholdPct
+  const dirty = sMax !== pool.sessionThresholdPct || wMax !== pool.weeklyThresholdPct || blindOk !== pool.allowWhenBlind
   const save = async () => {
     setSaving(true); setSaveErr(null); setSaved(false)
-    try { await setUsageLimits(sMax, wMax); setSaved(true) }
+    try { await setUsageLimits(sMax, wMax, blindOk); setSaved(true) }
     catch (e) { setSaveErr(e instanceof Error ? e.message : String(e)) }
     finally { setSaving(false) }
   }
@@ -110,6 +111,23 @@ export function SettingsPanel({ onClose, office }: { onClose: () => void; office
               <span style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.4)' }}>now {usageNow(pool.weeklyPct)}</span>
             </div>
           </div>
+
+          <label style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12,
+            cursor: owner && connected ? 'pointer' : 'default', opacity: owner && connected ? 1 : 0.5,
+          }}>
+            <input
+              type="checkbox" checked={blindOk} disabled={!owner || !connected}
+              onChange={e => { setBlindOk(e.target.checked); setSaved(false) }}
+              style={{ accentColor: '#ff6b35', marginTop: 2 }}
+            />
+            <span style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.6)', lineHeight: 1.5 }}>
+              <span style={{ color: 'rgba(255,150,100,0.9)' }}>Allow agents while usage is unknown.</span>{' '}
+              When Anthropic's usage endpoint is down, the office normally holds new agent sessions
+              (an unverified window is a billing risk). Tick this ONLY if extra-usage billing is
+              disabled in your Anthropic console — then sessions refuse at the limit instead of charging money.
+            </span>
+          </label>
 
           {!connected && (
             <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(255,170,80,0.7)' }}>Office offline — can't change limits.</div>

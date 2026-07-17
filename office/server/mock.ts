@@ -216,14 +216,18 @@ export function runMock(ctx: MockCtx) {
         active,
         queued: ids.filter(() => rand() < 0.05).slice(0, 4),
         paused: false,
+        hardStopped: false,
+        holdingBlind: false,
         resting,
         restReason: resting ? 'session' : null,
         restResumeAt: resting ? new Date(Date.now() + ((104 - usagePct) / 4) * 4000).toISOString() : null,
         usagePct,
         weeklyPct: 18,
         usageMonitorOk: true,
+        usageAgeMs: 30_000,
         sessionThresholdPct: 90,
         weeklyThresholdPct: 95,
+        allowWhenBlind: false,
       },
     })
   }, 4000)
