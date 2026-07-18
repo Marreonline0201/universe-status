@@ -58,7 +58,15 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
   const agents = new Map<string, OfficeAgent>(buildAgents(roster).map(a => [a.id, a]))
   const chat: ChatMsg[] = []
   const transcripts = new Map<string, string[]>()
-  const log = (line: string) => console.log(`[office] ${line}`)
+  // Timestamped + always written to office-runtime.log directly, no matter how
+  // the office was launched — diagnosing the 2026-07 usage blindness was crippled
+  // by an un-timestamped log that only the session hook's pipe ever populated.
+  const logFile = fs.createWriteStream(path.join(repoRoot, 'office-runtime.log'), { flags: 'a' })
+  const log = (line: string) => {
+    const stamped = `[office ${new Date().toISOString().slice(11, 19)}Z] ${line}`
+    console.log(stamped)
+    logFile.write(stamped + '\n')
+  }
 
   if (!opts.mock) {
     // Boot check: subscription auth present? (cheapest possible probe)
@@ -263,6 +271,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     void watcher.close()
     committer?.stop()
     ws.close()
+    logFile.end()
     setTimeout(() => process.exit(0), 500)
   }
   process.on('SIGINT', shutdown)

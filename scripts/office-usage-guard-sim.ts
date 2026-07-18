@@ -68,6 +68,16 @@ const writeFake = (sessionPct: number, resetsInMs: number) => fs.writeFileSync(f
   writeFake(100, 3_600_000)
   await poll()
   check(last!.hard.stop && last!.hard.reason === 'session', 'monitor: fresh 100% → HARD STOP decision')
+
+  // Adaptive cadence: calm+healthy → 5× slower; hot or blind → base rate.
+  writeFake(9, 3_600_000)
+  await poll()
+  check(mon.nextPollMs() === 300_000, 'monitor: calm 9% → gentle 5-min polls (shared-bucket friendly)')
+  writeFake(75, 3_600_000)
+  await poll()
+  check(mon.nextPollMs() === 60_000, 'monitor: hot 75% → full-rate 60s polls')
+  ;(mon as unknown as { state: UsageState }).state.ok = false
+  check(mon.nextPollMs() === 60_000, 'monitor: blind → full-rate 60s polls (recover fast)')
   mon.stop() // clear the armed resume timer so the test process can exit
 }
 
@@ -121,13 +131,19 @@ const writeFake = (sessionPct: number, resetsInMs: number) => fs.writeFileSync(f
   check(rebooted.paused && rebooted.hardStopped, 'scheduler: reboot with lock present boots PAUSED until owner resumes')
   fs.rmSync(lockFile)
 
-  // Blind hold: stale monitor → holdingBlind; allowWhenBlind waives.
+  // Blind hold, tiered: calm readings stay spawn-worthy 12 min, hot ones 5 min.
+  const noRest: RestDecision = { resting: false, reason: null, resumeAt: null }
+  const noStop = { stop: false, reason: null } as HardStopDecision
   const sch2 = new Scheduler(paths, [], cfg, events)
-  sch2.setUsage(at(50, false, Date.now() - STALE_MS - 60_000), { resting: false, reason: null, resumeAt: null }, { stop: false, reason: null })
-  check(sch2.poolState().holdingBlind, 'scheduler: blind monitor → new activations held')
+  sch2.setUsage(at(50, false, Date.now() - 10 * 60_000), noRest, noStop)
+  check(!sch2.poolState().holdingBlind, 'scheduler: blind but last reading CALM 50% + 10 min old → still spawning (12-min window)')
+  sch2.setUsage(at(50, false, Date.now() - 13 * 60_000), noRest, noStop)
+  check(sch2.poolState().holdingBlind, 'scheduler: calm reading 13 min old → held')
+  sch2.setUsage(at(80, false, Date.now() - 6 * 60_000), noRest, noStop)
+  check(sch2.poolState().holdingBlind, 'scheduler: blind with last reading HOT 80% + 6 min old → held (5-min window)')
   const cfg2 = { ...cfg, usageRest: { ...cfg.usageRest!, allowWhenBlind: true } } as OfficeConfig
   const sch3 = new Scheduler(paths, [], cfg2, events)
-  sch3.setUsage(at(50, false, Date.now() - STALE_MS - 60_000), { resting: false, reason: null, resumeAt: null }, { stop: false, reason: null })
+  sch3.setUsage(at(50, false, Date.now() - STALE_MS - 60_000), noRest, noStop)
   check(!sch3.poolState().holdingBlind, 'scheduler: allowWhenBlind waives the blind hold')
 
   check(logs.some(l => l.includes('HARD STOP')), 'scheduler: hard stop logged loudly')

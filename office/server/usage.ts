@@ -47,8 +47,17 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
  *  freeze (no auto-resume on stale data) and the scheduler holds new activations. */
 export const STALE_MS = 5 * 60_000
 const LIMIT_HIT_REST_MS = 30 * 60_000 // reactive backstop rest when no reset time is known
-const BACKOFF_START_MS = 5 * 60_000   // first 429 → skip polls for 5 min
-const BACKOFF_MAX_MS = 10 * 60_000    // repeated 429s → cap at 10 min (endpoint outages last hours; recover fast when it returns)
+// 429 ladder: 2 → 4 → 8 → 10 min. The most common 429 is the transient one right
+// after an office restart (the boot's CLI-session burst drains the shared per-
+// account oauth bucket) — a short first retry un-blinds the office quickly once
+// the burst settles, while the cap stays gentle during real endpoint outages.
+const BACKOFF_START_MS = 2 * 60_000
+const BACKOFF_MAX_MS = 10 * 60_000
+// Adaptive cadence: the oauth bucket is shared with the CLI sessions themselves,
+// so OUR polling contributes to the very starvation that blinds us. Far from the
+// thresholds a slow poll is plenty; near them (or blind) poll at full rate.
+const CALM_POLL_MULTIPLIER = 5
+const HOT_PCT = 70
 
 // The usage endpoint buckets callers by User-Agent: requests that don't identify
 // as the Claude Code CLI land in an aggressively throttled bucket and get
@@ -91,12 +100,23 @@ export class UsageMonitor {
     await this.poll()
   }
 
+  /** Base cadence when hot/blind; 5× slower when healthy and far from every
+   *  threshold — polling gently is part of staying UN-blind (shared bucket). */
+  nextPollMs(): number {
+    const base = Math.max(15, this.cfg.pollSeconds) * 1000
+    const hot = (this.state.sessionPct ?? 100) >= HOT_PCT || (this.state.weeklyPct ?? 100) >= HOT_PCT
+    return this.state.ok && !hot ? base * CALM_POLL_MULTIPLIER : base
+  }
+
   start() {
-    this.timer = setInterval(() => void this.poll(), Math.max(15, this.cfg.pollSeconds) * 1000)
+    const tick = () => {
+      this.timer = setTimeout(async () => { await this.poll(); tick() }, this.nextPollMs())
+    }
+    tick()
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     if (this.resumeTimer) clearTimeout(this.resumeTimer)
   }
 
@@ -107,7 +127,7 @@ export class UsageMonitor {
   setConfig(cfg: UsageRestConfig) {
     const pollChanged = cfg.pollSeconds !== this.cfg.pollSeconds
     this.cfg = cfg
-    if (pollChanged && this.timer) { clearInterval(this.timer); this.start() }
+    if (pollChanged && this.timer) { clearTimeout(this.timer); this.start() }
     this.emit() // re-evaluate rest decision + broadcast with the new thresholds
   }
 

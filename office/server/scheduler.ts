@@ -72,6 +72,18 @@ const STATUS_PRIORITY: Record<string, number> = {
 // real change (new mail, task status change, new task) resets it → instant wake.
 const SPIN_BACKOFF_CAP_MS = 30 * 60_000
 
+// How long a last-known CALM (<70%) usage reading stays spawn-worthy while the
+// monitor is blind. See holdingBlind().
+const CALM_BLIND_MS = 12 * 60_000
+
+// Minimum gap between consecutive session spawns. Every CLI session startup
+// fires a burst of requests at Anthropic's per-account oauth endpoints
+// (anthropics/claude-code#30616) — the same bucket our usage poller shares. An
+// unspaced 8-session boot burst is what starves the poller into 429-blindness
+// right after every restart. Spacing spawns keeps the monitor's eyes open (and
+// smooths the CPU spike).
+const SPAWN_GAP_MS = 4_000
+
 export class Scheduler {
   paused = false
   /** Usage hard stop tripped: in-flight sessions were killed and the office is
@@ -89,6 +101,8 @@ export class Scheduler {
   private scanTimer: ReturnType<typeof setInterval> | null = null
   private blindHoldLogged = false
   private readonly hardStopLock: string
+  private lastSpawnAt = 0
+  private spawnTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private paths: Paths,
@@ -118,6 +132,7 @@ export class Scheduler {
 
   stop() {
     if (this.scanTimer) clearInterval(this.scanTimer)
+    if (this.spawnTimer) clearTimeout(this.spawnTimer)
     for (const [id, act] of this.live) {
       act.kill('office shutdown')
       this.events.onStatus(id, 'idle')
@@ -186,12 +201,18 @@ export class Scheduler {
   /** True while new activations must be held because the usage monitor is
    *  blind. With extra-usage billing enabled, sessions past the limit BILL
    *  rather than refuse — an unverifiable window is a money risk, so spawning
-   *  needs a confirmed number. The owner may waive this (allowWhenBlind) after
-   *  disabling extra-usage billing in the Anthropic console. */
+   *  needs a confirmed number. Tiered: a last-known CALM reading (<70%) stays
+   *  spawn-worthy for 12 min (a boot-burst 429 shouldn't idle a clearly-safe
+   *  office); a HOT one (≥70%) goes stale after 5 min. The owner may waive
+   *  entirely (allowWhenBlind) after disabling extra-usage billing. */
   private holdingBlind(): boolean {
     if (this.cfg.usageRest?.allowWhenBlind) return false
     if (!this.usage) return true
-    return !this.usage.ok && Date.now() - this.usage.lastOkAt > STALE_MS
+    if (this.usage.ok) return false
+    if (this.usage.lastOkAt === 0) return true // never had a reading
+    const lastPct = Math.max(this.usage.sessionPct ?? 100, this.usage.weeklyPct ?? 100)
+    const window = lastPct >= 70 ? STALE_MS : CALM_BLIND_MS
+    return Date.now() - this.usage.lastOkAt > window
   }
 
   poolState(): PoolState {
@@ -290,6 +311,16 @@ export class Scheduler {
 
     for (const r of runnable) {
       if (this.live.size >= this.cfg.maxConcurrent) break
+      // Space out spawns (SPAWN_GAP_MS) — the rest of this batch starts on the
+      // rescheduled poke a few seconds from now.
+      const wait = SPAWN_GAP_MS - (Date.now() - this.lastSpawnAt)
+      if (wait > 0) {
+        if (!this.spawnTimer) {
+          this.spawnTimer = setTimeout(() => { this.spawnTimer = null; this.poke() }, wait)
+        }
+        break
+      }
+      this.lastSpawnAt = Date.now()
       this.activate(r)
     }
     this.emitPool()
