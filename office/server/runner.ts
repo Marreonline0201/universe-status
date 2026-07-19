@@ -129,7 +129,10 @@ export class Runner {
     let invalidReason: string | null = null
     let warn: string | null = null
     let runsIn: 'worktree' | 'repo' | null = null
-    if (r.fmId && r.fmId !== r.id) { valid = false; invalidReason = `frontmatter id "${r.fmId}" does not match filename` }
+    if (r.parseError) {
+      valid = false
+      invalidReason = `broken frontmatter (${r.parseError}) — the requesting agent must fix the YAML; unquoted titles containing ": " are the usual cause`
+    } else if (r.fmId && r.fmId !== r.id) { valid = false; invalidReason = `frontmatter id "${r.fmId}" does not match filename` }
     if (kind === 'run') {
       if (!this.cfg?.enabled) { valid = false; invalidReason = 'runner disabled in office config' }
       else {
@@ -182,6 +185,9 @@ export class Runner {
   approve(id: string): { ok: boolean; error?: string } {
     const r = this.fresh(id)
     if (!r) return { ok: false, error: 'unknown request' }
+    // Guard BEFORE any updateRequestFile call — it re-parses the file and would
+    // throw on the same broken YAML this flags.
+    if (r.parseError) return { ok: false, error: `broken frontmatter: ${r.parseError}` }
     if (r.status !== 'pending') return { ok: false, error: `request is ${r.status}, not pending` }
     if (r.fmId && r.fmId !== r.id) return { ok: false, error: 'frontmatter id mismatch' }
 
@@ -208,6 +214,7 @@ export class Runner {
   deny(id: string, reason?: string): { ok: boolean; error?: string } {
     const r = this.fresh(id)
     if (!r) return { ok: false, error: 'unknown request' }
+    if (r.parseError) return { ok: false, error: `broken frontmatter: ${r.parseError}` }
     if (r.status !== 'pending') return { ok: false, error: `request is ${r.status}, not pending` }
     updateRequestFile(this.paths, id, {
       status: 'denied', resolved_at: new Date().toISOString(), ...(reason ? { denied_reason: reason } : {}),

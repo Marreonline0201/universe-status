@@ -326,7 +326,9 @@ ${roleBlocks[a.role] ?? ''}
   \`\`\`markdown
   ---
   id: REQ-<unix-seconds>-<slug>        # must equal the filename stem
-  title: <one line — what and why>
+  title: >-                            # ALWAYS this folded form. A plain "title: text with: colons"
+    <one line — what and why>          # is ILLEGAL YAML — the file becomes unparseable, your
+                                       # request shows as INVALID, and the owner cannot approve it.
   requested_by: ${a.id}
   task: <task-id, if related>
   kind: run                            # run | decision | access

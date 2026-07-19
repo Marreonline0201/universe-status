@@ -157,6 +157,9 @@ export interface RawRequest {
   durationMs: number | null
   path: string         // repo-relative
   file: string         // absolute
+  /** Frontmatter failed to parse (broken YAML). The request stays VISIBLE so the
+   *  owner sees why the card can't be approved instead of a silent no-op. */
+  parseError: string | null
 }
 
 export function loadRequests(p: Paths): RawRequest[] {
@@ -164,7 +167,7 @@ export function loadRequests(p: Paths): RawRequest[] {
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir)
     .filter(f => f.endsWith('.md'))
-    .flatMap(f => {
+    .flatMap((f): RawRequest[] => {
       const abs = path.join(dir, f)
       try {
         if (!fs.statSync(abs).isFile()) return []
@@ -187,8 +190,23 @@ export function loadRequests(p: Paths): RawRequest[] {
           durationMs: fm.duration_ms !== undefined && fm.duration_ms !== null ? Number(fm.duration_ms) : null,
           path: path.relative(p.repoRoot, abs),
           file: abs,
+          parseError: null,
         } satisfies RawRequest]
-      } catch { return [] }
+      } catch (err) {
+        // Never let a malformed request VANISH. When this silently returned [],
+        // the owner's UI showed a card the server couldn't match — APPROVE
+        // no-oped with "unknown request" (2026-07-19: an agent wrote an
+        // unquoted title containing ": ", which is illegal YAML).
+        try { if (!fs.statSync(abs).isFile()) return [] } catch { return [] }
+        const stem = f.replace(/\.md$/, '')
+        return [{
+          id: stem, fmId: null, title: stem, requestedBy: '?', taskId: null,
+          kind: 'decision', status: 'pending', command: null, cwd: null, timeoutMs: null,
+          createdAt: fs.statSync(abs).mtimeMs, resolvedAt: null, exitCode: null, durationMs: null,
+          path: path.relative(p.repoRoot, abs), file: abs,
+          parseError: (err instanceof Error ? err.message : String(err)).split('\n')[0].slice(0, 160),
+        } satisfies RawRequest]
+      }
     })
     .sort((a, b) => b.createdAt - a.createdAt)
 }
