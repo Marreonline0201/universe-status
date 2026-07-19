@@ -3,6 +3,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import matter from 'gray-matter'
+
+/** gray-matter memoizes by raw string ONLY when called without options, and the
+ *  cache interacts badly with parse errors: the FIRST parse of a broken file
+ *  throws, later parses return cached EMPTY data — so a malformed agent file
+ *  flickers between "invisible" and "garbage defaults" depending on call order
+ *  (2026-07-19 planet-request incident: requested_by became "?", approve
+ *  rewrote the file with empty frontmatter). An explicit options object opts
+ *  out of the cache entirely; verified deterministic. Use this for EVERY parse
+ *  of an agent-authored file. */
+export const parseMatter = (raw: string) => matter(raw, {})
 import type { OfficeAgent, OfficeTeam, TaskSummary, ReportMeta, ChatMsg, LabExperiment } from './protocol.ts'
 
 export interface Paths {
@@ -38,7 +48,7 @@ export function loadTeams(p: Paths): OfficeTeam[] {
   return fs.readdirSync(teamsDir).flatMap(id => {
     const charter = path.join(teamsDir, id, 'CHARTER.md')
     if (!fs.existsSync(charter)) return []
-    const fm = matter(fs.readFileSync(charter, 'utf8')).data
+    const fm = parseMatter(fs.readFileSync(charter, 'utf8')).data
     return [{ id, name: String(fm.name ?? id), color: String(fm.color ?? '#00d4ff') }]
   }).sort((a, b) => a.id.localeCompare(b.id))
 }
@@ -51,7 +61,7 @@ export function loadTasks(p: Paths): TaskSummary[] {
     .flatMap(f => {
       const abs = path.join(dir, f)
       try {
-        const fm = matter(fs.readFileSync(abs, 'utf8')).data
+        const fm = parseMatter(fs.readFileSync(abs, 'utf8')).data
         return [{
           id: String(fm.id ?? f.replace(/\.md$/, '')),
           title: String(fm.title ?? f),
@@ -86,7 +96,7 @@ export function loadInbox(p: Paths, agentId: string): MailFile[] {
     .flatMap(f => {
       const abs = path.join(dir, f)
       try {
-        const fm = matter(fs.readFileSync(abs, 'utf8')).data
+        const fm = parseMatter(fs.readFileSync(abs, 'utf8')).data
         return [{
           file: abs,
           msg: {
@@ -117,7 +127,7 @@ export function loadReports(p: Paths): ReportMeta[] {
         if (!f.endsWith('.md')) continue
         const abs = path.join(d, f)
         try {
-          const fm = matter(fs.readFileSync(abs, 'utf8')).data
+          const fm = parseMatter(fs.readFileSync(abs, 'utf8')).data
           out.push({
             team,
             path: path.relative(p.repoRoot, abs),
@@ -160,6 +170,28 @@ export interface RawRequest {
   /** Frontmatter failed to parse (broken YAML). The request stays VISIBLE so the
    *  owner sees why the card can't be approved instead of a silent no-op. */
   parseError: string | null
+  /** Multiple-choice decision: short labels, one per option. From frontmatter
+   *  `options:` (preferred) or parsed from a numbered list under `## Options`
+   *  in the body. When present, approve REQUIRES a 1-based choice. */
+  options: string[] | null
+  /** 1-based index of the option the owner chose (resolved requests). */
+  chosenOption: number | null
+}
+
+/** Fallback for requests that describe alternatives only in prose: the first
+ *  line of each `1.`-numbered item under a `## Options` heading, de-markdowned.
+ *  ≥2 items → a real choice; anything else → null. */
+function optionsFromBody(content: string): string[] | null {
+  const lines = content.split('\n')
+  const start = lines.findIndex(l => /^##\s+Options\b/i.test(l))
+  if (start === -1) return null
+  const out: string[] = []
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) break
+    const m = lines[i].match(/^\s*\d+\.\s+(.*)/)
+    if (m) out.push(m[1].replace(/\*\*|`/g, '').trim().slice(0, 160))
+  }
+  return out.length >= 2 ? out.slice(0, 8) : null
 }
 
 export function loadRequests(p: Paths): RawRequest[] {
@@ -171,8 +203,13 @@ export function loadRequests(p: Paths): RawRequest[] {
       const abs = path.join(dir, f)
       try {
         if (!fs.statSync(abs).isFile()) return []
-        const fm = matter(fs.readFileSync(abs, 'utf8')).data
+        const parsed = parseMatter(fs.readFileSync(abs, 'utf8'))
+        const fm = parsed.data
         const stem = f.replace(/\.md$/, '')
+        const fmOptions = Array.isArray(fm.options)
+          ? fm.options.map((o: unknown) => String(o).trim().slice(0, 160)).filter(Boolean).slice(0, 8)
+          : null
+        const options = fmOptions && fmOptions.length >= 2 ? fmOptions : optionsFromBody(parsed.content)
         return [{
           id: stem,
           fmId: fm.id ? String(fm.id) : null,
@@ -191,6 +228,8 @@ export function loadRequests(p: Paths): RawRequest[] {
           path: path.relative(p.repoRoot, abs),
           file: abs,
           parseError: null,
+          options,
+          chosenOption: fm.chosen_option !== undefined && fm.chosen_option !== null ? Number(fm.chosen_option) : null,
         } satisfies RawRequest]
       } catch (err) {
         // Never let a malformed request VANISH. When this silently returned [],
@@ -205,6 +244,7 @@ export function loadRequests(p: Paths): RawRequest[] {
           createdAt: fs.statSync(abs).mtimeMs, resolvedAt: null, exitCode: null, durationMs: null,
           path: path.relative(p.repoRoot, abs), file: abs,
           parseError: (err instanceof Error ? err.message : String(err)).split('\n')[0].slice(0, 160),
+          options: null, chosenOption: null,
         } satisfies RawRequest]
       }
     })
@@ -242,7 +282,7 @@ export function updateRequestFile(p: Paths, id: string, patch: Record<string, un
   const file = path.join(p.companyDir, 'requests', `${id}.md`)
   if (!fs.existsSync(file)) return false
   try {
-    const parsed = matter(fs.readFileSync(file, 'utf8'))
+    const parsed = parseMatter(fs.readFileSync(file, 'utf8'))
     const data = { ...parsed.data, ...patch }
     const body = appendSection ? `${parsed.content.replace(/\s*$/, '')}\n\n${appendSection}\n` : parsed.content
     fs.writeFileSync(file, matter.stringify(body, data))

@@ -158,6 +158,8 @@ export class Runner {
       valid,
       invalidReason,
       warn,
+      options: r.options,
+      chosenOption: r.chosenOption,
       createdAt: r.createdAt,
       resolvedAt: r.resolvedAt,
       exitCode: r.exitCode,
@@ -182,7 +184,7 @@ export class Runner {
     }
   }
 
-  approve(id: string): { ok: boolean; error?: string } {
+  approve(id: string, choice?: number, note?: string): { ok: boolean; error?: string } {
     const r = this.fresh(id)
     if (!r) return { ok: false, error: 'unknown request' }
     // Guard BEFORE any updateRequestFile call — it re-parses the file and would
@@ -192,9 +194,25 @@ export class Runner {
     if (r.fmId && r.fmId !== r.id) return { ok: false, error: 'frontmatter id mismatch' }
 
     if (r.kind === 'decision' || r.kind === 'access') {
-      updateRequestFile(this.paths, id, { status: 'done', resolved_at: new Date().toISOString() },
-        `## Decision\napproved by owner on ${new Date().toISOString()}`)
-      this.mailOutcome(r, `${id}: approved`, 'The owner APPROVED this request. Proceed accordingly and log the outcome on the task.')
+      // A multiple-choice decision is a QUESTION, not a yes/no: a bare approve
+      // answered "which planet is real?" with "yes" (owner correction
+      // 2026-07-19). The choice is mandatory and travels back with the mail.
+      let chosenLine = ''
+      let mailChoice = ''
+      if (r.options && r.options.length >= 2) {
+        if (!Number.isInteger(choice) || choice! < 1 || choice! > r.options.length) {
+          return { ok: false, error: `this request offers ${r.options.length} options — pick one before approving` }
+        }
+        chosenLine = ` — **Option ${choice}: ${r.options[choice! - 1]}**`
+        mailChoice = `The owner chose **Option ${choice}: ${r.options[choice! - 1]}**.`
+      }
+      const ownerNote = note?.trim() ? note.trim().slice(0, 2000) : null
+      updateRequestFile(this.paths, id, {
+        status: 'done', resolved_at: new Date().toISOString(),
+        ...(chosenLine ? { chosen_option: choice } : {}),
+      }, `## Decision\napproved by owner on ${new Date().toISOString()}${chosenLine}${ownerNote ? `\n\nOwner note: ${ownerNote}` : ''}`)
+      this.mailOutcome(r, `${id}: approved${choice ? ` — option ${choice}` : ''}`,
+        `${mailChoice || 'The owner APPROVED this request.'}${ownerNote ? `\n\nOwner note: ${ownerNote}` : ''}\n\nProceed accordingly and log the outcome on the task.`)
       this.rebroadcast(id)
       return { ok: true }
     }

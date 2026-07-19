@@ -33,7 +33,12 @@ export function ApprovalCard({ req, mock, onWatch, onOpen }: {
   const [err, setErr] = useState<string | null>(null)
   const [body, setBody] = useState<string | null>(null)
   const [images, setImages] = useState<string[]>([])
+  // Multiple-choice decision: the owner must PICK, not just bless (owner
+  // correction 2026-07-19 — a bare approve answered a 3-option question with "yes").
+  const [choice, setChoice] = useState<number | null>(null)
+  const [note, setNote] = useState('')
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasOptions = !!req.options && req.options.length >= 2
 
   useEffect(() => {
     if (confirm !== 'none') {
@@ -41,7 +46,7 @@ export function ApprovalCard({ req, mock, onWatch, onOpen }: {
       return () => { if (resetTimer.current) clearTimeout(resetTimer.current) }
     }
   }, [confirm])
-  useEffect(() => { setConfirm('none'); setErr(null) }, [req.status])
+  useEffect(() => { setConfirm('none'); setErr(null); setChoice(null); setNote('') }, [req.status])
 
   // Pending decision cards show the agent's actual question (the REQ body) + screenshots.
   // Mock requests have no backing file — fetch failure just means no body section.
@@ -132,10 +137,42 @@ export function ApprovalCard({ req, mock, onWatch, onOpen }: {
       {req.warn && <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0' }}>⚠ {req.warn}</div>}
       {!req.valid && <div style={{ color: '#ff8787', fontSize: 'calc(9px * var(--font-scale, 1))', margin: '4px 0' }}>✗ not approvable: {req.invalidReason}</div>}
 
+      {/* multiple-choice: the options ARE the decision — radio-pick before approving */}
+      {pending && req.valid && hasOptions && (
+        <div onClick={e => e.stopPropagation()} style={{ margin: '6px 0', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {req.options!.map((label, i) => (
+            <label key={i} style={{
+              display: 'flex', gap: 7, alignItems: 'flex-start', cursor: 'pointer',
+              padding: '4px 6px', borderRadius: 3,
+              border: `1px solid ${choice === i + 1 ? 'rgba(0,255,136,0.5)' : 'rgba(90,110,150,0.25)'}`,
+              background: choice === i + 1 ? 'rgba(0,255,136,0.07)' : 'transparent',
+            }}>
+              <input type="radio" name={`opt-${req.id}`} checked={choice === i + 1}
+                onChange={() => { setChoice(i + 1); setErr(null) }} style={{ accentColor: '#00ff88', marginTop: 2 }} />
+              <span style={{ color: choice === i + 1 ? '#d9ffe9' : '#a9c1e8', fontSize: 'calc(10px * var(--font-scale, 1))', lineHeight: 1.4 }}>
+                <b style={{ color: '#00ff88' }}>{i + 1}.</b> {label}
+              </span>
+            </label>
+          ))}
+          <input
+            type="text" value={note} onChange={e => setNote(e.target.value)}
+            placeholder="optional note to the agent…"
+            style={{
+              background: 'rgba(0,20,50,0.5)', border: '1px solid rgba(90,110,150,0.3)', borderRadius: 3,
+              color: '#cfe3ff', fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', padding: '4px 7px', outline: 'none',
+            }}
+          />
+        </div>
+      )}
+
       {pending && req.valid && confirm === 'none' && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-          {btn(visualCheck ? '✓ LOOKS RIGHT' : 'APPROVE', '#00ff88', () => setConfirm('approve'))}
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
+          {btn(visualCheck ? '✓ LOOKS RIGHT' : hasOptions ? `APPROVE${choice ? ` OPTION ${choice}` : ''}` : 'APPROVE', '#00ff88',
+            () => { if (hasOptions && choice === null) { setErr('pick an option first — this request is a choice, not a yes/no'); return } setConfirm('approve') })}
           {btn(visualCheck ? '✗ NOT RIGHT' : 'DENY', '#ff4444', () => setConfirm('deny'))}
+          {hasOptions && choice === null && (
+            <span style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1 }}>◂ choose one of the {req.options!.length} options</span>
+          )}
         </div>
       )}
       {pending && confirm === 'approve' && (
@@ -143,12 +180,15 @@ export function ApprovalCard({ req, mock, onWatch, onOpen }: {
           <div style={{ color: '#ffd700', fontSize: 'calc(9px * var(--font-scale, 1))', letterSpacing: 1, marginBottom: 4 }}>
             {req.kind === 'run'
               ? `CONFIRM — will execute the command above in ${req.cwd}${mock ? ' (MOCK)' : ''}`
-              : visualCheck
-                ? `CONFIRM — the agent will record this as "looks right"${mock ? ' (MOCK)' : ''}`
-                : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
+              : hasOptions && choice !== null
+                ? `CONFIRM — the agent will be told you chose OPTION ${choice}: "${req.options![choice - 1].slice(0, 70)}"${mock ? ' (MOCK)' : ''}`
+                : visualCheck
+                  ? `CONFIRM — the agent will record this as "looks right"${mock ? ' (MOCK)' : ''}`
+                  : `CONFIRM — the agent will be told this was approved${mock ? ' (MOCK)' : ''}`}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {btn(visualCheck ? '✓ CONFIRM LOOKS RIGHT' : '✓ CONFIRM APPROVE', '#00ff88', () => void act(() => approveRequest(req.id)), true)}
+            {btn(visualCheck ? '✓ CONFIRM LOOKS RIGHT' : hasOptions ? `✓ CONFIRM OPTION ${choice}` : '✓ CONFIRM APPROVE', '#00ff88',
+              () => void act(() => approveRequest(req.id, choice ?? undefined, note || undefined)), true)}
             {btn('CANCEL', '#8a97b8', () => setConfirm('none'))}
           </div>
         </div>
@@ -175,6 +215,11 @@ export function ApprovalCard({ req, mock, onWatch, onOpen }: {
       )}
       {(req.status === 'done' || req.status === 'failed') && (
         <div style={{ marginTop: 6 }}>
+          {req.chosenOption !== null && req.options && req.options[req.chosenOption - 1] && (
+            <div style={{ color: '#00ff88', fontSize: 'calc(10px * var(--font-scale, 1))', margin: '2px 0' }}>
+              ✓ Option {req.chosenOption}: {req.options[req.chosenOption - 1]}
+            </div>
+          )}
           <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: statusColor }}>
             {req.exitCode !== null ? `exit ${req.exitCode}` : ''}
             {req.durationMs !== null ? ` · ${(req.durationMs / 1000).toFixed(1)}s` : ''}

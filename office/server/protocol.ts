@@ -103,6 +103,8 @@ export interface OwnerRequest {
   valid: boolean                // whitelist check result at load time
   invalidReason: string | null
   warn: string | null           // e.g. "cargo run launches the app window…"
+  options: string[] | null      // multiple-choice decision: approve requires picking one
+  chosenOption: number | null   // 1-based — which option the owner chose (resolved)
   createdAt: number
   resolvedAt: number | null
   exitCode: number | null

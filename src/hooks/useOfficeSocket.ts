@@ -95,6 +95,8 @@ export interface OwnerRequest {
   valid: boolean
   invalidReason: string | null
   warn: string | null
+  options: string[] | null    // multiple-choice decision — approve requires picking one
+  chosenOption: number | null // 1-based, set once resolved
   createdAt: number
   resolvedAt: number | null
   exitCode: number | null

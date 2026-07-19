@@ -334,6 +334,11 @@ ${roleBlocks[a.role] ?? ''}
   kind: run                            # run | decision | access
   status: pending                      # never write any other status — the server owns transitions
   created_at: <ISO timestamp>
+  options:                             # kind:decision offering ALTERNATIVES — REQUIRED then:
+    - <short one-line label, option 1> #   2-8 short labels mirroring your body's "## Options".
+    - <short one-line label, option 2> #   The owner MUST pick exactly one to approve; the pick
+                                       #   comes back in the approval mail as "Option N: <label>".
+                                       #   Omit the options key entirely for plain yes/no decisions.
   command: ["cargo", "check"]          # kind:run only — EXACT argv, one string per argument,
                                        # executed without a shell. No pipes, no &&, no quoting tricks.
   cwd: universe-engine                 # kind:run only — universe-engine | universe-status

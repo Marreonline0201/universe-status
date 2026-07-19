@@ -154,7 +154,7 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     },
     blob: (p) => readCompanyBlob(paths, p),
     lab: () => mockLab ?? listLab(paths),
-    approveRequest: (id) => runner?.approve(id) ?? { ok: false, error: 'runner not ready' },
+    approveRequest: (id, choice, note) => runner?.approve(id, choice, note) ?? { ok: false, error: 'runner not ready' },
     denyRequest: (id, reason) => runner?.deny(id, reason) ?? { ok: false, error: 'runner not ready' },
     killRequest: (id) => runner?.kill(id) ?? { ok: false, error: 'runner not ready' },
     runOutput: (id) => runner?.output(id) ?? null,

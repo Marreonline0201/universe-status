@@ -34,7 +34,7 @@ export interface WsHandlers {
   file: (repoRelPath: unknown) => { ok: true; path: string; content: string; mtimeMs: number } | { ok: false; error: string; code: 400 | 403 | 404 | 413 }
   blob: (repoRelPath: unknown) => { ok: true; buf: Buffer; contentType: string } | { ok: false; error: string; code: 400 | 403 | 404 | 413 }
   lab: () => LabExperiment[]
-  approveRequest: (id: string) => { ok: boolean; error?: string }
+  approveRequest: (id: string, choice?: number, note?: string) => { ok: boolean; error?: string }
   denyRequest: (id: string, reason?: string) => { ok: boolean; error?: string }
   killRequest: (id: string) => { ok: boolean; error?: string }
   runOutput: (id: string) => { requestId: string; lines: RunOutputLine[]; running: boolean } | null
@@ -317,7 +317,10 @@ export class OfficeWs {
       return readBody(body => {
         const id = typeof body.id === 'string' ? body.id : ''
         if (!id) return json(400, { error: 'id is required' })
-        const result = route === '/api/request/approve' ? this.handlers.approveRequest(id)
+        const result = route === '/api/request/approve'
+          ? this.handlers.approveRequest(id,
+              typeof body.choice === 'number' && Number.isInteger(body.choice) ? body.choice : undefined,
+              typeof body.note === 'string' ? body.note : undefined)
           : route === '/api/request/deny' ? this.handlers.denyRequest(id, typeof body.reason === 'string' ? body.reason : undefined)
           : this.handlers.killRequest(id)
         result.ok ? json(200, { ok: true }) : json(409, { error: result.error ?? 'rejected' })

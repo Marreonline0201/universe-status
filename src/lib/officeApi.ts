@@ -57,8 +57,14 @@ export async function fetchLabExperiments(): Promise<LabExperiment[]> {
   return experiments
 }
 
-export async function approveRequest(id: string): Promise<void> {
-  await req('POST', '/api/request/approve', { id })
+/** choice: 1-based option index — REQUIRED by the server when the request offers
+    options; note: optional free-text the agent receives with the decision. */
+export async function approveRequest(id: string, choice?: number, note?: string): Promise<void> {
+  await req('POST', '/api/request/approve', {
+    id,
+    ...(typeof choice === 'number' ? { choice } : {}),
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  })
 }
 
 export async function denyRequest(id: string, reason?: string): Promise<void> {
