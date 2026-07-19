@@ -79,3 +79,10 @@ export async function setUsageLimits(session: number, weekly: number, allowWhenB
 export async function resumeOffice(): Promise<void> {
   await req('POST', '/api/resume')
 }
+
+/** Owner-only: force an immediate usage re-check (bypasses the 429 backoff;
+    server-side debounced to one per 10s). Fresh numbers arrive via the WS pool
+    broadcast; throws with the server's reason when the endpoint is still down. */
+export async function refreshUsage(): Promise<void> {
+  await req('POST', '/api/usage/refresh')
+}

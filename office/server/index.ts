@@ -130,6 +130,12 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     },
     pause: () => { scheduler?.pause(); log('paused') },
     resume: () => { scheduler?.resume(); log('resumed') },
+    refreshUsage: async () => {
+      if (!usage) return { ok: false, error: 'no usage monitor (mock mode)' }
+      const r = await usage.refreshNow()
+      log(`usage refresh requested by owner → ${r.ok ? 'synced' : r.error}`)
+      return r
+    },
     status: () => ({
       mock: !!opts.mock,
       agents: agents.size,

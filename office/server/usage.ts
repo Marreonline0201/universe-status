@@ -80,6 +80,7 @@ export class UsageMonitor {
     sessionResetsAt: null, weeklyResetsAt: null, lastChecked: 0, lastOkAt: 0,
   }
   private lastOkAt = 0
+  private lastManualAt = 0
   private lastRest: RestDecision = { resting: false, reason: null, resumeAt: null }
   private failLogged = false
   private backoffUntil = 0
@@ -98,6 +99,23 @@ export class UsageMonitor {
    *  degrade open. */
   async prime(): Promise<void> {
     await this.poll()
+  }
+
+  /** Owner-triggered immediate poll ("refresh usage" button). Bypasses the 429
+   *  backoff — one deliberate request is negligible — but at most once per 10s
+   *  so click-spam can't drain the shared oauth bucket. On success the normal
+   *  emit broadcasts the fresh numbers to every connected client. */
+  async refreshNow(): Promise<{ ok: boolean; error?: string }> {
+    const now = Date.now()
+    if (now - this.lastManualAt < 10_000) {
+      return { ok: false, error: 'just refreshed — try again in a few seconds' }
+    }
+    this.lastManualAt = now
+    this.backoffUntil = 0
+    await this.poll(false)
+    return this.state.ok
+      ? { ok: true }
+      : { ok: false, error: 'usage endpoint still unreachable (rate-limited) — try again in a minute' }
   }
 
   /** Base cadence when hot/blind; 5× slower when healthy and far from every

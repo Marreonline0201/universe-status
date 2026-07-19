@@ -6,7 +6,7 @@ import type { OfficeSocket, TaskSummary } from '../../hooks/useOfficeSocket'
 import { PasswordModal } from '../common/PasswordModal'
 import { ResizeHandle } from '../common/ResizeHandle'
 import { useSettings } from '../../settings/SettingsContext'
-import { resumeOffice } from '../../lib/officeApi'
+import { refreshUsage, resumeOffice } from '../../lib/officeApi'
 
 const MONO = '"IBM Plex Mono", monospace'
 
@@ -52,8 +52,26 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set())
   const [sidebarWidth, setSidebarWidth] = useState(() => readW(SIDEBAR_W_KEY, 300))
   const [detailWidth, setDetailWidth] = useState(() => readW(DETAIL_W_KEY, 340))
+  // Manual usage refresh (owner): in-flight flag + a short-lived result note.
+  const [usageRefreshing, setUsageRefreshing] = useState(false)
+  const [usageRefreshNote, setUsageRefreshNote] = useState<string | null>(null)
   const { state } = office
   const { scale: fontScale } = useSettings()
+
+  const doRefreshUsage = async () => {
+    if (usageRefreshing) return
+    setUsageRefreshing(true)
+    setUsageRefreshNote(null)
+    try {
+      await refreshUsage() // fresh numbers arrive via the WS pool broadcast
+      setUsageRefreshNote('✓ synced')
+    } catch (e) {
+      setUsageRefreshNote(`✕ ${e instanceof Error ? e.message : 'refresh failed'}`)
+    } finally {
+      setUsageRefreshing(false)
+      setTimeout(() => setUsageRefreshNote(null), 5000)
+    }
+  }
 
   const toggleTeam = (id: string) =>
     setSelectedTeams(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -229,6 +247,26 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
               color={state.pool.usagePct >= 80 || (state.pool.weeklyPct ?? 0) >= 85 ? '#ffd700' : '#00d4ff'}
             />
           ) : null}
+          {/* owner: force an immediate usage re-check (server debounced to 1/10s) */}
+          {state.connected && !state.mock && state.owner && (
+            <button
+              onClick={() => { void doRefreshUsage() }}
+              disabled={usageRefreshing}
+              title="Re-check usage from Anthropic right now"
+              style={{
+                pointerEvents: 'auto', cursor: usageRefreshing ? 'default' : 'pointer',
+                background: 'rgba(8,12,24,0.9)', border: '1px solid rgba(0,212,255,0.4)', borderRadius: 3,
+                color: '#00d4ff', fontFamily: MONO, fontSize: 'calc(9px * var(--font-scale, 1))',
+                padding: '2px 7px', letterSpacing: 1, opacity: usageRefreshing ? 0.5 : 1,
+              }}
+            >{usageRefreshing ? '↻ …' : '↻'}</button>
+          )}
+          {usageRefreshNote && (
+            <Hud
+              label={usageRefreshNote.slice(0, 48)}
+              color={usageRefreshNote.startsWith('✓') ? '#00ff88' : '#ff6b35'}
+            />
+          )}
           <Hud label={`TASKS ${openTasks.length}`} color="#8a97b8" />
           <Hud label={`REPORTS ${state.reports.filter(r => r.status === 'approved').length}`} color="#00ff88" />
         </div>

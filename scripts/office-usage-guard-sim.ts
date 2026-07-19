@@ -78,6 +78,14 @@ const writeFake = (sessionPct: number, resetsInMs: number) => fs.writeFileSync(f
   check(mon.nextPollMs() === 60_000, 'monitor: hot 75% → full-rate 60s polls')
   ;(mon as unknown as { state: UsageState }).state.ok = false
   check(mon.nextPollMs() === 60_000, 'monitor: blind → full-rate 60s polls (recover fast)')
+
+  // Manual refresh: bypasses an armed 429 backoff, then debounces (1 per 10s).
+  ;(mon as unknown as { backoffUntil: number }).backoffUntil = Date.now() + 9_999_999
+  writeFake(42, 3_600_000)
+  const r1 = await mon.refreshNow()
+  check(r1.ok && last!.state.sessionPct === 42 && last!.state.ok, 'monitor: manual refresh bypasses the 429 backoff and re-syncs')
+  const r2 = await mon.refreshNow()
+  check(!r2.ok && !!r2.error, 'monitor: second manual refresh within 10s is debounced')
   mon.stop() // clear the armed resume timer so the test process can exit
 }
 
