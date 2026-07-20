@@ -1,6 +1,6 @@
-// Single source of truth for the company roster: 7 teams × 7 agents + 1 director = 50.
-// Per team: 1 lead (opus), 3 Fable senior researchers (claude-fable-5), 1 reviewer (opus),
-// 1 research engineer (sonnet), 1 liaison/scribe (sonnet). Haiku is never used.
+// Single source of truth for the company roster: 8 teams × 7 agents + 1 director = 57.
+// Per team: 1 lead (fable), 1 principal researcher (fable) + 2 senior researchers (opus),
+// 1 reviewer (opus), 1 research engineer (fable), 1 liaison/scribe (sonnet). Haiku is never used.
 // The scaffold generator writes company/ from this; the orchestrator loads the generated
 // profile.json files at runtime (so the user can hand-edit profiles without touching code).
 
@@ -18,15 +18,18 @@ export interface RoleSpec {
 }
 
 export const TEAM_ROLES: RoleSpec[] = [
-  { suffix: 'lead',     role: 'Team Lead',         model: MODELS.opus,   duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
-  // TEMP: Fable 5 left the subscription 2026-07-12 (usage-credit billing). Researchers run on Opus
-  // to stay in-plan. Revert model to MODELS.fable when Fable returns to the subscription.
-  { suffix: 'fable-1',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-2',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-3',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'reviewer', role: 'Reviewer / Editor', model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
-  { suffix: 'engineer', role: 'Research Engineer', model: MODELS.sonnet, duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
-  { suffix: 'liaison',  role: 'Liaison / Scribe',  model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
+  // 2026-07-20 owner decision: Fable 5 verified back in-plan (one-turn CLI ping OK).
+  // Fable goes where planning/thinking compounds: the director, team leads, one principal
+  // researcher per team, and research engineers. fable-2/3 stay on Opus — the principal
+  // plans the research and coordinates them. 25 of 57 agents on Fable (~2x Opus burn);
+  // the usage hard stop (scheduler.ts) is the money guard.
+  { suffix: 'lead',     role: 'Team Lead',            model: MODELS.fable,  duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
+  { suffix: 'fable-1',  role: 'Principal Researcher', model: MODELS.fable,  duty: 'Plans the team\'s research: decomposes questions into angles, coordinates the two senior researchers, synthesizes their threads into the draft.' },
+  { suffix: 'fable-2',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'fable-3',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'reviewer', role: 'Reviewer / Editor',    model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
+  { suffix: 'engineer', role: 'Research Engineer',    model: MODELS.fable,  duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
+  { suffix: 'liaison',  role: 'Liaison / Scribe',     model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
 ]
 
 export interface TeamSpec {
@@ -95,6 +98,14 @@ export const TEAMS: TeamSpec[] = [
     sources: ['docs/superpowers/plans/2026-04-07-ssfr-threejs-migration.md', 'src/fluid-render/'],
     names: ['Talia Moreau', 'Hugo Andrade', 'Sena Yildiz', 'Owen Gallagher', 'Kira Volkova', 'Mateo Rios', 'Ingrid Falk'],
   },
+  {
+    id: 'engine',
+    name: 'Engine Research',
+    color: '#a3e635',
+    mission: 'Game-engine subsystem research for the Rust/Bevy Universe Engine. For each subsystem (motion, collision, time control, thermal, instrumentation, …) produce a cited report proposing: the most physically precise method (exact published equations, real constants with sources — never third-party game-physics middleware, which trades accuracy for speed), the editor controls ("buttons") the subsystem needs, and the exact wiring into the engine loop. Every proposal must state how it will be verified against independent analytic references. f64 state; physics-shaped interfaces that expose full physical state, never convenience-shaped simplifications.',
+    sources: ['structure.md', 'VISION_REALIGNMENT.md'],
+    names: ['Iida Korhonen', 'Dario Bianchi', 'Yara Mansour', 'Callum Reid', 'Sachiko Endo', 'Lukas Meyer', 'Beatriz Anaya'],
+  },
 ]
 
 export interface AgentSpec {
@@ -112,7 +123,7 @@ export function buildRoster(): AgentSpec[] {
     name: 'Aurelio Kade',
     team: 'company',
     role: 'Company Director',
-    model: MODELS.opus,
+    model: MODELS.fable,
     duty: 'Routes the owner\'s assignments to team leads, keeps the company journal, arbitrates cross-team priorities.',
   }]
   for (const team of TEAMS) {

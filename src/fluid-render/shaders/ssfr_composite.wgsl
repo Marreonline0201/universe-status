@@ -124,17 +124,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (normal.z < 0.0) { normal = -normal; }
 
     // ── Read material properties ────────────────────────────────────────
-    // Default material (water-like) if we can't read comp ID.
-    // matColor is deliberately darkened: bright values drown out the
-    // transmitted (Beer-Lambert) color and make the fluid look milky.
-    // Water's apparent color comes mostly from absorption of scene light.
-    var matColor = vec3<f32>(0.25, 0.45, 0.65);
-    var metalness = 0.0;
-    var F0 = 0.02;
-    var emissive = 0.0;
-    var IOR = 1.333;
-    // Lower opacity = fluid becomes transparent faster with thickness.
-    var opacity = 0.06;
+    // Per-pixel composition_id from the depth pass (compIdTex), looked up in
+    // the materials buffer (CompositionTable.getRenderData(): 2 vec4s per
+    // composition — [R,G,B,metalness] then [F0,emissive,IOR,opacity]). Clamp
+    // to 255 — the GPU table is a fixed 256-slot array; blend()/addOrFindBlend()
+    // can mint IDs past that during play.
+    let compId = min(textureLoad(compIdTex, bgPixel, 0).r, 255u);
+    let mat0 = materials.data[2u * compId];
+    let mat1 = materials.data[2u * compId + 1u];
+    var matColor = mat0.rgb;
+    var metalness = mat0.a;
+    var F0 = mat1.x;
+    var emissive = mat1.y;
+    var IOR = mat1.z;
+    var opacity = mat1.w;
 
     // ── Lighting ────────────────────────────────────────────────────────
     let viewDir = normalize(-posC);

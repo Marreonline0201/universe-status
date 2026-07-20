@@ -54,15 +54,19 @@ export interface PoolState {
   active: string[]
   queued: string[]
   paused: boolean
+  hardStopped: boolean  // money ceiling tripped: in-flight killed, sticky pause until owner resume
+  holdingBlind: boolean // monitor blind → new activations held
   // Usage-aware rest mode (mirrors office/server/protocol.ts)
   resting: boolean
   restReason: 'session' | 'weekly' | null
   restResumeAt: string | null
-  usagePct: number | null
+  usagePct: number | null     // LAST GOOD poll — check usageAgeMs before trusting
   weeklyPct: number | null
   usageMonitorOk: boolean
+  usageAgeMs: number | null   // ms since the last successful usage poll
   sessionThresholdPct: number // owner-set nap threshold for the 5-hour window
   weeklyThresholdPct: number  // owner-set nap threshold for the 7-day window
+  allowWhenBlind: boolean     // owner-set: spawn even while blind (extra-usage billing must be OFF)
 }
 
 export interface AgentDetail {
@@ -91,6 +95,8 @@ export interface OwnerRequest {
   valid: boolean
   invalidReason: string | null
   warn: string | null
+  options: string[] | null    // multiple-choice decision — approve requires picking one
+  chosenOption: number | null // 1-based, set once resolved
   createdAt: number
   resolvedAt: number | null
   exitCode: number | null
@@ -172,9 +178,10 @@ const INITIAL: OfficeState = {
   runOutput: {},
   pool: {
     cap: 0, active: [], queued: [], paused: false,
+    hardStopped: false, holdingBlind: false,
     resting: false, restReason: null, restResumeAt: null,
-    usagePct: null, weeklyPct: null, usageMonitorOk: false,
-    sessionThresholdPct: 90, weeklyThresholdPct: 95,
+    usagePct: null, weeklyPct: null, usageMonitorOk: false, usageAgeMs: null,
+    sessionThresholdPct: 90, weeklyThresholdPct: 95, allowWhenBlind: false,
   },
   detail: null,
 }

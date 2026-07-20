@@ -4,6 +4,7 @@
 import { TILE, makeTile, STATUS_COLORS } from './assets'
 import { buildOfficeMap, type OfficeMapData } from './officeMap'
 import { AgentSprite } from './AgentSprite'
+import { Occupancy } from './occupancy'
 import type { OfficeAgent, OfficeTeam, OfficeServerMsg } from '../hooks/useOfficeSocket'
 
 interface Camera { x: number; y: number; scale: number }
@@ -12,6 +13,31 @@ interface Camera { x: number; y: number; scale: number }
 // just a bubble. Handoffs & reviews always walk; everything else rolls against this. Kept
 // low so the floor doesn't read as a constant swarm of people marching in straight lines.
 const CASUAL_VISIT_CHANCE = 0.12
+
+// ── Ambient small talk (canvas-only flavor, owner-requested) ─────────────────
+// Idle neighbors occasionally exchange a canned line. These are deliberately
+// scripted (the owner OK'd repeats), drawn in a muted 'casual' bubble style,
+// and NEVER written to the feed/transcripts — everything in the feed stays a
+// real agent event. Pace: one exchange every ~20-40 s office-wide, ≥3 min
+// between any one agent's chats.
+const CASUAL_GAP_MIN_MS = 18_000
+const CASUAL_GAP_JITTER_MS = 22_000
+const CASUAL_AGENT_COOLDOWN_MS = 180_000
+const CASUAL_RANGE_TILES = 5.5
+const CASUAL_OPENERS = [
+  'Coffee’s fresh ☕', 'How’s the report going?', 'Did you see the lab results?',
+  'The reviewer is strict today…', 'Lunch later?', 'New office looks amazing',
+  'I love these plants 🌿', 'Almost done with my draft', 'That sofa is calling me',
+  'Busy day, huh?', 'Any word from the director?', 'That meeting ran long…',
+  'Nice view today', 'I need more citations…', 'How’s your team’s task?',
+  'The espresso machine is elite', 'Deadline’s close…', 'Weekend plans?',
+]
+const CASUAL_REPLIES = [
+  'Haha, yeah', 'Totally.', 'Almost — one more pass.', 'Right? So good.',
+  'Tell me about it 😅', 'Soon, I hope!', 'Same here.', 'Good luck!',
+  '☕☕', 'For sure.', 'Deep in it right now.', 'Ask the liaison 😄',
+  'Don’t remind me…', 'One citation at a time.', 'After this task!',
+]
 
 /** Short human phrase for a live tool/text event — the agent's thought cloud. */
 function activityLabel(kind: 'tool_use' | 'text' | 'thinking' | 'turn_end', tool?: string, detail?: string): string | null {
@@ -54,6 +80,9 @@ export class OfficeEngine {
   private fontScale = 1
   private activeIds = new Set<string>() // agent ids with a live session (pool.active) → their team's room is lit
   private selectedTeams = new Set<string>() // owner-focused teams → override the auto working-spotlight
+  private occ = new Occupancy() // exclusive cell ownership — no two sprites ever overlap
+  private nextCasualAt = performance.now() + 20_000
+  private lastCasual = new Map<string, number>()
   onAgentClick: (id: string | null) => void = () => {}
 
   constructor(canvas: HTMLCanvasElement) {
@@ -79,9 +108,11 @@ export class OfficeEngine {
     this.map = buildOfficeMap(teams, agents)
     this.prerenderMap()
     this.sprites.clear()
+    this.occ.clear()
+    this.lastCasual.clear()
     for (const a of agents) {
       const color = teams.find(t => t.id === a.team)?.color ?? '#ffd700'
-      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map)
+      const sprite = new AgentSprite(a.id, a.name, a.team, a.role, color, this.map, this.occ, this.sprites)
       sprite.setStatus(a.status)
       this.sprites.set(a.id, sprite)
     }
@@ -171,7 +202,8 @@ export class OfficeEngine {
     const mx = e.clientX - rect.left, my = e.clientY - rect.top
     const before = { x: mx / this.cam.scale + this.cam.x, y: my / this.cam.scale + this.cam.y }
     const factor = e.deltaY < 0 ? 1.25 : 0.8
-    this.cam.scale = Math.min(6, Math.max(0.75, this.cam.scale * factor))
+    // 0.6 floor: the 82-tile (1312px) world must fit on panels narrower than ~984px.
+    this.cam.scale = Math.min(6, Math.max(0.6, this.cam.scale * factor))
     this.cam.x = before.x - mx / this.cam.scale
     this.cam.y = before.y - my / this.cam.scale
   }
@@ -180,7 +212,7 @@ export class OfficeEngine {
     if (!this.map) return
     const w = this.canvas.width, h = this.canvas.height
     const worldW = this.map.width * TILE, worldH = this.map.height * TILE
-    this.cam.scale = Math.max(0.75, Math.min(w / worldW, h / worldH) * 0.96)
+    this.cam.scale = Math.max(0.6, Math.min(w / worldW, h / worldH) * 0.96)
     this.cam.x = (worldW - w / this.cam.scale) / 2
     this.cam.y = (worldH - h / this.cam.scale) / 2
   }
@@ -214,6 +246,97 @@ export class OfficeEngine {
         g.drawImage(tile, x * TILE, y * TILE)
       }
     }
+
+    // ── baked decor passes ──────────────────────────────────────────────────
+    // All position-DEPENDENT art (shadows, team accents, lamp glow, window
+    // light) is painted here, once per snapshot, so makeTile stays position-
+    // independent and its `kind|checker|teamColor` cache key stays valid.
+    const map = this.map
+    const kindAt = (x: number, y: number) =>
+      x >= 0 && y >= 0 && x < map.width && y < map.height ? map.tiles[y][x] : 'void'
+    const WALL_LIKE = new Set<string>(['wall', 'wallTop', 'whiteboard', 'windowWall', 'greenWall', 'glass', 'fridge'])
+    const FLOOR_LIKE = new Set<string>(['floor', 'zoneFloor', 'corridor', 'rug', 'chair'])
+    const FURNITURE = new Set<string>([
+      'desk', 'meetTable', 'kitchenCounter', 'sink', 'coffee',
+      'sofaW', 'sofaC', 'sofaE', 'armchair', 'loungeTable', 'plant', 'lamp',
+    ])
+
+    // A + B: drop shadows from walls (2-step) and furniture (contact) onto floor below
+    for (let y = 0; y < map.height - 1; y++) {
+      for (let x = 0; x < map.width; x++) {
+        if (!FLOOR_LIKE.has(kindAt(x, y + 1))) continue
+        const k = kindAt(x, y)
+        if (WALL_LIKE.has(k)) {
+          g.fillStyle = 'rgba(20,12,4,0.30)'; g.fillRect(x * TILE, (y + 1) * TILE, TILE, 4)
+          g.fillStyle = 'rgba(20,12,4,0.14)'; g.fillRect(x * TILE, (y + 1) * TILE + 4, TILE, 2)
+        } else if (FURNITURE.has(k)) {
+          g.fillStyle = 'rgba(20,12,4,0.18)'; g.fillRect(x * TILE, (y + 1) * TILE, TILE, 3)
+        }
+      }
+    }
+    // A2: light comes from the upper-left, so wall runs also throw a thin
+    // shadow onto floor to their east — anchors the flat-cap vertical runs.
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width - 1; x++) {
+        if (!WALL_LIKE.has(kindAt(x, y)) || !FLOOR_LIKE.has(kindAt(x + 1, y))) continue
+        g.fillStyle = 'rgba(20,12,4,0.16)'; g.fillRect((x + 1) * TILE, y * TILE, 3, TILE)
+      }
+    }
+
+    // C: team accent strip along each room's corridor-side wall (doors skipped) —
+    // team identity stays readable even when the room is dimmed.
+    for (const z of map.zones) {
+      const wallY = z.rect.y < 14 ? z.rect.y + z.rect.h : z.rect.y - 1
+      g.globalAlpha = 0.55
+      g.fillStyle = z.color
+      for (let x = z.rect.x; x < z.rect.x + z.rect.w; x++) {
+        if (x === z.rect.x + 7 || x === z.rect.x + 8) continue
+        if (kindAt(x, wallY) !== 'wall') continue
+        g.fillRect(x * TILE, wallY * TILE, TILE, 3)
+      }
+      g.globalAlpha = 1
+    }
+
+    // F: gold border around the lounge rug
+    const rug = map.decor.rug
+    g.strokeStyle = 'rgba(201,185,138,0.9)'
+    g.lineWidth = 2
+    g.strokeRect(rug.x * TILE + 3, rug.y * TILE + 3, rug.w * TILE - 6, rug.h * TILE - 6)
+
+    // D: warm radial glow around each floor lamp
+    for (const p of map.decor.lamps) {
+      const cx = p.x * TILE + 8, cy = p.y * TILE + 5
+      const grad = g.createRadialGradient(cx, cy, 2, cx, cy, 56)
+      grad.addColorStop(0, 'rgba(255,205,120,0.30)')
+      grad.addColorStop(1, 'rgba(255,205,120,0)')
+      g.fillStyle = grad
+      g.beginPath(); g.arc(cx, cy, 56, 0, Math.PI * 2); g.fill()
+    }
+
+    // E: daylight pools under the windows
+    for (let x = 0; x < map.width; x++) {
+      if (kindAt(x, 0) === 'windowWall') {
+        const grad = g.createLinearGradient(0, TILE, 0, TILE + 40)
+        grad.addColorStop(0, 'rgba(255,238,200,0.10)')
+        grad.addColorStop(1, 'rgba(255,238,200,0)')
+        g.fillStyle = grad
+        g.fillRect(x * TILE, TILE, TILE, 40)
+      }
+      const by = map.height - 1
+      if (kindAt(x, by) === 'windowWall') {
+        const grad = g.createLinearGradient(0, by * TILE, 0, by * TILE - 40)
+        grad.addColorStop(0, 'rgba(255,238,200,0.08)')
+        grad.addColorStop(1, 'rgba(255,238,200,0)')
+        g.fillStyle = grad
+        g.fillRect(x * TILE, by * TILE - 40, TILE, 40)
+      }
+    }
+
+    // G: cool ambiance wash inside the glass meeting room
+    const gr = map.decor.glassRoom
+    g.fillStyle = 'rgba(190,225,235,0.06)'
+    g.fillRect((gr.x + 1) * TILE, (gr.y + 1) * TILE, (gr.w - 2) * TILE, (gr.h - 2) * TILE)
+
     this.mapLayer = layer
   }
 
@@ -221,8 +344,41 @@ export class OfficeEngine {
     const dt = Math.min(0.05, (t - this.lastT) / 1000 || 0.016)
     this.lastT = t
     for (const s of this.sprites.values()) s.update(dt, t)
+    this.casualTick(t)
     this.draw(t)
     this.raf = requestAnimationFrame(this.tick)
+  }
+
+  /** Ambient small talk: pick one idle pair standing/sitting near each other and
+      let them trade a canned line + reply. Canvas-only — never touches the feed. */
+  private casualTick(now: number) {
+    if (this.offline || now < this.nextCasualAt) return
+    this.nextCasualAt = now + CASUAL_GAP_MIN_MS + Math.random() * CASUAL_GAP_JITTER_MS
+    const candidates = [...this.sprites.values()].filter(s =>
+      s.status === 'idle' && !s.moving && !s.bubble &&
+      now - (this.lastCasual.get(s.id) ?? -Infinity) > CASUAL_AGENT_COOLDOWN_MS)
+    // shuffle so the same pair doesn't monopolize the floor
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+    }
+    for (const a of candidates) {
+      const b = candidates.find(o => o !== a && Math.hypot(o.x - a.x, o.y - a.y) <= CASUAL_RANGE_TILES)
+      if (!b) continue
+      a.say(CASUAL_OPENERS[Math.floor(Math.random() * CASUAL_OPENERS.length)], 'casual')
+      const reply = CASUAL_REPLIES[Math.floor(Math.random() * CASUAL_REPLIES.length)]
+      const bid = b.id
+      setTimeout(() => {
+        const s = this.sprites.get(bid)
+        if (s && s.status === 'idle') s.say(reply, 'casual')
+      }, 1400 + Math.random() * 900)
+      this.lastCasual.set(a.id, now)
+      this.lastCasual.set(b.id, now)
+      // verification hook: lets automated checks confirm chatter actually fires
+      ;(window as unknown as { __casualChats?: number }).__casualChats =
+        ((window as unknown as { __casualChats?: number }).__casualChats ?? 0) + 1
+      break // one exchange per beat keeps the floor calm
+    }
   }
 
   /** Owner-focused teams (from the legend). Non-empty → these rooms are lit and all
@@ -261,8 +417,10 @@ export class OfficeEngine {
     if (litTeams.size > 0) {
       for (const z of this.map.zones) {
         const rx = z.rect.x * TILE, ry = z.rect.y * TILE, rw = z.rect.w * TILE, rh = z.rect.h * TILE
-        // lit room: a soft light wash (brighter); other rooms: a heavy dark veil.
-        ctx.fillStyle = litTeams.has(z.teamId) ? 'rgba(150,180,230,0.12)' : 'rgba(4,6,12,0.72)'
+        // lit room: a soft warm wash (reads right on wood floors); others: a dusk veil —
+        // dark enough to make the spotlight obvious, light enough that the luxury
+        // interiors stay visible in resting rooms.
+        ctx.fillStyle = litTeams.has(z.teamId) ? 'rgba(255,214,150,0.10)' : 'rgba(4,6,12,0.52)'
         ctx.fillRect(rx, ry, rw, rh)
       }
     }
@@ -275,23 +433,36 @@ export class OfficeEngine {
       ctx.fillText(z.name.toUpperCase(), (z.rect.x + 0.5) * TILE, (z.rect.y + 0.9) * TILE)
     }
     ctx.fillStyle = '#8a97b899'
-    ctx.fillText('COMMONS', 49.5 * TILE, 19 * TILE)
+    ctx.fillText('COMMONS', 61.5 * TILE, 18.9 * TILE)
+    ctx.font = `${8 * this.fontScale}px "IBM Plex Mono", monospace`
+    ctx.fillText('MEETING', 51 * TILE, 20.9 * TILE)
+    ctx.fillText('KITCHEN', 73 * TILE, 20.5 * TILE)
+    ctx.fillText('LOUNGE', 66.5 * TILE, 23.6 * TILE)
 
     // sprites, painter's order by y
     const sorted = [...this.sprites.values()].sort((a, b) => a.y - b.y)
     for (const s of sorted) {
       const frame = s.sheet.frames[s.frame()]
       const px = s.x * TILE, py = s.y * TILE - 6 // feet near tile bottom
+      if (s.status !== 'offline') {
+        // soft contact shadow under the sprite
+        ctx.fillStyle = 'rgba(10,6,2,0.30)'
+        ctx.beginPath()
+        ctx.ellipse(Math.round(px) + 8, Math.round(py) + 15, 5, 2, 0, 0, Math.PI * 2)
+        ctx.fill()
+      }
       if (s.status === 'offline') ctx.globalAlpha = 0.25
       ctx.drawImage(frame, Math.round(px), Math.round(py))
       ctx.globalAlpha = 1
-      // status light above the head — a glowing dot colored by status
-      const lx = Math.round(px) + 8, ly = Math.round(py) - 2
+      // status light — a small badge at the head's shoulder, NOT a halo centered
+      // over the sprite: a head-sized glow above a seated agent reads as a second
+      // person crammed onto the same chair at overview zoom.
+      const lx = Math.round(px) + 13, ly = Math.round(py)
       ctx.fillStyle = s.dotColor()
-      ctx.globalAlpha = 0.35
-      ctx.beginPath(); ctx.arc(lx, ly, 5.5, 0, Math.PI * 2); ctx.fill() // soft glow
+      ctx.globalAlpha = 0.3
+      ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI * 2); ctx.fill() // soft glow
       ctx.globalAlpha = 1
-      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill()   // core
+      ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fill()   // core
       // selection ring
       if (s.id === this.selected) {
         ctx.strokeStyle = '#00d4ff'
@@ -330,10 +501,10 @@ export class OfficeEngine {
 
   private drawBubble(x: number, y: number, text: string, kind: string, alpha: number) {
     const { ctx } = this
-    const fs = this.fontScale
+    const fs = this.fontScale * (kind === 'casual' ? 0.85 : 1) // small talk is literally smaller
     const fpx = 16 * fs            // balloon font: 16px base (owner's floor) × global scale
     ctx.save()
-    ctx.globalAlpha = alpha
+    ctx.globalAlpha = alpha * (kind === 'casual' ? 0.9 : 1)
     ctx.font = `${fpx}px "IBM Plex Mono", monospace`
     const pad = 12 * fs
     const w = Math.min(340 * fs, ctx.measureText(text).width + pad)
@@ -344,6 +515,9 @@ export class OfficeEngine {
     if (kind === 'review-comment') ctx.strokeStyle = '#ffd700aa'
     if (kind === 'handoff') ctx.strokeStyle = '#ff6b35aa'
     if (kind === 'activity') ctx.strokeStyle = '#4d9fff77'
+    // Ambient small talk: deliberately muted so REAL communication (mail, reviews,
+    // handoffs — always driven by actual events) stays visually louder.
+    if (kind === 'casual') ctx.strokeStyle = 'rgba(160,180,200,0.45)'
     ctx.beginPath()
     ctx.roundRect(bx, by, w, h, (kind === 'activity' ? 8 : 4) * fs)
     ctx.fill()
@@ -362,7 +536,7 @@ export class OfficeEngine {
       ctx.moveTo(x - 3 * fs, by + h); ctx.lineTo(x + 3 * fs, by + h); ctx.lineTo(x, by + h + 5 * fs)
       ctx.closePath(); ctx.fill()
     }
-    ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : '#cfe3ff'
+    ctx.fillStyle = kind === 'activity' ? '#a9c1e8' : kind === 'casual' ? '#b7c4d6' : '#cfe3ff'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(text, x, by + h / 2, w - pad)

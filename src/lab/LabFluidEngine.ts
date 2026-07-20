@@ -181,6 +181,7 @@ export class LabFluidEngine {
     // spawns work immediately (parity with FluidTest.tsx:340-345).
     this.compositionTable.addDefaults()
     gpuSim.updateCompositionProps(this.compositionTable.getGpuData())
+    this.ssfrPipeline?.updateMaterialProps(this.compositionTable.getRenderData())
 
     this.resizeObserver = new ResizeObserver(() => {
       if (!this.camera || !this.renderer) return
@@ -214,6 +215,7 @@ export class LabFluidEngine {
       ))
     }
     this.gpuSim.updateCompositionProps(table.getGpuData())
+    this.ssfrPipeline?.updateMaterialProps(table.getRenderData())
 
     const particles: GpuParticle[] = []
     for (const sp of s.spawns) {

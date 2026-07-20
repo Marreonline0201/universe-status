@@ -57,8 +57,14 @@ export async function fetchLabExperiments(): Promise<LabExperiment[]> {
   return experiments
 }
 
-export async function approveRequest(id: string): Promise<void> {
-  await req('POST', '/api/request/approve', { id })
+/** choice: 1-based option index — REQUIRED by the server when the request offers
+    options; note: optional free-text the agent receives with the decision. */
+export async function approveRequest(id: string, choice?: number, note?: string): Promise<void> {
+  await req('POST', '/api/request/approve', {
+    id,
+    ...(typeof choice === 'number' ? { choice } : {}),
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  })
 }
 
 export async function denyRequest(id: string, reason?: string): Promise<void> {
@@ -69,7 +75,20 @@ export async function killRequest(id: string): Promise<void> {
   await req('POST', '/api/request/kill', { id })
 }
 
-/** Owner-only: set the office's usage nap thresholds (% of the 5-hour / 7-day windows). */
-export async function setUsageLimits(session: number, weekly: number): Promise<void> {
-  await req('POST', '/api/settings', { session, weekly })
+/** Owner-only: set the office's usage nap thresholds (% of the 5-hour / 7-day windows)
+    and optionally whether spawning is allowed while the usage monitor is blind. */
+export async function setUsageLimits(session: number, weekly: number, allowWhenBlind?: boolean): Promise<void> {
+  await req('POST', '/api/settings', { session, weekly, ...(typeof allowWhenBlind === 'boolean' ? { allowWhenBlind } : {}) })
+}
+
+/** Owner-only: resume the office — clears a manual pause AND a usage hard-stop lock. */
+export async function resumeOffice(): Promise<void> {
+  await req('POST', '/api/resume')
+}
+
+/** Owner-only: force an immediate usage re-check (bypasses the 429 backoff;
+    server-side debounced to one per 10s). Fresh numbers arrive via the WS pool
+    broadcast; throws with the server's reason when the endpoint is still down. */
+export async function refreshUsage(): Promise<void> {
+  await req('POST', '/api/usage/refresh')
 }

@@ -6,8 +6,13 @@ import type { OfficeSocket, TaskSummary } from '../../hooks/useOfficeSocket'
 import { PasswordModal } from '../common/PasswordModal'
 import { ResizeHandle } from '../common/ResizeHandle'
 import { useSettings } from '../../settings/SettingsContext'
+import { refreshUsage, resumeOffice } from '../../lib/officeApi'
 
 const MONO = '"IBM Plex Mono", monospace'
+
+/** "4m" / "2h" — how old the last good usage number is. */
+const formatAge = (ms: number): string =>
+  ms < 60_000 ? '<1m' : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${(ms / 3_600_000).toFixed(1)}h`
 
 // Panel widths are a personal layout preference — persisted per-browser (separate
 // localStorage keys, kept out of SettingsContext which is font-scale only).
@@ -47,8 +52,26 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set())
   const [sidebarWidth, setSidebarWidth] = useState(() => readW(SIDEBAR_W_KEY, 300))
   const [detailWidth, setDetailWidth] = useState(() => readW(DETAIL_W_KEY, 340))
+  // Manual usage refresh (owner): in-flight flag + a short-lived result note.
+  const [usageRefreshing, setUsageRefreshing] = useState(false)
+  const [usageRefreshNote, setUsageRefreshNote] = useState<string | null>(null)
   const { state } = office
   const { scale: fontScale } = useSettings()
+
+  const doRefreshUsage = async () => {
+    if (usageRefreshing) return
+    setUsageRefreshing(true)
+    setUsageRefreshNote(null)
+    try {
+      await refreshUsage() // fresh numbers arrive via the WS pool broadcast
+      setUsageRefreshNote('✓ synced')
+    } catch (e) {
+      setUsageRefreshNote(`✕ ${e instanceof Error ? e.message : 'refresh failed'}`)
+    } finally {
+      setUsageRefreshing(false)
+      setTimeout(() => setUsageRefreshNote(null), 5000)
+    }
+  }
 
   const toggleTeam = (id: string) =>
     setSelectedTeams(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -151,8 +174,34 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           </div>
         )}
 
+        {/* HARD STOP banner: the money ceiling tripped — in-flight sessions were
+            killed and the office stays paused until the OWNER resumes. */}
+        {state.connected && state.pool.hardStopped && (
+          <div style={{
+            position: 'absolute', top: state.mock ? 96 : 34, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 11, padding: '10px 20px', borderRadius: 4,
+            background: 'rgba(80,15,15,0.95)', border: '2px solid #ff4444',
+            color: '#ffe0e0', fontSize: 'calc(13px * var(--font-scale, 1))', fontWeight: 700, letterSpacing: 2, textAlign: 'center',
+          }}>
+            🛑 HARD-STOPPED — usage hit the ceiling; agent sessions were stopped mid-turn
+            <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', fontWeight: 400, letterSpacing: 1, marginTop: 3, color: '#ffb3b3' }}>
+              the office will NOT restart on its own — not on a window reset, not on a reboot
+            </div>
+            {state.owner && (
+              <button
+                onClick={() => { void resumeOffice() }}
+                style={{
+                  marginTop: 6, padding: '4px 14px', pointerEvents: 'auto', cursor: 'pointer',
+                  background: 'rgba(0,255,136,0.12)', border: '1px solid #00ff88', borderRadius: 4,
+                  color: '#00ff88', fontFamily: MONO, fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 2,
+                }}
+              >RESUME (OWNER)</button>
+            )}
+          </div>
+        )}
+
         {/* usage-guard banner: the office naps near the subscription limit */}
-        {state.connected && state.pool.resting && (
+        {state.connected && state.pool.resting && !state.pool.hardStopped && (
           <div style={{
             position: 'absolute', top: state.mock ? 96 : 34, left: '50%', transform: 'translateX(-50%)',
             zIndex: 10, pointerEvents: 'none', padding: '8px 18px', borderRadius: 4,
@@ -177,19 +226,47 @@ export function PixelOffice({ office }: { office: OfficeSocket }) {
           <Hud label={state.connected ? (state.mock ? 'MOCK' : 'OFFICE LIVE') : 'OFFICE OFFLINE'} color={state.connected ? (state.mock ? '#ff4444' : '#00ff88') : '#ff4444'} />
           <Hud label={`SESSIONS ${state.pool.active.length}/${state.pool.cap || '—'}`} color="#00d4ff" />
           {state.pool.queued.length > 0 && <Hud label={`QUEUED ${state.pool.queued.length}`} color="#ff6b35" />}
-          {state.pool.paused && <Hud label="PAUSED" color="#ffd700" />}
+          {state.pool.hardStopped && <Hud label="HARD STOP" color="#ff4444" />}
+          {state.pool.paused && !state.pool.hardStopped && <Hud label="PAUSED" color="#ffd700" />}
           {state.pool.resting && <Hud label="RESTING" color="#ffd700" />}
+          {state.pool.holdingBlind && !state.pool.hardStopped && <Hud label="HOLD · USAGE BLIND" color="#ff6b35" />}
           {state.requests.filter(r => r.status === 'pending').length > 0 && (
             <Hud label={`OWNER ${state.requests.filter(r => r.status === 'pending').length}`} color="#ffd700" />
           )}
-          {state.pool.usagePct !== null ? (
+          {/* A stale number presented as live is how the office once billed past the
+              limit unnoticed — blind monitor shows "USAGE ?" with the number's AGE. */}
+          {state.connected && !state.mock && !state.pool.usageMonitorOk ? (
+            <Hud
+              label={`USAGE ? ${state.pool.usagePct !== null && state.pool.usageAgeMs !== null
+                ? `(last ${Math.round(state.pool.usagePct)}% · ${formatAge(state.pool.usageAgeMs)} ago)` : '(no data yet)'}`}
+              color="#ff6b35"
+            />
+          ) : state.pool.usagePct !== null ? (
             <Hud
               label={`USAGE ${Math.round(state.pool.usagePct)}%${state.pool.weeklyPct !== null ? ` · WK ${Math.round(state.pool.weeklyPct)}%` : ''}`}
               color={state.pool.usagePct >= 80 || (state.pool.weeklyPct ?? 0) >= 85 ? '#ffd700' : '#00d4ff'}
             />
-          ) : state.connected && !state.mock && !state.pool.usageMonitorOk ? (
-            <Hud label="USAGE ?" color="#8a97b8" />
           ) : null}
+          {/* owner: force an immediate usage re-check (server debounced to 1/10s) */}
+          {state.connected && !state.mock && state.owner && (
+            <button
+              onClick={() => { void doRefreshUsage() }}
+              disabled={usageRefreshing}
+              title="Re-check usage from Anthropic right now"
+              style={{
+                pointerEvents: 'auto', cursor: usageRefreshing ? 'default' : 'pointer',
+                background: 'rgba(8,12,24,0.9)', border: '1px solid rgba(0,212,255,0.4)', borderRadius: 3,
+                color: '#00d4ff', fontFamily: MONO, fontSize: 'calc(9px * var(--font-scale, 1))',
+                padding: '2px 7px', letterSpacing: 1, opacity: usageRefreshing ? 0.5 : 1,
+              }}
+            >{usageRefreshing ? '↻ …' : '↻'}</button>
+          )}
+          {usageRefreshNote && (
+            <Hud
+              label={usageRefreshNote.slice(0, 48)}
+              color={usageRefreshNote.startsWith('✓') ? '#00ff88' : '#ff6b35'}
+            />
+          )}
           <Hud label={`TASKS ${openTasks.length}`} color="#8a97b8" />
           <Hud label={`REPORTS ${state.reports.filter(r => r.status === 'approved').length}`} color="#00ff88" />
         </div>

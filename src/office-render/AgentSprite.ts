@@ -1,7 +1,14 @@
 // Per-agent visual state machine: sitting, typing, walking (BFS paths), talking.
 // Protocol statuses drive *goals*; this class turns them into movement + animation.
+//
+// No-overlap invariant: every sprite exclusively owns the cell it occupies (and,
+// mid-step, the cell it is entering) via the shared Occupancy map. A walker that
+// can't claim its next cell WAITS in place; if the blockage persists it re-paths
+// around currently occupied cells. Stand spots (visits, coffee) are chosen from
+// unoccupied candidates up front, so queues form instead of pile-ups.
 import { characterSheet, STATUS_COLORS, type CharacterSheet, type CharFrame } from './assets'
 import { findPath, naturalizePath, type Point } from './pathfind'
+import { Occupancy, nearestFreeCell } from './occupancy'
 import type { AgentVisualStatus } from '../hooks/useOfficeSocket'
 import type { OfficeMapData } from './officeMap'
 
@@ -12,6 +19,16 @@ const BUBBLE_MS = 4200
 // between an idle agent's strolls; raise these two to make the floor calmer still.
 const WANDER_MIN_S = 120
 const WANDER_JITTER_S = 150
+// How long a blocked walker waits before re-pathing around the obstruction.
+// Staggered per agent so two head-on walkers don't re-path in the same frame.
+const BLOCK_REPATH_S = 1.2
+// Minimum body-to-body distance (tiles). Cell claims alone can't keep two
+// mid-step BODIES apart: two head-on walkers each stop at their shared cell
+// boundary (different cells, sprites fully overlapped), and a diagonal corner
+// cross can pass within ~0.3 tiles without ever sharing a cell. Sprites are
+// ~10px of a 16px tile wide, so 0.7 tiles keeps pixels from ever touching
+// while still letting agents pass in parallel corridor lanes (1.0 apart).
+const BODY_GAP = 0.7
 
 export interface Bubble { text: string; until: number; kind: string }
 
@@ -28,11 +45,18 @@ export class AgentSprite {
   bubble: Bubble | null = null
   sheet: CharacterSheet
   private path: Point[] = []
+  private dest: Point | null = null
   private dir: 'D' | 'U' | 'L' | 'R' = 'D'
   private animT = 0
   private wanderT: number
   private returnHome = false
   private speed: number // per-agent pace (tiles/s) — small spread so nobody marches in lockstep
+  private occ: Occupancy
+  private heldPrev: Point | null = null // trailing cell kept until the body clears it
+  private blockedT = 0
+  private repathAfter: number
+  /** true while movement is stalled behind another agent (draw a standing frame) */
+  waiting = false
   /** where this agent belongs when not doing anything special */
   home: Point
 
@@ -42,20 +66,33 @@ export class AgentSprite {
   role: string
   private map: OfficeMapData
 
-  constructor(id: string, name: string, team: string, role: string, teamColor: string, map: OfficeMapData) {
+  /** shared live roster (engine's sprite map) — read-only, for body separation */
+  private peers: ReadonlyMap<string, AgentSprite>
+
+  constructor(
+    id: string, name: string, team: string, role: string, teamColor: string,
+    map: OfficeMapData, occ: Occupancy, peers: ReadonlyMap<string, AgentSprite>,
+  ) {
     this.id = id
     this.name = name
     this.team = team
     this.role = role
     this.map = map
+    this.occ = occ
+    this.peers = peers
     this.sheet = characterSheet(hashCode(id), teamColor)
     const spot = map.desks.get(id)
     this.home = spot ? spot.chair : map.lobby
-    this.x = this.home.x
-    this.y = this.home.y
+    // Claim the spawn cell; if someone already holds it (shared lobby), shift
+    // to the nearest free cell so nobody materializes inside a colleague.
+    const spawn = nearestFreeCell(map.walkable, occ, this.home, id)
+    this.occ.claim(spawn.x, spawn.y, id)
+    this.x = spawn.x
+    this.y = spawn.y
     // First stroll is pushed well out (and spread per-agent) so the office doesn't swarm on load.
     this.wanderT = 45 + (hashCode(id) % 90)
     this.speed = WALK_SPEED * (0.82 + (hashCode(id + 'spd') % 37) / 100) // ~0.82×–1.18× base
+    this.repathAfter = BLOCK_REPATH_S + (hashCode(id + 'blk') % 100) / 100 // 1.2–2.2 s stagger
   }
 
   get tile(): Point { return { x: Math.round(this.x), y: Math.round(this.y) } }
@@ -83,24 +120,92 @@ export class AgentSprite {
     this.bubble = { text: text.length > 44 ? text.slice(0, 43) + '…' : text, until: now + 3200, kind: 'activity' }
   }
 
-  /** Walk to another agent (stand next to their tile), then wander home. */
+  /** Walk to another agent (stand next to their tile), then wander home.
+      Picks an UNOCCUPIED adjacent cell so two visitors queue instead of stacking. */
   visit(target: AgentSprite) {
     const t = target.tile
     const stand = [
       { x: t.x, y: t.y + 1 }, { x: t.x, y: t.y - 1 },
       { x: t.x - 1, y: t.y }, { x: t.x + 1, y: t.y },
-    ].find(pt => this.map.walkable(pt.x, pt.y))
+      { x: t.x - 1, y: t.y + 1 }, { x: t.x + 1, y: t.y + 1 },
+    ].find(pt => this.map.walkable(pt.x, pt.y) && this.occ.isFree(pt.x, pt.y, this.id))
     if (stand) {
       this.goTo(stand)
       this.returnHome = true
     }
   }
 
+  /** New paths start from the owned cell. The body is NEVER teleported to the
+      cell center — an ungated snap can move it half a tile INTO a colleague.
+      Off-center bodies get their own cell center as a first waypoint instead,
+      so the correcting step passes through the same separation gate as any
+      other movement. */
+  private setPath(waypoints: Point[]) {
+    const from = this.tile
+    const offCenter = Math.abs(this.x - from.x) + Math.abs(this.y - from.y) > 0.01
+    this.path = offCenter ? [from, ...waypoints] : waypoints
+    this.blockedT = 0
+    this.waiting = false
+  }
+
   goTo(dest: Point) {
     const from = this.tile
-    this.x = from.x; this.y = from.y
+    if (this.heldPrev) { // a mid-walk redirect: the current cell is ours, drop the trailing claim
+      this.occ.release(this.heldPrev.x, this.heldPrev.y, this.id)
+      this.heldPrev = null
+    }
+    this.dest = dest
     const raw = findPath(this.map.walkable, this.map.width, this.map.height, from, dest)
-    this.path = naturalizePath(this.map.walkable, from, raw)
+    this.setPath(naturalizePath(this.map.walkable, from, raw))
+  }
+
+  /** True if stepping to (nx,ny) would put this body within BODY_GAP of a
+      colleague's body — unless the step opens the gap (escape moves are always
+      allowed so nobody gets pinned by someone brushing past behind them). */
+  private stepBlockedByBody(nx: number, ny: number): boolean {
+    for (const p of this.peers.values()) {
+      if (p === this) continue
+      const dNew = Math.hypot(nx - p.x, ny - p.y)
+      if (dNew >= BODY_GAP) continue
+      if (dNew > Math.hypot(this.x - p.x, this.y - p.y)) continue
+      return true
+    }
+    return false
+  }
+
+  /** Re-plan to the same destination treating currently held cells (except ours
+      and the destination itself) as solid — walks around a stopped colleague. */
+  private rePathAroundOccupied() {
+    const dest = this.dest
+    if (!dest) { this.path = []; return }
+    const from = this.tile
+    // Destination itself taken and we're already beside it → this is as close
+    // as anyone can get. Treat it as arrived (prevents a wait/re-path loop).
+    if (!this.occ.isFree(dest.x, dest.y, this.id)
+      && Math.max(Math.abs(from.x - dest.x), Math.abs(from.y - dest.y)) <= 1) {
+      this.path = []
+      this.waiting = false
+      if (this.returnHome) {
+        this.returnHome = false
+        setTimeout(() => { if (!this.moving) this.goTo(this.home) }, 1600 + (hashCode(this.id) % 1000))
+      }
+      return
+    }
+    const clear = (x: number, y: number) =>
+      this.map.walkable(x, y) &&
+      (this.occ.isFree(x, y, this.id) || (x === dest.x && y === dest.y))
+    const raw = findPath(clear, this.map.width, this.map.height, from, dest)
+    if (raw.length > 0) {
+      this.setPath(naturalizePath(clear, from, raw))
+      return
+    }
+    // No route around (destination boxed in). Give up gracefully.
+    this.path = []
+    this.waiting = false
+    if (this.returnHome && (dest.x !== this.home.x || dest.y !== this.home.y)) {
+      this.returnHome = false
+      this.goTo(this.home)
+    }
   }
 
   update(dt: number, now: number) {
@@ -113,19 +218,66 @@ export class AgentSprite {
       const dist = Math.hypot(dx, dy)
       const step = this.speed * dt
       this.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U')
+
+      // Tentative position for this frame.
+      const nx = dist <= step ? next.x : this.x + (dx / dist) * step
+      const ny = dist <= step ? next.y : this.y + (dy / dist) * step
+
+      // Body separation — checked before cell logic. Never step within
+      // BODY_GAP of a colleague's body: stop short like a person would,
+      // and if they don't move, re-path around their claimed cells.
+      if (this.stepBlockedByBody(nx, ny)) {
+        this.waiting = true
+        this.blockedT += dt
+        if (this.blockedT >= this.repathAfter) {
+          this.blockedT = 0
+          this.rePathAroundOccupied()
+        }
+        return
+      }
+
+      const curCell = this.tile
+      const newCell = { x: Math.round(nx), y: Math.round(ny) }
+
+      if (newCell.x !== curCell.x || newCell.y !== curCell.y) {
+        // Entering a new cell — it must be exclusively ours first.
+        if (!this.occ.claim(newCell.x, newCell.y, this.id)) {
+          this.waiting = true
+          this.blockedT += dt
+          if (this.blockedT >= this.repathAfter) {
+            this.blockedT = 0
+            this.rePathAroundOccupied()
+          }
+          return // hold position this frame; trailing cell keeps its claim
+        }
+        // Claimed. Hand over the trailing cell bookkeeping.
+        if (this.heldPrev) this.occ.release(this.heldPrev.x, this.heldPrev.y, this.id)
+        this.heldPrev = curCell
+      }
+      this.waiting = false
+      this.blockedT = 0
+      this.x = nx
+      this.y = ny
       if (dist <= step) {
-        this.x = next.x; this.y = next.y
         this.path.shift()
         if (this.path.length === 0 && this.returnHome) {
           // pause a moment at the visit target, then head home
           this.returnHome = false
           setTimeout(() => { if (!this.moving) this.goTo(this.home) }, 1600 + (hashCode(this.id) % 1000))
         }
-      } else {
-        this.x += (dx / dist) * step
-        this.y += (dy / dist) * step
+      }
+      // Release the trailing cell once the body has fully cleared it.
+      if (this.heldPrev && Math.hypot(this.x - this.heldPrev.x, this.y - this.heldPrev.y) > 0.8) {
+        this.occ.release(this.heldPrev.x, this.heldPrev.y, this.id)
+        this.heldPrev = null
       }
       return
+    }
+
+    // Not moving: make sure the trailing claim is gone and our seat is ours.
+    if (this.heldPrev) {
+      this.occ.release(this.heldPrev.x, this.heldPrev.y, this.id)
+      this.heldPrev = null
     }
 
     // Idle flavor: rarely stroll to the coffee machine and back.
@@ -134,8 +286,12 @@ export class AgentSprite {
       if (this.wanderT <= 0) {
         this.wanderT = WANDER_MIN_S + (hashCode(this.id + String(now | 0)) % WANDER_JITTER_S)
         const c = this.map.coffee
-        const stand = { x: c.x, y: c.y + 1 }
-        if (this.map.walkable(stand.x, stand.y)) {
+        // Queue-friendly: pick the first free stand spot along the counter.
+        const stand = [
+          { x: c.x, y: c.y + 1 }, { x: c.x - 1, y: c.y + 1 }, { x: c.x + 1, y: c.y + 1 },
+          { x: c.x - 2, y: c.y + 1 }, { x: c.x + 2, y: c.y + 1 },
+        ].find(pt => this.map.walkable(pt.x, pt.y) && this.occ.isFree(pt.x, pt.y, this.id))
+        if (stand) {
           this.goTo(stand)
           this.returnHome = true
         }
@@ -144,10 +300,11 @@ export class AgentSprite {
   }
 
   frame(): CharFrame {
-    if (this.moving) {
+    if (this.moving && !this.waiting) {
       const f = Math.floor(this.animT * 6) % 2
       return `walk${this.dir}${f}` as CharFrame
     }
+    if (this.moving && this.waiting) return 'stand' // queuing behind someone
     const seated = this.atHome && this.map.desks.get(this.id)
     switch (this.status) {
       case 'typing':

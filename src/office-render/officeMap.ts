@@ -1,12 +1,12 @@
 // Office layout generator: builds the tile grid, team zones, and desk assignments
 // from the live roster — no hardcoded per-agent coordinates anywhere.
-// Layout: 4 team zones on top, 3 on the bottom, a central corridor, and a commons
-// room (meeting table + coffee + the director's desk) bottom-right.
+// Layout: 5 team zones on top, 3 on the bottom, a central corridor, and a luxury
+// commons bottom-right (glass meeting room, micro-kitchen, lounge, director's nook).
 import type { OfficeAgent, OfficeTeam } from '../hooks/useOfficeSocket'
 import type { TileKind } from './assets'
 import type { Point } from './pathfind'
 
-export const MAP_W = 66
+export const MAP_W = 82
 export const MAP_H = 32
 
 export interface DeskSpot {
@@ -32,6 +32,13 @@ export interface OfficeMapData {
   coffee: Point
   lobby: Point                  // where agents without a desk appear
   zoneColorAt: (x: number, y: number) => string | undefined
+  // Position data consumed by the baked decor passes in prerenderMap
+  // (lamp glows, rug border, glass-room ambiance).
+  decor: {
+    lamps: Point[]
+    glassRoom: { x: number; y: number; w: number; h: number }
+    rug: { x: number; y: number; w: number; h: number }
+  }
 }
 
 const ROLE_ORDER = ['Team Lead', 'Senior Researcher', 'Reviewer / Editor', 'Research Engineer', 'Liaison / Scribe']
@@ -57,9 +64,9 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
   const zones: Zone[] = []
   const desks = new Map<string, DeskSpot>()
 
-  // Zone slots: 4 top (interior y 1..12), 3 bottom (interior y 18..30, x 1..47).
+  // Zone slots: 5 top (interior y 1..12), 3 bottom (interior y 18..30, x 1..47).
   const slots = [
-    ...[0, 1, 2, 3].map(i => ({ x: 1 + i * 16, y: 1, h: 12, top: true })),
+    ...[0, 1, 2, 3, 4].map(i => ({ x: 1 + i * 16, y: 1, h: 12, top: true })),
     ...[0, 1, 2].map(i => ({ x: 1 + i * 16, y: 18, h: 13, top: false })),
   ]
 
@@ -69,7 +76,7 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
     byTeam.get(a.team)!.push(a)
   }
 
-  teams.slice(0, 7).forEach((team, ti) => {
+  teams.slice(0, 8).forEach((team, ti) => {
     const slot = slots[ti]
     const { x: zx, y: zy } = slot
     const w = 15
@@ -89,7 +96,7 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
       if (zx + w < MAP_W - 1) set(zx + w, Math.max(1, Math.min(MAP_H - 2, y)), 'wall', true)
     }
 
-    // whiteboard on the outer wall behind the lead desk
+    // glassboard on the outer wall behind the lead desk
     const boardY = slot.top ? 0 : MAP_H - 1
     set(zx + 6, boardY, 'whiteboard', true)
     set(zx + 7, boardY, 'whiteboard', true)
@@ -117,27 +124,88 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
     members.forEach((m, i) => { if (spots[i]) desks.set(m.id, spots[i]) })
   })
 
-  // Commons room: x 49..64, y 18..30 — meeting table, coffee, director's desk.
+  // Windows: convert stretches of plain border wall to windowWall AFTER the
+  // zone loop so the glassboards (set inside the loop) survive. Guard on the
+  // current tile still being 'wall'.
+  const windowize = (x: number, y: number) => {
+    if (tiles[y][x] === 'wall') { tiles[y][x] = 'windowWall' } // stays solid
+  }
+  for (const slot of slots.filter(s => s.top)) {
+    for (const dx of [2, 3, 11, 12]) windowize(slot.x + dx, 0)
+  }
+  for (const slot of slots.filter(s => !s.top)) {
+    for (const dx of [2, 3, 11, 12]) windowize(slot.x + dx, MAP_H - 1)
+  }
+  for (const x of [60, 61, 66, 67, 74, 75]) windowize(x, MAP_H - 1) // commons stretch
+
+  // ── Luxury commons: x 49..80, y 18..30 ─────────────────────────────────────
   for (let y = 18; y <= 30; y++) for (let x = 49; x < MAP_W - 1; x++) set(x, y, 'floor')
-  for (let x = 48; x < MAP_W - 1; x++) { if (x !== 55 && x !== 56) set(x, 17, 'wall', true) }
+  // north wall with two doors: main (55,56) aligned with the lobby, kitchen (71,72)
+  for (let x = 48; x < MAP_W - 1; x++) {
+    if (x === 55 || x === 56 || x === 71 || x === 72) continue
+    set(x, 17, 'wall', true)
+  }
   for (let y = 17; y <= 30; y++) set(48, y, 'wall', true)
 
+  // Glass meeting room ("the aquarium"), NW quadrant — perimeter x 50..60 / y 19..26
+  // with a door gap at (55,19)(56,19) lined up with the commons door and lobby.
+  for (let x = 50; x <= 60; x++) {
+    if (x !== 55 && x !== 56) set(x, 19, 'glass', true)
+    set(x, 26, 'glass', true)
+  }
+  for (let y = 20; y <= 25; y++) { set(50, y, 'glass', true); set(60, y, 'glass', true) }
+
   const meetingSeats: Point[] = []
-  for (let x = 51; x <= 56; x++) {
+  for (let x = 52; x <= 57; x++) {
     set(x, 22, 'meetTable', true)
     set(x, 23, 'meetTable', true)
     meetingSeats.push({ x, y: 21 }, { x, y: 24 })
   }
-  const coffee: Point = { x: 63, y: 19 }
-  set(coffee.x, coffee.y, 'coffee', true)
-  set(49, 30, 'plant', true)
-  set(63, 30, 'plant', true)
 
-  // director's desk in the commons
-  const directorSpot: DeskSpot = { desk: { x: 60, y: 27 }, chair: { x: 60, y: 28 } }
+  // Micro-kitchen along the top wall of the commons' east side.
+  set(73, 18, 'kitchenCounter', true)
+  set(74, 18, 'kitchenCounter', true)
+  set(75, 18, 'sink', true)
+  set(76, 18, 'kitchenCounter', true)
+  const coffee: Point = { x: 77, y: 18 } // espresso machine; agents stand at (77,19)
+  set(coffee.x, coffee.y, 'coffee', true)
+  set(78, 18, 'kitchenCounter', true)
+  set(79, 18, 'kitchenCounter', true)
+  set(80, 18, 'fridge', true)
+
+  // Lounge, SE quadrant: rug + two sofas + low table + armchair + floor lamps.
+  const rug = { x: 66, y: 24, w: 8, h: 6 }
+  for (let y = rug.y; y < rug.y + rug.h; y++) for (let x = rug.x; x < rug.x + rug.w; x++) set(x, y, 'rug')
+  set(67, 25, 'sofaW', true); set(68, 25, 'sofaC', true); set(69, 25, 'sofaE', true)
+  set(67, 28, 'sofaW', true); set(68, 28, 'sofaC', true); set(69, 28, 'sofaE', true)
+  set(68, 26, 'loungeTable', true); set(68, 27, 'loungeTable', true)
+  set(71, 26, 'armchair', true)
+  const lamps: Point[] = [{ x: 66, y: 24 }, { x: 73, y: 29 }]
+  for (const p of lamps) set(p.x, p.y, 'lamp', true)
+
+  // plants
+  set(49, 30, 'plant', true)
+  set(80, 30, 'plant', true)
+  set(65, 18, 'plant', true)
+
+  // director's nook, SW under the glass room, backed by a living green wall
+  const directorSpot: DeskSpot = { desk: { x: 53, y: 28 }, chair: { x: 53, y: 29 } }
   set(directorSpot.desk.x, directorSpot.desk.y, 'desk', true)
   set(directorSpot.chair.x, directorSpot.chair.y, 'chair')
+  for (let x = 51; x <= 56; x++) set(x, MAP_H - 1, 'greenWall', true)
   for (const a of agents) if (a.team === 'company') desks.set(a.id, directorSpot)
+
+  // Wall orientation pass (after ALL wall placement): a wall tile with another
+  // wall-like tile directly below it is part of a vertical run or junction, so
+  // only its top surface is visible from this angle — repeating the south-facing
+  // cap+face art up a column reads as a striped ladder. Tiles with open space
+  // below keep the face; the bottom border row (nothing below) stays a face band.
+  const WALLISH = new Set<TileKind>(['wall', 'wallTop', 'windowWall', 'whiteboard', 'greenWall'])
+  for (let y = 0; y < MAP_H - 1; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      if (tiles[y][x] === 'wall' && WALLISH.has(tiles[y + 1][x])) tiles[y][x] = 'wallTop'
+    }
+  }
 
   const lobby: Point = { x: 55, y: 15 }
 
@@ -151,5 +219,8 @@ export function buildOfficeMap(teams: OfficeTeam[], agents: OfficeAgent[]): Offi
     return undefined
   }
 
-  return { width: MAP_W, height: MAP_H, tiles, walkable, zones, desks, meetingSeats, coffee, lobby, zoneColorAt }
+  return {
+    width: MAP_W, height: MAP_H, tiles, walkable, zones, desks, meetingSeats, coffee, lobby, zoneColorAt,
+    decor: { lamps, glassRoom: { x: 50, y: 19, w: 11, h: 8 }, rug },
+  }
 }

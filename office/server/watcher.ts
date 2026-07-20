@@ -2,7 +2,7 @@
 import path from 'node:path'
 import fs from 'node:fs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import matter from 'gray-matter'
+import { parseMatter } from './store.ts'
 import type { Paths } from './store.ts'
 import type { ChatMsg, ReportMeta, TaskSummary } from './protocol.ts'
 
@@ -40,7 +40,7 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
     if (!rel.endsWith('.md')) return
     try {
       if (parts[0] === 'mail' && parts[2] === 'inbox' && isNew) {
-        const fm = matter(fs.readFileSync(file, 'utf8')).data
+        const fm = parseMatter(fs.readFileSync(file, 'utf8')).data
         events.onMail({
           from: String(fm.from ?? '?'),
           to: String(fm.to ?? parts[1]),
@@ -50,7 +50,7 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
           ts: Date.now(),
         })
       } else if (parts[0] === 'tasks') {
-        const fm = matter(fs.readFileSync(file, 'utf8')).data
+        const fm = parseMatter(fs.readFileSync(file, 'utf8')).data
         events.onTask({
           id: String(fm.id ?? path.basename(file, '.md')),
           title: String(fm.title ?? path.basename(file)),
@@ -68,7 +68,7 @@ export function startWatcher(p: Paths, events: WatcherEvents): FSWatcher {
         // add AND change: a reviewer flipping status draft→approved is a change,
         // and both the site and the vault mirror must follow it.
         events.onReportFile?.(file)
-        const fm = matter(fs.readFileSync(file, 'utf8')).data
+        const fm = parseMatter(fs.readFileSync(file, 'utf8')).data
         events.onReport({
           team: parts[1],
           path: path.relative(p.repoRoot, file),
