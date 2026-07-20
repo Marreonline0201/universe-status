@@ -19,10 +19,10 @@ export interface RoleSpec {
 
 export const TEAM_ROLES: RoleSpec[] = [
   // 2026-07-20 owner decision: Fable 5 verified back in-plan (one-turn CLI ping OK).
-  // Fable goes where planning/thinking compounds: team leads, one principal researcher per
-  // team, and research engineers. fable-2/3 stay on Opus — the principal plans the research
-  // and coordinates them. 24 of 57 agents on Fable (~2x Opus burn); the usage hard stop
-  // (scheduler.ts) is the money guard.
+  // Fable goes where planning/thinking compounds: the director, team leads, one principal
+  // researcher per team, and research engineers. fable-2/3 stay on Opus — the principal
+  // plans the research and coordinates them. 25 of 57 agents on Fable (~2x Opus burn);
+  // the usage hard stop (scheduler.ts) is the money guard.
   { suffix: 'lead',     role: 'Team Lead',            model: MODELS.fable,  duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
   { suffix: 'fable-1',  role: 'Principal Researcher', model: MODELS.fable,  duty: 'Plans the team\'s research: decomposes questions into angles, coordinates the two senior researchers, synthesizes their threads into the draft.' },
   { suffix: 'fable-2',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
@@ -123,7 +123,7 @@ export function buildRoster(): AgentSpec[] {
     name: 'Aurelio Kade',
     team: 'company',
     role: 'Company Director',
-    model: MODELS.opus,
+    model: MODELS.fable,
     duty: 'Routes the owner\'s assignments to team leads, keeps the company journal, arbitrates cross-team priorities.',
   }]
   for (const team of TEAMS) {
