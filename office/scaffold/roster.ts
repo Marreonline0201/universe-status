@@ -1,6 +1,6 @@
 // Single source of truth for the company roster: 8 teams × 7 agents + 1 director = 57.
-// Per team: 1 lead (opus), 3 Fable senior researchers (claude-fable-5), 1 reviewer (opus),
-// 1 research engineer (sonnet), 1 liaison/scribe (sonnet). Haiku is never used.
+// Per team: 1 lead (fable), 1 principal researcher (fable) + 2 senior researchers (opus),
+// 1 reviewer (opus), 1 research engineer (fable), 1 liaison/scribe (sonnet). Haiku is never used.
 // The scaffold generator writes company/ from this; the orchestrator loads the generated
 // profile.json files at runtime (so the user can hand-edit profiles without touching code).
 
@@ -18,15 +18,18 @@ export interface RoleSpec {
 }
 
 export const TEAM_ROLES: RoleSpec[] = [
-  { suffix: 'lead',     role: 'Team Lead',         model: MODELS.opus,   duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
-  // TEMP: Fable 5 left the subscription 2026-07-12 (usage-credit billing). Researchers run on Opus
-  // to stay in-plan. Revert model to MODELS.fable when Fable returns to the subscription.
-  { suffix: 'fable-1',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-2',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-3',  role: 'Senior Researcher', model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'reviewer', role: 'Reviewer / Editor', model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
-  { suffix: 'engineer', role: 'Research Engineer', model: MODELS.sonnet, duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
-  { suffix: 'liaison',  role: 'Liaison / Scribe',  model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
+  // 2026-07-20 owner decision: Fable 5 verified back in-plan (one-turn CLI ping OK).
+  // Fable goes where planning/thinking compounds: team leads, one principal researcher per
+  // team, and research engineers. fable-2/3 stay on Opus — the principal plans the research
+  // and coordinates them. 24 of 57 agents on Fable (~2x Opus burn); the usage hard stop
+  // (scheduler.ts) is the money guard.
+  { suffix: 'lead',     role: 'Team Lead',            model: MODELS.fable,  duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
+  { suffix: 'fable-1',  role: 'Principal Researcher', model: MODELS.fable,  duty: 'Plans the team\'s research: decomposes questions into angles, coordinates the two senior researchers, synthesizes their threads into the draft.' },
+  { suffix: 'fable-2',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'fable-3',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'reviewer', role: 'Reviewer / Editor',    model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
+  { suffix: 'engineer', role: 'Research Engineer',    model: MODELS.fable,  duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
+  { suffix: 'liaison',  role: 'Liaison / Scribe',     model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
 ]
 
 export interface TeamSpec {
