@@ -33,7 +33,7 @@ export class CompositionTable {
    *  densityOverride: use this for molecular compounds where Vegard's law doesn't apply
    *  renderOverride: physically correct render properties that override PropertyCalculator values
    */
-  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number, renderOverride?: RenderOverride): number {
+  add(name: string, formula: string, elements: Partial<Record<ElementName, number>>, temperature = 20, densityOverride?: number, renderOverride?: RenderOverride, fluidOverride?: { viscosity?: number; surfaceTension?: number }): number {
     // Normalize fractions to sum to 1
     const total = Object.values(elements).reduce((s, v) => s + v, 0)
     const normalized: Partial<Record<ElementName, number>> = {}
@@ -54,6 +54,10 @@ export class CompositionTable {
       if (renderOverride.metalness !== undefined) props.metalness = renderOverride.metalness
       if (renderOverride.emissive !== undefined) props.emissive = renderOverride.emissive
       if (renderOverride.IOR !== undefined) props.IOR = renderOverride.IOR
+    }
+    if (fluidOverride) {
+      if (fluidOverride.viscosity !== undefined) props.viscosity = fluidOverride.viscosity
+      if (fluidOverride.surfaceTension !== undefined) props.surfaceTension = fluidOverride.surfaceTension
     }
     const id = this.compositions.length
 
@@ -202,8 +206,10 @@ export class CompositionTable {
       { color: [0.55, 0.55, 0.55], opacityDensity: 8.0, F0: 0.56, metalness: 0.95, emissive: 0.0, IOR: 2.95 })
     this.add('Copper', 'Cu', { Cu: 1.0 }, 1100, 8960,
       { color: [0.85, 0.5, 0.2], opacityDensity: 6.0, F0: 0.6, metalness: 0.9, emissive: 1.2, IOR: 1.0 })
+    // Using Pb as proxy (Hg not in element list)
     this.add('Mercury', 'Hg', { Pb: 1.0 }, 20, 13534,
-      { color: [0.75, 0.75, 0.78], opacityDensity: 10.0, F0: 0.9, metalness: 0.98, emissive: 0.0, IOR: 1.0 })
+      { color: [0.75, 0.75, 0.78], opacityDensity: 10.0, F0: 0.9, metalness: 0.98, emissive: 0.0, IOR: 1.0 },
+      { viscosity: 0.00117, surfaceTension: 0.47 })
     this.add('Olive Oil', 'C₅₅H₁₀₄O₆', { C: 0.77, H: 0.12, O: 0.11 }, 20, 920,
       { color: [0.7, 0.65, 0.3], opacityDensity: 1.0, F0: 0.03, metalness: 0.0, emissive: 0.0, IOR: 1.473 })
     this.add('Lava', 'Basalt', { Si: 0.25, O: 0.44, Fe: 0.08, Al: 0.08, Ca: 0.07, Mg: 0.04, Na: 0.02, K: 0.02 }, 1200, 2700,
