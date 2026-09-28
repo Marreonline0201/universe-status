@@ -57,12 +57,12 @@ try {
     const s = await status(page)
     if (s.renderPath === 'points') switchedAfter = Math.round((s.presentIntervalP50 ? (s.rafFrames - c.rafFrames) / s.presentEvery : s.rafFrames - c.rafFrames))
   }
-  const t0 = await page.evaluate(() => performance.now())
+  const w0 = await page.evaluate(() => performance.now())
   const s0 = await status(page)
   await page.waitForTimeout(2000)
-  const t1 = await page.evaluate(() => performance.now())
+  const w1 = await page.evaluate(() => performance.now())
   const d = await status(page)
-  const presented = Math.round((t1 - t0) / d.presentIntervalP50)
+  const presented = Math.round((w1 - w0) / d.presentIntervalP50)
   const done = d.pointsReadbacksCompleted - s0.pointsReadbacksCompleted
   report.r2 = { switchedAfterPresentedFrames: switchedAfter, presented, completed: done, lockstep: report.r2lockstep }
   gate.check(switchedAfter !== null && switchedAfter <= 2, `R2 forced SSFR failure → Points path after ${switchedAfter} presented frame(s) (≤ 2)`)

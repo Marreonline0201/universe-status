@@ -20,11 +20,13 @@ const ref = process.argv[2] ?? 'HEAD'
 const git = (...args) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).trim()
 
 const sha = git('rev-parse', ref)
+const stamp = path.join(tree, 'gate-sha.txt')
+if (fs.existsSync(stamp)) fs.rmSync(stamp)            // our own stamp is not a source change
 if (!fs.existsSync(tree)) git('worktree', 'add', '--detach', tree, sha)
 else execFileSync('git', ['checkout', '--detach', '--force', sha], { cwd: tree, stdio: 'inherit' })
 const status = execFileSync('git', ['status', '--porcelain'], { cwd: tree, encoding: 'utf8' }).trim()
 if (status) { console.error(`✗ .gate-tree is not clean:\n${status}`); process.exit(1) }
-fs.writeFileSync(path.join(tree, 'gate-sha.txt'), `${sha} clean\n`)
+fs.writeFileSync(stamp, `${sha} clean\n`)
 console.log(`gate tree at ${sha.slice(0, 10)} (${git('log', '-1', '--format=%s', sha)})`)
 
 const vite = path.join(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js')
