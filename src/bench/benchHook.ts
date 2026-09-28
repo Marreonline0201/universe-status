@@ -5,6 +5,7 @@
 // Determinism: every spawn a script triggers runs with Math.random swapped for a seeded
 // generator, and setStepLimit(n) freezes the simulation after exactly n stepped frames
 // (rendering continues), so a sample is taken at a known frame and two runs are comparable.
+import type { ProbeOptions, ProbeResultWithCamera } from '../fluid-render/SSFRPipeline'
 
 /** mulberry32 — small, fast, well-distributed 32-bit PRNG. */
 export function mulberry32(seed: number): () => number {
@@ -52,6 +53,8 @@ export interface BenchTarget {
   framesStepped(): number
   setStepLimit(frames: number): void
   readParticleSample(): Promise<ParticleSample | null>
+  /** Offscreen SSFR frame with a test camera/overrides, read back (render acceptance gates, r0-render.mjs). */
+  probe?(opts: ProbeOptions): Promise<ProbeResultWithCamera | null>
   compositions(): { id: number; name: string }[]
   fps(): number
   count(): number
@@ -101,6 +104,16 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     diagnostics() {
       if (!target.diagnostics) throw new Error(`${meta.page} has no diagnostics`)
       return target.diagnostics()
+    },
+
+    /** Offscreen render probe; every requested target comes back base64-encoded (see SSFRPipeline ProbeResult). */
+    async probe(opts: ProbeOptions) {
+      if (!target.probe) throw new Error(`${meta.page} has no render probe`)
+      const r = await target.probe(opts)
+      if (!r) return null
+      const data: Record<string, string> = {}
+      for (const [k, v] of Object.entries(r.data)) if (v) data[k] = toBase64(new Uint8Array(v))
+      return { ...r, data }
     },
 
     status() {

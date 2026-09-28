@@ -8,16 +8,17 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FluidScene } from '../fluid-render/FluidScene'
-import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
+import { SSFRPipeline, type ProbeOptions, type ProbeResultWithCamera } from '../fluid-render/SSFRPipeline'
+import { opticsRenderData } from '../fluid-render/optics/materials'
 import { BG_BASE, clampBrightness, readBgBrightness } from '../fluid-render/bgBrightness'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import type { MenuEntry } from '../composition/liquidGate'
 import type { ElementName } from '../composition/PropertyCalculator'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
-import { DOMAIN_L_M, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel, tankMetresToUnit } from './units'
+import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel, tankMetresToUnit } from './units'
 import { PresentationClock } from './clock'
-import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
+import { REST_PPC, buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
 
 const DEFAULT_BALL_RADIUS = 0.1   // ~6 grid cells in MLS-MPM [0,1] space
@@ -217,9 +218,10 @@ export class FluidEngine {
 
     let ssfrPipeline: SSFRPipeline | null = null
     try {
+      // Particle rest volume from the MLS-MPM packing (world unit = tank edge); metres per world unit from units.ts.
       const ssfr = new SSFRPipeline({
-        particleRadius: 0.025, blurRadius: 10, blurDepthFalloff: 40.0,
-        refractionStrength: 0.08, absorptionScale: 0.6,
+        particleVolume: 1 / (GRID_RES ** 3 * REST_PPC), metresPerUnit: DOMAIN_L_M,
+        blurRadius: 10, blurDepthFalloff: 40.0,
       })
       await ssfr.init(device, this.container.clientWidth, this.container.clientHeight)
       if (this.destroyed) return false
@@ -259,6 +261,7 @@ export class FluidEngine {
       this.camera.aspect = w / h
       this.camera.updateProjectionMatrix()
       this.renderer.setSize(w, h)
+      this.ssfrPipeline?.resize(w, h)   // CSS size, capped at 1280×800-equivalent inside (ED-2)
     })
     this.resizeObserver.observe(this.container)
 
@@ -268,7 +271,7 @@ export class FluidEngine {
 
   private uploadCompositions() {
     this.gpuSim?.updateCompositionProps(this.compositionTable.getGpuData())
-    this.ssfrPipeline?.updateMaterialProps(this.compositionTable.getRenderData())
+    this.ssfrPipeline?.updateMaterialProps(opticsRenderData(this.compositionTable.getAll()))
   }
 
   /** FLUID TEST's default scene: a ~0.77 m block of water (≈10k particles at rest packing)
@@ -768,12 +771,47 @@ export class FluidEngine {
   /** Raw GPU particle readback (positions/velocities/composition ids). */
   readParticleSample() { return this.gpuSim?.readParticleSample() ?? Promise.resolve(null) }
 
+  /** Bench: render one SSFR frame offscreen (SSFRPipeline.probe) with a gate-specified camera, returning the
+   *  targets it asks for plus the exact matrices used. The canvas keeps rendering untouched. */
+  async renderProbe(o: ProbeOptions): Promise<ProbeResultWithCamera | null> {
+    const ssfr = this.ssfrPipeline, sim = this.gpuSim, page = this.camera
+    if (!ssfr || !sim || !page) return null
+    const [w, h] = [o.width ?? ssfr.size[0], o.height ?? ssfr.size[1]]
+    let cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
+    if (o.camera) {
+      const c = o.camera, near = c.near ?? 0.1, far = c.far ?? 50
+      if (c.kind === 'orthographic') {
+        const hh = c.halfHeight ?? 1
+        cam = new THREE.OrthographicCamera(-hh * w / h, hh * w / h, hh, -hh, near, far)
+      } else {
+        cam = new THREE.PerspectiveCamera(c.fovDeg ?? 50, w / h, near, far)
+      }
+      cam.coordinateSystem = THREE.WebGPUCoordinateSystem   // NDC z ∈ [0,1], as the depth attachment expects
+      cam.up.set(...(c.up ?? [0, 1, 0]))
+      cam.position.set(...c.eye)
+      cam.lookAt(...c.target)
+    } else {
+      cam = page.clone()
+      cam.aspect = w / h
+    }
+    cam.updateProjectionMatrix()
+    cam.updateMatrixWorld()
+    const m = {
+      view: new Float32Array(cam.matrixWorldInverse.elements), proj: new Float32Array(cam.projectionMatrix.elements),
+      invProj: new Float32Array(cam.projectionMatrixInverse.elements), invView: new Float32Array(cam.matrixWorld.elements),
+    }
+    const ball = this.ball.active ? { center: [...this.ball.center] as [number, number, number], radius: this.ball.radius, active: true } : undefined
+    const r = await ssfr.probe(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball })
+    return { ...r, view: [...m.view], proj: [...m.proj], invView: [...m.invView], invProj: [...m.invProj] }
+  }
+
   /** Adapter for installBenchHook; `action` maps page-level user actions for scripted tests. */
   benchTarget(extra: Pick<BenchTarget, 'loadScenario' | 'action'> = {}): BenchTarget {
     return {
       framesStepped: () => this.steppedFrames,
       setStepLimit: (n) => this.setStepLimit(n),
       readParticleSample: () => this.readParticleSample(),
+      probe: (o) => this.renderProbe(o),
       compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name })),
       fps: () => this.lastFps,
       count: () => this.particleCount,

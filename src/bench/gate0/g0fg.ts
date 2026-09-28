@@ -12,6 +12,7 @@
 import { PerspectiveCamera, Vector3 } from 'three'
 import { MpmGpuSimulator, type GpuParticle } from '../../gpu-sim/MpmGpuSimulator'
 import { SSFRPipeline } from '../../fluid-render/SSFRPipeline'
+import { opticsRenderData } from '../../fluid-render/optics/materials'
 import { CompositionTable } from '../../composition/CompositionTable'
 import { GpuTimer, timingInvalid, mean, median, quantile, type Gate0Device } from './gpu'
 
@@ -193,9 +194,11 @@ export interface SsfrRig {
  *  texture of the canvas format at W x H. */
 export async function createSsfrRig(g: Gate0Device, e: SimEntry, W: number, H: number, view: View): Promise<SsfrRig> {
   const device = g.device
-  const ssfr = new SSFRPipeline({ particleRadius: 0.025, blurRadius: 10, blurDepthFalloff: 40.0, refractionStrength: 0.08, absorptionScale: 0.6 })
+  // (render track 2026-09-28: the config is FluidEngine's; maxRenderPixels = W·H keeps this bench measuring W×H
+  //  itself — the page caps at 1280×800-equivalent, ED-2)
+  const ssfr = new SSFRPipeline({ particleVolume: 1 / (64 ** 3 * 4), metresPerUnit: 3.63, blurRadius: 10, blurDepthFalloff: 40.0, maxRenderPixels: W * H })
   await ssfr.init(device, W, H)
-  ssfr.updateMaterialProps(e.table.getRenderData())
+  ssfr.updateMaterialProps(opticsRenderData(e.table.getAll()))
   const format = navigator.gpu.getPreferredCanvasFormat()
   const target = device.createTexture({ size: [W, H], format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC })
   const tview = target.createView()
