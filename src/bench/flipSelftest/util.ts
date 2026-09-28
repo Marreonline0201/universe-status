@@ -8,6 +8,11 @@ export const DX = 3.63 / 64
 export const RHO = 998.2072          // kg/m³, water 20 °C (NIST)
 export const L_REF = 3.63, TAU = 1 / 24
 
+/** Pressure/ψ solver used by every projection test on this page (set via __flipTest.configure). MGPCG converges in
+ *  tens of iterations, so its encoded cap is bounded (encoding thousands of V-cycles per solve is pure CPU cost). */
+export const solverConfig: { method: 'jpcg' | 'mgpcg' } = { method: 'jpcg' }
+export const capFor = (cap: number) => (solverConfig.method === 'mgpcg' ? Math.min(cap, 100) : cap)
+
 export function mulberry32(seed: number) {
   let a = seed >>> 0
   return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }

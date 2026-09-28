@@ -43,6 +43,9 @@ try {
   if (init.info.vendor !== 'nvidia') throw new Error(`adapter is ${init.info.vendor}, not the NVIDIA dGPU`)
   report.adapter = init.info
   const run = (t, p = {}) => page.evaluate(([t, p]) => window.__flipTest.run(t, p), [t, p])
+  const SOLVER = (process.argv.find(a => a.startsWith('--solver=')) ?? '--solver=jpcg').slice(9)
+  report.solver = (await run('configure', { solver: SOLVER })).solver
+  console.log(`  pressure/ψ solver: ${report.solver}`)
 
   report.kernels = {}
   for (const c of [{ label: '16³', n: [16, 16, 16] }, { label: '64³ ring(5,11,3)', n: [64, 64, 64], ring: [5, 11, 3] }, { label: '24×16×12 ring(7,2,9)', n: [24, 16, 12], ring: [7, 2, 9] }]) {

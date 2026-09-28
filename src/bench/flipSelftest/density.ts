@@ -4,7 +4,7 @@
 import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
 import { FlipRef, CellLabel, makeParticles, type RefParticles } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator, MASS_SCALE } from '../../gpu-sim/flip/FlipGpuSimulator'
-import { DX, RHO, L_REF, TAU, mulberry32, f32round, toInit, submit } from './util'
+import { DX, RHO, L_REF, TAU, mulberry32, f32round, toInit, submit, solverConfig, capFor } from './util'
 
 const G = 9.80665
 const GRAV: Vec3 = [0, -G, 0]
@@ -33,8 +33,8 @@ function merge(a: RefParticles, b: RefParticles): RefParticles {
 async function makeSim(device: GPUDevice, n: Vec3, o: { count: number; h?: number; density?: boolean; gravity?: Vec3; ring?: Vec3; psiTol?: number; psiCap?: number; tol?: number; cap?: number }) {
   return FlipGpuSimulator.create(device, {
     nx: n[0], ny: n[1], nz: n[2], dx: o.h ?? DX, ring: o.ring, gravity: o.gravity ?? GRAV, maxParticles: o.count, lRef: L_REF, tauS: TAU,
-    projection: true, density: RHO, pressureTolerance: o.tol ?? 1e-2, pressureCap: o.cap ?? 400, solverMethod: 'jpcg',
-    densityProjection: o.density ?? true, psiTolerance: o.psiTol ?? 1e-3, psiCap: o.psiCap ?? 400,
+    projection: true, density: RHO, pressureTolerance: o.tol ?? 1e-2, pressureCap: capFor(o.cap ?? 400), solverMethod: solverConfig.method,
+    densityProjection: o.density ?? true, psiTolerance: o.psiTol ?? 1e-3, psiCap: capFor(o.psiCap ?? 400),
   })
 }
 

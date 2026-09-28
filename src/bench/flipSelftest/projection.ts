@@ -4,7 +4,7 @@
 import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
 import { FlipRef, CellLabel } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator } from '../../gpu-sim/flip/FlipGpuSimulator'
-import { DX, RHO, L_REF, TAU, mulberry32, blob, f32round, toInit, submit } from './util'
+import { DX, RHO, L_REF, TAU, mulberry32, blob, f32round, toInit, submit, solverConfig, capFor } from './util'
 
 const G = 9.80665
 const GRAV: Vec3 = [0, -G, 0]
@@ -15,7 +15,7 @@ const lin = (L: GridLayout, i: number, j: number, k: number) => (i + 1) + (L.nx 
 async function makeSim(device: GPUDevice, n: Vec3, o: { ring?: Vec3; tol?: number; cap?: number; count: number; gravity?: Vec3 }) {
   return FlipGpuSimulator.create(device, {
     nx: n[0], ny: n[1], nz: n[2], dx: DX, ring: o.ring, gravity: o.gravity ?? GRAV, maxParticles: o.count, lRef: L_REF, tauS: TAU,
-    projection: true, density: RHO, pressureTolerance: o.tol ?? 1e-2, pressureCap: o.cap ?? 400, solverMethod: 'jpcg',
+    projection: true, density: RHO, pressureTolerance: o.tol ?? 1e-2, pressureCap: capFor(o.cap ?? 400), solverMethod: solverConfig.method,
   })
 }
 

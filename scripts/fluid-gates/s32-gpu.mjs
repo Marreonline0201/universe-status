@@ -62,6 +62,9 @@ try {
   if (init.info.vendor !== 'nvidia') throw new Error(`adapter is ${init.info.vendor}, not the NVIDIA dGPU`)
   report.adapter = init.info
   const run = (t, p = {}) => page.evaluate(([t, p]) => window.__flipTest.run(t, p), [t, p])
+  const SOLVER = (process.argv.find(a => a.startsWith('--solver=')) ?? '--solver=jpcg').slice(9)
+  report.solver = (await run('configure', { solver: SOLVER })).solver
+  console.log(`  pressure/ψ solver: ${report.solver}`)
 
   report.kernels = {}
   for (const c of [{ label: '16³', n: [16, 16, 16] }, { label: '64³ ring(5,11,3)', n: [64, 64, 64], ring: [5, 11, 3] }, { label: '24×16×12 ring(7,2,9)', n: [24, 16, 12], ring: [7, 2, 9] }]) {
@@ -101,8 +104,6 @@ try {
   report.g2 = { with: { ...g2, series: undefined }, without: { ...base, series: undefined }, seriesWith: g2.series, seriesWithout: base.series }
   const range = s => `${(100 * Math.min(...s)).toFixed(2)} … ${(100 * Math.max(...s)).toFixed(2)} %`
   gate.check(Math.abs(g2.endOverNVp - 1) <= 0.02 && g2.breakdowns === 0, `G2 on the GPU, double dam break 30 s (${g2.particles} particles): φ-volume / N·V_p = ${g2.endOverNVp.toFixed(4)} (${(100 * (g2.endOverNVp - 1)).toFixed(3)} %, ≤ 2 %, target 0.5 %); vs the biased t = 0 reading (${g2.v0OverNVp.toFixed(4)}·N·V_p) ${(100 * g2.end).toFixed(2)} %; p cap hits ${g2.capHits}/${g2.solves}, ψ cap hits ${g2.psiCapHits}/${g2.psiSolves}`)
-  }
-  if (!QUICK) {
   console.log(`  [recorded] G2-baseline WITHOUT density projection: φ-volume / N·V_p = ${base.endOverNVp.toFixed(4)} after 30 s (${(100 * (base.endOverNVp - 1)).toFixed(2)} %), range vs t = 0 ${range(base.series)} (Kugelstadt: APIC loses ~38 % in 3D)`)
   }
 

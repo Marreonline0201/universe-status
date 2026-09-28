@@ -6,10 +6,11 @@
 // so a kernel that only works with raised limits fails here.
 import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
 import { FlipRef } from '../../sim-ref/flipRef'
-import { DX, L_REF, TAU, mulberry32, blob, f32round, toInit, submit, maxDiff } from './util'
+import { DX, L_REF, TAU, mulberry32, blob, f32round, toInit, submit, maxDiff, solverConfig } from './util'
 import { FlipGpuSimulator, MASS_SCALE, MOM_SCALE, LO_SCALE } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { projKernels, g1a, settle, damBreak } from './projection'
 import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak } from './density'
+import { equivalence, tankCaps } from './mg'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -287,7 +288,8 @@ try {
     say(`run ${test} ${JSON.stringify(params)}`)
     const errBefore = errors.length
     let out: unknown
-    if (test === 'kernels') out = await kernels(device, params as KernelOpts)
+    if (test === 'configure') { if (params.solver === 'jpcg' || params.solver === 'mgpcg') solverConfig.method = params.solver; out = { solver: solverConfig.method } }
+    else if (test === 'kernels') out = await kernels(device, params as KernelOpts)
     else if (test === 'linearField') out = await linearField(device, params)
     else if (test === 'rotation') out = await rotation(device, params)
     else if (test === 'ballistic') out = await ballistic(device, params as { dt: number })
@@ -296,6 +298,8 @@ try {
     else if (test === 'g1a') out = await g1a(device)
     else if (test === 'settle') out = await settle(device, params)
     else if (test === 'damBreak') out = await damBreak(device)
+    else if (test === 'equivalence') out = await equivalence(device)
+    else if (test === 'tankCaps') out = await tankCaps(device, params as { cap: number; psiCap: number; seconds?: number })
     else if (test === 'densKernels') out = await densKernels(device, params)
     else if (test === 'direction') out = await direction(device)
     else if (test === 'restVolume') out = await restVolume(device)

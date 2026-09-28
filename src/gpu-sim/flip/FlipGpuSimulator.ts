@@ -70,15 +70,16 @@ export interface FlipSimOptions {
   density?: number
   /** Pressure solve tolerance ‖∇·u‖∞, 1/s (FINAL-PLAN §5.3 ε_div = 1e-2). */
   pressureTolerance?: number
-  /** Encoded iteration cap of the pressure solve (a cap hit is counted in the solver's sticky faults). */
+  /** Encoded iteration cap of the pressure solve (a cap hit is counted in the solver's sticky faults). Default: MGPCG
+   *  18 (Gate 0 dev p95 + 2; S3.3 measured ≤ 10 in the 64³ tank dam break), JPCG 400. */
   pressureCap?: number
-  /** 'jpcg' (correctness baseline, S3.1b) or 'mgpcg' (S3.3). */
+  /** 'mgpcg' (default since S3.3: equivalent to JPCG within 2 Pa, 6 vs 24 iterations) or 'jpcg' (baseline). */
   solverMethod?: SolverMethod
   /** Kugelstadt et al. 2019 density projection before P2G (S3.2). Requires projection. */
   densityProjection?: boolean
   /** ψ solve tolerance ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3). */
   psiTolerance?: number
-  /** Encoded iteration cap of the ψ solve. */
+  /** Encoded iteration cap of the ψ solve. Default: MGPCG 10 (S3.3 measured ≤ 8), JPCG 200. */
   psiCap?: number
 }
 
@@ -184,12 +185,12 @@ export class FlipGpuSimulator {
     this.projection = opts.projection ?? false
     this.density = opts.density ?? 998.2072
     this.pressureTolerance = opts.pressureTolerance ?? 1e-2
-    this.pressureCap = opts.pressureCap ?? 400
-    this.solverMethod = opts.solverMethod ?? 'jpcg'
+    this.solverMethod = opts.solverMethod ?? 'mgpcg'
+    this.pressureCap = opts.pressureCap ?? (this.solverMethod === 'mgpcg' ? 18 : 400)
     this.densityProjection = opts.densityProjection ?? false
     if (this.densityProjection && !this.projection) throw new Error('FlipGpuSimulator: densityProjection requires projection')
     this.psiTolerance = opts.psiTolerance ?? 1e-3
-    this.psiCap = opts.psiCap ?? 200
+    this.psiCap = opts.psiCap ?? (this.solverMethod === 'mgpcg' ? 10 : 200)
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
