@@ -73,8 +73,9 @@ export class MpmGpuSimulator {
 
   private numParticles = 0
   private frameCount = 0
-  private gravity = 0.3    // grid-space gravity (WebGPU-Ocean uses 0.3)
-  private dt = 0.2         // WebGPU-Ocean uses 0.20
+  // Code units (cells, τ): see src/fluid-engine/units.ts for the SI conversions.
+  private gravity = 0.3    // downward gravity MAGNITUDE in cells/τ² — the sign is applied once, in gridForces.wgsl
+  private dt = 0.2         // substep in τ (0.2 τ = 1/120 s is the verified explicit-EOS step)
   private contactDetectionEnabled = false  // Disabled by default — O(n²) kills FPS
 
   // Sphere obstacle state
@@ -308,12 +309,13 @@ export class MpmGpuSimulator {
     this.device.queue.writeBuffer(this.compPropsBuf, 0, props.buffer, props.byteOffset, props.byteLength)
   }
 
-  /** Run one simulation step.
+  /** Encode `substeps` simulation substeps of `dt` τ each.
    *  Pipeline per substep (matching WebGPU-Ocean):
    *    clearGrid → P2G1 (mass+momentum) → P2G2 (stress) → updateGrid → G2P
-   *  2 substeps per frame for stability.
+   *  Uniforms are written once per call, so all substeps in one call share the same dt,
+   *  gravity and sphere state — submit separately when those change between calls.
    */
-  step(encoder: GPUCommandEncoder) {
+  step(encoder: GPUCommandEncoder, substeps = 2) {
     // Upload sim params
     const params = new Float32Array([this.dt, this.gravity, 0, 0])
     new Uint32Array(params.buffer, 8, 1)[0] = this.numParticles
@@ -336,8 +338,7 @@ export class MpmGpuSimulator {
     const gridCellGroups = Math.ceil(GRID_CELLS / 256)
     const gridSlotGroups = Math.ceil(GRID_SLOTS / 256)
 
-    // 2 substeps per frame for stability (matching WebGPU-Ocean)
-    for (let sub = 0; sub < 2; sub++) {
+    for (let sub = 0; sub < substeps; sub++) {
       // 1. Clear grid — dispatches over all GRID_SLOTS (1,048,576 entries)
       const clearPass = encoder.beginComputePass()
       clearPass.setPipeline(this.clearGridPipeline)

@@ -2,10 +2,12 @@
 // the LAB page runs it in the in-browser WebGPU fluid sim. Pure data — no
 // agent-written code ever executes.
 //
-// gravity is in the simulator's grid-space scale (MpmGpuSimulator.setGravity);
-// water-like default is 0.3.
+// Gravity: `gravity_mps2` is the downward magnitude in m/s² (default: standard gravity).
+// The legacy `gravity` field is in the old grid-space code units (0.3 ≙ Earth gravity by the
+// 2026-07-17 units contract) and is converted on load — see scenarioGravityMs2().
 import { ELEMENTS, type ElementName } from '../composition/PropertyCalculator'
 import type { RenderOverride } from '../composition/CompositionTable'
+import { DX_M, G_STANDARD, TAU_S } from '../fluid-engine/units'
 
 export interface LabMaterial {
   name: string
@@ -29,9 +31,21 @@ export interface LabScenario {
   name?: string
   materials: LabMaterial[]
   spawns: LabSpawn[]
+  /** Downward gravity magnitude, m/s². Takes precedence over the legacy `gravity`. */
+  gravity_mps2?: number
+  /** LEGACY: gravity in grid-space code units (cells/τ²); 0.3 means standard gravity. */
   gravity?: number
   temperature?: number
   ball?: { center?: [number, number, number]; radius?: number }
+}
+
+/** A scenario's gravity in m/s². Legacy code-unit gravity converts through the units
+ *  contract; the canonical legacy value 0.3 was defined as Earth gravity, so it maps to
+ *  standard gravity exactly rather than to 0.3·dx/τ² (9.801 at L = 3.63 m). */
+export function scenarioGravityMs2(s: Pick<LabScenario, 'gravity' | 'gravity_mps2'>): number {
+  if (s.gravity_mps2 !== undefined) return s.gravity_mps2
+  if (s.gravity === undefined || Math.abs(s.gravity - 0.3) < 1e-9) return G_STANDARD
+  return s.gravity * DX_M / (TAU_S * TAU_S)
 }
 
 const MAX_PER_SPAWN = 100_000

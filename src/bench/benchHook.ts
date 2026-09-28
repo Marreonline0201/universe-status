@@ -57,6 +57,10 @@ export interface BenchTarget {
   loadScenario?(json: string): { warning: string | null }
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
   action?(name: string): void
+  /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
+  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean }): void
+  /** Extra status fields (sim time, real-time factor, …) merged into status(). */
+  extraStatus?(): Record<string, unknown>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -82,6 +86,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     /** Freeze the sim after this many stepped frames (Infinity = run freely). */
     setStepLimit(frames: number) { target.setStepLimit(frames) },
 
+    configure(opts: Parameters<NonNullable<BenchTarget['configure']>>[0]) {
+      if (!target.configure) throw new Error(`${meta.page} cannot be configured`)
+      target.configure(opts)
+    },
+
     status() {
       return {
         page: meta.page,
@@ -90,6 +99,7 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
         rafFrames,
         framesStepped: target.framesStepped(),
         visibility: document.visibilityState,
+        ...(target.extraStatus?.() ?? {}),
       }
     },
 

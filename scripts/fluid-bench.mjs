@@ -147,6 +147,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const init = await page.evaluate(() => ({ ok: window.__fluidBench.ok, err: window.__fluidBench.initError }))
     if (!init.ok) throw new Error(`bench init failed: ${init.err} | console: ${consoleErrors.slice(-3).join(' | ')}`)
 
+    // Lockstep clock: "frame N" = exactly N × 1/60 s of sim time, independent of display rate.
+    await page.evaluate(() => { try { window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60 }) } catch { /* pre-S1.1 page */ } })
+    await page.evaluate(() => window.__fluidBench.setStepLimit?.(Infinity))
     const loadRes = await page.evaluate(([t, s]) => window.__fluidBench.load(t, s), [scenarioText, seed])
     if (loadRes.warning) console.log(`scenario warning: ${loadRes.warning}`)
     fs.mkdirSync(outDir, { recursive: true })

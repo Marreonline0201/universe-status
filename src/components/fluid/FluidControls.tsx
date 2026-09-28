@@ -6,6 +6,7 @@
 // own sim owner: FluidTest's simRef, or the lab's LabFluidEngine).
 import { useState } from 'react'
 import type { NamedComposition } from '../../composition/CompositionTable'
+import { G_STANDARD } from '../../fluid-engine/units'
 
 /** The control surface both pages implement. Setters follow FluidTest's model:
  *  setGravity/setTemperature update the page's slider state (the live sim update
@@ -20,6 +21,7 @@ export interface FluidController {
   ballActive: boolean
   dropBall: () => void
   removeBall: () => void
+  /** Downward gravity magnitude in m/s² (both fluid and ball). */
   gravity: number
   setGravity: (g: number) => void
   temperature: number
@@ -124,9 +126,9 @@ export function FluidControls({ controller }: { controller: FluidController }) {
       {/* Gravity slider */}
       <div>
         <label style={labelStyle}>GRAVITY</label>
-        <input type="range" min={0} max={2.0} step={0.01} value={gravity}
+        <input type="range" min={0} max={20} step={0.01} value={gravity}
           onChange={(e) => controller.setGravity(Number(e.target.value))} style={sliderStyle} />
-        <div style={valueStyle}>{gravity.toFixed(2)}</div>
+        <div style={valueStyle}>{gravity.toFixed(2)} m/s²{Math.abs(gravity - G_STANDARD) < 0.005 ? ' (Earth)' : ''}</div>
       </div>
 
       {/* Background brightness slider — hue stays the owner's olive; only brightness scales */}

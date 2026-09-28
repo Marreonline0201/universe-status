@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { FluidEngine } from '../fluid-engine/FluidEngine'
+import { G_STANDARD } from '../fluid-engine/units'
 import { readBgBrightness, writeBgBrightness } from '../fluid-render/bgBrightness'
 import type { NamedComposition } from '../composition/CompositionTable'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
@@ -13,6 +14,7 @@ import { AutoExperimenter } from '../ai/AutoExperimenter'
 import { AIChatPanel } from './AIChatPanel'
 import { FluidControls, type FluidController } from './fluid/FluidControls'
 import { benchHookEnabled, installBenchHook } from '../bench/benchHook'
+import { parseScenario } from '../lab/scenario'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -24,7 +26,7 @@ export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<FluidEngine | null>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
-  const [gravityVal, setGravityVal] = useState(0.5)
+  const [gravityVal, setGravityVal] = useState(G_STANDARD)   // m/s²
   const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
@@ -153,6 +155,12 @@ export function FluidTest() {
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
         installBenchHook(engine.benchTarget({
+          loadScenario: (json) => {
+            const parsed = parseScenario(json)
+            if (!parsed.ok) throw new Error(parsed.error)
+            engine.loadScenario(parsed.scenario)
+            return { warning: parsed.warning }
+          },
           action: (name) => {
             if (name === 'reset') resetSim()
             else if (name === 'batch10k') spawnBatch(10000)

@@ -17,9 +17,6 @@ const FIXED_SCALE: f32 = 1e7;
 const INV_FIXED: f32   = 1e-7;
 const BOUNDARY: u32    = 2u;              // wall margin in cells
 
-// Gravity in grid-space units (WebGPU-Ocean uses -0.3)
-const GRAVITY: f32     = -0.3;
-
 // ── Uniforms ─────────────────────────────────────────────────────────────────
 struct SimParams {
     dt:             f32,
@@ -71,8 +68,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         decodeFixedPoint(atomicLoad(&grid[base_slot + 2u])) / mass,
     );
 
-    // ── Apply gravity (WebGPU-Ocean: vel.y += -0.3 * dt) ────────────────
-    vel.y += GRAVITY * params.dt;
+    // ── Apply gravity: params.gravity is a positive magnitude in cells/τ² (converted from
+    // m/s² by src/fluid-engine/units.ts). This is the ONE place the downward sign is applied.
+    vel.y -= params.gravity * params.dt;
 
     // ── 3D cell coordinates ──────────────────────────────────────────────
     // Grid indexing: cell_idx = x * Ny * Nz + y * Nz + z

@@ -14,6 +14,7 @@ import { FluidControls, type FluidController } from '../fluid/FluidControls'
 import { readBgBrightness, writeBgBrightness } from '../../fluid-render/bgBrightness'
 import type { LabFluidEngine } from '../../lab/LabFluidEngine'
 import type { NamedComposition } from '../../composition/CompositionTable'
+import { G_STANDARD } from '../../fluid-engine/units'
 
 const MONO = '"IBM Plex Mono", monospace'
 
@@ -50,7 +51,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
   const [engine, setEngine] = useState<LabFluidEngine | null>(null)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
   const [selectedComp, setSelectedComp] = useState(0)
-  const [gravityVal, setGravityVal] = useState(0.3)
+  const [gravityVal, setGravityVal] = useState(G_STANDARD)   // m/s²
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [ballActive, setBallActive] = useState(false)
   const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)

@@ -26,6 +26,7 @@ const SEQUENCES = [
 const [mode, a, b, ...rest] = process.argv.slice(2)
 let url = 'http://localhost:5173/?tab=fluid&bench=1'
 for (const arg of [b, ...rest].filter(Boolean)) {
+  if (arg === "--legacy-gravity") continue
   const m = /^--url=(.+)$/.exec(arg)
   if (m) url = m[1]
 }
@@ -67,6 +68,12 @@ try {
   await page.bringToFront()
   await page.waitForFunction(() => window.__fluidBench?.page === 'fluid-test', null, { timeout: 30_000 })
   const adapter = await page.evaluate(async () => { const ad = await navigator.gpu.requestAdapter(); return ad ? { vendor: ad.info.vendor, arch: ad.info.architecture } : null })
+  // Pages built on the S1.1 clock need lockstep so "frame N" means N × 1/60 s of sim time.
+  // --legacy-gravity reproduces the pre-SI shader constant (0.3 cells/τ² = 0.3·dx/τ² m/s²)
+  // so a clock refactor can be checked for parity on its own.
+  const legacyG = process.argv.includes('--legacy-gravity') ? 0.3 * (3.63 / 64) * 576 : undefined
+  const configurable = await page.evaluate(() => { try { window.__fluidBench.configure({}); return true } catch { return false } })
+  if (configurable) await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, ...(g !== undefined ? { gravityMs2: g } : {}) }), legacyG)
   const sequences = []
   for (const seq of SEQUENCES) {
     await page.evaluate(() => { window.__fluidBench.setStepLimit(0); window.__fluidBench.action('removeBall') })
