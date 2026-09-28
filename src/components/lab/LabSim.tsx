@@ -49,7 +49,7 @@ export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
       ref={containerRef}
       // Left-click spawns a cluster of the selected material (parity with FLUID TEST);
       // OrbitControls still handles drag-to-orbit on the canvas beneath.
-      onPointerDown={(e) => { if (e.button === 0) engineRef.current?.spawnAtPointer(e.clientX, e.clientY) }}
+      onPointerDown={(e) => { if (e.button === 0) void engineRef.current?.spawnAtPointer(e.clientX, e.clientY) }}
       style={{ position: 'absolute', inset: 0, cursor: 'crosshair' }}
     >
       {!ready && (

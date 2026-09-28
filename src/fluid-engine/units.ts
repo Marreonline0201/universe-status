@@ -40,6 +40,9 @@ export const secondsToCode = (s: number) => s / TAU_S
 /** Particle velocity as stored by g2p ([0,1] lengths per τ) → m/s. */
 export const unitVelToMs = (v: number) => v * DOMAIN_L_M / TAU_S
 
+/** m/s → particle velocity units ([0,1] lengths per τ). */
+export const msToUnitVel = (v: number) => v * TAU_S / DOMAIN_L_M
+
 /** Split a sim-time interval into equal MPM substeps no longer than the legacy substep
  *  (the explicit EOS is only verified up to that Δt, so never round up past it). */
 export function mpmSubsteps(intervalS: number): { n: number; dtCode: number } {

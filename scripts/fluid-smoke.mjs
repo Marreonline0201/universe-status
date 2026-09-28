@@ -33,7 +33,8 @@ try {
   const btn = name => page.getByRole('button', { name, exact: true })
 
   const s0 = await st()
-  check(s0.count === 10000, `default scene has 10000 particles (got ${s0.count})`)
+  const n0 = s0.count
+  check(n0 >= 9500 && n0 <= 10500, `default scene ≈10k particles at rest packing (got ${n0})`)
   await page.waitForTimeout(500)
   const s1 = await st()
   check(s1.framesStepped > s0.framesStepped && s1.rafFrames > s0.rafFrames, `frames advance (${s0.framesStepped}→${s1.framesStepped} stepped)`)
@@ -43,8 +44,9 @@ try {
   const h1 = await hash(); await page.waitForTimeout(400); const h2 = await hash()
   check(h1 !== h2, 'canvas pixels change while the sim runs (not a frozen frame)')
 
-  await btn('+10K').click(); await page.waitForTimeout(200)
-  check((await st()).count === 20000, `+10K → 20000 particles (got ${(await st()).count})`)
+  await btn('+10K').click(); await page.waitForTimeout(400)
+  const n10 = (await st()).count
+  check(n10 - n0 >= 9000, `+10K pours ≈10k particles (${n0}→${n10})`)
 
   await btn('DROP BALL').click(); await page.waitForTimeout(200)
   check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')
@@ -54,13 +56,13 @@ try {
   const box = await canvas.boundingBox()
   const before = (await st()).count
   await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5)
-  await page.waitForTimeout(200)
+  await page.waitForTimeout(400)
   const after = (await st()).count
   check(after > before, `canvas click spawns a cluster (${before}→${after})`)
 
   await btn('RESET').click(); await page.waitForTimeout(300)
   const sr = await st()
-  check(sr.count === 10000, `RESET restores 10000 particles (got ${sr.count})`)
+  check(sr.count === n0, `RESET restores the default scene (${n0} particles, got ${sr.count})`)
 
   if (shot) await canvas.screenshot({ path: shot, type: 'jpeg', quality: 75 })
   check(errors.length === 0, `no unexpected console errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`)

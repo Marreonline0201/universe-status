@@ -56,7 +56,7 @@ export interface BenchTarget {
   /** Load a lab scenario (JSON text, company/lab/<exp>/scenario.json format). */
   loadScenario?(json: string): { warning: string | null }
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
-  action?(name: string): void
+  action?(name: string): void | Promise<unknown>
   /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
   configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean }): void
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
@@ -80,7 +80,9 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
 
     action(name: string, seed = 1) {
       if (!target.action) throw new Error(`${meta.page} has no scripted actions`)
-      withSeededRandom(seed, () => target.action!(name))
+      // Returned promise (async spawns) is awaited by page.evaluate; the seeded RNG is captured
+      // synchronously by the engine, so it stays in effect across the action's awaits.
+      return withSeededRandom(seed, () => target.action!(name))
     },
 
     /** Freeze the sim after this many stepped frames (Infinity = run freely). */

@@ -1,0 +1,77 @@
+// Volume spawner: fills regions with particles on a jittered cubic lattice at the solver's rest
+// packing, so new fluid starts at rest density instead of under-dense random scatter (the old
+// spawns placed ~1.4 particles/cell against a rest density of 4, so pressure stayed zero until
+// gravity crushed the fluid) — and never inside existing fluid (spawning into occupied cells
+// compresses it far past rest density and the EOS pressure throws it apart).
+//
+// Pure functions of their inputs + an RNG (Math.random by default; benches swap in a seeded
+// generator), all in the sim's tank-normalised [0,1]³ coordinates.
+import { GRID_RES } from './units'
+
+/** MPM rest packing: particles per grid cell at rest density (REST_DENSITY in p2g2.wgsl). */
+export const REST_PPC = 4
+
+/** Lattice spacing that puts exactly REST_PPC particles in each cell volume. */
+export const LATTICE_SPACING = 1 / (GRID_RES * Math.cbrt(REST_PPC))
+
+/** The fluid region: inside the 3-node wall band on every face (gridForces.wgsl BOUND). */
+export const TANK_MIN = 3 / GRID_RES
+export const TANK_MAX = 1 - 3 / GRID_RES
+
+export type Vec3 = [number, number, number]
+
+/** Grid cells (64³ keys) holding at least one particle — the "already fluid" test. */
+export function buildOccupancy(positions: Float32Array, n = positions.length / 3): Set<number> {
+  const occ = new Set<number>()
+  for (let i = 0; i < n; i++) occ.add(cellKey(positions[3 * i], positions[3 * i + 1], positions[3 * i + 2]))
+  return occ
+}
+
+export function cellKey(x: number, y: number, z: number): number {
+  const c = (v: number) => Math.min(GRID_RES - 1, Math.max(0, Math.floor(v * GRID_RES)))
+  return (c(x) * GRID_RES + c(y)) * GRID_RES + c(z)
+}
+
+export interface LatticeResult {
+  positions: Vec3[]
+  /** Lattice volume actually filled (whole spacings per axis), in [0,1]³ units. */
+  latticeVolume: number
+  skippedOutside: number
+  skippedOccupied: number
+}
+
+/** Fill the box [lo, lo+size) with lattice sites at rest packing, jittered by ±jitter·spacing.
+ *  The box is shrunk to a whole number of spacings per axis (≥ 1) so particle count and volume
+ *  agree exactly. Sites outside the fluid region are rejected (never clamped onto a wall), and
+ *  sites in `occupied` cells are skipped. */
+export function latticeBox(lo: Vec3, size: Vec3, opts: { occupied?: Set<number>; jitter?: number; rng?: () => number } = {}): LatticeResult {
+  const s = LATTICE_SPACING
+  const jitter = opts.jitter ?? 0.25
+  const rng = opts.rng ?? Math.random
+  const counts = size.map(v => Math.max(1, Math.round(v / s))) as Vec3
+  const positions: Vec3[] = []
+  let skippedOutside = 0, skippedOccupied = 0
+  for (let i = 0; i < counts[0]; i++) for (let j = 0; j < counts[1]; j++) for (let k = 0; k < counts[2]; k++) {
+    const p: Vec3 = [
+      lo[0] + (i + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+      lo[1] + (j + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+      lo[2] + (k + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+    ]
+    if (p.some(v => v < TANK_MIN || v > TANK_MAX)) { skippedOutside++; continue }
+    if (opts.occupied?.has(cellKey(p[0], p[1], p[2]))) { skippedOccupied++; continue }
+    positions.push(p)
+  }
+  return { positions, latticeVolume: counts[0] * counts[1] * counts[2] * s ** 3, skippedOutside, skippedOccupied }
+}
+
+/** A near-cubic block holding ≈`count` particles at rest packing (nx = nz = round(∛count),
+ *  ny chosen so nx·ny·nz is closest to count), centred on `center` but shifted — never shrunk —
+ *  to lie inside the fluid region. Returns [lo, size] with sizes an exact number of spacings. */
+export function cubeForCount(center: Vec3, count: number): { lo: Vec3; size: Vec3 } {
+  const maxN = Math.floor((TANK_MAX - TANK_MIN) / LATTICE_SPACING)
+  const nxz = Math.min(maxN, Math.max(1, Math.round(Math.cbrt(count))))
+  const ny = Math.min(maxN, Math.max(1, Math.round(count / (nxz * nxz))))
+  const size: Vec3 = [nxz * LATTICE_SPACING, ny * LATTICE_SPACING, nxz * LATTICE_SPACING]
+  const lo = center.map((c, a) => Math.min(TANK_MAX - size[a], Math.max(TANK_MIN, c - size[a] / 2))) as Vec3
+  return { lo, size }
+}

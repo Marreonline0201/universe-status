@@ -14,7 +14,8 @@ import { CompositionTable, type NamedComposition } from '../composition/Composit
 import type { ElementName } from '../composition/PropertyCalculator'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
-import { G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps } from './units'
+import { DOMAIN_L_M, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel } from './units'
+import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
 
 const DEFAULT_BALL_RADIUS = 0.1   // ~6 grid cells in MLS-MPM [0,1] space
@@ -251,20 +252,34 @@ export class FluidEngine {
     this.ssfrPipeline?.updateMaterialProps(this.compositionTable.getRenderData())
   }
 
-  /** FLUID TEST's default scene: a 10k-particle water block in the middle of the tank. */
+  /** FLUID TEST's default scene: a ~0.77 m block of water (≈10k particles at rest packing)
+   *  released in the middle of the tank. */
   loadDefaultScene() {
     if (!this.gpuSim || this.destroyed) return
     this.lastScenario = null
-    const particles: GpuParticle[] = []
-    for (let i = 0; i < 10000; i++) {
-      particles.push({
-        pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
-        vel: [0, 0, 0], composition_id: 0, temperature: 20, phase: 1,
-      })
-    }
-    this.gpuSim.spawnParticles(particles)
+    const { lo, size } = cubeForCount([0.5, 0.5, 0.5], 10000)
+    const block = latticeBox(lo, size)
+    this.gpuSim.spawnParticles(block.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: 0, temperature: 20, phase: 1 })))
     this.resetClock()
     this.uploadCompositions()
+  }
+
+  /** Cells currently holding fluid, from a fresh GPU readback (spawns must not overlap them). */
+  private async occupancyNow(): Promise<Set<number>> {
+    const s = await this.readParticleSample()
+    return s ? buildOccupancy(s.positions) : new Set()
+  }
+
+  /** Fill a block with one composition at rest packing, skipping cells already holding fluid.
+   *  `rng` must be captured synchronously by the caller (benches seed Math.random only around
+   *  the synchronous part of a call). Returns the number of particles actually added. */
+  private addBlock(block: { lo: Vec3; size: Vec3 }, occupied: Set<number>, rng: () => number, compId: number, temperature: number, phase: number): number {
+    if (!this.gpuSim) return 0
+    const r = latticeBox(block.lo, block.size, { occupied, rng })
+    if (r.positions.length > 0) {
+      this.gpuSim.addParticles(r.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: compId, temperature, phase })))
+    }
+    return r.positions.length
   }
 
   /** A new scene starts at sim time 0 (bench samples are indexed from here). */
@@ -293,23 +308,21 @@ export class FluidEngine {
     }
     this.uploadCompositions()
 
+    // Spawns fill blocks at rest packing; later spawns skip cells earlier ones already filled.
     const particles: GpuParticle[] = []
+    const occupied = new Set<number>()
     for (const sp of s.spawns) {
-      const spread = sp.spread ?? 0.1
       const temperature = sp.temperature ?? s.materials.find(m => m.name === sp.material)?.temperature ?? s.temperature ?? 20
       const compId = idByName.get(sp.material) ?? 0
-      for (let i = 0; i < sp.count && particles.length < 200_000; i++) {
-        particles.push({
-          pos: [
-            Math.min(0.98, Math.max(0.02, sp.center[0] + (Math.random() - 0.5) * 2 * spread)),
-            Math.min(0.98, Math.max(0.02, sp.center[1] + (Math.random() - 0.5) * 2 * spread)),
-            Math.min(0.98, Math.max(0.02, sp.center[2] + (Math.random() - 0.5) * 2 * spread)),
-          ],
-          vel: [0, 0, 0],
-          composition_id: compId,
-          temperature,
-          phase: sp.phase ?? 1,
-        })
+      const block = sp.box
+        ? { lo: sp.box.min.map(v => v / DOMAIN_L_M) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
+        : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000)
+      const vel = (sp.initialVelocity ?? [0, 0, 0]).map(v => msToUnitVel(v)) as Vec3
+      const r = latticeBox(block.lo, block.size, { occupied })
+      for (const pos of r.positions) {
+        if (particles.length >= 200_000) break
+        occupied.add(cellKey(pos[0], pos[1], pos[2]))
+        particles.push({ pos, vel: [...vel] as Vec3, composition_id: compId, temperature, phase: sp.phase ?? 1 })
       }
     }
     this.gpuSim.spawnParticles(particles)
@@ -505,17 +518,12 @@ export class FluidEngine {
     return id
   }
 
-  /** Spawn `count` particles of one composition uniformly inside an axis-aligned box ([0,1]³ coords). */
-  spawnCompositionInBox(compId: number, count: number, lo: [number, number, number], size: [number, number, number], temperature: number, phase: number) {
-    if (!this.gpuSim) return
-    const particles: GpuParticle[] = []
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        pos: [lo[0] + Math.random() * size[0], lo[1] + Math.random() * size[1], lo[2] + Math.random() * size[2]],
-        vel: [0, 0, 0], composition_id: compId, temperature, phase,
-      })
-    }
-    this.gpuSim.addParticles(particles)
+  /** Spawn ≈`count` particles of one composition as a block at rest packing around `center`
+   *  ([0,1]³ coords), skipping cells that already hold fluid. Resolves to the number added. */
+  async spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number, phase: number): Promise<number> {
+    const rng = Math.random
+    const occupied = await this.occupancyNow()
+    return this.addBlock(cubeForCount(center, count), occupied, rng, compId, temperature, phase)
   }
 
   /** Objective motion metrics from a GPU particle readback — positions in the sim's [0,1]³ space. */
@@ -584,39 +592,25 @@ export class FluidEngine {
     this.ssfrPipeline?.setBgBrightness(v)
   }
 
-  /** +N button: add `count` particles of the selected material in the center. */
-  spawnBatch(count: number) {
-    if (!this.gpuSim) return
-    const particles: GpuParticle[] = []
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        pos: [0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3, 0.35 + Math.random() * 0.3],
-        vel: [0, 0, 0], composition_id: this.selectedComposition, temperature: this.spawnTemperature, phase: 1,
-      })
-    }
-    this.gpuSim.addParticles(particles)
+  /** +N button: pour ≈`count` particles of the selected material as a block at rest packing,
+   *  centred horizontally and placed as high as the tank allows (skipping cells already full).
+   *  Resolves to the number of particles actually added. */
+  async spawnBatch(count: number): Promise<number> {
+    const rng = Math.random
+    const occupied = await this.occupancyNow()
+    return this.addBlock(cubeForCount([0.5, 1, 0.5], count), occupied, rng, this.selectedComposition, this.spawnTemperature, 1)
   }
 
-  /** Click-to-spawn: a 7×7×7 cluster of the selected material at a world point. */
-  spawnAt(worldPos: THREE.Vector3) {
-    if (!this.gpuSim) return
-    const [cx, cy, cz] = [worldPos.x, worldPos.y, worldPos.z]
-    const particles: GpuParticle[] = []
-    const spacing = 0.015, gridSize = 7, jitter = spacing * 0.25
-    for (let xi = 0; xi < gridSize; xi++) for (let yi = 0; yi < gridSize; yi++) for (let zi = 0; zi < gridSize; zi++) {
-      const x = cx + (xi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-      const y = cy + (yi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-      const z = cz + (zi - gridSize / 2) * spacing + (Math.random() - 0.5) * jitter
-      if (x > 0.02 && x < 0.98 && y > 0.02 && y < 0.98 && z > 0.02 && z < 0.98) {
-        particles.push({ pos: [x, y, z], vel: [0, 0, 0], composition_id: this.selectedComposition, temperature: this.spawnTemperature, phase: 1 })
-      }
-    }
-    if (particles.length > 0) this.gpuSim.addParticles(particles)
+  /** Click-to-spawn: a ≈512-particle block (~0.29 m) of the selected material at a world point. */
+  async spawnAt(worldPos: THREE.Vector3): Promise<number> {
+    const rng = Math.random
+    const occupied = await this.occupancyNow()
+    return this.addBlock(cubeForCount([worldPos.x, worldPos.y, worldPos.z], 512), occupied, rng, this.selectedComposition, this.spawnTemperature, 1)
   }
 
-  /** Raycast a screen click against the glass box and spawn there (kept 0.05 from the walls). */
-  spawnAtPointer(clientX: number, clientY: number) {
-    if (!this.camera || !this.glassBox) return
+  /** Raycast a screen click against the glass box and spawn a block there. */
+  async spawnAtPointer(clientX: number, clientY: number): Promise<number> {
+    if (!this.camera || !this.glassBox) return 0
     const rect = this.container.getBoundingClientRect()
     const ndc = new THREE.Vector2(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -624,9 +618,8 @@ export class FluidEngine {
     )
     this.raycaster.setFromCamera(ndc, this.camera)
     const hit = this.raycaster.intersectObject(this.glassBox, false)[0]
-    if (!hit) return
-    const clamp = (v: number) => Math.max(0.05, Math.min(0.95, v))
-    this.spawnAt(new THREE.Vector3(clamp(hit.point.x), clamp(hit.point.y), clamp(hit.point.z)))
+    if (!hit) return 0
+    return this.spawnAt(hit.point)
   }
 
   dropBall() {

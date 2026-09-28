@@ -50,8 +50,8 @@ export function FluidTest() {
     syncCount()
   }, [syncCount])
 
-  const spawnBatch = useCallback((count: number) => {
-    engineRef.current?.spawnBatch(count)
+  const spawnBatch = useCallback(async (count: number) => {
+    await engineRef.current?.spawnBatch(count)
     syncCount()
   }, [syncCount])
 
@@ -99,12 +99,12 @@ export function FluidTest() {
 
     const compId = engine.addComposition(result.name, result.formula, result.elements, result.temperature)
     const phase = result.state === 'solid' ? 0 : result.state === 'liquid' ? 1 : 2
-    engine.spawnCompositionInBox(compId, 3000, [0.3, 0.6, 0.3], [0.4, 0.3, 0.4], result.temperature, phase)
+    const added = await engine.spawnCompositionBlock(compId, 3000, [0.5, 0.75, 0.5], result.temperature, phase)
     syncCount()
     setCompositions(engine.getCompositions())
     setSelectedComposition(compId)
 
-    return `Spawned 3000 ${result.name} (${result.formula}) at ${result.temperature} C [${result.state}]`
+    return `Spawned ${added} ${result.name} (${result.formula}) at ${result.temperature} C [${result.state}]`
   }, [syncCount])
 
   // ── AI: Toggle auto-experiment ────────────────────────────────────────────
@@ -162,11 +162,11 @@ export function FluidTest() {
             return { warning: parsed.warning }
           },
           action: (name) => {
-            if (name === 'reset') resetSim()
-            else if (name === 'batch10k') spawnBatch(10000)
-            else if (name === 'dropBall') dropBall()
-            else if (name === 'removeBall') removeBall()
-            else throw new Error(`unknown action ${name}`)
+            if (name === 'reset') return resetSim()
+            if (name === 'batch10k') return spawnBatch(10000)
+            if (name === 'dropBall') return dropBall()
+            if (name === 'removeBall') return removeBall()
+            throw new Error(`unknown action ${name}`)
           },
         }), { page: 'fluid-test' })
       }
@@ -274,7 +274,7 @@ export function FluidTest() {
         <div
           ref={canvasRef}
           // Left-click spawns a cluster of the selected material; OrbitControls still orbits on drag.
-          onPointerDown={(e) => { if (e.button === 0) engineRef.current?.spawnAtPointer(e.clientX, e.clientY); syncCount() }}
+          onPointerDown={(e) => { if (e.button === 0) void engineRef.current?.spawnAtPointer(e.clientX, e.clientY).then(syncCount) }}
           style={{
             flex: 1,
             minWidth: 0,

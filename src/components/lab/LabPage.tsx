@@ -151,7 +151,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     compositions,
     selectedComposition: selectedComp,
     setSelectedComposition: (id) => { engine.setSelectedComposition(id); setSelectedComp(id) },
-    spawnBatch: (n) => engine.spawnBatch(n),
+    spawnBatch: (n) => { void engine.spawnBatch(n) },
     ballActive,
     dropBall: () => { engine.dropBall(); setBallActive(true) },
     removeBall: () => { engine.removeBall(); setBallActive(false) },
