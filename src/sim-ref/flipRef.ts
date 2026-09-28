@@ -117,6 +117,8 @@ export class FlipRef {
   /** Cell labels and pressure (Pa), in layout slots. */
   readonly label: Uint8Array
   readonly pressure: Float64Array
+  /** Right-hand side −(∇·u*)/1 of the last solve per LIQUID cell slot, 1/s (0 elsewhere; kernel-parity tests). */
+  readonly rhs: Float64Array
   lastSolve: SolveStats | null = null
 
   constructor(layout: GridLayout, opts: FlipRefOptions = {}) {
@@ -136,6 +138,7 @@ export class FlipRef {
     this.pressureMaxIterations = opts.pressureMaxIterations ?? 20000
     this.label = new Uint8Array(layout.size)
     this.pressure = new Float64Array(layout.size)
+    this.rhs = new Float64Array(layout.size)
   }
 
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
@@ -206,6 +209,8 @@ export class FlipRef {
       b[r] = -div / L.dx
     }
     for (let r = 0; r < n; r++) stats.rhsInf = Math.max(stats.rhsInf, Math.abs(b[r]))
+    this.rhs.fill(0)
+    for (let r = 0; r < n; r++) this.rhs[cells[r]] = b[r]
     if (stats.closed) {           // consistent singular system: remove the constant from the right-hand side
       let mean = 0
       for (let r = 0; r < n; r++) mean += b[r]

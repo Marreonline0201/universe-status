@@ -19,7 +19,7 @@ struct FlipParams {
   lRef: f32,               // m, presentation length unit (1 world unit)
   tauS: f32,               // s, presentation time unit
   size: u32,               // padded slots per grid = (nx+2)(ny+2)(nz+2)
-  _pad: u32,
+  rho: f32,                // liquid density for the projection, kg/m³ (uniform until S3.5)
 }
 
 @group(0) @binding(0) var<uniform> P: FlipParams;
@@ -29,10 +29,12 @@ const SOLID: u32 = 1u;
 const OPEN: u32 = 2u;
 const GHOST: u32 = 3u;
 
-// Diagnostics counters (u32): [0] wall clamps, [1] unset-face reads, [2] OPEN faces met (reserved type).
+// Diagnostics counters (u32): [0] wall clamps, [1] unset-face reads, [2] OPEN faces met (reserved type),
+// [3] non-solid faces of liquid cells without u* when the divergence was formed.
 const DIAG_WALL_CLAMPS: u32 = 0u;
 const DIAG_UNSET_READS: u32 = 1u;
 const DIAG_OPEN_FACES: u32 = 2u;
+const DIAG_UNSET_DIVERGENCE: u32 = 3u;
 
 fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
   if (i < 0) { return 0; }
@@ -75,6 +77,15 @@ fn inFaceRange(a: u32, c: vec3<i32>) -> bool {
   var lo = vec3<i32>(-1);
   lo[a] = 0;
   return all(c >= lo) && all(c <= P.n);
+}
+
+// Pressure-solver cell layout (PoissonSolver.ts level 0): padded, x fastest, NO ring — the pressure field is rebuilt
+// every substep, so it needs no window-relative storage; kernels translate logical cells to this index.
+const LABEL_AIR: u32 = 0u;
+const LABEL_FLUID: u32 = 1u;
+const LABEL_SOLID: u32 = 2u;
+fn linIdx(c: vec3<i32>) -> u32 {
+  return u32((c.x + 1) + (P.n.x + 2) * ((c.y + 1) + (P.n.y + 2) * (c.z + 1)));
 }
 
 fn encodeFixed(x: f32) -> i32 { return i32(round(x)); }

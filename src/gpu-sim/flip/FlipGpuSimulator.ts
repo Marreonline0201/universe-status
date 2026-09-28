@@ -1,7 +1,9 @@
 /// <reference types="@webgpu/types" />
 // FlipGpuSimulator — the incompressible APIC-MAC liquid solver on WebGPU (FINAL-PLAN S3).
-// Stage implemented: S3.1a transfers (faceScatter → gridUpdate → extrapolate ×2 → g2pMac + RK2), diffed kernel by
-// kernel against the f64 CPU reference src/sim-ref/flipRef.ts (gate scripts/fluid-gates/s31a-gpu.mjs).
+// Stages implemented, each diffed kernel by kernel against the f64 CPU reference src/sim-ref/flipRef.ts:
+//   S3.1a transfers: faceScatter → gridUpdate → extrapolate ×2 → g2pMac + RK2          (gate s31a-gpu.mjs)
+//   S3.1b projection (`projection: true`, create()): labelClear → labelParticles (voxel free surface) → divergence
+//         → PoissonSolver (JPCG until S3.3) → project, between gridUpdate and extrapolate  (gate s31b-gpu.mjs)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -18,6 +20,11 @@ import gridUpdateWGSL from './shaders/gridUpdate.wgsl?raw'
 import extrapolateWGSL from './shaders/extrapolate.wgsl?raw'
 import g2pMacWGSL from './shaders/g2pMac.wgsl?raw'
 import presentWGSL from './shaders/present.wgsl?raw'
+import labelClearWGSL from './shaders/labelClear.wgsl?raw'
+import labelParticlesWGSL from './shaders/labelParticles.wgsl?raw'
+import divergenceWGSL from './shaders/divergence.wgsl?raw'
+import projectWGSL from './shaders/project.wgsl?raw'
+import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
 export const MASS_SCALE = 2 ** 24
@@ -51,6 +58,16 @@ export interface FlipSimOptions {
    *  half a quantum per add (s31a P1: single-word momentum at 2^19 left c 1.4e-4 relative off at interior
    *  particles). false = one i32 per sum (fewer atomics; kept for the cost measurement). */
   preciseP2G?: boolean
+  /** Pressure projection (S3.1b). Requires FlipGpuSimulator.create(). */
+  projection?: boolean
+  /** Liquid density, kg/m³ (uniform until S3.5). Default water at 20 °C (NIST). */
+  density?: number
+  /** Pressure solve tolerance ‖∇·u‖∞, 1/s (FINAL-PLAN §5.3 ε_div = 1e-2). */
+  pressureTolerance?: number
+  /** Encoded iteration cap of the pressure solve (a cap hit is counted in the solver's sticky faults). */
+  pressureCap?: number
+  /** 'jpcg' (correctness baseline, S3.1b) or 'mgpcg' (S3.3). */
+  solverMethod?: SolverMethod
 }
 
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
@@ -70,9 +87,13 @@ export interface FlipParticleInit {
   temperatureC: number
 }
 
-export interface FlipDiagnostics { wallClamps: number; unsetFaceReads: number; openFaces: number }
+export interface FlipDiagnostics {
+  wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number
+  /** Pressure solver sticky faults since the last reset (0 without projection). */
+  solves: number; capHits: number; breakdowns: number; maxIterations: number
+}
 
-type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present'
+type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -84,6 +105,15 @@ export class FlipGpuSimulator {
   readonly apic: boolean
   readonly extrapolationLayers: number
   readonly preciseP2G: boolean
+  readonly projection: boolean
+  readonly density: number
+  readonly pressureTolerance: number
+  readonly pressureCap: number
+  readonly solverMethod: SolverMethod
+  /** Pressure solver (projection only; created by create()). Its x vector is the pressure in Pa, padded layout. */
+  solver: PoissonSolver | null = null
+  private solveCfg: SolveConfig | null = null
+  private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
   private readonly wallEps: number
@@ -107,7 +137,8 @@ export class FlipGpuSimulator {
   readonly diagBuf: GPUBuffer
   private readonly paramsBuf: GPUBuffer
 
-  private readonly pipelines: Record<Kernel, GPUComputePipeline>
+  private readonly pipelines: Partial<Record<Kernel, GPUComputePipeline>>
+  private projBg: { labelClear: GPUBindGroup; labelParticles: GPUBindGroup; divergence: GPUBindGroup; project: GPUBindGroup } | null = null
   private readonly bg: {
     faceScatter: GPUBindGroup
     gridUpdate: GPUBindGroup
@@ -124,6 +155,11 @@ export class FlipGpuSimulator {
     this.apic = opts.apic ?? true
     this.extrapolationLayers = opts.extrapolationLayers ?? 2
     this.preciseP2G = opts.preciseP2G ?? true
+    this.projection = opts.projection ?? false
+    this.density = opts.density ?? 998.2072
+    this.pressureTolerance = opts.pressureTolerance ?? 1e-2
+    this.pressureCap = opts.pressureCap ?? 400
+    this.solverMethod = opts.solverMethod ?? 'jpcg'
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -164,7 +200,7 @@ export class FlipGpuSimulator {
       present: pipe('present', presentWGSL),
     }
     const group = (k: Kernel, bufs: GPUBuffer[]) => device.createBindGroup({
-      label: `flip.${k}`, layout: this.pipelines[k].getBindGroupLayout(0),
+      label: `flip.${k}`, layout: this.pipelines[k]!.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
     })
     const [uA, uB] = this.uBuf, [vA, vB] = this.validBuf
@@ -182,6 +218,39 @@ export class FlipGpuSimulator {
       present: group('present', [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.presentationBuffer]),
     }
     this.resetDiagnostics()
+  }
+
+  /** Constructor + (projection) the pressure solver and the projection kernels. */
+  static async create(device: GPUDevice, opts: FlipSimOptions): Promise<FlipGpuSimulator> {
+    const sim = new FlipGpuSimulator(device, opts)
+    if (sim.projection) await sim.initProjection()
+    return sim
+  }
+
+  private async initProjection(): Promise<void> {
+    const L = this.layout, device = this.device
+    const solver = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.pressure' })
+    this.solver = solver
+    this.solveCfg = solver.createSolveConfig({ criterion: 'inf', tol: this.pressureTolerance, cap: this.pressureCap })
+    const pipe = (name: Kernel, code: string) => device.createComputePipeline({
+      label: `flip.${name}`, layout: 'auto',
+      compute: { module: device.createShaderModule({ label: `flip.${name}`, code: `${commonWGSL}\n${code}` }), entryPoint: 'main' },
+    })
+    this.pipelines.labelClear = pipe('labelClear', labelClearWGSL)
+    this.pipelines.labelParticles = pipe('labelParticles', labelParticlesWGSL)
+    this.pipelines.divergence = pipe('divergence', divergenceWGSL)
+    this.pipelines.project = pipe('project', projectWGSL)
+    const group = (k: Kernel, bufs: GPUBuffer[]) => device.createBindGroup({
+      label: `flip.${k}`, layout: this.pipelines[k]!.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
+    })
+    const sb = solver.buffers, [uA] = this.uBuf, [vA] = this.validBuf
+    this.projBg = {
+      labelClear: group('labelClear', [sb.labels]),
+      labelParticles: group('labelParticles', [this.posBuf, sb.labels]),
+      divergence: group('divergence', [this.faceTypeBuf, uA, vA, sb.labels, sb.rhs, this.diagBuf]),
+      project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA]),
+    }
   }
 
   get particleCount(): number { return this.count }
@@ -222,15 +291,20 @@ export class FlipGpuSimulator {
     f.set(this.gravity, 8); f[11] = L.dx
     f.set(L.extent, 12); f[15] = this.dt
     f[16] = 1 / this.massUnit; f[17] = MASS_SCALE; f[18] = MOM_SCALE; f[19] = this.wallEps
-    f[20] = this.lRef; f[21] = this.tauS; u[22] = L.size; u[23] = 0
+    f[20] = this.lRef; f[21] = this.tauS; u[22] = L.size; f[23] = this.density
     this.device.queue.writeBuffer(this.paramsBuf, 0, b)
+    // a_f = Δt/(ρ·dx²) on every face (uniform until S3.5); rewritten only when Δt changes
+    const coef = this.dt / (this.density * L.dx * L.dx)
+    if (this.solver && coef !== this.coefFor) { this.solver.writeUnitCoefficients(coef); this.coefFor = coef }
   }
 
   // ── kernels (each encodable alone, for the kernel-by-kernel self-test) ─────────────────────────────────────
 
   private dispatch(encoder: GPUCommandEncoder, k: Kernel, bg: GPUBindGroup, threads: number, wg: number): void {
+    const pipeline = this.pipelines[k]
+    if (!pipeline) throw new Error(`FlipGpuSimulator: kernel ${k} not created`)
     const pass = encoder.beginComputePass({ label: `flip.${k}` })
-    pass.setPipeline(this.pipelines[k])
+    pass.setPipeline(pipeline)
     pass.setBindGroup(0, bg)
     pass.dispatchWorkgroups(Math.max(1, Math.ceil(threads / wg)))
     pass.end()
@@ -253,6 +327,37 @@ export class FlipGpuSimulator {
   encodeG2P(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'g2pMac', this.bg.g2pMac[this.finalVelocityBuffer], this.count, 64)
   }
+  /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
+  encodeProjection(encoder: GPUCommandEncoder): void {
+    this.encodeLabels(encoder)
+    this.encodeDivergence(encoder)
+    this.encodePressureSolve(encoder)
+    this.encodeProject(encoder)
+  }
+
+  private proj() {
+    if (!this.projBg || !this.solver || !this.solveCfg) throw new Error('FlipGpuSimulator: projection not initialised (use FlipGpuSimulator.create)')
+    return { bg: this.projBg, solver: this.solver, cfg: this.solveCfg, cells: this.layout.nx * this.layout.ny * this.layout.nz }
+  }
+  encodeLabels(encoder: GPUCommandEncoder): void {
+    const { bg, cells } = this.proj()
+    this.dispatch(encoder, 'labelClear', bg.labelClear, cells, 256)
+    if (this.count > 0) this.dispatch(encoder, 'labelParticles', bg.labelParticles, this.count, 64)
+  }
+  encodeDivergence(encoder: GPUCommandEncoder): void {
+    const { bg, cells } = this.proj()
+    this.dispatch(encoder, 'divergence', bg.divergence, cells, 256)
+  }
+  encodePressureSolve(encoder: GPUCommandEncoder, cfg?: SolveConfig): void {
+    const p = this.proj()
+    p.solver.encodePrepare(encoder)
+    p.solver.encodeSolve(encoder, cfg ?? p.cfg, { warmStart: true })
+  }
+  encodeProject(encoder: GPUCommandEncoder): void {
+    const { bg } = this.proj()
+    this.dispatch(encoder, 'project', bg.project, 3 * this.layout.size, 256)
+  }
+
   encodePresent(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'present', this.bg.present, this.count, 64)
   }
@@ -263,6 +368,7 @@ export class FlipGpuSimulator {
     for (let s = 0; s < substeps; s++) {
       this.encodeScatter(encoder)
       this.encodeGridUpdate(encoder)
+      if (this.projection) this.encodeProjection(encoder)
       this.encodeExtrapolate(encoder)
       this.encodeG2P(encoder)
     }
@@ -314,15 +420,26 @@ export class FlipGpuSimulator {
     if (data.valid) q.writeBuffer(this.validBuf[which], 0, data.valid)
   }
 
-  resetDiagnostics(): void { this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(4)) }
+  resetDiagnostics(): void {
+    this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(4))
+    if (this.solver) this.device.queue.writeBuffer(this.solver.buffers.faults, 0, new Uint32Array(4))
+  }
 
   async readDiagnostics(): Promise<FlipDiagnostics> {
     const d = new Uint32Array(await this.readBuffer(this.diagBuf, 16))
-    return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2] }
+    const f = this.solver ? await this.solver.readFaults() : null
+    return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2], unsetDivergenceFaces: d[3], solves: f?.solves ?? 0, capHits: f?.capHits ?? 0, breakdowns: f?.breakdowns ?? 0, maxIterations: f?.maxIterations ?? 0 }
+  }
+
+  /** Pressure (Pa) and labels in the solver's padded layout: index (i+1) + (nx+2)·((j+1) + (ny+2)·(k+1)). */
+  async readPressure(): Promise<{ pressure: Float32Array; labels: Uint32Array }> {
+    if (!this.solver) throw new Error('no projection')
+    return { pressure: await this.solver.readVector('x'), labels: await this.solver.readLabels(0) }
   }
 
   destroy(): void {
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
+    this.solver?.destroy()
   }
 }

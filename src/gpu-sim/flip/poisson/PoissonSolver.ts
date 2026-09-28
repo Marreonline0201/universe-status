@@ -239,7 +239,7 @@ export class PoissonSolver {
       x: mk('x', p0 * 4, S | CS | CD),
       d: mk('d', p0 * 4, S | CS | CD),
       q: mk('q', p0 * 4, S | CS),
-      rhs: mk('rhs', p0 * 4, S | CD),
+      rhs: mk('rhs', p0 * 4, S | CS | CD),   // COPY_SRC: kernel-parity tests read the GPU-written rhs
       mgB: mk('mgB', total * 4, S | CS | CD),
       mgUA: mk('mgUA', total * 4, S | CS),
       mgUB: mk('mgUB', total * 4, S | CS),
