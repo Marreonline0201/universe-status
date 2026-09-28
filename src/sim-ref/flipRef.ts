@@ -67,10 +67,35 @@ export interface FlipRefOptions {
   pressureTolerance?: number
   /** Pressure solve iteration cap (default 20000; a cap hit is recorded, never hidden). */
   pressureMaxIterations?: number
+  /** Kugelstadt et al. 2019 density projection before P2G (S3.2). Default false. */
+  densityProjection?: boolean
+  /** ψ solve tolerance, ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3; the reference default solves tight). */
+  psiTolerance?: number
 }
 
 /** Cell labels for the projection (a cell holding at least one particle is LIQUID; the ghost layer is SOLID). */
 export const CellLabel = { AIR: 0, LIQUID: 1, SOLID: 2 } as const
+
+export interface DensityStats extends SolveStats {
+  /** Range of the compensated volume fraction f̃ over LIQUID cells before the clamp. */
+  fMin: number
+  fMax: number
+  /** Potential-energy change of the position correction, J (logged for INV′). */
+  deltaPotential: number
+  /** Largest particle displacement, m. */
+  maxMove: number
+}
+
+interface LiquidSystem {
+  n: number
+  cells: number[]
+  coords: [number, number, number][]
+  diag: Float64Array
+  nbr: Int32Array
+  a: number
+  closed: boolean
+  airNeighbour: Uint8Array
+}
 
 export interface SolveStats {
   liquidCells: number
@@ -91,6 +116,8 @@ export interface RefDiagnostics {
   unsetFaceReads: number
   /** Non-solid faces of LIQUID cells that had no u* when the divergence was formed (must stay 0). */
   unsetDivergenceFaces: number
+  /** Particles pushed back inside the window after the density correction. */
+  densityClamps: number
 }
 
 /** Positions are kept this fraction of a cell inside the window (a particle exactly on the far wall would put its
@@ -109,7 +136,15 @@ export class FlipRef {
   readonly u: [Float64Array, Float64Array, Float64Array]
   /** 1 where u holds a velocity (fluid face with mass, extrapolated face, or solid face). */
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
-  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0 }
+  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0 }
+  readonly densityProjection: boolean
+  readonly psiTolerance: number
+  /** Density projection state (layout slots): raw volume fraction, compensated f̃, ψ̂ and the face displacements (m). */
+  readonly volumeFraction: Float64Array
+  readonly fCompensated: Float64Array
+  readonly psi: Float64Array
+  readonly displacement: [Float64Array, Float64Array, Float64Array]
+  lastDensity: DensityStats | null = null
   readonly projection: boolean
   density: number
   readonly pressureTolerance: number
@@ -139,10 +174,17 @@ export class FlipRef {
     this.label = new Uint8Array(layout.size)
     this.pressure = new Float64Array(layout.size)
     this.rhs = new Float64Array(layout.size)
+    this.densityProjection = opts.densityProjection ?? false
+    this.psiTolerance = opts.psiTolerance ?? 1e-9
+    this.volumeFraction = new Float64Array(layout.size)
+    this.fCompensated = new Float64Array(layout.size)
+    this.psi = new Float64Array(layout.size)
+    this.displacement = [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
   }
 
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
   step(p: RefParticles, dt: number): void {
+    if (this.densityProjection) this.densityCorrect(p)
     this.p2g(p)
     this.gridUpdate(dt)
     if (this.projection) {
@@ -172,97 +214,152 @@ export class FlipRef {
   /** Pressure Poisson solve on the LIQUID cells: Σ_f a·(p_c − p_nbr) = −(∇·u*)_c over non-solid faces, a = Δt/(ρ·dx²),
    *  p_nbr = 0 in AIR. Jacobi-preconditioned CG to ‖r‖∞ ≤ pressureTolerance. */
   solvePressure(dt: number): SolveStats {
-    const L = this.layout, lab = this.label, pr = this.pressure
-    pr.fill(0)
+    const L = this.layout
+    const sys = this.liquidSystem(dt / (this.density * L.dx * L.dx))
+    const b = new Float64Array(sys.n)
+    for (let r = 0; r < sys.n; r++) {
+      const [i, j, k] = sys.coords[r]
+      let div = 0
+      for (const ax of AXES) {
+        for (const side of [0, 1] as const) {
+          const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
+          if (this.faceType[ax][fs] !== FaceType.SOLID && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
+          div += side === 1 ? this.u[ax][fs] : -this.u[ax][fs]
+        }
+      }
+      b[r] = -div / L.dx
+    }
+    this.rhs.fill(0)
+    for (let r = 0; r < sys.n; r++) this.rhs[sys.cells[r]] = b[r]
+    const stats = solveSystem(sys, b, this.pressureTolerance, this.pressureMaxIterations, this.pressure)
+    this.lastSolve = stats
+    return stats
+  }
+
+  /** Rows of the 7-point operator on the LIQUID cells with face coefficient `a` (SOLID faces dropped, AIR = Dirichlet 0). */
+  private liquidSystem(a: number): LiquidSystem {
+    const L = this.layout, lab = this.label
     const cells: number[] = [], coords: [number, number, number][] = []
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const s = L.idx(i, j, k)
       if (lab[s] === CellLabel.LIQUID) { cells.push(s); coords.push([i, j, k]) }
     }
     const n = cells.length
-    const stats: SolveStats = { liquidCells: n, iterations: 0, residualInf: 0, rhsInf: 0, capHit: false, closed: true }
-    if (n === 0) { this.lastSolve = stats; return stats }
-    const a = dt / (this.density * L.dx * L.dx)
     const row = new Map<number, number>()
     cells.forEach((s, r) => row.set(s, r))
-    // per row: diagonal and liquid neighbour rows (faces that are SOLID are dropped)
-    const diag = new Float64Array(n), nbr = new Int32Array(6 * n).fill(-1), b = new Float64Array(n)
+    const diag = new Float64Array(n), nbr = new Int32Array(6 * n).fill(-1), airNeighbour = new Uint8Array(n)
+    let closed = n > 0
     for (let r = 0; r < n; r++) {
       const [i, j, k] = coords[r]
-      let d = 0, div = 0
+      let d = 0
       for (const ax of AXES) {
         for (const side of [0, 1] as const) {
-          const fi = i + (ax === 0 ? side : 0), fj = j + (ax === 1 ? side : 0), fk = k + (ax === 2 ? side : 0)
-          const fs = L.idx(fi, fj, fk)
-          const uf = this.u[ax][fs]
-          if (this.faceType[ax][fs] !== FaceType.SOLID && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
-          div += side === 1 ? uf : -uf
+          const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
           if (this.faceType[ax][fs] === FaceType.SOLID) continue
           d += a
-          const ni = i + (ax === 0 ? 2 * side - 1 : 0), nj = j + (ax === 1 ? 2 * side - 1 : 0), nk = k + (ax === 2 ? 2 * side - 1 : 0)
-          const ns = L.idx(ni, nj, nk)
+          const ns = L.idx(i + (ax === 0 ? 2 * side - 1 : 0), j + (ax === 1 ? 2 * side - 1 : 0), k + (ax === 2 ? 2 * side - 1 : 0))
           if (lab[ns] === CellLabel.LIQUID) nbr[6 * r + 2 * ax + side] = row.get(ns)!
-          else if (lab[ns] === CellLabel.AIR) stats.closed = false
+          else if (lab[ns] === CellLabel.AIR) { closed = false; airNeighbour[r] = 1 }
         }
       }
       diag[r] = d
-      b[r] = -div / L.dx
     }
-    for (let r = 0; r < n; r++) stats.rhsInf = Math.max(stats.rhsInf, Math.abs(b[r]))
-    this.rhs.fill(0)
-    for (let r = 0; r < n; r++) this.rhs[cells[r]] = b[r]
-    if (stats.closed) {           // consistent singular system: remove the constant from the right-hand side
-      let mean = 0
-      for (let r = 0; r < n; r++) mean += b[r]
-      mean /= n
-      for (let r = 0; r < n; r++) b[r] -= mean
-    }
-    const Ap = (x: Float64Array, out: Float64Array) => {
-      for (let r = 0; r < n; r++) {
-        let v = diag[r] * x[r]
-        for (let f = 0; f < 6; f++) { const c = nbr[6 * r + f]; if (c >= 0) v -= a * x[c] }
-        out[r] = v
+    return { n, cells, coords, diag, nbr, a, closed, airNeighbour }
+  }
+
+  /** Kugelstadt et al. 2019 density projection (FINAL-PLAN §4.1, §5.2 steps 2–5), before P2G:
+   *  f = Σ V_p·N(x_p − x_c)/dx³ with the cell-centred trilinear N (their eq. 12), plus the solid-side kernel volume of a
+   *  rest-density fill f_solid = 1 − Π_axes (1 − 0.125·[solid neighbours on that axis]) (design C §2.4 [DERIVED]);
+   *  f̃ = clamp(f, 0.5, 1.5) and ≥ 1 in cells with an AIR neighbour; solve ∇²ψ = 1 − f̃ with ψ = 0 in AIR and Neumann at
+   *  solids — in the solver's positive form Σ(ψ̂_c − ψ̂_nbr) = f̃ − 1 with ψ̂ = ψ/dx² — then move every particle by
+   *  δx = −∇ψ (trilinear from the face values −dx·(ψ̂₊ − ψ̂₋)), WITHOUT changing its velocity. */
+  densityCorrect(p: RefParticles): DensityStats {
+    const L = this.layout, h = L.dx
+    this.classify(p)
+    // volume fraction on cell centres (logical −1 … n; ghost cells collect the mass that is lost across the walls)
+    const f = this.volumeFraction
+    f.fill(0)
+    for (let q = 0; q < p.n; q++) {
+      const vp = p.mass[q] / this.density / (h * h * h)
+      const fx = p.pos[3 * q] / h - 0.5, fy = p.pos[3 * q + 1] / h - 0.5, fz = p.pos[3 * q + 2] / h - 0.5
+      const i0 = Math.floor(fx), j0 = Math.floor(fy), k0 = Math.floor(fz), tx = fx - i0, ty = fy - j0, tz = fz - k0
+      for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
+        const w = (di ? tx : 1 - tx) * (dj ? ty : 1 - ty) * (dk ? tz : 1 - tz)
+        if (w !== 0) f[L.idx(i0 + di, j0 + dj, k0 + dk)] += vp * w
       }
     }
-    // Jacobi-preconditioned conjugate gradient
-    const x = new Float64Array(n), res = b.slice(), z = new Float64Array(n), d = new Float64Array(n), q = new Float64Array(n)
-    const inf = (v: Float64Array) => { let m = 0; for (let r = 0; r < n; r++) m = Math.max(m, Math.abs(v[r])); return m }
-    for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
-    d.set(z)
-    let rz = 0
-    for (let r = 0; r < n; r++) rz += res[r] * z[r]
-    let it = 0
-    while (inf(res) > this.pressureTolerance && it < this.pressureMaxIterations) {
-      Ap(d, q)
-      let dq = 0
-      for (let r = 0; r < n; r++) dq += d[r] * q[r]
-      if (dq <= 0) break
-      const alpha = rz / dq
-      for (let r = 0; r < n; r++) { x[r] += alpha * d[r]; res[r] -= alpha * q[r] }
-      for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
-      let rzNew = 0
-      for (let r = 0; r < n; r++) rzNew += res[r] * z[r]
-      const beta = rzNew / rz
-      rz = rzNew
-      for (let r = 0; r < n; r++) d[r] = z[r] + beta * d[r]
-      it++
+    const sys = this.liquidSystem(1)
+    const b = new Float64Array(sys.n)
+    let fMin = Infinity, fMax = -Infinity
+    for (let r = 0; r < sys.n; r++) {
+      const [i, j, k] = sys.coords[r], c = sys.cells[r]
+      let keep = 1
+      for (const ax of AXES) {
+        let solidNbrs = 0
+        for (const side of [0, 1] as const) {
+          const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
+          if (this.faceType[ax][fs] === FaceType.SOLID) solidNbrs++
+        }
+        keep *= 1 - 0.125 * solidNbrs
+      }
+      let ft = f[c] + (1 - keep)
+      this.fCompensated[c] = ft
+      fMin = Math.min(fMin, ft); fMax = Math.max(fMax, ft)
+      ft = Math.min(1.5, Math.max(0.5, ft))
+      if (sys.airNeighbour[r]) ft = Math.max(ft, 1)
+      b[r] = ft - 1
     }
-    if (stats.closed) {           // pin the mean: pressure is defined up to a constant
-      let mean = 0
-      for (let r = 0; r < n; r++) mean += x[r]
-      mean /= n
-      for (let r = 0; r < n; r++) x[r] -= mean
+    const psi = this.psi
+    const stats = solveSystem(sys, b, this.psiTolerance, this.pressureMaxIterations, psi)
+    // face displacements δx = −dx·(ψ̂₊ − ψ̂₋) on non-SOLID faces touching LIQUID (ψ̂ = 0 in AIR), 0 elsewhere
+    const lab = this.label
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      const t = this.faceType[a], dsp = this.displacement[a]
+      dsp.fill(0)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k)
+        if (t[s] === FaceType.SOLID) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        const pp = lab[s] === CellLabel.LIQUID ? psi[s] : 0, pm = lab[sm] === CellLabel.LIQUID ? psi[sm] : 0
+        if (lab[s] === CellLabel.LIQUID || lab[sm] === CellLabel.LIQUID) dsp[s] = -h * (pp - pm)
+      }
     }
-    // true residual, recomputed from scratch
-    Ap(x, q)
-    let rInf = 0
-    for (let r = 0; r < n; r++) rInf = Math.max(rInf, Math.abs(b[r] - q[r]))
-    for (let r = 0; r < n; r++) pr[cells[r]] = x[r]
-    stats.iterations = it
-    stats.residualInf = rInf
-    stats.capHit = rInf > this.pressureTolerance
-    this.lastSolve = stats
-    return stats
+    // move the particles; log the potential-energy change of the correction (INV′)
+    const ext = L.extent, eps = WALL_EPS_CELLS * h
+    let dEp = 0, maxMove = 0
+    for (let q = 0; q < p.n; q++) {
+      const x = p.pos[3 * q], y = p.pos[3 * q + 1], z = p.pos[3 * q + 2]
+      const dxs = [0, 0, 0]
+      for (const a of AXES) {
+        const st = stencil(L, a, x, y, z)
+        let v = 0
+        for (let m = 0; m < 8; m++) v += st.w[m] * this.displacement[a][L.idx(st.i[m], st.j[m], st.k[m])]
+        dxs[a] = v
+      }
+      const nx = x + dxs[0], ny = y + dxs[1], nz = z + dxs[2]
+      const cx = clampIn(nx, eps, ext[0] - eps), cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
+      if (cx !== nx || cy !== ny || cz !== nz) this.diag.densityClamps++
+      dEp -= p.mass[q] * (this.gravity[0] * (cx - x) + this.gravity[1] * (cy - y) + this.gravity[2] * (cz - z))
+      maxMove = Math.max(maxMove, Math.hypot(cx - x, cy - y, cz - z))
+      p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
+    }
+    const out: DensityStats = { ...stats, fMin, fMax, deltaPotential: dEp, maxMove }
+    this.lastDensity = out
+    return out
+  }
+
+  /** Liquid volume Σ min(f, 1)·dx³ over ALL window cells from the last densityCorrect, m³ (FINAL-PLAN S3.2 G2): f̃ with
+   *  the wall compensation in LIQUID cells, the raw fraction in AIR cells — the cell-centred kernel of a surface
+   *  particle spills up to 1/8 of its volume into the AIR cell above, which a LIQUID-only sum would lose. */
+  phiVolume(): number {
+    const L = this.layout
+    let v = 0
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const s = L.idx(i, j, k)
+      v += Math.min(this.label[s] === CellLabel.LIQUID ? this.fCompensated[s] : this.volumeFraction[s], 1)
+    }
+    return v * L.dx ** 3
   }
 
   /** u = u* − (Δt/ρ)·(p₊ − p₋)/dx on every non-SOLID face with a LIQUID cell on either side (p = 0 in AIR); those
@@ -440,6 +537,57 @@ export class FlipRef {
 const NEIGHBOURS: readonly (readonly [number, number, number])[] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]]
 
 function clampIn(v: number, lo: number, hi: number): number { return v < lo ? lo : v > hi ? hi : v }
+
+/** Jacobi-preconditioned CG on a LiquidSystem: A·x = b to ‖r‖∞ ≤ tol (cold start). A closed system (no AIR neighbour
+ *  anywhere) is singular but consistent after the mean of b is removed; the mean of x is then pinned to 0. The residual
+ *  reported is the TRUE residual recomputed from x. The solution is written into `out` at the system's cell slots. */
+function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: number, out: Float64Array): SolveStats {
+  const { n, diag, nbr, a } = sys
+  out.fill(0)
+  const stats: SolveStats = { liquidCells: n, iterations: 0, residualInf: 0, rhsInf: 0, capHit: false, closed: sys.closed }
+  if (n === 0) return stats
+  const b = bIn.slice()
+  for (let r = 0; r < n; r++) stats.rhsInf = Math.max(stats.rhsInf, Math.abs(b[r]))
+  if (sys.closed) { let m = 0; for (let r = 0; r < n; r++) m += b[r]; m /= n; for (let r = 0; r < n; r++) b[r] -= m }
+  const Ap = (x: Float64Array, o: Float64Array) => {
+    for (let r = 0; r < n; r++) {
+      let v = diag[r] * x[r]
+      for (let k = 0; k < 6; k++) { const c = nbr[6 * r + k]; if (c >= 0) v -= a * x[c] }
+      o[r] = v
+    }
+  }
+  const inf = (v: Float64Array) => { let m = 0; for (let r = 0; r < n; r++) m = Math.max(m, Math.abs(v[r])); return m }
+  const x = new Float64Array(n), res = b.slice(), z = new Float64Array(n), d = new Float64Array(n), q = new Float64Array(n)
+  for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
+  d.set(z)
+  let rz = 0
+  for (let r = 0; r < n; r++) rz += res[r] * z[r]
+  let it = 0
+  while (inf(res) > tol && it < cap) {
+    Ap(d, q)
+    let dq = 0
+    for (let r = 0; r < n; r++) dq += d[r] * q[r]
+    if (dq <= 0) break
+    const alpha = rz / dq
+    for (let r = 0; r < n; r++) { x[r] += alpha * d[r]; res[r] -= alpha * q[r] }
+    for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
+    let rzNew = 0
+    for (let r = 0; r < n; r++) rzNew += res[r] * z[r]
+    const beta = rzNew / rz
+    rz = rzNew
+    for (let r = 0; r < n; r++) d[r] = z[r] + beta * d[r]
+    it++
+  }
+  if (sys.closed) { let m = 0; for (let r = 0; r < n; r++) m += x[r]; m /= n; for (let r = 0; r < n; r++) x[r] -= m }
+  Ap(x, q)
+  let rInf = 0
+  for (let r = 0; r < n; r++) rInf = Math.max(rInf, Math.abs(b[r] - q[r]))
+  for (let r = 0; r < n; r++) out[sys.cells[r]] = x[r]
+  stats.iterations = it
+  stats.residualInf = rInf
+  stats.capHit = rInf > tol
+  return stats
+}
 
 /** Cell index of a coordinate (clamped into the window: positions are kept wallEps inside it). */
 function cellIndex(x: number, dx: number, n: number): number { const i = Math.floor(x / dx); return i < 0 ? 0 : i >= n ? n - 1 : i }
