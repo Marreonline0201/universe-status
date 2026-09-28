@@ -47,13 +47,13 @@ export async function provenance() {
   return { sha: head, state: dirty ? 'LIVE-DIRTY' : 'LIVE', attributable: false, base: BASE }
 }
 
-export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800 } = {}) {
+export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800, deviceScaleFactor = 1 } = {}) {
   const browser = await chromium.launch({
     executablePath: CHROME, headless: false,
     args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
   })
   const errors = []
-  const page = await browser.newPage({ viewport: { width, height } })
+  const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor })
   page.on('pageerror', e => errors.push(String(e)))
   page.on('console', m => {
     const t = m.text()

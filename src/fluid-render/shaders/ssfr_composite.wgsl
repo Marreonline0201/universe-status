@@ -1,40 +1,55 @@
-// ssfr_composite.wgsl — SSFR Pass 5: Final compositing
-// Reconstructs normals from depth, applies Fresnel, Beer-Lambert absorption,
-// refraction, and incandescence. Composites fluid on top of scene.
+// ssfr_composite.wgsl — SSFR final pass: physically based shading of the liquid surface, in linear light.
+// (ssfr_scene.wgsl is prepended: traceScene, Scene, srgbEncode/Decode, footprintCone, rayThroughNdc.)
+//
+// Per pixel with liquid in front of the background (single front surface; r6 rungs 0, 1 and 5):
+//   dielectric:  C = F·L_refl + (1 − F)·T(ℓ)·L_refr
+//     F      exact unpolarised Fresnel at the material's refractive index (pbr-book 3rd ed. §8.2), no Schlick;
+//     L_refl the room traced along reflect(−V, N) — including the sun disc (its flux averaged over the pixel's
+//            reflected-direction footprint), so the sun glint is F·L_sun and needs no separate specular term;
+//     L_refr the room traced along the Snell-refracted ray refract(−V, N, 1/n): exact apparent depth for a
+//            flat surface over the floor, and no screen-edge clamping (the room is analytic, not a screen image);
+//     T(ℓ)   Beer–Lambert transmittance of D65 light over the in-liquid path ℓ, from the spectral LUT built out
+//            of the material's measured a(λ) (optics/materials.ts);
+//     ℓ      thickness (metres of liquid along the straight view ray, ssfr_thickness.wgsl) × cosθi / cosθt —
+//            the refracted path through a flat layer (r6 §4: the straight chord overestimates it, 1.43× at 57°).
+//   conductor:   C = R(θ)·L_refl, R from the measured complex index, integrated over the spectrum; nothing is
+//                transmitted.
+// Output: alpha = 1 (no blending over a clear colour), clipped to [0,1] per channel, sRGB-encoded (CSS Color 4).
+// Where there is no liquid (or the background is in front of it) the background texel is passed through
+// untouched, so the background is bit-identical to ssfr_bg.wgsl's output (acceptance test V6).
+//
+// Stated approximations (not modelled here; later rungs): one refracting surface — a ray leaving a mid-air blob
+// is not bent again, TIR at an exit surface cannot occur (rung 3, back faces); the liquid neither reflects nor
+// shadows itself; per-channel T × L is exact only for grey backgrounds; the submerged floor keeps its authored
+// radiance (its underwater illumination, the n² radiance law and TIR re-trapping are rung-3 floor lighting);
+// polarisation is not tracked; mixed liquids use the front composition's optics for the whole path.
 
 struct CompositeParams {
-    invProjMatrix: mat4x4<f32>,
+    viewMatrix: mat4x4<f32>,
+    invViewMatrix: mat4x4<f32>,
     projMatrix: mat4x4<f32>,
-    screenSize: vec2<f32>,
-    nearPlane: f32,
-    farPlane: f32,
-    // Fluid rendering parameters
-    refractionStrength: f32,
-    absorptionScale: f32,
-    fresnelPower: f32,
-    ambientStrength: f32,
-    lightDir: vec3<f32>,
-    _pad: f32,
+    invProjMatrix: mat4x4<f32>,
+    screenSize: vec2<f32>,   // SSFR internal size (all input textures)
+    lutN: f32,
+    lutLmaxM: f32,
+    outputSize: vec2<f32>,   // size of the target this pass draws (the canvas: CSS size × device pixel ratio)
+    _pad: vec2<f32>,
 };
 
-// Material properties: 8 floats per composition [R, G, B, metalness, F0, emissive, IOR, opacity]
-struct MaterialProps {
-    data: array<vec4<f32>, 512>,  // 256 materials × 2 vec4s each
+// Per composition: [kind (0 dielectric, 1 conductor), refractive index, LUT row (−1 none), 0] + [reserved].
+struct Materials {
+    data: array<vec4<f32>, 512>,
 };
 
 @group(0) @binding(0) var<uniform> params: CompositeParams;
-@group(0) @binding(1) var depthTex: texture_2d<f32>;      // smoothed fluid depth
-@group(0) @binding(2) var thicknessTex: texture_2d<f32>;   // accumulated thickness
-@group(0) @binding(3) var sceneTex: texture_2d<f32>;       // bg color (grid/box/ball raytrace)
-@group(0) @binding(4) var compIdTex: texture_2d<u32>;      // per-pixel composition ID
-@group(0) @binding(5) var<storage, read> materials: MaterialProps;
-@group(0) @binding(6) var linearSampler: sampler;
-// Eye-space depth of the BG geometry (grid / box / ball). Used per-pixel
-// to decide whether the bg surface is IN FRONT of the fluid (then the bg
-// wins and we skip the fluid composite) or BEHIND (then fluid overlays).
-// This replaces the old "bg is always infinitely behind" assumption that
-// caused the two-layer problem.
-@group(0) @binding(7) var bgDepthTex: texture_2d<f32>;
+@group(0) @binding(1) var depthTex: texture_2d<f32>;        // smoothed fluid eye depth (0 = no fluid)
+@group(0) @binding(2) var thicknessTex: texture_2d<f32>;    // metres of liquid along the view ray
+@group(0) @binding(3) var bgTex: texture_2d<f32>;           // background, sRGB-encoded (canvas format)
+@group(0) @binding(4) var compIdTex: texture_2d<u32>;       // composition id of the front-most splat
+@group(0) @binding(5) var<storage, read> materials: Materials;
+@group(0) @binding(6) var bgDepthTex: texture_2d<f32>;      // background eye depth (1e6 = void)
+@group(0) @binding(7) var<uniform> scene: Scene;
+@group(0) @binding(8) var<storage, read> lut: array<vec4<f32>>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -51,172 +66,174 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     return out;
 }
 
-// Reconstruct eye-space position from LINEAR eye-space depth.
-// The depth pass stores negative eye-space Z (like Splash).
-// Uses projection matrix coefficients to reconstruct NDC z from linear depth.
-fn eyePosFromDepth(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-    var ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - 2.0 * uv.y, 0.0, 1.0);
-    // Reconstruct NDC z from linear depth using projection matrix
-    ndc.z = -params.projMatrix[2].z + params.projMatrix[3].z / depth;
-    let eyePos = params.invProjMatrix * ndc;
-    return eyePos.xyz / eyePos.w;
+// Eye-space position of the surface at SSFR pixel coordinate `pc` (pixel centres at +0.5) and positive eye
+// depth `depth`, for any projection: the point at eye z = −depth on the line through the pixel's near- and
+// far-plane points. (Reconstructing through NDC z instead, as before 2026-09-28, loses ~2 mrad of normal
+// precision to the perspective depth mapping at 1 m — enough to break a sun glint into speckle; gate R0 "S".)
+fn eyePosAt(pc: vec2<f32>, depth: f32) -> vec3<f32> {
+    let ndcXY = uvToNdc(pc / params.screenSize);
+    let a4 = params.invProjMatrix * vec4<f32>(ndcXY, 0.0, 1.0);
+    let b4 = params.invProjMatrix * vec4<f32>(ndcXY, 1.0, 1.0);
+    let a = a4.xyz / a4.w;
+    let b = b4.xyz / b4.w;
+    return a + ((-depth - a.z) / (b.z - a.z)) * (b - a);
 }
 
-// Schlick Fresnel approximation
-fn fresnelSchlick(cosTheta: f32, F0: f32) -> f32 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, params.fresnelPower);
+fn validDepth(d: f32) -> bool { return d > 0.0 && d < 1000.0; }
+
+fn loadDepth(p: vec2<i32>) -> f32 {
+    let size = vec2<i32>(params.screenSize);
+    return textureLoad(depthTex, clamp(p, vec2<i32>(0), size - 1), 0).r;
 }
 
-// Beer-Lambert absorption with per-channel water absorption.
-// Real water absorbs red heavily, green moderately, blue barely.
-// This is why deep water looks blue-green.
-fn beerLambert(sceneColor: vec3<f32>, thickness: f32) -> vec3<f32> {
-    // Absorption coefficients per channel (1/m): higher = more absorbed
-    let absorption = vec3<f32>(0.45, 0.09, 0.04) * params.absorptionScale;
-    return sceneColor * exp(-absorption * thickness);
+// The inputs are at the SSFR size (CSS pixels, ED-2) while the canvas is CSS × device pixel ratio, so the composite
+// upsamples. tc = continuous SSFR texel coordinate with texel centres at integers: exactly the texel index when the
+// output is the SSFR size (DPR 1, bench probes), so nothing below changes a single bit there.
+fn texelCoord(fragXY: vec2<f32>) -> vec2<f32> {
+    return fragXY * (params.screenSize / params.outputSize) - 0.5;
+}
+fn nearestTexel(tc: vec2<f32>) -> vec2<i32> {
+    return clamp(vec2<i32>(floor(tc + 0.5)), vec2<i32>(0), vec2<i32>(params.screenSize) - 1);
+}
+// Bilinear depth where all four taps hold liquid; nearest at silhouettes (never blends liquid with empty).
+fn depthAt(tc: vec2<f32>) -> f32 {
+    let i0 = vec2<i32>(floor(tc));
+    let f = tc - floor(tc);
+    let a = loadDepth(i0);
+    let b = loadDepth(i0 + vec2<i32>(1, 0));
+    let c = loadDepth(i0 + vec2<i32>(0, 1));
+    let d = loadDepth(i0 + vec2<i32>(1, 1));
+    if (validDepth(a) && validDepth(b) && validDepth(c) && validDepth(d)) { return mix(mix(a, b, f.x), mix(c, d, f.x), f.y); }
+    return loadDepth(nearestTexel(tc));
+}
+// Bilinear background (a display resampling of the sRGB image, as the pre-2026-09-28 linear sampler did).
+fn loadBg(p: vec2<i32>) -> vec4<f32> {
+    return textureLoad(bgTex, clamp(p, vec2<i32>(0), vec2<i32>(params.screenSize) - 1), 0);
+}
+fn bgAt(tc: vec2<f32>) -> vec4<f32> {
+    let i0 = vec2<i32>(floor(tc));
+    let f = tc - floor(tc);
+    return mix(mix(loadBg(i0), loadBg(i0 + vec2<i32>(1, 0)), f.x), mix(loadBg(i0 + vec2<i32>(0, 1)), loadBg(i0 + vec2<i32>(1, 1)), f.x), f.y);
 }
 
-// Blackbody incandescence color
-fn incandescence(temperature: f32) -> vec3<f32> {
-    if (temperature < 500.0) { return vec3<f32>(0.0); }
-    let t = (temperature + 273.15) / 1000.0;
-    let r = min(1.0, max(0.0, (t - 0.5) * 1.2));
-    let g = min(1.0, max(0.0, (t - 0.8) * 0.9));
-    let b = min(1.0, max(0.0, (t - 1.5) * 0.7));
-    let intensity = min(3.0, max(0.0, (temperature - 500.0) / 400.0));
-    return vec3<f32>(r, g, b) * intensity;
+// Exact unpolarised dielectric Fresnel reflectance (pbr-book 3rd ed. §8.2).
+fn fresnelDielectric(cosI: f32, etaI: f32, etaT: f32) -> f32 {
+    let ci = clamp(cosI, 0.0, 1.0);
+    let r = etaI / etaT;
+    let sinT2 = r * r * max(0.0, 1.0 - ci * ci);
+    if (sinT2 >= 1.0) { return 1.0; }
+    let ct = sqrt(1.0 - sinT2);
+    let rPar = (etaT * ci - etaI * ct) / (etaT * ci + etaI * ct);
+    let rPerp = (etaI * ci - etaT * ct) / (etaI * ci + etaT * ct);
+    return 0.5 * (rPar * rPar + rPerp * rPerp);
+}
+
+// Linear interpolation in one row of the optics LUT at normalised coordinate u ∈ [0,1].
+fn lutFetch(row: f32, u: f32) -> vec3<f32> {
+    let n = u32(params.lutN);
+    let x = clamp(u, 0.0, 1.0) * (params.lutN - 1.0);
+    let i0 = u32(floor(x));
+    let f = x - floor(x);
+    let base = u32(row) * n;
+    return mix(lut[base + i0].rgb, lut[base + min(i0 + 1u, n - 1u)].rgb, f);
+}
+
+// Transmittance rows are sampled at path L = Lmax·u² (see optics/materials.ts buildOpticsLut).
+fn transmittance(row: f32, pathM: f32) -> vec3<f32> {
+    if (row < 0.0) { return vec3<f32>(1.0); }
+    return lutFetch(row, sqrt(clamp(pathM / params.lutLmaxM, 0.0, 1.0)));
+}
+
+struct Shaded {
+    encoded: vec4<f32>,   // what goes to the canvas
+    linear: vec4<f32>,    // the same colour before the clip and the sRGB encode (bench probe target)
+};
+
+fn shade(fragXY: vec2<f32>) -> Shaded {
+    let tc = texelCoord(fragXY);
+    let pix = nearestTexel(tc);          // flat per-texel data: liquid present?, composition, thickness, bg depth
+    let pc = tc + 0.5;                   // SSFR pixel coordinates (pixel centres at +0.5)
+
+    let hasFluid = validDepth(loadDepth(pix));
+    let depth = depthAt(tc);
+    let dc = select(1.0, depth, hasFluid);
+    // Neighbour depths one texel away; a neighbour without liquid is replaced by the centre depth (a flat tangent).
+    let nR = depthAt(tc + vec2<f32>(1.0, 0.0));
+    let nL = depthAt(tc - vec2<f32>(1.0, 0.0));
+    let nD = depthAt(tc + vec2<f32>(0.0, 1.0));   // +y = down the screen
+    let nU = depthAt(tc - vec2<f32>(0.0, 1.0));
+    let dR = select(dc, nR, validDepth(nR));
+    let dL = select(dc, nL, validDepth(nL));
+    let dD = select(dc, nD, validDepth(nD));
+    let dU = select(dc, nU, validDepth(nU));
+
+    let posC = eyePosAt(pc, dc);
+    let posR = eyePosAt(pc + vec2<f32>(1.0, 0.0), dR);
+    let posL = eyePosAt(pc - vec2<f32>(1.0, 0.0), dL);
+    let posD = eyePosAt(pc + vec2<f32>(0.0, 1.0), dD);
+    let posU = eyePosAt(pc - vec2<f32>(0.0, 1.0), dU);
+    // One-sided differences on the side with the smaller depth step (keeps silhouettes from bending normals).
+    let ddx = select(posR - posC, posC - posL, abs(posR.z - posC.z) > abs(posC.z - posL.z));
+    let ddy = select(posU - posC, posC - posD, abs(posU.z - posC.z) > abs(posC.z - posD.z));
+    var nEye = normalize(cross(ddx, ddy));
+    if (nEye.z < 0.0) { nEye = -nEye; }
+
+    let ray = rayThroughNdc(uvToNdc(pc / params.screenSize), params.invProjMatrix, params.invViewMatrix);
+    let V = -ray.dir;
+    let P = (params.invViewMatrix * vec4<f32>(posC, 1.0)).xyz;
+    var N = normalize((params.invViewMatrix * vec4<f32>(nEye, 0.0)).xyz);
+    if (dot(N, V) < 0.0) { N = -N; }
+    let cosI = clamp(dot(N, V), 1e-4, 1.0);
+
+    let compId = min(textureLoad(compIdTex, pix, 0).r, 255u);
+    let m0 = materials.data[2u * compId];
+    let isConductor = m0.x > 0.5;
+    let ior = max(m0.y, 1.0);
+    let row = m0.z;
+
+    // Reflected and Snell-refracted directions (air → liquid, η = 1/n; no TIR on entry).
+    let rDir = reflect(-V, N);
+    let eta = 1.0 / ior;
+    let cosT = sqrt(max(0.0, 1.0 - eta * eta * (1.0 - cosI * cosI)));
+    let tDir = normalize(eta * (-V) + (eta * cosI - cosT) * N);
+    // Pixel footprints of both rays (derivatives: uniform control flow, before any branch).
+    let coneR = footprintCone(rDir);
+    let coneT = footprintCone(tDir);
+
+    let bgEnc = bgAt(tc);
+    let bgDepth = textureLoad(bgDepthTex, pix, 0).r;
+    let bgInFront = (bgDepth + 1e-4) < depth;
+    if (!hasFluid || bgInFront) {
+        return Shaded(bgEnc, vec4<f32>(srgbDecode(bgEnc.rgb), 1.0));
+    }
+
+    let Lrefl = traceScene(P, rDir, coneR).radiance;
+    var L: vec3<f32>;
+    if (isConductor) {
+        L = lutFetch(row, cosI) * Lrefl;
+    } else {
+        let F = fresnelDielectric(cosI, 1.0, ior);
+        let thickness = textureLoad(thicknessTex, pix, 0).r;
+        let pathM = thickness * cosI / max(cosT, 1e-4);
+        let Lrefr = traceScene(P, tDir, coneT).radiance;
+        L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr;
+    }
+    return Shaded(vec4<f32>(srgbEncode(clamp(L, vec3<f32>(0.0), vec3<f32>(1.0))), 1.0), vec4<f32>(L, 1.0));
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // WGSL requires ALL textureSample calls in uniform control flow.
-    // Sample everything upfront, branch on results later.
-    let texelSize = 1.0 / params.screenSize;
+    return shade(in.position.xy).encoded;
+}
 
-    let depth = textureSample(depthTex, linearSampler, in.uv).r;
-    let depthR = textureSample(depthTex, linearSampler, in.uv + vec2<f32>(texelSize.x, 0.0)).r;
-    let depthL = textureSample(depthTex, linearSampler, in.uv - vec2<f32>(texelSize.x, 0.0)).r;
-    let depthU = textureSample(depthTex, linearSampler, in.uv + vec2<f32>(0.0, texelSize.y)).r;
-    let depthD = textureSample(depthTex, linearSampler, in.uv - vec2<f32>(0.0, texelSize.y)).r;
-    let thickness = textureSample(thicknessTex, linearSampler, in.uv).r;
-    let sceneBg = textureSample(sceneTex, linearSampler, in.uv);
-    // bg eye-space depth. r32float with 'unfilterable-float' sampling
-    // requires textureLoad, not textureSample.
-    let bgPixel = vec2<i32>(in.uv * params.screenSize);
-    let bgDepth = textureLoad(bgDepthTex, bgPixel, 0).r;
+// Bench probe (SSFRPipeline.probe): the same shading, plus the linear colour before the clip and encode.
+struct ProbeOut {
+    @location(0) encoded: vec4<f32>,
+    @location(1) linear: vec4<f32>,
+};
 
-    // Determine if fluid exists at this pixel
-    let hasFluid = depth > 0.0 && depth < 1000.0;
-
-    // Use safe depth for position reconstruction (avoid div by zero)
-    let safeDepth = select(1.0, depth, hasFluid);
-    let posC = eyePosFromDepth(in.uv, safeDepth);
-    let posR = eyePosFromDepth(in.uv + vec2<f32>(texelSize.x, 0.0), depthR);
-    let posL = eyePosFromDepth(in.uv - vec2<f32>(texelSize.x, 0.0), depthL);
-    let posU = eyePosFromDepth(in.uv + vec2<f32>(0.0, texelSize.y), depthU);
-    let posD = eyePosFromDepth(in.uv - vec2<f32>(0.0, texelSize.y), depthD);
-
-    let ddx = select(posR - posC, posC - posL, abs(posR.z - posC.z) > abs(posC.z - posL.z));
-    let ddy = select(posU - posC, posC - posD, abs(posU.z - posC.z) > abs(posC.z - posD.z));
-
-    var normal = normalize(cross(ddx, ddy));
-    // Ensure normal faces the camera
-    if (normal.z < 0.0) { normal = -normal; }
-
-    // ── Read material properties ────────────────────────────────────────
-    // Per-pixel composition_id from the depth pass (compIdTex), looked up in
-    // the materials buffer (CompositionTable.getRenderData(): 2 vec4s per
-    // composition — [R,G,B,metalness] then [F0,emissive,IOR,opacity]). Clamp
-    // to 255 — the GPU table is a fixed 256-slot array; blend()/addOrFindBlend()
-    // can mint IDs past that during play.
-    let compId = min(textureLoad(compIdTex, bgPixel, 0).r, 255u);
-    let mat0 = materials.data[2u * compId];
-    let mat1 = materials.data[2u * compId + 1u];
-    var matColor = mat0.rgb;
-    var metalness = mat0.a;
-    var F0 = mat1.x;
-    var emissive = mat1.y;
-    var IOR = mat1.z;
-    var opacity = mat1.w;
-
-    // ── Lighting ────────────────────────────────────────────────────────
-    let viewDir = normalize(-posC);
-    let lightDir = normalize(params.lightDir);
-
-    // Diffuse (half-Lambert for softer look)
-    let NdotL = dot(normal, lightDir);
-    let diffuse = NdotL * 0.5 + 0.5;
-
-    // Specular (Blinn-Phong)
-    let halfVec = normalize(lightDir + viewDir);
-    let NdotH = max(0.0, dot(normal, halfVec));
-    let specular = pow(NdotH, 150.0);
-
-    // Fresnel
-    let NdotV = max(0.001, dot(normal, viewDir));
-    let fresnel = fresnelSchlick(NdotV, F0);
-
-    // ── Refraction ──────────────────────────────────────────────────────
-    let refractOffset = normal.xy * params.refractionStrength * (1.0 - NdotV);
-    let refractUV = clamp(in.uv + refractOffset, vec2<f32>(0.0), vec2<f32>(1.0));
-    // Use textureLoad for refracted scene (avoids uniform control flow restriction)
-    let refractPixel = vec2<u32>(vec2<f32>(refractUV.x, refractUV.y) * params.screenSize);
-    let sceneColor = textureLoad(sceneTex, refractPixel, 0).rgb;
-    let transmittedColor = beerLambert(sceneColor, thickness);
-
-    // ── Compose final color ─────────────────────────────────────────────
-    // Environment reflection (simplified cubemap substitute)
-    let reflectDir = reflect(-viewDir, normal);
-    let envColor = vec3<f32>(
-        0.1 + 0.05 * reflectDir.x,
-        0.12 + 0.08 * reflectDir.y,
-        0.18 + 0.12 * max(0.0, reflectDir.y),
-    );
-
-    // Fluid color philosophy:
-    //   - Beer-Lambert on the refracted bg gives water its natural blue
-    //     tint (red absorbs fastest). That's where most of the COLOR
-    //     comes from.
-    //   - fluidTint is a modest diffuse-scattered surface contribution,
-    //     not a full replacement for the bg.
-    //   - thicknessFactor controls how much fluidTint mixes in; it must
-    //     saturate smoothly so moderate-thickness water still shows the
-    //     scene behind it, not turn into an opaque sheet.
-    let fluidTint = matColor * (diffuse * 0.35 + params.ambientStrength * 0.7);
-    let thicknessFactor = 1.0 - exp(-thickness * opacity * 1.6);
-
-    var finalColor = mix(transmittedColor, fluidTint, thicknessFactor * 0.75);
-    finalColor = mix(finalColor, envColor, fresnel * 0.5);
-    // Specular highlight is narrower + weaker so the surface reads as water,
-    // not polished plastic.
-    finalColor += specular * vec3<f32>(0.95, 0.95, 1.0) * 0.3;
-
-    // Add emissive glow
-    if (emissive > 0.0) {
-        finalColor += matColor * emissive;
-    }
-
-    // Alpha: no minimum floor. Thin fluid is genuinely translucent.
-    let alpha = min(1.0, thicknessFactor + fresnel * 0.3);
-
-    // ── Per-pixel depth compositing ─────────────────────────────────
-    // Three cases:
-    //   1. No fluid at this pixel → show bg directly.
-    //   2. bg surface is IN FRONT of fluid surface (bgDepth < fluidDepth)
-    //      → bg wins, bypass fluid composite. This handles the ball or
-    //      box edge being between the camera and the fluid.
-    //   3. Otherwise → fluid composite (bg shows through via
-    //      transmittedColor + Beer-Lambert).
-    // Small bias (1e-4) avoids z-fighting where bg and fluid coincide.
-    let bgInFront = hasFluid && (bgDepth + 1e-4) < depth;
-    let fluidColor = vec4<f32>(finalColor, alpha);
-    var result: vec4<f32>;
-    if (!hasFluid) {
-        result = sceneBg;
-    } else if (bgInFront) {
-        result = sceneBg;
-    } else {
-        result = fluidColor;
-    }
-    return result;
+@fragment
+fn fs_probe(in: VertexOutput) -> ProbeOut {
+    let s = shade(in.position.xy);
+    return ProbeOut(s.encoded, s.linear);
 }

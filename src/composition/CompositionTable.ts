@@ -500,9 +500,11 @@ export class CompositionTable {
   /** Get per-composition color data for SSFR shader binding */
   getColorData(): Float32Array { return this.colorData }
 
-  /** Get full rendering properties for all compositions (for SSFR uniform buffer) */
+  /** LEGACY look record per composition: [R, G, B, metalness, F0, emissive, IOR, opacity] (8 floats). NOT rendered
+   *  since 2026-09-28 — the SSFR composite takes its optics from fluid-render/optics/materials.ts opticsRenderData()
+   *  (measured spectra, exact Fresnel, cited IOR / complex index). Kept because the S1.5 materials gate (K1, Q3)
+   *  asserts this API. */
   getRenderData(): Float32Array {
-    // 8 floats per composition: [R, G, B, metalness, F0, emissive, IOR, opacity]
     const data = new Float32Array(MAX_COMPOSITIONS * 8)
     for (const comp of this.compositions) {
       if (comp.id >= MAX_COMPOSITIONS) break
