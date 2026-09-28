@@ -1,0 +1,328 @@
+/// <reference types="@webgpu/types" />
+// FlipGpuSimulator — the incompressible APIC-MAC liquid solver on WebGPU (FINAL-PLAN S3).
+// Stage implemented: S3.1a transfers (faceScatter → gridUpdate → extrapolate ×2 → g2pMac + RK2), diffed kernel by
+// kernel against the f64 CPU reference src/sim-ref/flipRef.ts (gate scripts/fluid-gates/s31a-gpu.mjs).
+//
+// State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
+//   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
+//   aff  3×vec4 per particle (c_x, c_y, c_z in 1/s)
+//   aux  vec4<u32> (composition id, phase, f32 bits of spawn °C, 0)
+//   enthalpy vec2<u32> — reserved 64-bit slot (S3N-9), written 0 at spawn, bound by no kernel until HEAT-1.
+// The renderer and every existing consumer read `presentationBuffer`, filled by present.wgsl in the legacy
+// 80-byte layout (world units = lRef metres, time unit τ) — the only place solver and presentation units meet.
+// Face grids: the three MAC grids concatenated (axis a at offset a·size), one slot per GridLayout.idx.
+import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
+import commonWGSL from './shaders/common.wgsl?raw'
+import faceScatterWGSL from './shaders/faceScatter.wgsl?raw'
+import gridUpdateWGSL from './shaders/gridUpdate.wgsl?raw'
+import extrapolateWGSL from './shaders/extrapolate.wgsl?raw'
+import g2pMacWGSL from './shaders/g2pMac.wgsl?raw'
+import presentWGSL from './shaders/present.wgsl?raw'
+
+/** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
+export const MASS_SCALE = 2 ** 24
+export const MOM_SCALE = 2 ** 19
+/** Legacy presentation layout: 20 words per particle. */
+export const PRESENT_STRIDE_BYTES = 80
+const PARAMS_BYTES = 96
+
+export interface FlipSimOptions {
+  nx: number
+  ny: number
+  nz: number
+  /** Cell size, m. */
+  dx: number
+  ring?: Vec3
+  /** m/s², window axes (default none). */
+  gravity?: Vec3
+  /** false = PIC transfers (gates' positive control only). */
+  apic?: boolean
+  maxParticles: number
+  /** Grid mass unit density, kg/m³ (default 1000). */
+  rhoRef?: number
+  /** Presentation length unit, m (1 world unit). */
+  lRef: number
+  /** Presentation time unit, s. */
+  tauS: number
+  /** Positions are kept this many metres inside the window (default 1e-6·dx, as flipRef). */
+  wallEps?: number
+  extrapolationLayers?: number
+  /** Two-word fixed-point P2G (default true): sums resolved to the f32 precision of each contribution instead of to
+   *  half a quantum per add (s31a P1: single-word momentum at 2^19 left c 1.4e-4 relative off at interior
+   *  particles). false = one i32 per sum (fewer atomics; kept for the cost measurement). */
+  preciseP2G?: boolean
+}
+
+/** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
+export const LO_SCALE = 4096
+
+export interface FlipParticleInit {
+  /** Window-local metres. */
+  pos: Vec3
+  /** m/s. */
+  vel: Vec3
+  /** Affine vectors c_x, c_y, c_z (1/s); default 0. */
+  c?: [Vec3, Vec3, Vec3]
+  /** kg. */
+  mass: number
+  composition: number
+  phase: number
+  temperatureC: number
+}
+
+export interface FlipDiagnostics { wallClamps: number; unsetFaceReads: number; openFaces: number }
+
+type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present'
+
+export class FlipGpuSimulator {
+  readonly device: GPUDevice
+  readonly layout: GridLayout
+  readonly maxParticles: number
+  readonly massUnit: number
+  gravity: Vec3
+  dt = 1 / 120
+  readonly apic: boolean
+  readonly extrapolationLayers: number
+  readonly preciseP2G: boolean
+  private readonly lRef: number
+  private readonly tauS: number
+  private readonly wallEps: number
+  private count = 0
+
+  // particles
+  readonly posBuf: GPUBuffer
+  readonly velBuf: GPUBuffer
+  readonly affBuf: GPUBuffer
+  readonly auxBuf: GPUBuffer
+  readonly enthalpyBuf: GPUBuffer
+  readonly presentationBuffer: GPUBuffer
+  // grid
+  readonly faceTypeBuf: GPUBuffer
+  readonly massBuf: GPUBuffer
+  readonly momBuf: GPUBuffer
+  readonly massLoBuf: GPUBuffer
+  readonly momLoBuf: GPUBuffer
+  readonly uBuf: [GPUBuffer, GPUBuffer]
+  readonly validBuf: [GPUBuffer, GPUBuffer]
+  readonly diagBuf: GPUBuffer
+  private readonly paramsBuf: GPUBuffer
+
+  private readonly pipelines: Record<Kernel, GPUComputePipeline>
+  private readonly bg: {
+    faceScatter: GPUBindGroup
+    gridUpdate: GPUBindGroup
+    extrapolate: [GPUBindGroup, GPUBindGroup]   // [A→B, B→A]
+    g2pMac: [GPUBindGroup, GPUBindGroup]        // reads A or B
+    present: GPUBindGroup
+  }
+
+  constructor(device: GPUDevice, opts: FlipSimOptions) {
+    this.device = device
+    this.layout = new GridLayout({ nx: opts.nx, ny: opts.ny, nz: opts.nz, dx: opts.dx, ring: opts.ring })
+    this.maxParticles = opts.maxParticles
+    this.gravity = opts.gravity ?? [0, 0, 0]
+    this.apic = opts.apic ?? true
+    this.extrapolationLayers = opts.extrapolationLayers ?? 2
+    this.preciseP2G = opts.preciseP2G ?? true
+    this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
+    this.lRef = opts.lRef
+    this.tauS = opts.tauS
+    this.wallEps = opts.wallEps ?? 1e-6 * opts.dx
+    const S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST, R = GPUBufferUsage.COPY_SRC
+    const buf = (label: string, size: number, usage = S | D | R) => device.createBuffer({ label: `flip.${label}`, size, usage })
+    const N = this.maxParticles, G = 3 * this.layout.size
+    this.posBuf = buf('pos', 16 * N)
+    this.velBuf = buf('vel', 16 * N)
+    this.affBuf = buf('aff', 48 * N)
+    this.auxBuf = buf('aux', 16 * N)
+    this.enthalpyBuf = buf('enthalpy', 8 * N)
+    this.presentationBuffer = buf('present', PRESENT_STRIDE_BYTES * N)
+    this.faceTypeBuf = buf('faceType', 4 * G)
+    this.massBuf = buf('mass', 4 * G)
+    this.momBuf = buf('mom', 4 * G)
+    this.massLoBuf = buf('massLo', 4 * G)
+    this.momLoBuf = buf('momLo', 4 * G)
+    this.uBuf = [buf('uA', 4 * G), buf('uB', 4 * G)]
+    this.validBuf = [buf('validA', 4 * G), buf('validB', 4 * G)]
+    this.diagBuf = buf('diag', 16)
+    this.paramsBuf = buf('params', PARAMS_BYTES, GPUBufferUsage.UNIFORM | D)
+
+    const types = new Uint32Array(G)
+    for (const a of [0, 1, 2] as const) types.set(this.layout.defaultFaceTypes(a), a * this.layout.size)
+    device.queue.writeBuffer(this.faceTypeBuf, 0, types)
+
+    const pipe = (name: Kernel, code: string) => device.createComputePipeline({
+      label: `flip.${name}`, layout: 'auto',
+      compute: { module: device.createShaderModule({ label: `flip.${name}`, code: `${commonWGSL}\n${code}` }), entryPoint: 'main',
+        constants: code.includes('PRECISE_P2G') ? { PRECISE_P2G: this.preciseP2G ? 1 : 0 } : undefined },
+    })
+    this.pipelines = {
+      faceScatter: pipe('faceScatter', faceScatterWGSL),
+      gridUpdate: pipe('gridUpdate', gridUpdateWGSL),
+      extrapolate: pipe('extrapolate', extrapolateWGSL),
+      g2pMac: pipe('g2pMac', g2pMacWGSL),
+      present: pipe('present', presentWGSL),
+    }
+    const group = (k: Kernel, bufs: GPUBuffer[]) => device.createBindGroup({
+      label: `flip.${k}`, layout: this.pipelines[k].getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
+    })
+    const [uA, uB] = this.uBuf, [vA, vB] = this.validBuf
+    this.bg = {
+      faceScatter: group('faceScatter', [this.posBuf, this.velBuf, this.affBuf, this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf]),
+      gridUpdate: group('gridUpdate', [this.faceTypeBuf, this.massBuf, this.momBuf, uA, vA, this.diagBuf, this.massLoBuf, this.momLoBuf]),
+      extrapolate: [
+        group('extrapolate', [this.faceTypeBuf, uA, vA, uB, vB]),
+        group('extrapolate', [this.faceTypeBuf, uB, vB, uA, vA]),
+      ],
+      g2pMac: [
+        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uA, vA, this.diagBuf]),
+        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uB, vB, this.diagBuf]),
+      ],
+      present: group('present', [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.presentationBuffer]),
+    }
+    this.resetDiagnostics()
+  }
+
+  get particleCount(): number { return this.count }
+  /** Which ping-pong buffer holds the final grid velocity after extrapolation (0 = A, 1 = B). */
+  get finalVelocityBuffer(): 0 | 1 { return (this.extrapolationLayers % 2) as 0 | 1 }
+
+  /** Replace all particles. */
+  setParticles(ps: readonly FlipParticleInit[]): void { this.count = 0; this.addParticles(ps) }
+
+  /** Append particles (throws past capacity — never silently clamps). */
+  addParticles(ps: readonly FlipParticleInit[]): void {
+    if (this.count + ps.length > this.maxParticles) throw new RangeError(`FlipGpuSimulator: ${this.count} + ${ps.length} particles exceed capacity ${this.maxParticles}`)
+    const n = ps.length
+    const pos = new Float32Array(4 * n), vel = new Float32Array(4 * n), aff = new Float32Array(12 * n)
+    const aux = new Uint32Array(4 * n), tBits = new Float32Array(1), tU = new Uint32Array(tBits.buffer)
+    ps.forEach((p, i) => {
+      pos.set(p.pos, 4 * i)
+      vel.set(p.vel, 4 * i); vel[4 * i + 3] = p.mass / this.massUnit
+      if (p.c) for (let a = 0; a < 3; a++) aff.set(p.c[a], 12 * i + 4 * a)
+      tBits[0] = p.temperatureC
+      aux.set([p.composition >>> 0, p.phase >>> 0, tU[0], 0], 4 * i)
+    })
+    const q = this.device.queue, o = this.count
+    q.writeBuffer(this.posBuf, 16 * o, pos)
+    q.writeBuffer(this.velBuf, 16 * o, vel)
+    q.writeBuffer(this.affBuf, 48 * o, aff)
+    q.writeBuffer(this.auxBuf, 16 * o, aux)
+    q.writeBuffer(this.enthalpyBuf, 8 * o, new Uint32Array(2 * n))
+    this.count += n
+  }
+
+  /** Upload the per-call uniforms (once per step() call — FINAL-PLAN §5.1). */
+  writeParams(): void {
+    const b = new ArrayBuffer(PARAMS_BYTES), f = new Float32Array(b), i = new Int32Array(b), u = new Uint32Array(b)
+    const L = this.layout
+    i.set([L.nx, L.ny, L.nz], 0); u[3] = this.count
+    i.set(L.ring, 4); u[7] = this.apic ? 1 : 0
+    f.set(this.gravity, 8); f[11] = L.dx
+    f.set(L.extent, 12); f[15] = this.dt
+    f[16] = 1 / this.massUnit; f[17] = MASS_SCALE; f[18] = MOM_SCALE; f[19] = this.wallEps
+    f[20] = this.lRef; f[21] = this.tauS; u[22] = L.size; u[23] = 0
+    this.device.queue.writeBuffer(this.paramsBuf, 0, b)
+  }
+
+  // ── kernels (each encodable alone, for the kernel-by-kernel self-test) ─────────────────────────────────────
+
+  private dispatch(encoder: GPUCommandEncoder, k: Kernel, bg: GPUBindGroup, threads: number, wg: number): void {
+    const pass = encoder.beginComputePass({ label: `flip.${k}` })
+    pass.setPipeline(this.pipelines[k])
+    pass.setBindGroup(0, bg)
+    pass.dispatchWorkgroups(Math.max(1, Math.ceil(threads / wg)))
+    pass.end()
+  }
+
+  encodeScatter(encoder: GPUCommandEncoder): void {
+    encoder.clearBuffer(this.massBuf)
+    encoder.clearBuffer(this.momBuf)
+    if (this.preciseP2G) { encoder.clearBuffer(this.massLoBuf); encoder.clearBuffer(this.momLoBuf) }
+    if (this.count > 0) this.dispatch(encoder, 'faceScatter', this.bg.faceScatter, this.count, 64)
+  }
+  encodeGridUpdate(encoder: GPUCommandEncoder): void {
+    this.dispatch(encoder, 'gridUpdate', this.bg.gridUpdate, 3 * this.layout.size, 256)
+  }
+  encodeExtrapolate(encoder: GPUCommandEncoder): void {
+    for (let layer = 0; layer < this.extrapolationLayers; layer++) {
+      this.dispatch(encoder, 'extrapolate', this.bg.extrapolate[layer % 2], 3 * this.layout.size, 256)
+    }
+  }
+  encodeG2P(encoder: GPUCommandEncoder): void {
+    if (this.count > 0) this.dispatch(encoder, 'g2pMac', this.bg.g2pMac[this.finalVelocityBuffer], this.count, 64)
+  }
+  encodePresent(encoder: GPUCommandEncoder): void {
+    if (this.count > 0) this.dispatch(encoder, 'present', this.bg.present, this.count, 64)
+  }
+
+  /** `substeps` full transfer substeps of `dt` s each, then the presentation copy. */
+  step(encoder: GPUCommandEncoder, substeps = 1): void {
+    this.writeParams()
+    for (let s = 0; s < substeps; s++) {
+      this.encodeScatter(encoder)
+      this.encodeGridUpdate(encoder)
+      this.encodeExtrapolate(encoder)
+      this.encodeG2P(encoder)
+    }
+    this.encodePresent(encoder)
+  }
+
+  // ── readback (tests, benches) ───────────────────────────────────────────────────────────────────────────────
+
+  async readBuffer(src: GPUBuffer, bytes: number): Promise<ArrayBuffer> {
+    const staging = this.device.createBuffer({ size: Math.max(4, bytes), usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+    try {
+      const enc = this.device.createCommandEncoder()
+      enc.copyBufferToBuffer(src, 0, staging, 0, Math.max(4, bytes))
+      this.device.queue.submit([enc.finish()])
+      await staging.mapAsync(GPUMapMode.READ)
+      return staging.getMappedRange().slice(0, bytes)
+    } finally {
+      staging.destroy()
+    }
+  }
+
+  async readParticles(): Promise<{ pos: Float32Array; vel: Float32Array; aff: Float32Array }> {
+    const n = this.count
+    return {
+      pos: new Float32Array(await this.readBuffer(this.posBuf, 16 * n)),
+      vel: new Float32Array(await this.readBuffer(this.velBuf, 16 * n)),
+      aff: new Float32Array(await this.readBuffer(this.affBuf, 48 * n)),
+    }
+  }
+
+  async readGrid(which: 0 | 1 = 0): Promise<{ mass: Int32Array; mom: Int32Array; massLo: Int32Array; momLo: Int32Array; u: Float32Array; valid: Uint32Array }> {
+    const G = 3 * this.layout.size
+    return {
+      mass: new Int32Array(await this.readBuffer(this.massBuf, 4 * G)),
+      mom: new Int32Array(await this.readBuffer(this.momBuf, 4 * G)),
+      massLo: new Int32Array(await this.readBuffer(this.massLoBuf, 4 * G)),
+      momLo: new Int32Array(await this.readBuffer(this.momLoBuf, 4 * G)),
+      u: new Float32Array(await this.readBuffer(this.uBuf[which], 4 * G)),
+      valid: new Uint32Array(await this.readBuffer(this.validBuf[which], 4 * G)),
+    }
+  }
+
+  /** Overwrite grid inputs (kernel self-test: every kernel runs on the reference's exact inputs). */
+  writeGrid(which: 0 | 1, data: { mass?: Int32Array<ArrayBuffer>; mom?: Int32Array<ArrayBuffer>; u?: Float32Array<ArrayBuffer>; valid?: Uint32Array<ArrayBuffer> }): void {
+    const q = this.device.queue
+    if (data.mass) q.writeBuffer(this.massBuf, 0, data.mass)
+    if (data.mom) q.writeBuffer(this.momBuf, 0, data.mom)
+    if (data.u) q.writeBuffer(this.uBuf[which], 0, data.u)
+    if (data.valid) q.writeBuffer(this.validBuf[which], 0, data.valid)
+  }
+
+  resetDiagnostics(): void { this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(4)) }
+
+  async readDiagnostics(): Promise<FlipDiagnostics> {
+    const d = new Uint32Array(await this.readBuffer(this.diagBuf, 16))
+    return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2] }
+  }
+
+  destroy(): void {
+    for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
+      this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
+  }
+}

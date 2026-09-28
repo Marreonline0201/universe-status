@@ -1,0 +1,87 @@
+// common.wgsl — shared by every APIC-MAC kernel (prepended at pipeline creation). WGSL mirror of
+// src/sim-ref/gridLayout.ts: ONE index function for cells and all three face grids, a ghost layer per side,
+// faces stored as each cell's LOWER face, toroidal window-relative addressing (S3N-1). Units are SI in
+// window-local metres (S3N-5); gravity is a vector (S3N-6). Every kernel is diffed against src/sim-ref/flipRef.ts.
+
+struct FlipParams {
+  n: vec3<i32>,            // interior cells per axis (non-cubic allowed, S3N-2)
+  numParticles: u32,
+  ring: vec3<i32>,         // toroidal storage offsets, each in [0, n)
+  apic: u32,               // 1 = APIC transfers, 0 = PIC (gate positive control only)
+  gravity: vec3<f32>,      // m/s², window axes
+  dx: f32,                 // m
+  extent: vec3<f32>,       // window size, m (= n·dx)
+  dt: f32,                 // s
+  invMassUnit: f32,        // 1 / (ρ_ref·dx³), kg⁻¹ — grid mass unit (FINAL-PLAN §5.7)
+  massScale: f32,          // fixed-point scale for mass (2^24)
+  momScale: f32,           // fixed-point scale for momentum (2^19), unit (ρ_ref·dx³)·m/s
+  wallEps: f32,            // m, particles kept this far inside the window
+  lRef: f32,               // m, presentation length unit (1 world unit)
+  tauS: f32,               // s, presentation time unit
+  size: u32,               // padded slots per grid = (nx+2)(ny+2)(nz+2)
+  _pad: u32,
+}
+
+@group(0) @binding(0) var<uniform> P: FlipParams;
+
+const FLUID: u32 = 0u;
+const SOLID: u32 = 1u;
+const OPEN: u32 = 2u;
+const GHOST: u32 = 3u;
+
+// Diagnostics counters (u32): [0] wall clamps, [1] unset-face reads, [2] OPEN faces met (reserved type).
+const DIAG_WALL_CLAMPS: u32 = 0u;
+const DIAG_UNSET_READS: u32 = 1u;
+const DIAG_OPEN_FACES: u32 = 2u;
+
+fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
+  if (i < 0) { return 0; }
+  if (i >= n) { return n + 1; }
+  return 1 + ((i + ring) % n);
+}
+
+/// THE index function: logical (i, j, k), each in −1 … n, to a slot of one grid.
+fn slotOf(c: vec3<i32>) -> u32 {
+  let p = P.n + vec3<i32>(2);
+  return u32(physIdx(c.x, P.n.x, P.ring.x) + p.x * (physIdx(c.y, P.n.y, P.ring.y) + p.y * physIdx(c.z, P.n.z, P.ring.z)));
+}
+
+/// Offset of face grid `a` inside the concatenated three-grid buffers.
+fn gridBase(a: u32) -> u32 { return a * P.size; }
+
+/// Half-cell offsets of face grid `a`: 0 on its own axis, ½ on the others.
+fn faceOffset(a: u32) -> vec3<f32> {
+  var o = vec3<f32>(0.5);
+  o[a] = 0.0;
+  return o;
+}
+
+/// Window-local position (m) of face (a; c).
+fn facePos(a: u32, c: vec3<i32>) -> vec3<f32> {
+  return (vec3<f32>(c) + faceOffset(a)) * P.dx;
+}
+
+/// Logical coordinates of the thread that owns padded grid coordinate `t` (0 … n+1 per axis): logical = t − 1.
+fn logicalOfThread(t: u32) -> vec3<i32> {
+  let p = vec3<u32>(P.n + vec3<i32>(2));
+  let x = t % p.x;
+  let y = (t / p.x) % p.y;
+  let z = t / (p.x * p.y);
+  return vec3<i32>(i32(x), i32(y), i32(z)) - vec3<i32>(1);
+}
+
+/// Logical range check for face grid `a`: 0 … n on its own axis, −1 … n on the others.
+fn inFaceRange(a: u32, c: vec3<i32>) -> bool {
+  var lo = vec3<i32>(-1);
+  lo[a] = 0;
+  return all(c >= lo) && all(c <= P.n);
+}
+
+fn encodeFixed(x: f32) -> i32 { return i32(round(x)); }
+
+// Two-word fixed point (PRECISE_P2G): a sum is Σhi + Σlo/LO_SCALE quanta. hi = round(x) keeps the full range of one
+// i32; lo = round((x − hi)·LO_SCALE) carries the remainder (|lo| ≤ LO_SCALE/2 per add), so a face with 64 adds is
+// resolved to the f32 precision of each contribution instead of to half a quantum. x − hi is exact (Sterbenz).
+const LO_SCALE: f32 = 4096.0;
+override PRECISE_P2G: bool = true;
+fn encodeLo(x: f32) -> i32 { return i32(round((x - round(x)) * LO_SCALE)); }

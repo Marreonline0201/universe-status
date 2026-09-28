@@ -1,0 +1,353 @@
+/// <reference types="@webgpu/types" />
+// flip-selftest.html entry — FINAL-PLAN S3.0/S3.1a: every APIC-MAC GPU kernel is diffed against the f64 CPU
+// reference (src/sim-ref/flipRef.ts) on IDENTICAL inputs, then the S3.1a physics gates run on the GPU path.
+// Driven by scripts/fluid-gates/s31a-gpu.mjs; by hand: `await __flipTest.run('kernels', { n: [16,16,16] })`.
+// The device is requested with DEFAULT limits (8 storage buffers per stage, like the three.js device the app uses),
+// so a kernel that only works with raised limits fails here.
+import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
+import { FlipRef, makeParticles, type RefParticles } from '../../sim-ref/flipRef'
+import { FlipGpuSimulator, MASS_SCALE, MOM_SCALE, LO_SCALE, type FlipParticleInit } from '../../gpu-sim/flip/FlipGpuSimulator'
+
+const DX = 3.63 / 64
+const RHO = 998.2072          // kg/m³, water 20 °C (NIST)
+const L_REF = 3.63, TAU = 1 / 24
+
+const log = document.getElementById('log') as HTMLPreElement
+const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
+
+function mulberry32(seed: number) {
+  let a = seed >>> 0
+  return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+}
+
+/** 8 ppc jittered in their 2×2×2 sub-cells over cells lo..hi (inclusive). Values are rounded to f32 so the CPU
+ *  reference and the GPU start from bit-identical inputs. */
+function blob(lo: Vec3, hi: Vec3, rng: () => number): RefParticles {
+  const pts: number[][] = []
+  for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++)
+    for (let s = 0; s < 8; s++) {
+      pts.push([(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX])
+    }
+  const p = makeParticles(pts.length)
+  const m = Math.fround(RHO * DX ** 3 / 8)
+  pts.forEach((x, q) => { p.pos.set(x.map(Math.fround), 3 * q); p.mass[q] = m })
+  return p
+}
+
+function f32round(p: RefParticles) {
+  for (const arr of [p.pos, p.vel, ...p.c]) for (let i = 0; i < arr.length; i++) arr[i] = Math.fround(arr[i])
+}
+
+function toInit(p: RefParticles): FlipParticleInit[] {
+  const out: FlipParticleInit[] = []
+  for (let q = 0; q < p.n; q++) {
+    const v3 = (a: Float64Array): Vec3 => [a[3 * q], a[3 * q + 1], a[3 * q + 2]]
+    out.push({ pos: v3(p.pos), vel: v3(p.vel), c: [v3(p.c[0]), v3(p.c[1]), v3(p.c[2])], mass: p.mass[q], composition: 0, phase: 1, temperatureC: 20 })
+  }
+  return out
+}
+
+async function submit(device: GPUDevice, f: (e: GPUCommandEncoder) => void) {
+  const e = device.createCommandEncoder()
+  f(e)
+  device.queue.submit([e.finish()])
+  await device.queue.onSubmittedWorkDone()
+}
+
+/** Largest |a − b| and the largest |b| over paired arrays (b = reference). */
+function maxDiff(a: ArrayLike<number>, b: ArrayLike<number>, pick?: (i: number) => boolean) {
+  let d = 0, ref = 0
+  for (let i = 0; i < b.length; i++) {
+    if (pick && !pick(i)) continue
+    d = Math.max(d, Math.abs(a[i] - b[i])); ref = Math.max(ref, Math.abs(b[i]))
+  }
+  return { d, ref }
+}
+
+// ── kernel-by-kernel parity ─────────────────────────────────────────────────────────────────────────────────
+
+interface KernelOpts { n?: Vec3; ring?: Vec3; seed?: number; apic?: boolean; dt?: number; precise?: boolean }
+
+async function kernels(device: GPUDevice, o: KernelOpts) {
+  const n = o.n ?? [16, 16, 16], ring = o.ring ?? [0, 0, 0], apic = o.apic ?? true, dt = o.dt ?? 1 / 120
+  const rng = mulberry32(o.seed ?? 5)
+  const layout = new GridLayout({ nx: n[0], ny: n[1], nz: n[2], dx: DX, ring })
+  const gravity: Vec3 = [0.7, -9.80665, 0.3]
+  const cpu = new FlipRef(layout, { gravity, apic })
+  // blob touching the x = 0 wall and the floor (exercises SOLID and GHOST faces), random linear field + noise
+  const hi: Vec3 = [Math.min(n[0] - 2, 9), Math.min(n[1] - 2, 7), Math.min(n[2] - 3, 10)]
+  const p = blob([0, 0, 2], hi, rng)
+  for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) {
+    p.vel[3 * q + a] = rng() * 2 - 1
+    for (let b = 0; b < 3; b++) p.c[a][3 * q + b] = (rng() * 2 - 1) * 4
+  }
+  f32round(p)
+  const precise = o.precise ?? true
+  const gpu = new FlipGpuSimulator(device, { nx: n[0], ny: n[1], nz: n[2], dx: DX, ring, gravity, apic, preciseP2G: precise, maxParticles: p.n, lRef: L_REF, tauS: TAU })
+  gpu.dt = dt
+  gpu.setParticles(toInit(p))
+  gpu.writeParams()
+  const S = layout.size, mu = gpu.massUnit
+  const out: Record<string, unknown> = { n, ring, apic, precise, particles: p.n }
+  // decoded sums in quanta: hi + lo/LO_SCALE (two-word) or hi alone
+  const dec = (hi: Int32Array, lo: Int32Array, i: number) => hi[i] + (precise ? lo[i] / LO_SCALE : 0)
+
+  // K1 faceScatter
+  cpu.p2g(p)
+  await submit(device, e => gpu.encodeScatter(e))
+  const g1 = await gpu.readGrid(0)
+  const adds = [new Uint16Array(S), new Uint16Array(S), new Uint16Array(S)]
+  for (let q = 0; q < p.n; q++) for (const a of [0, 1, 2] as const) {
+    const x = p.pos[3 * q], y = p.pos[3 * q + 1], z = p.pos[3 * q + 2]
+    const f = [x / DX - (a === 0 ? 0 : 0.5), y / DX - (a === 1 ? 0 : 0.5), z / DX - (a === 2 ? 0 : 0.5)]
+    const b = f.map(Math.floor), t = f.map((v, i) => v - b[i])
+    for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
+      const w = (di ? t[0] : 1 - t[0]) * (dj ? t[1] : 1 - t[1]) * (dk ? t[2] : 1 - t[2])
+      if (w !== 0) adds[a][layout.idx(b[0] + di, b[1] + dj, b[2] + dk)]++
+    }
+  }
+  let massWorst = 0, momWorst = 0, massRef = 0, momRef = 0, maxAdds = 0
+  for (const a of [0, 1, 2]) for (let s = 0; s < S; s++) {
+    const gm = dec(g1.mass, g1.massLo, a * S + s) / MASS_SCALE, cm = cpu.mass[a][s] / mu
+    const gp = dec(g1.mom, g1.momLo, a * S + s) / MOM_SCALE, cp = cpu.mom[a][s] / mu
+    massRef = Math.max(massRef, Math.abs(cm)); momRef = Math.max(momRef, Math.abs(cp)); maxAdds = Math.max(maxAdds, adds[a][s])
+    // excess over the quantisation bound, in quanta: single word (adds·½ + 1); two words (adds·½/LO_SCALE + 1)
+    const qb = precise ? adds[a][s] / 2 / LO_SCALE + 1 : adds[a][s] / 2 + 1
+    massWorst = Math.max(massWorst, Math.abs(gm - cm) * MASS_SCALE - qb)
+    momWorst = Math.max(momWorst, Math.abs(gp - cp) * MOM_SCALE - qb)
+  }
+  // relative-error form for the report
+  out.k1 = { massExcessQuanta: massWorst, momExcessQuanta: momWorst, massRef, momRef, maxAdds,
+    massRelTolQuanta: 1e-5 * massRef * MASS_SCALE, momRelTolQuanta: 1e-5 * momRef * MOM_SCALE }
+
+  // K2 gridUpdate — the reference runs on the GPU's own integer sums, so only the division/gravity are compared
+  for (const a of [0, 1, 2]) for (let s = 0; s < S; s++) {
+    cpu.mass[a][s] = dec(g1.mass, g1.massLo, a * S + s) / MASS_SCALE * mu
+    cpu.mom[a][s] = dec(g1.mom, g1.momLo, a * S + s) / MOM_SCALE * mu
+  }
+  cpu.gridUpdate(dt); cpu.applySolidFaces()
+  await submit(device, e => gpu.encodeGridUpdate(e))
+  const g2 = await gpu.readGrid(0)
+  const cu = new Float64Array(3 * S), cv = new Uint32Array(3 * S)
+  for (const a of [0, 1, 2]) { cu.set(cpu.u[a], a * S); for (let s = 0; s < S; s++) cv[a * S + s] = cpu.valid[a][s] }
+  const inRange = (i: number) => { const a = Math.floor(i / S) as 0 | 1 | 2; return rangeMask(layout, a)[i % S] === 1 }
+  const u2 = maxDiff(g2.u, cu, inRange)
+  let validMismatch2 = 0
+  for (let i = 0; i < 3 * S; i++) if (inRange(i) && g2.valid[i] !== cv[i]) validMismatch2++
+  out.k2 = { uDiff: u2.d, uRef: u2.ref, validMismatch: validMismatch2 }
+
+  // K3 extrapolate — both start from the reference's gridUpdate result, rounded to f32
+  const uIn = new Float32Array(cu), vIn = new Uint32Array(cv)
+  for (const a of [0, 1, 2]) for (let s = 0; s < S; s++) cpu.u[a][s] = uIn[a * S + s]
+  gpu.writeGrid(0, { u: uIn, valid: vIn })
+  cpu.extrapolate(); cpu.applySolidFaces()
+  await submit(device, e => gpu.encodeExtrapolate(e))
+  const g3 = await gpu.readGrid(gpu.finalVelocityBuffer)
+  const cu3 = new Float64Array(3 * S), cv3 = new Uint32Array(3 * S)
+  for (const a of [0, 1, 2]) { cu3.set(cpu.u[a], a * S); for (let s = 0; s < S; s++) cv3[a * S + s] = cpu.valid[a][s] }
+  const u3 = maxDiff(g3.u, cu3, inRange)
+  let validMismatch3 = 0
+  for (let i = 0; i < 3 * S; i++) if (inRange(i) && g3.valid[i] !== cv3[i]) validMismatch3++
+  out.k3 = { uDiff: u3.d, uRef: u3.ref, validMismatch: validMismatch3 }
+
+  // K4 g2pMac + RK2 — both read the reference's final grid, rounded to f32
+  const uFin = new Float32Array(cu3)
+  for (const a of [0, 1, 2]) for (let s = 0; s < S; s++) cpu.u[a][s] = uFin[a * S + s]
+  gpu.writeGrid(gpu.finalVelocityBuffer, { u: uFin, valid: cv3 })
+  gpu.resetDiagnostics()
+  const before = p.pos.slice()
+  cpu.diag.wallClamps = 0; cpu.diag.unsetFaceReads = 0
+  cpu.g2p(p); cpu.advect(p, dt)
+  await submit(device, e => gpu.encodeG2P(e))
+  const gp4 = await gpu.readParticles(), d4 = await gpu.readDiagnostics()
+  const pick3 = (src: Float32Array, stride: number, off: number) => {
+    const r = new Float64Array(3 * p.n)
+    for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) r[3 * q + a] = src[stride * q + off + a]
+    return r
+  }
+  const gVel = pick3(gp4.vel, 4, 0), gPos = pick3(gp4.pos, 4, 0)
+  const gC = [0, 1, 2].map(a => pick3(gp4.aff, 12, 4 * a))
+  const dv = maxDiff(gVel, p.vel), dp = maxDiff(gPos, p.pos)
+  let dc = 0, cRef = 0
+  for (const a of [0, 1, 2]) { const m = maxDiff(gC[a], p.c[a]); dc = Math.max(dc, m.d); cRef = Math.max(cRef, m.ref) }
+  let disp = 0
+  for (let i = 0; i < p.pos.length; i++) disp = Math.max(disp, Math.abs(p.pos[i] - before[i]))
+  out.k4 = { velDiff: dv.d, velRef: dv.ref, cDiff: dc, cRef, posDiff: dp.d, extent: Math.max(...layout.extent), maxDisplacement: disp,
+    wallClamps: { gpu: d4.wallClamps, cpu: cpu.diag.wallClamps }, unsetReads: { gpu: d4.unsetFaceReads, cpu: cpu.diag.unsetFaceReads } }
+
+  // K5 present — the legacy 80-byte layout, from the GPU's own post-K4 state
+  await submit(device, e => { gpu.writeParams(); gpu.encodePresent(e) })
+  const pres = await gpu.readBuffer(gpu.presentationBuffer, 80 * p.n)
+  const pf = new Float32Array(pres), pu = new Uint32Array(pres)
+  let presErr = 0, presIdErr = 0
+  for (let q = 0; q < p.n; q++) {
+    for (let a = 0; a < 3; a++) {
+      presErr = Math.max(presErr, Math.abs(pf[20 * q + a] - gp4.pos[4 * q + a] / L_REF))
+      presErr = Math.max(presErr, Math.abs(pf[20 * q + 4 + a] - gp4.vel[4 * q + a] * TAU / L_REF))
+    }
+    if (pu[20 * q + 3] !== 0 || pu[20 * q + 17] !== 1 || pf[20 * q + 7] !== 20) presIdErr++
+  }
+  out.k5 = { maxAbsErr: presErr, idOrPhaseOrTempErrors: presIdErr }
+  gpu.destroy()
+  return out
+}
+
+/** 1 for slots that belong to face grid `a`'s logical range (ghosts included), else 0. */
+function rangeMask(layout: GridLayout, a: 0 | 1 | 2): Uint8Array {
+  const key = `${layout.nx},${layout.ny},${layout.nz},${layout.ring},${a}`
+  const hit = maskCache.get(key)
+  if (hit) return hit
+  const m = new Uint8Array(layout.size)
+  const [lo, hi] = layout.faceRange(a)
+  for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) m[layout.idx(i, j, k)] = 1
+  maskCache.set(key, m)
+  return m
+}
+const maskCache = new Map<string, Uint8Array>()
+
+// ── S3.1a physics gates on the GPU path ─────────────────────────────────────────────────────────────────────
+
+async function linearField(device: GPUDevice, o: { n?: Vec3; ring?: Vec3; apic?: boolean; seed?: number; precise?: boolean }) {
+  const n = o.n ?? [16, 16, 16], rng = mulberry32(o.seed ?? 11)
+  const p = blob([3, 3, 3], [n[0] - 4, n[1] - 4, n[2] - 4], rng)
+  const u0 = [rng() * 2 - 1, rng() * 2 - 1, rng() * 2 - 1]
+  const A = [0, 1, 2].map(() => [0, 1, 2].map(() => (rng() * 2 - 1) * 3))
+  const exact = (q: number, a: number) => u0[a] + A[a][0] * p.pos[3 * q] + A[a][1] * p.pos[3 * q + 1] + A[a][2] * p.pos[3 * q + 2]
+  for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) { p.vel[3 * q + a] = exact(q, a); p.c[a].set(A[a], 3 * q) }
+  f32round(p)
+  const gpu = new FlipGpuSimulator(device, { nx: n[0], ny: n[1], nz: n[2], dx: DX, ring: o.ring, apic: o.apic ?? true, preciseP2G: o.precise ?? true, maxParticles: p.n, lRef: L_REF, tauS: TAU })
+  gpu.dt = 0
+  gpu.setParticles(toInit(p))
+  await submit(device, e => gpu.step(e, 1))
+  const r = await gpu.readParticles(), d = await gpu.readDiagnostics()
+  // "interior" = every face of the particle's stencil lies at least one full cell inside the blob (FINAL-PLAN S3.1a
+  // gates interior particles); edge particles are reported separately — their faces hold partial mass, which
+  // magnifies the fixed-point momentum quantum.
+  const lo = [3, 3, 3], hi = [n[0] - 4, n[1] - 4, n[2] - 4]
+  const interior = (q: number) => [0, 1, 2].every(a => { const c = p.pos[3 * q + a] / DX; return c >= lo[a] + 2 && c <= hi[a] - 1 })
+  let ev = 0, ec = 0, evEdge = 0, ecEdge = 0, vScale = 0, aScale = 0, nInt = 0
+  for (const row of A) for (const v of row) aScale = Math.max(aScale, Math.abs(v))
+  for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) vScale = Math.max(vScale, Math.abs(exact(q, a)))
+  for (let q = 0; q < p.n; q++) {
+    const inner = interior(q)
+    if (inner) nInt++
+    for (let a = 0; a < 3; a++) {
+      const e1 = Math.abs(r.vel[4 * q + a] - exact(q, a)) / vScale
+      let e2 = 0
+      for (let b = 0; b < 3; b++) e2 = Math.max(e2, Math.abs(r.aff[12 * q + 4 * a + b] - A[a][b]) / aScale)
+      if (inner) { ev = Math.max(ev, e1); ec = Math.max(ec, e2) } else { evEdge = Math.max(evEdge, e1); ecEdge = Math.max(ecEdge, e2) }
+    }
+  }
+  gpu.destroy()
+  return { ev, ec, evEdge, ecEdge, interior: nInt, particles: p.n, vScale, aScale, unset: d.unsetFaceReads }
+}
+
+async function rotation(device: GPUDevice, o: { apic?: boolean }) {
+  const rng = mulberry32(22)
+  const p = blob([3, 3, 3], [12, 12, 12], rng)
+  let M = 0; const c = [0, 0, 0]
+  for (let q = 0; q < p.n; q++) { M += p.mass[q]; for (let a = 0; a < 3; a++) c[a] += p.mass[q] * p.pos[3 * q + a] }
+  const o0 = c.map(v => v / M), w = [1.3, -0.7, 2.1]
+  for (let q = 0; q < p.n; q++) {
+    const r = [p.pos[3 * q] - o0[0], p.pos[3 * q + 1] - o0[1], p.pos[3 * q + 2] - o0[2]]
+    p.vel.set([w[1] * r[2] - w[2] * r[1], w[2] * r[0] - w[0] * r[2], w[0] * r[1] - w[1] * r[0]], 3 * q)
+    p.c[0].set([0, -w[2], w[1]], 3 * q); p.c[1].set([w[2], 0, -w[0]], 3 * q); p.c[2].set([-w[1], w[0], 0], 3 * q)
+  }
+  f32round(p)
+  const Lof = (pos: ArrayLike<number>, vel: ArrayLike<number>, sp: number, sv: number) => {
+    const L = [0, 0, 0]
+    for (let q = 0; q < p.n; q++) {
+      const rx = pos[sp * q] - o0[0], ry = pos[sp * q + 1] - o0[1], rz = pos[sp * q + 2] - o0[2]
+      const vx = vel[sv * q], vy = vel[sv * q + 1], vz = vel[sv * q + 2], m = p.mass[q]
+      L[0] += m * (ry * vz - rz * vy); L[1] += m * (rz * vx - rx * vz); L[2] += m * (rx * vy - ry * vx)
+    }
+    return L
+  }
+  const L0 = Lof(p.pos, p.vel, 3, 3)
+  const gpu = new FlipGpuSimulator(device, { nx: 16, ny: 16, nz: 16, dx: DX, apic: o.apic ?? true, maxParticles: p.n, lRef: L_REF, tauS: TAU })
+  gpu.dt = 0
+  gpu.setParticles(toInit(p))
+  await submit(device, e => gpu.step(e, 1))
+  const r = await gpu.readParticles()
+  const L1 = Lof(r.pos, r.vel, 4, 4)
+  gpu.destroy()
+  return { rel: Math.hypot(L1[0] - L0[0], L1[1] - L0[1], L1[2] - L0[2]) / Math.hypot(...L0) }
+}
+
+async function ballistic(device: GPUDevice, o: { dt: number; T?: number; gravity?: Vec3; v0?: Vec3; ring?: Vec3 }) {
+  const T = o.T ?? 0.2, v0 = o.v0 ?? [1.2, 2.5, -0.7], gravity = o.gravity ?? [0, -9.80665, 0]
+  const rng = mulberry32(33)
+  const p = blob([10, 8, 13], [15, 13, 18], rng)
+  for (let q = 0; q < p.n; q++) p.vel.set(v0, 3 * q)
+  f32round(p)
+  const gpu = new FlipGpuSimulator(device, { nx: 32, ny: 32, nz: 32, dx: DX, ring: o.ring, gravity, maxParticles: p.n, lRef: L_REF, tauS: TAU })
+  gpu.dt = o.dt
+  gpu.setParticles(toInit(p))
+  const steps = Math.round(T / o.dt)
+  const com = (pos: Float32Array) => { const c = [0, 0, 0]; for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) c[a] += pos[4 * q + a]; return c.map(v => v / p.n) }
+  const ts = [0], cs = [com((await gpu.readParticles()).pos)]
+  for (let s = 1; s <= steps; s++) {
+    await submit(device, e => gpu.step(e, 1))
+    ts.push(s * o.dt); cs.push(com((await gpu.readParticles()).pos))
+  }
+  const d = await gpu.readDiagnostics()
+  const final = await gpu.readParticles()
+  gpu.destroy()
+  return { ts, cs, steps, wallClamps: d.wallClamps, unset: d.unsetFaceReads, finalPos: Array.from(final.pos) }
+}
+
+/** P2G cost, single- vs two-word fixed point: ~100k particles (a 25×25×20-cell block at 8 ppc) in 64³, `reps`
+ *  scatters in one command buffer, wall time to completion / reps (includes clears; timestamp-free). */
+async function p2gCost(device: GPUDevice, o: { reps?: number }) {
+  const reps = o.reps ?? 200, rng = mulberry32(7)
+  const p = blob([20, 5, 22], [44, 29, 41], rng)
+  for (let q = 0; q < p.n; q++) p.vel.set([rng() - 0.5, rng() - 0.5, rng() - 0.5], 3 * q)
+  const res: Record<string, number> = { particles: p.n }
+  for (const precise of [false, true, false, true]) {
+    const gpu = new FlipGpuSimulator(device, { nx: 64, ny: 64, nz: 64, dx: DX, preciseP2G: precise, maxParticles: p.n, lRef: L_REF, tauS: TAU })
+    gpu.setParticles(toInit(p)); gpu.writeParams()
+    await submit(device, e => gpu.encodeScatter(e))          // warm-up
+    const t0 = performance.now()
+    await submit(device, e => { for (let r = 0; r < reps; r++) gpu.encodeScatter(e) })
+    const ms = (performance.now() - t0) / reps
+    const key = precise ? 'twoWordMs' : 'oneWordMs'
+    res[key] = Math.min(res[key] ?? Infinity, ms)
+    gpu.destroy()
+  }
+  return res
+}
+
+// ── page API ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+interface FlipTestApi { ready: boolean; error: string | null; info: () => unknown; run: (test: string, params?: Record<string, unknown>) => Promise<unknown> }
+declare global { interface Window { __flipTest: FlipTestApi } }
+const api: FlipTestApi = { ready: false, error: null, info: () => null, run: async () => { throw new Error('not ready') } }
+window.__flipTest = api
+
+try {
+  if (!navigator.gpu) throw new Error('navigator.gpu unavailable')
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+  if (!adapter) throw new Error('requestAdapter returned null')
+  const device = await adapter.requestDevice({ label: 'flip-selftest (default limits)' })
+  const errors: string[] = []
+  device.addEventListener('uncapturederror', ev => errors.push((ev as GPUUncapturedErrorEvent).error.message))
+  api.info = () => ({ vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description,
+    maxStorageBuffersPerShaderStage: device.limits.maxStorageBuffersPerShaderStage, gpuErrors: errors.slice() })
+  api.run = async (test, params = {}) => {
+    say(`run ${test} ${JSON.stringify(params)}`)
+    const errBefore = errors.length
+    let out: unknown
+    if (test === 'kernels') out = await kernels(device, params as KernelOpts)
+    else if (test === 'linearField') out = await linearField(device, params)
+    else if (test === 'rotation') out = await rotation(device, params)
+    else if (test === 'ballistic') out = await ballistic(device, params as { dt: number })
+    else if (test === 'p2gCost') out = await p2gCost(device, params)
+    else throw new Error(`unknown test ${test}`)
+    return { ...(out as object), gpuErrors: errors.slice(errBefore) }
+  }
+  api.ready = true
+  say(`adapter: ${adapter.info.vendor} / ${adapter.info.architecture} — default limits (storage buffers/stage ${device.limits.maxStorageBuffersPerShaderStage})`)
+} catch (e) {
+  api.error = e instanceof Error ? e.message : String(e)
+  say(`INIT FAILED: ${api.error}`)
+}
