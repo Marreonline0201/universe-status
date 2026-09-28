@@ -47,7 +47,9 @@ try {
   const l1 = await status(page)
   report.r2lockstep = { completed: l1.pointsReadbacksCompleted - l0.pointsReadbacksCompleted, steppedFrames: l1.framesStepped - l0.framesStepped }
   // the gate, in the realtime clock
-  await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false, clock: 'realtime' }))
+  // Reset the clock statistics at the switch: presentIntervalP50 kept the 5.6 ms lockstep intervals of R1, so the old
+  // "presented = 2 s / p50" read ~346 frames at a real 60 fps (120). Presented frames are now COUNTED (framesAdvanced).
+  await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false, clock: 'realtime', resetClockStats: true }))
   await page.waitForTimeout(500)
   await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: true }))
   const c = await status(page)
@@ -55,16 +57,16 @@ try {
   for (let i = 0; i < 40 && switchedAfter === null; i++) {
     await page.waitForTimeout(5)
     const s = await status(page)
-    if (s.renderPath === 'points') switchedAfter = Math.round((s.presentIntervalP50 ? (s.rafFrames - c.rafFrames) / s.presentEvery : s.rafFrames - c.rafFrames))
+    if (s.renderPath === 'points') switchedAfter = s.framesAdvanced - c.framesAdvanced
   }
   const w0 = await page.evaluate(() => performance.now())
   const s0 = await status(page)
   await page.waitForTimeout(2000)
   const w1 = await page.evaluate(() => performance.now())
   const d = await status(page)
-  const presented = Math.round((w1 - w0) / d.presentIntervalP50)
+  const presented = d.framesAdvanced - s0.framesAdvanced
   const done = d.pointsReadbacksCompleted - s0.pointsReadbacksCompleted
-  report.r2 = { switchedAfterPresentedFrames: switchedAfter, presented, completed: done, lockstep: report.r2lockstep }
+  report.r2 = { switchedAfterPresentedFrames: switchedAfter, presented, completed: done, wallMs: w1 - w0, lockstep: report.r2lockstep }
   gate.check(switchedAfter !== null && switchedAfter <= 2, `R2 forced SSFR failure → Points path after ${switchedAfter} presented frame(s) (≤ 2)`)
   gate.check(done >= 0.5 * presented, `R2 fallback receives live positions: ${done} completed readbacks over ~${presented} presented frames in 2 s (≥ half); lockstep 180 fps: ${report.r2lockstep.completed}/${report.r2lockstep.steppedFrames} [reported]`)
   await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false }))
