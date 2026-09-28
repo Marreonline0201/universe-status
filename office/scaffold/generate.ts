@@ -55,9 +55,9 @@ organization: delegation, peer review, and written deliverables — not solo pro
   arbitrates cross-team priorities, keeps \`company/JOURNAL.md\`.
 ${orgLines}
 
-Each team: 1 Team Lead (Fable 5), 1 Principal Researcher (Fable 5) who plans the research
-and coordinates 2 Senior Researchers (Opus), 1 Reviewer/Editor (Opus), 1 Research Engineer
-(Fable 5), 1 Liaison/Scribe (Sonnet). Haiku-class models are never used.
+Each team: 1 Team Lead, 1 Principal Researcher who plans the research and coordinates
+2 Senior Researchers, 1 Reviewer/Editor, 1 Research Engineer, 1 Liaison/Scribe. Every seat,
+including the Director, runs Opus 5.5 (\`claude-opus-5-5\`) — owner decision 2026-09-28.
 
 ## How work flows
 
@@ -244,8 +244,8 @@ you route, prioritize, and keep the record.`
 - You own the final "is this worth the owner's time" call before a report goes to review.`,
     'Principal Researcher': `
 ## Duties
-- You are the team's research planner — the strongest model on the team sits in this seat
-  because planning is where it pays. When a research task lands on you, do NOT dive straight
+- You are the team's research planner — planning is where the team's thinking compounds, so
+  this seat owns it. When a research task lands on you, do NOT dive straight
   into reading: first write a short research plan into the task's \`## Log\` — the question
   decomposed into 2-3 angles, what evidence would settle each angle, and which sources matter.
 - Split the angles: mail \`${a.team}-fable-2\` and \`${a.team}-fable-3\` (\`kind: request\`), one

@@ -1,13 +1,13 @@
 // Single source of truth for the company roster: 8 teams × 7 agents + 1 director = 57.
-// Per team: 1 lead (fable), 1 principal researcher (fable) + 2 senior researchers (opus),
-// 1 reviewer (opus), 1 research engineer (fable), 1 liaison/scribe (sonnet). Haiku is never used.
+// Every seat — director, leads, researchers, reviewers, engineers, liaisons — runs Opus 5.5.
 // The scaffold generator writes company/ from this; the orchestrator loads the generated
 // profile.json files at runtime (so the user can hand-edit profiles without touching code).
 
+// 2026-09-28 owner decision: "change every workers to use opus5.5 from now on". This replaces
+// the 2026-07-20 Fable/Opus/Sonnet tier split. One model for every seat — do not reintroduce
+// per-role tiers without a new owner decision.
 export const MODELS = {
-  fable: 'claude-fable-5',
-  opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-5',
+  opus: 'claude-opus-5-5',
 } as const
 
 export interface RoleSpec {
@@ -18,18 +18,16 @@ export interface RoleSpec {
 }
 
 export const TEAM_ROLES: RoleSpec[] = [
-  // 2026-07-20 owner decision: Fable 5 verified back in-plan (one-turn CLI ping OK).
-  // Fable goes where planning/thinking compounds: the director, team leads, one principal
-  // researcher per team, and research engineers. fable-2/3 stay on Opus — the principal
-  // plans the research and coordinates them. 25 of 57 agents on Fable (~2x Opus burn);
-  // the usage hard stop (scheduler.ts) is the money guard.
-  { suffix: 'lead',     role: 'Team Lead',            model: MODELS.fable,  duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
-  { suffix: 'fable-1',  role: 'Principal Researcher', model: MODELS.fable,  duty: 'Plans the team\'s research: decomposes questions into angles, coordinates the two senior researchers, synthesizes their threads into the draft.' },
-  { suffix: 'fable-2',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'fable-3',  role: 'Senior Researcher',    model: MODELS.opus,   duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
-  { suffix: 'reviewer', role: 'Reviewer / Editor',    model: MODELS.opus,   duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
-  { suffix: 'engineer', role: 'Research Engineer',    model: MODELS.fable,  duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
-  { suffix: 'liaison',  role: 'Liaison / Scribe',     model: MODELS.sonnet, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
+  // Every seat on Opus 5.5 (owner, 2026-09-28). The seat suffixes ('fable-1' etc.) are
+  // historical agent ids kept so mail, task and memory paths stay valid — they no longer
+  // imply a model. The usage hard stop (scheduler.ts) remains the money guard.
+  { suffix: 'lead',     role: 'Team Lead',            model: MODELS.opus, duty: 'Decomposes assignments into subtasks, assigns them, tracks progress, escalates blockers to the director.' },
+  { suffix: 'fable-1',  role: 'Principal Researcher', model: MODELS.opus, duty: 'Plans the team\'s research: decomposes questions into angles, coordinates the two senior researchers, synthesizes their threads into the draft.' },
+  { suffix: 'fable-2',  role: 'Senior Researcher',    model: MODELS.opus, duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'fable-3',  role: 'Senior Researcher',    model: MODELS.opus, duty: 'Deep research, idea generation, and report drafting at the highest quality bar.' },
+  { suffix: 'reviewer', role: 'Reviewer / Editor',    model: MODELS.opus, duty: 'Gates every report against company/REPORT_STANDARDS.md; requests revisions until the bar is met.' },
+  { suffix: 'engineer', role: 'Research Engineer',    model: MODELS.opus, duty: 'Grounds proposals in the actual codebase; writes feasibility notes with concrete file references.' },
+  { suffix: 'liaison',  role: 'Liaison / Scribe',     model: MODELS.opus, duty: 'Handles cross-team mail, keeps the team charter current, writes digests of finished work.' },
 ]
 
 export interface TeamSpec {
@@ -123,7 +121,7 @@ export function buildRoster(): AgentSpec[] {
     name: 'Aurelio Kade',
     team: 'company',
     role: 'Company Director',
-    model: MODELS.fable,
+    model: MODELS.opus,
     duty: 'Routes the owner\'s assignments to team leads, keeps the company journal, arbitrates cross-team priorities.',
   }]
   for (const team of TEAMS) {
