@@ -3,8 +3,8 @@
 import { chromium } from 'playwright-core'
 
 export const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-export const FLUID_TEST_URL = 'http://localhost:5173/?tab=fluid&bench=1'
-export const BENCH_URL = 'http://localhost:5173/bench.html'
+export const FLUID_TEST_URL = 'http://localhost:5174/?tab=fluid&bench=1'
+export const BENCH_URL = 'http://localhost:5174/bench.html'
 /** The app shell tries the office websocket; the office is deliberately never started. */
 export const EXPECTED_NOISE = /ws:\/\/localhost:4571/
 

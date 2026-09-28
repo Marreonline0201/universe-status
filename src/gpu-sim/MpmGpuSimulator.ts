@@ -54,6 +54,7 @@ export class MpmGpuSimulator {
   private contactCounterBuf!: GPUBuffer
   private contactReadBuf!: GPUBuffer   // MAP_READ for CPU readback
   private counterReadBuf!: GPUBuffer   // MAP_READ for counter readback
+  private diagBuf!: GPUBuffer          // g2p diagnostics counters (u32): [0] = safety-clamp hits
 
   // Pipelines
   private clearGridPipeline!: GPUComputePipeline
@@ -140,6 +141,11 @@ export class MpmGpuSimulator {
     this.counterReadBuf = device.createBuffer({
       size: 4,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    })
+
+    this.diagBuf = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     })
 
     // ── Create compute pipelines ──────────────────────────────────────────
@@ -232,6 +238,7 @@ export class MpmGpuSimulator {
         { binding: 0, resource: { buffer: this.particleBuf } },
         { binding: 1, resource: { buffer: this.gridBuf } },
         { binding: 2, resource: { buffer: this.simParamsBuf } },
+        { binding: 3, resource: { buffer: this.diagBuf } },   // diagnostics counters
       ],
     })
 
@@ -460,6 +467,30 @@ export class MpmGpuSimulator {
     }
   }
 
+  /** Zero the GPU diagnostics counters. */
+  resetDiagnostics() {
+    if (this.initialized) this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(4))
+  }
+
+  /** Read the GPU diagnostics counters (accumulated since the last reset). */
+  async readDiagnostics(): Promise<{ clampHits: number } | null> {
+    if (!this.initialized) return null
+    const staging = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+    try {
+      const encoder = this.device.createCommandEncoder()
+      encoder.copyBufferToBuffer(this.diagBuf, 0, staging, 0, 16)
+      this.device.queue.submit([encoder.finish()])
+      await staging.mapAsync(GPUMapMode.READ)
+      const d = new Uint32Array(staging.getMappedRange().slice(0))
+      staging.unmap()
+      return { clampHits: d[0] }
+    } catch {
+      return null
+    } finally {
+      staging.destroy()
+    }
+  }
+
   setGravity(g: number) { this.gravity = g }
   setTimestep(dt: number) { this.dt = dt }
   enableContactDetection(enabled: boolean) { this.contactDetectionEnabled = enabled }
@@ -500,6 +531,7 @@ export class MpmGpuSimulator {
     this.contactCounterBuf?.destroy()
     this.contactReadBuf?.destroy()
     this.counterReadBuf?.destroy()
+    this.diagBuf?.destroy()
     this.initialized = false
   }
 }

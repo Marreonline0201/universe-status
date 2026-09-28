@@ -40,6 +40,8 @@ struct Particle {
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read>       grid:      array<i32>;
 @group(0) @binding(2) var<uniform>             params:    SimParams;
+// Diagnostics counters: [0] = particle-substeps whose position hit the safety clamp.
+@group(0) @binding(3) var<storage, read_write> diag:      array<atomic<u32>>;
 
 fn decodeFixedPoint(v: i32) -> f32 {
     return f32(v) * INV_FIXED;
@@ -124,24 +126,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // ── Advect position (in grid-space) ──────────────────────────────────
     // new_vel is already in grid-space units
-    var new_position = position + new_vel * params.dt;
+    let advected = position + new_vel * params.dt;
 
-    // ── Clamp to domain (matching WebGPU-Ocean: clamp to [1, boxSize-2]) ─
-    new_position = clamp(new_position, vec3<f32>(1.0), vec3<f32>(GRID_RESf - 2.0));
-
-    // ── Wall repulsion (matching WebGPU-Ocean g2p) ───────────────────────
-    let k = 3.0;
-    let wall_stiffness = 0.3;
-    let x_n = new_position + new_vel * params.dt * k;
-    let wall_min = vec3<f32>(3.0);
-    let wall_max = vec3<f32>(GRID_RESf - 4.0);
-
-    if (x_n.x < wall_min.x) { new_vel.x += wall_stiffness * (wall_min.x - x_n.x); }
-    if (x_n.x > wall_max.x) { new_vel.x += wall_stiffness * (wall_max.x - x_n.x); }
-    if (x_n.y < wall_min.y) { new_vel.y += wall_stiffness * (wall_min.y - x_n.y); }
-    if (x_n.y > wall_max.y) { new_vel.y += wall_stiffness * (wall_max.y - x_n.y); }
-    if (x_n.z < wall_min.z) { new_vel.z += wall_stiffness * (wall_min.z - x_n.z); }
-    if (x_n.z > wall_max.z) { new_vel.z += wall_stiffness * (wall_max.z - x_n.z); }
+    // ── Safety clamp, COUNTED ─────────────────────────────────────────────
+    // Walls are the separating grid boundary (gridForces.wgsl). This clamp only keeps the
+    // quadratic stencil inside the 64³ grid if a particle ever outruns the wall band; every hit
+    // is counted so a gate can prove it (almost) never fires. (The old WebGPU-Ocean predictive
+    // wall spring — a non-physical force — was removed with the sticky walls, 2026-09-28.)
+    let new_position = clamp(advected, vec3<f32>(1.0), vec3<f32>(GRID_RESf - 2.0));
+    if (any(new_position != advected)) { atomicAdd(&diag[0], 1u); }
 
     // ── Convert back to [0,1] world space and store ──────────────────────
     p.pos_x = new_position.x * INV_GRID_RES;

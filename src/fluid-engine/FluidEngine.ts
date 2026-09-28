@@ -92,6 +92,7 @@ export class FluidEngine {
   private simTime = 0               // sim seconds since the last scene load
   private droppedTime = 0           // realtime: wall seconds dropped by the catch-up cap (time dilation)
   private substepsTotal = 0
+  private particleSubsteps = 0      // Σ particles × substeps since the last diagnostics reset
   private steppedFrames = 0         // macro-steps since the last scene load (bench clock)
   private stepLimit = Infinity      // bench: freeze the sim after this many macro-steps
   private maxFrameSteps = 0         // realtime: most macro-steps run in one presented frame (≤ MAX_CATCHUP_STEPS)
@@ -377,6 +378,7 @@ export class FluidEngine {
       const encoder = device.createCommandEncoder()
       sim.step(encoder, n)
       device.queue.submit([encoder.finish()])
+      this.particleSubsteps += n * sim.particleCount
     }
     this.steppedFrames++
     this.substepsTotal += n
@@ -671,6 +673,11 @@ export class FluidEngine {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
         if (opts.resetClockStats) { this.maxFrameSteps = 0; this.droppedTime = 0; this.presentIntervals = []; this.rtSamples = [] }
+        if (opts.resetDiagnostics) { this.gpuSim?.resetDiagnostics(); this.particleSubsteps = 0 }
+      },
+      diagnostics: async () => {
+        const d = await this.gpuSim?.readDiagnostics()
+        return { clampHits: d?.clampHits ?? null, particleSubsteps: this.particleSubsteps }
       },
       extraStatus: () => {
         const iv = [...this.presentIntervals].sort((a, b) => a - b)

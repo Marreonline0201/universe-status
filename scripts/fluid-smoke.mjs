@@ -5,11 +5,11 @@
 // changes while the sim runs, and no console errors appear (other than the expected office
 // websocket refusal — the office is deliberately never started).
 //
-//   node scripts/fluid-smoke.mjs [--url=http://localhost:5173/?tab=fluid&bench=1] [--shot=path.jpg]
+//   node scripts/fluid-smoke.mjs [--url=http://localhost:5174/?tab=fluid&bench=1] [--shot=path.jpg]
 import crypto from 'node:crypto'
 import { chromium } from 'playwright-core'
 
-let url = 'http://localhost:5173/?tab=fluid&bench=1'
+let url = 'http://localhost:5174/?tab=fluid&bench=1'
 let shot = null
 for (const a of process.argv.slice(2)) {
   let m

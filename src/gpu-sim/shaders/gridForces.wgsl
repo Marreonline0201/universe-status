@@ -15,7 +15,9 @@ const GRID_RES: u32    = 64u;
 const NUM_CELLS: u32   = 262144u;         // 64^3
 const FIXED_SCALE: f32 = 1e7;
 const INV_FIXED: f32   = 1e-7;
-const BOUNDARY: u32    = 2u;              // wall margin in cells
+// Wall band: grid nodes within BOUND of a tank face get the separating boundary below.
+// Must match TANK_MIN/TANK_MAX (3/64) in src/fluid-engine/spawn.ts.
+const BOUND: u32       = 3u;
 
 // ── Uniforms ─────────────────────────────────────────────────────────────────
 struct SimParams {
@@ -98,11 +100,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    // ── Boundary conditions: zero velocity near walls ────────────────────
-    // (WebGPU-Ocean uses < 2 and > ceil(boxSize) - 3)
-    if (x < BOUNDARY || x >= GRID_RES - BOUNDARY) { vel.x = 0.0; }
-    if (y < BOUNDARY || y >= GRID_RES - BOUNDARY) { vel.y = 0.0; }
-    if (z < BOUNDARY || z >= GRID_RES - BOUNDARY) { vel.z = 0.0; }
+    // ── Separating wall boundary (Hu et al. 2018 MLS-MPM eq. 25 "separate"; Taichi mpm88
+    // lines 49-56, bound = 3): in the wall band remove only the velocity component INTO the
+    // wall. Fluid slides freely along walls and can pull away from them (no sticking), and no
+    // artificial wall force is added. https://yzhu.io/publication/mpmmls2018siggraph/paper.pdf
+    if (x < BOUND && vel.x < 0.0) { vel.x = 0.0; }
+    if (x >= GRID_RES - BOUND && vel.x > 0.0) { vel.x = 0.0; }
+    if (y < BOUND && vel.y < 0.0) { vel.y = 0.0; }
+    if (y >= GRID_RES - BOUND && vel.y > 0.0) { vel.y = 0.0; }
+    if (z < BOUND && vel.z < 0.0) { vel.z = 0.0; }
+    if (z >= GRID_RES - BOUND && vel.z > 0.0) { vel.z = 0.0; }
 
     // ── Store velocity (NOT momentum) as fixed-point ─────────────────────
     // This is the key difference from our old code: grid now stores velocity.

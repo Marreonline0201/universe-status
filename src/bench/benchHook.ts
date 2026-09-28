@@ -58,7 +58,9 @@ export interface BenchTarget {
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
   action?(name: string): void | Promise<unknown>
   /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
-  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean }): void
+  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean }): void
+  /** GPU diagnostics counters (e.g. wall safety-clamp hits) + the particle-substeps denominator. */
+  diagnostics?(): Promise<Record<string, unknown>>
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
   extraStatus?(): Record<string, unknown>
 }
@@ -91,6 +93,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     configure(opts: Parameters<NonNullable<BenchTarget['configure']>>[0]) {
       if (!target.configure) throw new Error(`${meta.page} cannot be configured`)
       target.configure(opts)
+    },
+
+    diagnostics() {
+      if (!target.diagnostics) throw new Error(`${meta.page} has no diagnostics`)
+      return target.diagnostics()
     },
 
     status() {
