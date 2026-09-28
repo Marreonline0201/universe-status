@@ -91,8 +91,10 @@ try {
   gate.check(s5.n === expect && outBox === 0, `P5 box [0,0,0]–[1,0.5,1] m: ${s5.n} particles (lattice rule ${expect}), ${outBox} outside the requested box`)
   gate.check(Math.abs(p5.interior - PPC) / PPC <= 0.02, `P5 box interior packing ${p5.interior.toFixed(4)}/cell`)
 
-  // P3a — click-spawn path aimed into the middle of a settled pool
+  // P3a — click-spawn path aimed into the middle of a settled pool. Gravity set EXPLICITLY: the
+  // previous check's scenario (P5, g = 0) would otherwise leave the "pool" floating as a block.
   await bench(() => window.__fluidBench.setStepLimit(0))
+  await bench(() => window.__fluidBench.configure({ gravityMs2: 9.80665 }))
   await action('defaultScene', 24)
   await sampleAtFrame(page, 240)
   const pre = await sample(page)
@@ -102,8 +104,9 @@ try {
   const addedA = await action(`spawnAt:${c.map(v => v.toFixed(5)).join(',')}`, 25)
   const postA = await sample(page)
   const hA = hits(postA, pre.n, postA.n, cellsOf(pre))
-  report.p3a = { pre: pre.n, target: c, added: postA.n - pre.n, returned: addedA, inOcc: hA }
-  gate.check(hA === 0 && postA.n - pre.n === addedA, `P3a click-spawn aimed into the pool's centre: added ${postA.n - pre.n} (only in empty cells), ${hA} in occupied cells`)
+  report.p3a = { pre: pre.n, target: c, poolTopM: null, added: postA.n - pre.n, returned: addedA, inOcc: hA }
+  gate.check(c[1] < 0.2, `P3a setup: the pool settled (centre of mass at ${(unitToTankM(c[1])).toFixed(3)} m above the floor)`)
+  gate.check(hA === 0 && postA.n - pre.n === addedA && addedA > 0, `P3a click-spawn aimed into the pool's centre: added ${postA.n - pre.n} (> 0, only in empty cells above the water), ${hA} in occupied cells`)
 
   // P3b — +10K into a column filled to the top
   const column = { name: 'gate-full-column', materials: [water], spawns: [{ material: 'water', box: { min: [0.3 * TANK_INNER_M, 0, 0.3 * TANK_INNER_M], max: [0.7 * TANK_INNER_M, TANK_INNER_M, 0.7 * TANK_INNER_M] } }], gravity_mps2: 0 }
@@ -117,6 +120,7 @@ try {
 
   // P3c — two +10K spawns fired together (spawns are serialised; the second must see the first)
   await bench(() => window.__fluidBench.setStepLimit(0))
+  await bench(() => window.__fluidBench.configure({ gravityMs2: 9.80665 }))
   await action('defaultScene', 28)
   const preC = await sampleAtFrame(page, 120)
   const [n1, n2] = await bench(() => Promise.all([window.__fluidBench.action('batch10k', 29), window.__fluidBench.action('batch10k', 30)]))

@@ -4,9 +4,11 @@
 //   node scripts/fluid-gates/s1-render.mjs
 //
 // R1 100k particles, SSFR healthy: renderPath 'ssfr' and zero Points readbacks over 120 frames.
-// R2 forced SSFR failure: renderPath switches to 'points' within 2 presented frames and COMPLETED
-//    readbacks (positions actually copied into the Points geometry) resume for at least half the
-//    stepped frames — so the fallback shows live positions, not the last frame SSFR drew.
+// R2 forced SSFR failure, in the REALTIME clock the owner sees: renderPath switches to 'points'
+//    within 2 presented frames, and COMPLETED readbacks (positions actually copied into the Points
+//    geometry) arrive for at least half the presented frames over 2 s — live positions, not the
+//    last frame SSFR drew. (Lockstep at ~180 fps is reported too: a mapAsync in flight spans
+//    several such frames there, which says nothing about what a viewer sees at 60 Hz.)
 // R3 (reported) presented-frame rate at 100k in lockstep vs the a400506 baseline (159 FPS, which
 //    paid an 8 MB readback every frame). The 240 Hz vsync caps what can be seen here.
 import fs from 'node:fs'
@@ -38,21 +40,33 @@ try {
   console.log(`  R3 presented-frame rate at ${b.count} particles, lockstep: ${fps.toFixed(1)} fps (a400506 baseline with per-frame readback: 159)`)
 
   // R2
+  // lockstep figure, reported only
+  await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: true }))
+  const l0 = await status(page)
+  await waitStepped(page, l0.framesStepped + 30)
+  const l1 = await status(page)
+  report.r2lockstep = { completed: l1.pointsReadbacksCompleted - l0.pointsReadbacksCompleted, steppedFrames: l1.framesStepped - l0.framesStepped }
+  // the gate, in the realtime clock
+  await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false, clock: 'realtime' }))
+  await page.waitForTimeout(500)
   await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: true }))
   const c = await status(page)
   let switchedAfter = null
   for (let i = 0; i < 40 && switchedAfter === null; i++) {
     await page.waitForTimeout(5)
     const s = await status(page)
-    if (s.renderPath === 'points') switchedAfter = s.rafFrames - c.rafFrames
+    if (s.renderPath === 'points') switchedAfter = Math.round((s.presentIntervalP50 ? (s.rafFrames - c.rafFrames) / s.presentEvery : s.rafFrames - c.rafFrames))
   }
-  const f0 = (await status(page)).framesStepped
-  await waitStepped(page, f0 + 30)
+  const t0 = await page.evaluate(() => performance.now())
+  const s0 = await status(page)
+  await page.waitForTimeout(2000)
+  const t1 = await page.evaluate(() => performance.now())
   const d = await status(page)
-  const done = d.pointsReadbacksCompleted - c.pointsReadbacksCompleted
-  report.r2 = { switchedAfterFrames: switchedAfter, attempted: d.pointsReadbacks - c.pointsReadbacks, completed: done, steppedFrames: d.framesStepped - c.framesStepped }
+  const presented = Math.round((t1 - t0) / d.presentIntervalP50)
+  const done = d.pointsReadbacksCompleted - s0.pointsReadbacksCompleted
+  report.r2 = { switchedAfterPresentedFrames: switchedAfter, presented, completed: done, lockstep: report.r2lockstep }
   gate.check(switchedAfter !== null && switchedAfter <= 2, `R2 forced SSFR failure → Points path after ${switchedAfter} presented frame(s) (≤ 2)`)
-  gate.check(done >= 0.5 * (d.framesStepped - c.framesStepped), `R2 fallback receives live positions: ${done} completed readbacks over ${d.framesStepped - c.framesStepped} stepped frames (≥ half)`)
+  gate.check(done >= 0.5 * presented, `R2 fallback receives live positions: ${done} completed readbacks over ~${presented} presented frames in 2 s (≥ half); lockstep 180 fps: ${report.r2lockstep.completed}/${report.r2lockstep.steppedFrames} [reported]`)
   await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false }))
   await gate.hygiene(page, errors)
 } finally {

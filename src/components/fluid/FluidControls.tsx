@@ -126,7 +126,8 @@ export function FluidControls({ controller }: { controller: FluidController }) {
       {/* Gravity slider */}
       <div>
         <label style={labelStyle}>GRAVITY</label>
-        <input type="range" min={0} max={20} step={0.01} value={gravity}
+        {/* step "any": a 0.01 step made the browser round 9.80665 to 9.81 the moment it was touched */}
+        <input type="range" min={0} max={20} step="any" value={gravity}
           onChange={(e) => controller.setGravity(Number(e.target.value))} style={sliderStyle} />
         <div style={valueStyle}>{gravity.toFixed(2)} m/s²{Math.abs(gravity - G_STANDARD) < 0.005 ? ' (Earth)' : ''}</div>
       </div>

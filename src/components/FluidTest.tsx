@@ -52,8 +52,9 @@ export function FluidTest() {
   }, [syncCount])
 
   const spawnBatch = useCallback(async (count: number) => {
-    await engineRef.current?.spawnBatch(count)
+    const added = await engineRef.current?.spawnBatch(count) ?? 0
     syncCount()
+    return added
   }, [syncCount])
 
   const dropBall = useCallback(() => {
