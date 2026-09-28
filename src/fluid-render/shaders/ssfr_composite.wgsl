@@ -29,9 +29,11 @@ struct CompositeParams {
     invViewMatrix: mat4x4<f32>,
     projMatrix: mat4x4<f32>,
     invProjMatrix: mat4x4<f32>,
-    screenSize: vec2<f32>,
+    screenSize: vec2<f32>,   // SSFR internal size (all input textures)
     lutN: f32,
     lutLmaxM: f32,
+    outputSize: vec2<f32>,   // size of the target this pass draws (the canvas: CSS size × device pixel ratio)
+    _pad: vec2<f32>,
 };
 
 // Per composition: [kind (0 dielectric, 1 conductor), refractive index, LUT row (−1 none), 0] + [reserved].
@@ -84,6 +86,36 @@ fn loadDepth(p: vec2<i32>) -> f32 {
     return textureLoad(depthTex, clamp(p, vec2<i32>(0), size - 1), 0).r;
 }
 
+// The inputs are at the SSFR size (CSS pixels, ED-2) while the canvas is CSS × device pixel ratio, so the composite
+// upsamples. tc = continuous SSFR texel coordinate with texel centres at integers: exactly the texel index when the
+// output is the SSFR size (DPR 1, bench probes), so nothing below changes a single bit there.
+fn texelCoord(fragXY: vec2<f32>) -> vec2<f32> {
+    return fragXY * (params.screenSize / params.outputSize) - 0.5;
+}
+fn nearestTexel(tc: vec2<f32>) -> vec2<i32> {
+    return clamp(vec2<i32>(floor(tc + 0.5)), vec2<i32>(0), vec2<i32>(params.screenSize) - 1);
+}
+// Bilinear depth where all four taps hold liquid; nearest at silhouettes (never blends liquid with empty).
+fn depthAt(tc: vec2<f32>) -> f32 {
+    let i0 = vec2<i32>(floor(tc));
+    let f = tc - floor(tc);
+    let a = loadDepth(i0);
+    let b = loadDepth(i0 + vec2<i32>(1, 0));
+    let c = loadDepth(i0 + vec2<i32>(0, 1));
+    let d = loadDepth(i0 + vec2<i32>(1, 1));
+    if (validDepth(a) && validDepth(b) && validDepth(c) && validDepth(d)) { return mix(mix(a, b, f.x), mix(c, d, f.x), f.y); }
+    return loadDepth(nearestTexel(tc));
+}
+// Bilinear background (a display resampling of the sRGB image, as the pre-2026-09-28 linear sampler did).
+fn loadBg(p: vec2<i32>) -> vec4<f32> {
+    return textureLoad(bgTex, clamp(p, vec2<i32>(0), vec2<i32>(params.screenSize) - 1), 0);
+}
+fn bgAt(tc: vec2<f32>) -> vec4<f32> {
+    let i0 = vec2<i32>(floor(tc));
+    let f = tc - floor(tc);
+    return mix(mix(loadBg(i0), loadBg(i0 + vec2<i32>(1, 0)), f.x), mix(loadBg(i0 + vec2<i32>(0, 1)), loadBg(i0 + vec2<i32>(1, 1)), f.x), f.y);
+}
+
 // Exact unpolarised dielectric Fresnel reflectance (pbr-book 3rd ed. §8.2).
 fn fresnelDielectric(cosI: f32, etaI: f32, etaT: f32) -> f32 {
     let ci = clamp(cosI, 0.0, 1.0);
@@ -117,19 +149,23 @@ struct Shaded {
     linear: vec4<f32>,    // the same colour before the clip and the sRGB encode (bench probe target)
 };
 
-fn shade(uv: vec2<f32>) -> Shaded {
-    let size = vec2<i32>(params.screenSize);
-    let pix = clamp(vec2<i32>(uv * params.screenSize), vec2<i32>(0), size - 1);
-    let pc = vec2<f32>(pix) + 0.5;
+fn shade(fragXY: vec2<f32>) -> Shaded {
+    let tc = texelCoord(fragXY);
+    let pix = nearestTexel(tc);          // flat per-texel data: liquid present?, composition, thickness, bg depth
+    let pc = tc + 0.5;                   // SSFR pixel coordinates (pixel centres at +0.5)
 
-    let depth = loadDepth(pix);
-    let hasFluid = validDepth(depth);
+    let hasFluid = validDepth(loadDepth(pix));
+    let depth = depthAt(tc);
     let dc = select(1.0, depth, hasFluid);
-    // Neighbour depths; a neighbour without liquid is replaced by the centre depth (a flat tangent there).
-    let dR = select(dc, loadDepth(pix + vec2<i32>(1, 0)), validDepth(loadDepth(pix + vec2<i32>(1, 0))));
-    let dL = select(dc, loadDepth(pix - vec2<i32>(1, 0)), validDepth(loadDepth(pix - vec2<i32>(1, 0))));
-    let dD = select(dc, loadDepth(pix + vec2<i32>(0, 1)), validDepth(loadDepth(pix + vec2<i32>(0, 1))));   // +y = down the screen
-    let dU = select(dc, loadDepth(pix - vec2<i32>(0, 1)), validDepth(loadDepth(pix - vec2<i32>(0, 1))));
+    // Neighbour depths one texel away; a neighbour without liquid is replaced by the centre depth (a flat tangent).
+    let nR = depthAt(tc + vec2<f32>(1.0, 0.0));
+    let nL = depthAt(tc - vec2<f32>(1.0, 0.0));
+    let nD = depthAt(tc + vec2<f32>(0.0, 1.0));   // +y = down the screen
+    let nU = depthAt(tc - vec2<f32>(0.0, 1.0));
+    let dR = select(dc, nR, validDepth(nR));
+    let dL = select(dc, nL, validDepth(nL));
+    let dD = select(dc, nD, validDepth(nD));
+    let dU = select(dc, nU, validDepth(nU));
 
     let posC = eyePosAt(pc, dc);
     let posR = eyePosAt(pc + vec2<f32>(1.0, 0.0), dR);
@@ -164,7 +200,7 @@ fn shade(uv: vec2<f32>) -> Shaded {
     let coneR = footprintCone(rDir);
     let coneT = footprintCone(tDir);
 
-    let bgEnc = textureLoad(bgTex, pix, 0);
+    let bgEnc = bgAt(tc);
     let bgDepth = textureLoad(bgDepthTex, pix, 0).r;
     let bgInFront = (bgDepth + 1e-4) < depth;
     if (!hasFluid || bgInFront) {
@@ -187,7 +223,7 @@ fn shade(uv: vec2<f32>) -> Shaded {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return shade(in.uv).encoded;
+    return shade(in.position.xy).encoded;
 }
 
 // Bench probe (SSFRPipeline.probe): the same shading, plus the linear colour before the clip and encode.
@@ -198,6 +234,6 @@ struct ProbeOut {
 
 @fragment
 fn fs_probe(in: VertexOutput) -> ProbeOut {
-    let s = shade(in.uv);
+    let s = shade(in.position.xy);
     return ProbeOut(s.encoded, s.linear);
 }

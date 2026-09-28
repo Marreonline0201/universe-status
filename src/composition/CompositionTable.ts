@@ -500,8 +500,26 @@ export class CompositionTable {
   /** Get per-composition color data for SSFR shader binding */
   getColorData(): Float32Array { return this.colorData }
 
-  // (getRenderData() moved to the renderer: fluid-render/optics/materials.ts opticsRenderData() builds the SSFR
-  //  optics records from each composition's cited material key; the look values in props are no longer rendered.)
+  /** LEGACY look record per composition: [R, G, B, metalness, F0, emissive, IOR, opacity] (8 floats). NOT rendered
+   *  since 2026-09-28 — the SSFR composite takes its optics from fluid-render/optics/materials.ts opticsRenderData()
+   *  (measured spectra, exact Fresnel, cited IOR / complex index). Kept because the S1.5 materials gate (K1, Q3)
+   *  asserts this API. */
+  getRenderData(): Float32Array {
+    const data = new Float32Array(MAX_COMPOSITIONS * 8)
+    for (const comp of this.compositions) {
+      if (comp.id >= MAX_COMPOSITIONS) break
+      const base = comp.id * 8
+      data[base + 0] = comp.props.color[0]
+      data[base + 1] = comp.props.color[1]
+      data[base + 2] = comp.props.color[2]
+      data[base + 3] = comp.props.metalness
+      data[base + 4] = comp.props.F0
+      data[base + 5] = comp.props.emissive
+      data[base + 6] = comp.props.IOR
+      data[base + 7] = comp.props.opacityDensity
+    }
+    return data
+  }
 
   /** Create a blended composition from two existing ones (ratio-based) */
   blend(idA: number, idB: number, ratioA: number): number {

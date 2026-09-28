@@ -568,7 +568,8 @@ export class FluidEngine {
       try {
         camera.updateMatrixWorld()
         const ctx = renderer.backend.context as GPUCanvasContext
-        const outputView = ctx.getCurrentTexture().createView()
+        const outputTex = ctx.getCurrentTexture()
+        const outputView = outputTex.createView()
         if (this.frameCount < 2) device.pushErrorScope('validation')
         const encoder2 = device.createCommandEncoder()
         const ballSnapshot = this.ball.active
@@ -584,6 +585,7 @@ export class FluidEngine {
           new Float32Array(camera.matrixWorld.elements),
           outputView,
           ballSnapshot,
+          [outputTex.width, outputTex.height],   // canvas = CSS × DPR; SSFR passes stay at CSS size (ED-2)
         )
         device.queue.submit([encoder2.finish()])
         if (this.frameCount < 2) {

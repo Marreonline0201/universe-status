@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Render screenshots of FLUID TEST for a human look (NOT a gate — pixels here go through Chrome's compositor).
 //
-//   node scripts/fluid-gates/tools/render-shots.mjs [--tag=after] [--out=bench-results/render]
+//   node scripts/fluid-gates/tools/render-shots.mjs [--tag=after] [--out=bench-results/render] [--dpr=2]
+//
+// --dpr sets the device pixel ratio (the page renders its canvas at min(DPR, 2) × CSS size; SSFR's passes stay at
+// CSS size, ED-2, and the composite upsamples them). The owner's laptop is not DPR 1.
 //
 // Deterministic states: lockstep clock (1/60 s per frame), seeded spawns, the sim frozen at a fixed frame
 // (rendering keeps running), then the canvas element is captured.
@@ -14,11 +17,12 @@ import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, waitStepped, G_STANDARD } from '../../lib/fluid-page.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-let tag = 'shot', outDir = path.join(repoRoot, 'bench-results', 'render')
+let tag = 'shot', outDir = path.join(repoRoot, 'bench-results', 'render'), dpr = 1
 for (const a of process.argv.slice(2)) {
   let m
   if ((m = /^--tag=(.+)$/.exec(a))) tag = m[1]
   else if ((m = /^--out=(.+)$/.exec(a))) outDir = path.resolve(m[1])
+  else if ((m = /^--dpr=(.+)$/.exec(a))) dpr = Number(m[1])
 }
 fs.mkdirSync(outDir, { recursive: true })
 
@@ -44,7 +48,7 @@ const SCENES = {
   },
 }
 
-const { browser, page } = await openFluidPage()
+const { browser, page } = await openFluidPage(undefined, { deviceScaleFactor: dpr })
 try {
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60 }))
   const canvas = page.locator('canvas').first()

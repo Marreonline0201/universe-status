@@ -163,6 +163,8 @@ interface FrameInputs {
   invProj: Float32Array
   invView: Float32Array
   ball?: { center: [number, number, number]; radius: number; active: boolean }
+  /** Size of the composite's target (default: the internal size). */
+  outputSize?: [number, number]
   overrides?: ProbeOverrides
 }
 
@@ -274,7 +276,7 @@ export class SSFRPipeline {
     this.sceneUBO = ubo(192)       // 12 vec4 (Scene in ssfr_scene.wgsl)
     this.blurHUBO = ubo(32)
     this.blurVUBO = ubo(32)
-    this.compositeUBO = ubo(272)   // 4 mat4 + screenSize + lutN + lutLmax
+    this.compositeUBO = ubo(288)   // 4 mat4 + screenSize + lutN + lutLmax + outputSize + pad
     this.matBuf = d.createBuffer({ size: 256 * 8 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     this.probeMatBuf = d.createBuffer({ size: 256 * 8 * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
     const lut = buildOpticsLut()
@@ -412,7 +414,8 @@ export class SSFRPipeline {
     this.device.queue.writeBuffer(this.matBuf, 0, data.buffer, data.byteOffset, data.byteLength)
   }
 
-  /** Render one frame into `outputView` (the canvas texture; any size — the passes run at the internal size). */
+  /** Render one frame into `outputView`. The passes run at the internal size; the composite draws the whole target and
+   *  upsamples, so pass the target's size when it differs from the internal size (the canvas at a DPR above 1). */
   render(
     encoder: GPUCommandEncoder,
     particleBuffer: GPUBuffer,
@@ -423,10 +426,11 @@ export class SSFRPipeline {
     invViewMatrix: Float32Array,
     outputView: GPUTextureView,
     ball?: { center: [number, number, number]; radius: number; active: boolean },
+    outputSize?: [number, number],
   ) {
     if (particleCount === 0) return
     this.encodeFrame(encoder, this.main, {
-      particleBuffer, count: particleCount, view: viewMatrix, proj: projMatrix, invProj: invProjMatrix, invView: invViewMatrix, ball,
+      particleBuffer, count: particleCount, view: viewMatrix, proj: projMatrix, invProj: invProjMatrix, invView: invViewMatrix, ball, outputSize,
     }, outputView, null, this.matBuf)
   }
 
@@ -460,9 +464,10 @@ export class SSFRPipeline {
     q.writeBuffer(this.blurHUBO, 0, blur([1, 0]))
     q.writeBuffer(this.blurVUBO, 0, blur([0, 1]))
 
-    const comp = new Float32Array(68)
+    const comp = new Float32Array(72)
     comp.set(f.view, 0); comp.set(f.invView, 16); comp.set(f.proj, 32); comp.set(f.invProj, 48)
     comp[64] = t.w; comp[65] = t.h; comp[66] = LUT_N; comp[67] = LUT_LMAX_M
+    comp[68] = f.outputSize?.[0] ?? t.w; comp[69] = f.outputSize?.[1] ?? t.h
     q.writeBuffer(this.compositeUBO, 0, comp)
   }
 
