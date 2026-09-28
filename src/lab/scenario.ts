@@ -7,7 +7,7 @@
 // 2026-07-17 units contract) and is converted on load — see scenarioGravityMs2().
 import { ELEMENTS, type ElementName } from '../composition/PropertyCalculator'
 import type { RenderOverride } from '../composition/CompositionTable'
-import { DOMAIN_L_M, DX_M, G_STANDARD, TAU_S } from '../fluid-engine/units'
+import { DOMAIN_L_M, DX_M, G_STANDARD, TANK_INNER_M, TAU_S } from '../fluid-engine/units'
 import { LATTICE_SPACING } from '../fluid-engine/spawn'
 
 export interface LabMaterial {
@@ -24,7 +24,8 @@ export interface LabMaterial {
  *  at rest packing centred on `center` (the old uniform scatter was ~1.4 particles/cell). */
 export interface LabSpawn {
   material: string
-  /** Region to fill, metres from the tank's (0,0,0) corner. */
+  /** Region to fill, in metres from the tank's inner (0,0,0) corner (the walls), within
+   *  [0, TANK_INNER_M] = [0, 3.290 m] on each axis. */
   box?: { min: [number, number, number]; max: [number, number, number] }
   /** Initial velocity of the spawned particles, m/s. */
   initialVelocity?: [number, number, number]
@@ -48,6 +49,9 @@ export interface LabScenario {
   temperature?: number
   ball?: { center?: [number, number, number]; radius?: number }
 }
+
+/** Largest gravity a scenario may set (m/s²) — the GRAVITY slider's range. */
+export const MAX_GRAVITY_MPS2 = 20
 
 /** A scenario's gravity in m/s². Legacy code-unit gravity converts through the units
  *  contract; the canonical legacy value 0.3 was defined as Earth gravity, so it maps to
@@ -89,6 +93,20 @@ export function parseScenario(text: string):
   if (!Array.isArray(s.spawns) || s.spawns.length === 0) {
     return { ok: false, error: 'scenario needs a non-empty "spawns" array' }
   }
+  // Gravity is live in the solver: reject anything that is not a finite, bounded magnitude.
+  const gravityOk = (g: unknown) => typeof g === 'number' && Number.isFinite(g) && g >= 0
+  if (s.gravity_mps2 !== undefined && (!gravityOk(s.gravity_mps2) || s.gravity_mps2 > MAX_GRAVITY_MPS2)) {
+    return { ok: false, error: `gravity_mps2 must be a number in [0, ${MAX_GRAVITY_MPS2}] m/s² (got ${JSON.stringify(s.gravity_mps2)})` }
+  }
+  const warnings: string[] = []
+  if (s.gravity !== undefined) {
+    if (!gravityOk(s.gravity)) return { ok: false, error: `legacy "gravity" must be a non-negative number (got ${JSON.stringify(s.gravity)})` }
+    if (s.gravity_mps2 === undefined) {
+      const g = scenarioGravityMs2(s)
+      if (g > MAX_GRAVITY_MPS2) return { ok: false, error: `legacy gravity ${s.gravity} converts to ${g.toFixed(2)} m/s², above ${MAX_GRAVITY_MPS2}` }
+      warnings.push(`legacy "gravity": ${s.gravity} (grid units) converted to ${g.toFixed(4)} m/s² — write "gravity_mps2" instead`)
+    }
+  }
   const names = new Set(s.materials.map(m => m.name))
   let total = 0
   const isVec3 = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(c => typeof c === 'number' && Number.isFinite(c))
@@ -98,11 +116,12 @@ export function parseScenario(text: string):
       return { ok: false, error: 'spawn initialVelocity must be [vx,vy,vz] in m/s' }
     }
     if (sp.box !== undefined) {
-      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > DOMAIN_L_M)) {
-        return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres with 0 ≤ min < max ≤ ${DOMAIN_L_M}` }
+      const inner = +TANK_INNER_M.toFixed(4)
+      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > TANK_INNER_M + 1e-9)) {
+        return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres from the tank's inner corner, 0 ≤ min < max ≤ ${inner}` }
       }
-      const vol = sp.box.max.reduce((acc, v, i) => acc * (v - sp.box!.min[i]), 1) / DOMAIN_L_M ** 3
-      total += Math.round(vol / LATTICE_SPACING ** 3)
+      // Same count the lattice spawner will place: floor(size / spacing) per axis.
+      total += sp.box.max.reduce((acc, v, i) => acc * Math.max(1, Math.floor((v - sp.box!.min[i]) / DOMAIN_L_M / LATTICE_SPACING + 1e-9)), 1)
       continue
     }
     if (typeof sp.count !== 'number' || sp.count < 1 || sp.count > MAX_PER_SPAWN) {
@@ -113,9 +132,8 @@ export function parseScenario(text: string):
     }
     total += sp.count
   }
-  let warning: string | null = null
-  if (total > MAX_TOTAL) warning = `total spawn count ${total} exceeds ${MAX_TOTAL} — spawns will be truncated`
-  return { ok: true, scenario: s, warning }
+  if (total > MAX_TOTAL) warnings.push(`total spawn count ${total} exceeds ${MAX_TOTAL} — spawns will be truncated`)
+  return { ok: true, scenario: s, warning: warnings.length ? warnings.join('; ') : null }
 }
 
 export function elementsAs(elements: Record<string, number>): Partial<Record<ElementName, number>> {

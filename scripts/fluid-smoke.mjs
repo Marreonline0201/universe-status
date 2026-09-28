@@ -9,7 +9,7 @@
 import crypto from 'node:crypto'
 import { chromium } from 'playwright-core'
 
-let url = 'http://localhost:5174/?tab=fluid&bench=1'
+let url = (process.env.FLUID_BASE ?? 'http://localhost:5175') + '/?tab=fluid&bench=1'
 let shot = null
 for (const a of process.argv.slice(2)) {
   let m

@@ -42,7 +42,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
   const [notes, setNotes] = useState<string | null>(null)
   const [notesOpen, setNotesOpen] = useState(false)
   const [runNonce, setRunNonce] = useState(0)
-  const [stats, setStats] = useState({ fps: 0, count: 0 })
+  const [stats, setStats] = useState({ fps: 0, count: 0, rtFactor: 1 })
   const [consoleId, setConsoleId] = useState<string | null>(null)
   const notesCache = useRef(new Map<string, string>())
 
@@ -249,6 +249,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
           {selected?.hasScenario && scenario && toolbarBtn('▶ RE-RUN', () => setRunNonce(n => n + 1))}
           {selected?.hasNotes && toolbarBtn('NOTES', () => setNotesOpen(o => !o), notesOpen)}
           <span data-testid="lab-fps" style={{ marginLeft: 'auto', fontSize: 'calc(9px * var(--font-scale, 1))', color: stats.fps >= 30 ? '#00ff88' : '#ffd700' }}>{stats.fps} FPS</span>
+          {stats.rtFactor < 0.98 && <span title="The simulation cannot keep up with real time; physics is unchanged, time runs slower." style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: '#ffaa00' }}>TIME ×{stats.rtFactor.toFixed(2)}</span>}
           <span data-testid="lab-particles" style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: '#8a97b8' }}>{stats.count.toLocaleString()} particles</span>
           <span data-testid="lab-webgpu" style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: webgpu ? '#00ff88' : '#ff4444' }}>{webgpu ? 'WEBGPU' : 'NO WEBGPU'}</span>
         </div>

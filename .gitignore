@@ -38,3 +38,6 @@ office-runtime.log
 
 # Fluid bench outputs (scripts/fluid-bench.mjs)
 bench-results/
+
+# Clean-commit gate worktree (scripts/gate-server.mjs)
+.gate-tree/

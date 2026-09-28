@@ -43,6 +43,8 @@ export interface ParticleSample {
   positions: Float32Array
   velocities: Float32Array
   compIds: Uint32Array
+  /** APIC affine matrix C per particle (9 floats, row-major), when the engine provides it. */
+  affine?: Float32Array
 }
 
 /** What a page must provide for the hook. Optional members enable the matching hook calls. */
@@ -67,8 +69,9 @@ export interface BenchTarget {
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
   let rafFrames = 0
-  const countFrames = () => { rafFrames++; requestAnimationFrame(countFrames) }
-  requestAnimationFrame(countFrames)
+  let rafId = 0
+  const countFrames = () => { rafFrames++; rafId = requestAnimationFrame(countFrames) }
+  rafId = requestAnimationFrame(countFrames)
 
   const hook = {
     ok: true,
@@ -113,7 +116,7 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     },
 
     /** Full particle readback, base64-encoded (Float32 pos/vel xyz, Uint32 composition id). */
-    async sample() {
+    async sample(opts: { affine?: boolean } = {}) {
       const frame = target.framesStepped()
       const s = await target.readParticleSample()
       if (!s) return null
@@ -123,15 +126,26 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
         pos: toBase64(s.positions),
         vel: toBase64(s.velocities),
         comp: toBase64(s.compIds),
+        ...(opts.affine && s.affine ? { aff: toBase64(s.affine) } : {}),
         materials: target.compositions(),
       }
     },
   }
-  ;(window as unknown as { __fluidBench: typeof hook }).__fluidBench = hook
-  return hook
+  const w = window as unknown as { __fluidBench?: typeof hook }
+  w.__fluidBench = hook
+  return {
+    hook,
+    /** Stop the frame counter and drop window.__fluidBench (if it is still this hook), so a
+     *  remounted page never leaks the old engine or stacks rAF loops. */
+    uninstall() {
+      cancelAnimationFrame(rafId)
+      if (w.__fluidBench === hook) delete w.__fluidBench
+    },
+  }
 }
 
-/** FLUID TEST installs the hook in dev builds, or in any build with ?bench=1. */
+/** FLUID TEST installs the hook only when a script asks for it (?bench=1) — the owner's
+ *  everyday page never carries it, in dev or production. */
 export function benchHookEnabled(): boolean {
-  return import.meta.env.DEV || new URLSearchParams(window.location.search).has('bench')
+  return new URLSearchParams(window.location.search).has('bench')
 }

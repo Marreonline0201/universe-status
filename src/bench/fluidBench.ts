@@ -13,7 +13,7 @@ let initError: string | null = null
 const ok = await engine.init().catch(e => { initError = String(e); return false })
 if (!ok && !initError) initError = navigator.gpu ? 'engine init failed' : 'WebGPU unavailable'
 
-const hook = installBenchHook(engine.benchTarget({
+const { hook } = installBenchHook(engine.benchTarget({
   loadScenario: (json: string) => {
     const parsed = parseScenario(json)
     if (!parsed.ok) throw new Error(parsed.error)
@@ -21,10 +21,12 @@ const hook = installBenchHook(engine.benchTarget({
     return { warning: parsed.warning }
   },
   action: (name: string) => {
-    if (name === 'dropBall') engine.dropBall()
-    else if (name === 'removeBall') engine.removeBall()
-    else if (name === 'reset') engine.reset()
-    else throw new Error(`unknown action ${name}`)
+    if (name === 'dropBall') return engine.dropBall()
+    if (name === 'removeBall') return engine.removeBall()
+    if (name === 'reset') return engine.reset()
+    if (name === 'defaultScene') return engine.loadDefaultScene()
+    if (name === 'batch10k') return engine.spawnBatch(10000)
+    throw new Error(`unknown action ${name}`)
   },
 }), { page: 'bench' })
 hook.ok = ok

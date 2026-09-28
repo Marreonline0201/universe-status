@@ -24,7 +24,7 @@ const SEQUENCES = [
 ]
 
 const [mode, a, b, ...rest] = process.argv.slice(2)
-let url = 'http://localhost:5174/?tab=fluid&bench=1'
+let url = (process.env.FLUID_BASE ?? 'http://localhost:5175') + '/?tab=fluid&bench=1'
 for (const arg of [b, ...rest].filter(Boolean)) {
   if (arg === "--legacy-gravity") continue
   const m = /^--url=(.+)$/.exec(arg)

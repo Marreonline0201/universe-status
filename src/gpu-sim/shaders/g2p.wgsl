@@ -133,7 +133,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // quadratic stencil inside the 64³ grid if a particle ever outruns the wall band; every hit
     // is counted so a gate can prove it (almost) never fires. (The old WebGPU-Ocean predictive
     // wall spring — a non-physical force — was removed with the sticky walls, 2026-09-28.)
-    let new_position = clamp(advected, vec3<f32>(1.0), vec3<f32>(GRID_RESf - 2.0));
+    // Symmetric about the cell-centred grid: 1 cell outside the wall band on each side
+    // (band nodes 0-2 / 61-63; walls at 3 and 61 cells), and the quadratic stencil
+    // floor(p)-1 .. floor(p)+1 stays inside nodes 0..63 for p in [1, 63).
+    let new_position = clamp(advected, vec3<f32>(1.0), vec3<f32>(GRID_RESf - 1.001));
     if (any(new_position != advected)) { atomicAdd(&diag[0], 1u); }
 
     // ── Convert back to [0,1] world space and store ──────────────────────

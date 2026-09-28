@@ -12,6 +12,7 @@ export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<LabFluidEngine | null>(null)
+  const downAt = useRef<{ x: number; y: number } | null>(null)
   const [ready, setReady] = useState(false)
   const onStatsRef = useRef(onStats); onStatsRef.current = onStats
   const onEngineRef = useRef(onEngine); onEngineRef.current = onEngine
@@ -49,7 +50,13 @@ export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
       ref={containerRef}
       // Left-click spawns a cluster of the selected material (parity with FLUID TEST);
       // OrbitControls still handles drag-to-orbit on the canvas beneath.
-      onPointerDown={(e) => { if (e.button === 0) void engineRef.current?.spawnAtPointer(e.clientX, e.clientY) }}
+      // Spawn only on a click (pointer barely moved), never at the start of an orbit drag.
+      onPointerDown={(e) => { if (e.button === 0) downAt.current = { x: e.clientX, y: e.clientY } }}
+      onPointerUp={(e) => {
+        const d = downAt.current
+        downAt.current = null
+        if (e.button === 0 && d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) void engineRef.current?.spawnAtPointer(e.clientX, e.clientY)
+      }}
       style={{ position: 'absolute', inset: 0, cursor: 'crosshair' }}
     >
       {!ready && (

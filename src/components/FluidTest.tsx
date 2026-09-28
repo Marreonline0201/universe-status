@@ -32,6 +32,7 @@ export function FluidTest() {
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
   const [fpsWarning, setFpsWarning] = useState(false)
+  const [rtFactor, setRtFactor] = useState(1)
   const [gpuReady, setGpuReady] = useState(false)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
   const [ballActive, setBallActive] = useState(false)
@@ -140,9 +141,11 @@ export function FluidTest() {
     const container = canvasRef.current
     if (!container) return
     let cancelled = false
+    let uninstallHook: (() => void) | null = null
     const engine = new FluidEngine(container, s => {
       setFps(s.fps)
       setParticleCount(s.count)
+      setRtFactor(s.rtFactor)
       setFpsWarning(s.fps < 30 && s.count > 100)
     }, { initialScene: 'default-water' })
     engineRef.current = engine
@@ -154,7 +157,7 @@ export function FluidTest() {
       setParticleCount(engine.particleCount)
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
-        installBenchHook(engine.benchTarget({
+        uninstallHook = installBenchHook(engine.benchTarget({
           loadScenario: (json) => {
             const parsed = parseScenario(json)
             if (!parsed.ok) throw new Error(parsed.error)
@@ -166,18 +169,28 @@ export function FluidTest() {
             if (name === 'batch10k') return spawnBatch(10000)
             if (name === 'dropBall') return dropBall()
             if (name === 'removeBall') return removeBall()
+            if (name === 'defaultScene') { engine.loadDefaultScene(); return syncCount() }
+            if (name.startsWith('spawnAt:')) {   // the click-spawn path at an exact point (tests skip the raycast)
+              const [x, y, z] = name.slice(8).split(',').map(Number)
+              return engine.spawnAt({ x, y, z }).then(n => { syncCount(); return n })
+            }
             throw new Error(`unknown action ${name}`)
           },
-        }), { page: 'fluid-test' })
+        }), { page: 'fluid-test' }).uninstall
       }
     })
     return () => {
       cancelled = true
+      uninstallHook?.()
       engine.destroy()
       engineRef.current = null
       setGpuReady(false)
     }
-  }, [resetSim, spawnBatch, dropBall, removeBall])
+  }, [resetSim, spawnBatch, dropBall, removeBall, syncCount])
+
+  // Click-to-spawn only on a CLICK: a pointerdown that becomes an orbit drag must not spawn
+  // (each spawn reads the particle buffer back from the GPU).
+  const pointerDownAt = useRef<{ x: number; y: number } | null>(null)
 
   // Adapter over engine state → the shared FluidControls panel (same one the LAB page uses).
   const ftController: FluidController = {
@@ -245,6 +258,15 @@ export function FluidTest() {
           }}>
             FPS: {fps}
           </span>
+          {rtFactor < 0.98 && (
+            <span title="The simulation cannot keep up with real time; physics is unchanged, time runs slower." style={{
+              fontSize: 'calc(10px * var(--font-scale, 1))',
+              color: '#ffaa00',
+              letterSpacing: 1,
+            }}>
+              TIME ×{rtFactor.toFixed(2)}
+            </span>
+          )}
           {gpuReady && (
             <span style={{
               fontSize: 'calc(8px * var(--font-scale, 1))',
@@ -274,7 +296,14 @@ export function FluidTest() {
         <div
           ref={canvasRef}
           // Left-click spawns a cluster of the selected material; OrbitControls still orbits on drag.
-          onPointerDown={(e) => { if (e.button === 0) void engineRef.current?.spawnAtPointer(e.clientX, e.clientY).then(syncCount) }}
+          onPointerDown={(e) => { if (e.button === 0) pointerDownAt.current = { x: e.clientX, y: e.clientY } }}
+          onPointerUp={(e) => {
+            const d = pointerDownAt.current
+            pointerDownAt.current = null
+            if (e.button === 0 && d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) {
+              void engineRef.current?.spawnAtPointer(e.clientX, e.clientY).then(syncCount)
+            }
+          }}
           style={{
             flex: 1,
             minWidth: 0,

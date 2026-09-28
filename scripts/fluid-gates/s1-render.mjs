@@ -4,14 +4,15 @@
 //   node scripts/fluid-gates/s1-render.mjs
 //
 // R1 100k particles, SSFR healthy: renderPath 'ssfr' and zero Points readbacks over 120 frames.
-// R2 forced SSFR failure: renderPath switches to 'points' within 2 presented frames and
-//    readbacks resume (one per frame that moved the fluid), so the fallback shows live positions.
+// R2 forced SSFR failure: renderPath switches to 'points' within 2 presented frames and COMPLETED
+//    readbacks (positions actually copied into the Points geometry) resume for at least half the
+//    stepped frames — so the fallback shows live positions, not the last frame SSFR drew.
 // R3 (reported) presented-frame rate at 100k in lockstep vs the a400506 baseline (159 FPS, which
 //    paid an 8 MB readback every frame). The 240 Hz vsync caps what can be seen here.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openFluidPage, loadScenario, status, waitStepped, makeGate } from '../lib/fluid-page.mjs'
+import { openFluidPage, loadScenario, status, waitStepped, makeGate, writeReport } from '../lib/fluid-page.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S1.6 (readback only for the fallback)')
@@ -45,19 +46,18 @@ try {
     const s = await status(page)
     if (s.renderPath === 'points') switchedAfter = s.rafFrames - c.rafFrames
   }
-  await waitStepped(page, (await status(page)).framesStepped + 30)
+  const f0 = (await status(page)).framesStepped
+  await waitStepped(page, f0 + 30)
   const d = await status(page)
-  report.r2 = { switchedAfterFrames: switchedAfter, readbacks: d.pointsReadbacks - c.pointsReadbacks }
+  const done = d.pointsReadbacksCompleted - c.pointsReadbacksCompleted
+  report.r2 = { switchedAfterFrames: switchedAfter, attempted: d.pointsReadbacks - c.pointsReadbacks, completed: done, steppedFrames: d.framesStepped - c.framesStepped }
   gate.check(switchedAfter !== null && switchedAfter <= 2, `R2 forced SSFR failure → Points path after ${switchedAfter} presented frame(s) (≤ 2)`)
-  gate.check(d.pointsReadbacks - c.pointsReadbacks >= 30, `R2 fallback receives live positions: ${d.pointsReadbacks - c.pointsReadbacks} readbacks over ≥ 30 stepped frames`)
+  gate.check(done >= 0.5 * (d.framesStepped - c.framesStepped), `R2 fallback receives live positions: ${done} completed readbacks over ${d.framesStepped - c.framesStepped} stepped frames (≥ half)`)
   await page.evaluate(() => window.__fluidBench.configure({ forceSsfrFailure: false }))
-  gate.check(errors.length === 0, `no unexpected console errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`)
+  await gate.hygiene(page, errors)
 } finally {
   await browser.close()
 }
 const pass = gate.finish()
-const out = path.join(repoRoot, 'bench-results', 'gates', `s1-render-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`)
-fs.mkdirSync(path.dirname(out), { recursive: true })
-fs.writeFileSync(out, JSON.stringify({ pass, ...report, checks: gate.results }, null, 2))
-console.log(`→ ${path.relative(repoRoot, out)}`)
+await writeReport(repoRoot, 's1-render', pass, report, gate.results)
 process.exit(pass ? 0 : 1)

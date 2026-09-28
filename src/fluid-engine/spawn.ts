@@ -6,7 +6,7 @@
 //
 // Pure functions of their inputs + an RNG (Math.random by default; benches swap in a seeded
 // generator), all in the sim's tank-normalised [0,1]³ coordinates.
-import { GRID_RES } from './units'
+import { GRID_RES, WALL_BAND_CELLS } from './units'
 
 /** MPM rest packing: particles per grid cell at rest density (REST_DENSITY in p2g2.wgsl). */
 export const REST_PPC = 4
@@ -14,9 +14,9 @@ export const REST_PPC = 4
 /** Lattice spacing that puts exactly REST_PPC particles in each cell volume. */
 export const LATTICE_SPACING = 1 / (GRID_RES * Math.cbrt(REST_PPC))
 
-/** The fluid region: inside the 3-node wall band on every face (gridForces.wgsl BOUND). */
-export const TANK_MIN = 3 / GRID_RES
-export const TANK_MAX = 1 - 3 / GRID_RES
+/** The fluid region: inside the wall band on every face (gridForces.wgsl BOUND = WALL_BAND_CELLS). */
+export const TANK_MIN = WALL_BAND_CELLS / GRID_RES
+export const TANK_MAX = 1 - WALL_BAND_CELLS / GRID_RES
 
 export type Vec3 = [number, number, number]
 
@@ -41,21 +41,23 @@ export interface LatticeResult {
 }
 
 /** Fill the box [lo, lo+size) with lattice sites at rest packing, jittered by ±jitter·spacing.
- *  The box is shrunk to a whole number of spacings per axis (≥ 1) so particle count and volume
- *  agree exactly. Sites outside the fluid region are rejected (never clamped onto a wall), and
- *  sites in `occupied` cells are skipped. */
+ *  The lattice holds floor(size/spacing) sites per axis (≥ 1), CENTRED in the box, so it never
+ *  pokes out of the box and particle count and filled volume agree exactly (the unfilled margin
+ *  is < 1 spacing per axis). Sites outside the fluid region are rejected (never clamped onto a
+ *  wall), and sites in `occupied` cells are skipped. */
 export function latticeBox(lo: Vec3, size: Vec3, opts: { occupied?: Set<number>; jitter?: number; rng?: () => number } = {}): LatticeResult {
   const s = LATTICE_SPACING
   const jitter = opts.jitter ?? 0.25
   const rng = opts.rng ?? Math.random
-  const counts = size.map(v => Math.max(1, Math.round(v / s))) as Vec3
+  const counts = size.map(v => Math.max(1, Math.floor(v / s + 1e-9))) as Vec3
+  const origin = lo.map((l, a) => l + (size[a] - counts[a] * s) / 2) as Vec3   // centre the lattice
   const positions: Vec3[] = []
   let skippedOutside = 0, skippedOccupied = 0
   for (let i = 0; i < counts[0]; i++) for (let j = 0; j < counts[1]; j++) for (let k = 0; k < counts[2]; k++) {
     const p: Vec3 = [
-      lo[0] + (i + 0.5) * s + (rng() * 2 - 1) * jitter * s,
-      lo[1] + (j + 0.5) * s + (rng() * 2 - 1) * jitter * s,
-      lo[2] + (k + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+      origin[0] + (i + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+      origin[1] + (j + 0.5) * s + (rng() * 2 - 1) * jitter * s,
+      origin[2] + (k + 0.5) * s + (rng() * 2 - 1) * jitter * s,
     ]
     if (p.some(v => v < TANK_MIN || v > TANK_MAX)) { skippedOutside++; continue }
     if (opts.occupied?.has(cellKey(p[0], p[1], p[2]))) { skippedOccupied++; continue }

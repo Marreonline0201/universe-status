@@ -14,20 +14,12 @@ import { CompositionTable, type NamedComposition } from '../composition/Composit
 import type { ElementName } from '../composition/PropertyCalculator'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
-import { DOMAIN_L_M, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel } from './units'
+import { DOMAIN_L_M, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel, tankMetresToUnit } from './units'
+import { PresentationClock } from './clock'
 import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
 
 const DEFAULT_BALL_RADIUS = 0.1   // ~6 grid cells in MLS-MPM [0,1] space
-
-/** Presentation cap: rAF callbacks sooner than this after the last presented frame do nothing.
- *  Slightly under 1/60 s so a 240 Hz panel presents on every 4th vsync despite timer jitter. */
-const PRESENT_MIN_MS = 1000 / 60 - 2
-/** At most this many physics macro-steps per presented frame; any older backlog is dropped and
- *  reported as time dilation instead of spiralling (the physics per step never changes). */
-const MAX_CATCHUP_STEPS = 2
-/** Longest wall-clock gap credited to the accumulator (tab switch, debugger pause). */
-const MAX_WALL_GAP_S = 0.25
 
 export type ClockMode = 'realtime' | 'lockstep'
 
@@ -84,23 +76,28 @@ export class FluidEngine {
   private fpsFrames = 0
   private lastFps = 0
   private frameCount = 0
-  // ── Clock ── physics advances in fixed MACRO_DT_S steps of sim time, never "one per rAF".
+  // ── Clock ── each presented frame advances the sim by its own vsync-snapped interval
+  // (PresentationClock, src/fluid-engine/clock.ts): real time, uniform motion, ~60 Hz presentation
+  // on any panel. Lockstep benches advance exactly `lockstepDt` per callback instead.
   private clockMode: ClockMode = 'realtime'
   private lockstepDt = MACRO_DT_S   // lockstep (bench): sim seconds advanced per presented frame
-  private lastTick = 0              // performance.now() of the last presented frame
-  private accumulator = 0           // realtime: wall seconds owed to the sim
+  private clock = new PresentationClock()
+  private lastPresentTs = 0         // rAF timestamp of the last presented frame
   private simTime = 0               // sim seconds since the last scene load
-  private droppedTime = 0           // realtime: wall seconds dropped by the catch-up cap (time dilation)
+  private droppedTime = 0           // realtime: wall seconds not simulated (time dilation)
   private substepsTotal = 0
   private particleSubsteps = 0      // Σ particles × substeps since the last diagnostics reset
-  private steppedFrames = 0         // macro-steps since the last scene load (bench clock)
-  private stepLimit = Infinity      // bench: freeze the sim after this many macro-steps
+  private steppedFrames = 0         // frames that advanced the sim since the last scene load (bench clock)
+  private stepLimit = Infinity      // bench: freeze the sim after this many advancing frames
   private ssfrDrewLastFrame = false  // render path of the previous presented frame
   private forceSsfrFailure = false   // bench: exercise the Points fallback
   private pointsReadbacks = 0
-  private maxFrameSteps = 0         // realtime: most macro-steps run in one presented frame (≤ MAX_CATCHUP_STEPS)
+  private frameAdvances: number[] = []  // realtime: sim ms advanced per presented frame (last 600)
   private rtSamples: { wall: number; sim: number }[] = []
   private presentIntervals: number[] = []
+  private gpuErrors = 0             // uncaptured WebGPU errors on this engine's device
+  private sceneGeneration = 0       // bumped on every scene load; in-flight spawns then abort
+  private spawnChain: Promise<unknown> = Promise.resolve()   // spawns run one at a time
   private resizeObserver: ResizeObserver | null = null
 
   private container: HTMLDivElement
@@ -228,7 +225,11 @@ export class FluidEngine {
     this.ssfrPipeline = ssfrPipeline
     this.sphereMesh = sphereMesh
     this.glassBox = glassBox
-    this.lastTick = performance.now()
+    // Validation/OOM errors that nothing else catches: counted (bench gates require 0) and logged.
+    device.addEventListener('uncapturederror', (e: Event) => {
+      this.gpuErrors++
+      console.error('[fluid GPU error]', (e as GPUUncapturedErrorEvent).error?.message)
+    })
     gpuSim.setGravity(accelToCode(this.gravityMs2))
 
     this.compositionTable.addDefaults()
@@ -247,7 +248,7 @@ export class FluidEngine {
     })
     this.resizeObserver.observe(this.container)
 
-    this.animate()
+    this.animId = requestAnimationFrame(this.animate)
     return true
   }
 
@@ -274,9 +275,25 @@ export class FluidEngine {
     return s ? buildOccupancy(s.positions) : new Set()
   }
 
+  /** Queue a spawn: spawns run strictly one after another, each reading occupancy only after the
+   *  previous block was added (two quick clicks can never stack blocks into each other); the
+   *  material, temperature and RNG are captured NOW (benches seed Math.random only around the
+   *  synchronous part of a call); a scene change while waiting cancels the spawn. */
+  private enqueueSpawn(block: () => { lo: Vec3; size: Vec3 }, compId: number, temperature: number, phase: number): Promise<number> {
+    const rng = Math.random
+    const generation = this.sceneGeneration
+    const run = async () => {
+      const occupied = await this.occupancyNow()
+      if (this.destroyed || generation !== this.sceneGeneration) return 0
+      return this.addBlock(block(), occupied, rng, compId, temperature, phase)
+    }
+    const p = this.spawnChain.then(run, run)
+    this.spawnChain = p.catch(() => undefined)
+    return p
+  }
+
   /** Fill a block with one composition at rest packing, skipping cells already holding fluid.
-   *  `rng` must be captured synchronously by the caller (benches seed Math.random only around
-   *  the synchronous part of a call). Returns the number of particles actually added. */
+   *  Returns the number of particles actually added. */
   private addBlock(block: { lo: Vec3; size: Vec3 }, occupied: Set<number>, rng: () => number, compId: number, temperature: number, phase: number): number {
     if (!this.gpuSim) return 0
     const r = latticeBox(block.lo, block.size, { occupied, rng })
@@ -291,7 +308,7 @@ export class FluidEngine {
     this.steppedFrames = 0
     this.simTime = 0
     this.substepsTotal = 0
-    this.accumulator = 0
+    this.sceneGeneration++
   }
 
   /** Load (or re-load) a scenario. spawnParticles replaces everything → doubles as RESET. */
@@ -319,7 +336,7 @@ export class FluidEngine {
       const temperature = sp.temperature ?? s.materials.find(m => m.name === sp.material)?.temperature ?? s.temperature ?? 20
       const compId = idByName.get(sp.material) ?? 0
       const block = sp.box
-        ? { lo: sp.box.min.map(v => v / DOMAIN_L_M) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
+        ? { lo: sp.box.min.map(tankMetresToUnit) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
         : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000)
       const vel = (sp.initialVelocity ?? [0, 0, 0]).map(v => msToUnitVel(v)) as Vec3
       const r = latticeBox(block.lo, block.size, { occupied })
@@ -358,37 +375,40 @@ export class FluidEngine {
     const { n, dtCode } = mpmSubsteps(intervalS)
     sim.setTimestep(dtCode)
 
-    // Ball obstacle: explicit Euler per substep, gravity in tank-normalised units ([0,1]/τ²).
     if (this.ball.active) {
+      // Ball obstacle: explicit Euler per substep (gravity in tank-normalised units, [0,1]/τ²),
+      // and the fluid sees EACH substep's ball state — one submit per substep, because uniforms
+      // are written once per submit (a single upload let the fluid see the ball n−1 substeps ahead).
       const g = accelToUnitPerTau2(this.gravityMs2)
-      for (let sub = 0; sub < n; sub++) {
-        this.ball.velocity[1] -= g * dtCode
-        this.ball.center[0] += this.ball.velocity[0] * dtCode
-        this.ball.center[1] += this.ball.velocity[1] * dtCode
-        this.ball.center[2] += this.ball.velocity[2] * dtCode
-      }
       const lo = this.ball.radius
       const hi = 1.0 - this.ball.radius
-      for (let axis = 0; axis < 3; axis++) {
-        if (this.ball.center[axis] < lo) { this.ball.center[axis] = lo; this.ball.velocity[axis] = Math.abs(this.ball.velocity[axis]) * 0.3 }
-        if (this.ball.center[axis] > hi) { this.ball.center[axis] = hi; this.ball.velocity[axis] = -Math.abs(this.ball.velocity[axis]) * 0.3 }
+      for (let sub = 0; sub < n; sub++) {
+        this.ball.velocity[1] -= g * dtCode
+        for (let axis = 0; axis < 3; axis++) this.ball.center[axis] += this.ball.velocity[axis] * dtCode
+        for (let axis = 0; axis < 3; axis++) {
+          if (this.ball.center[axis] < lo) { this.ball.center[axis] = lo; this.ball.velocity[axis] = Math.abs(this.ball.velocity[axis]) * 0.3 }
+          if (this.ball.center[axis] > hi) { this.ball.center[axis] = hi; this.ball.velocity[axis] = -Math.abs(this.ball.velocity[axis]) * 0.3 }
+        }
+        sim.setSphereObstacle(this.ball.center, this.ball.radius, this.ball.velocity)
+        if (sim.particleCount > 0) {
+          const encoder = device.createCommandEncoder()
+          sim.step(encoder, 1)
+          device.queue.submit([encoder.finish()])
+        }
       }
-      sim.setSphereObstacle(this.ball.center, this.ball.radius, this.ball.velocity)
       this.sphereMesh?.position.set(this.ball.center[0], this.ball.center[1], this.ball.center[2])
-    }
-
-    if (sim.particleCount > 0) {
+    } else if (sim.particleCount > 0) {
       const encoder = device.createCommandEncoder()
       sim.step(encoder, n)
       device.queue.submit([encoder.finish()])
-      this.particleSubsteps += n * sim.particleCount
     }
+    this.particleSubsteps += n * sim.particleCount
     this.steppedFrames++
     this.substepsTotal += n
     this.simTime += intervalS
   }
 
-  private animate = () => {
+  private animate = (ts: number) => {
     if (this.destroyed) return
     this.animId = requestAnimationFrame(this.animate)
     const sim = this.gpuSim
@@ -397,36 +417,31 @@ export class FluidEngine {
     const camera = this.camera
     if (!sim || !device || !renderer || !camera || !this.fluidScene) return
 
-    const now = performance.now()
-    // 60 Hz presentation: on a 240 Hz panel most rAF callbacks do nothing (lockstep benches
-    // present every callback so they finish quickly — their physics does not depend on it).
-    if (this.clockMode === 'realtime' && now - this.lastTick < PRESENT_MIN_MS) return
-    const wallDt = (now - this.lastTick) / 1000
-    this.lastTick = now
-    this.presentIntervals.push(wallDt * 1000)
-    if (this.presentIntervals.length > 600) this.presentIntervals.shift()
-
-    const simBefore = this.simTime
+    // `ts` is the rAF callback timestamp (vsync-aligned) — never performance.now() here.
+    let advanceS: number
     if (this.clockMode === 'lockstep') {
-      if (this.steppedFrames < this.stepLimit) this.macroStep(this.lockstepDt)
+      advanceS = this.steppedFrames < this.stepLimit ? this.lockstepDt : 0
     } else {
-      this.accumulator += Math.min(wallDt, MAX_WALL_GAP_S)
-      let steps = 0
-      while (this.accumulator >= MACRO_DT_S - 1e-6 && steps < MAX_CATCHUP_STEPS && this.steppedFrames < this.stepLimit) {
-        this.macroStep(MACRO_DT_S)
-        this.accumulator -= MACRO_DT_S
-        steps++
-      }
-      this.maxFrameSteps = Math.max(this.maxFrameSteps, steps)
-      if (this.steppedFrames >= this.stepLimit) this.accumulator = 0
-      if (this.accumulator >= MACRO_DT_S) {          // backlog beyond the catch-up cap: drop it
-        const drop = Math.floor(this.accumulator / MACRO_DT_S) * MACRO_DT_S
-        this.droppedTime += drop
-        this.accumulator -= drop
+      const d = this.clock.tick(ts)
+      if (!d.present) return                          // ~60 Hz presentation: skip this vsync
+      this.droppedTime += d.droppedS
+      advanceS = this.steppedFrames < this.stepLimit ? d.advanceS : 0
+      if (advanceS > 0) {
+        this.frameAdvances.push(advanceS * 1000)
+        if (this.frameAdvances.length > 600) this.frameAdvances.shift()
       }
     }
-    this.rtSamples.push({ wall: now, sim: this.simTime })
-    while (this.rtSamples.length > 2 && now - this.rtSamples[0].wall > 2000) this.rtSamples.shift()
+    const wallDt = this.lastPresentTs > 0 ? (ts - this.lastPresentTs) / 1000 : 0
+    this.lastPresentTs = ts
+    if (wallDt > 0) {
+      this.presentIntervals.push(wallDt * 1000)
+      if (this.presentIntervals.length > 600) this.presentIntervals.shift()
+    }
+
+    const simBefore = this.simTime
+    if (advanceS > 0) this.macroStep(advanceS)
+    this.rtSamples.push({ wall: ts, sim: this.simTime })
+    while (this.rtSamples.length > 2 && ts - this.rtSamples[0].wall > 2000) this.rtSamples.shift()
 
     this.fpsAccum += wallDt
     this.fpsFrames++
@@ -443,7 +458,9 @@ export class FluidEngine {
     // reads the particle buffer on the GPU directly, so copying 80 B/particle back to the CPU
     // every frame (8 MB at 100k) was pure waste whenever SSFR drew. Keyed on LAST frame's SSFR
     // health, so a failing SSFR shows fresh Points positions from the next frame on.
-    if (count > 0 && this.simTime !== simBefore && !this.ssfrDrewLastFrame) {
+    if (count === 0) {
+      this.fluidScene.clear()                         // no stale "ghost" Points after the scene empties
+    } else if (this.simTime !== simBefore && !this.ssfrDrewLastFrame) {
       const encoder = device.createCommandEncoder()
       this.fluidScene.scheduleReadback(encoder, sim.particleBuffer, count)
       device.queue.submit([encoder.finish()])
@@ -513,12 +530,11 @@ export class FluidEngine {
     return (b.sim - a.sim) / ((b.wall - a.wall) / 1000)
   }
 
-  /** Clock: 'realtime' (pages: wall-clock accumulator, 60 Hz presentation) or 'lockstep'
-   *  (bench: exactly `frameDt` sim seconds per presented frame, no wall clock involved). */
+  /** Clock: 'realtime' (pages: each ~60 Hz presented frame advances its own vsync-snapped
+   *  interval) or 'lockstep' (bench: exactly `frameDt` sim seconds per callback, no wall clock). */
   configureClock(mode: ClockMode, frameDt = MACRO_DT_S) {
     this.clockMode = mode
     this.lockstepDt = frameDt
-    this.accumulator = 0
   }
 
   /** Register a new composition (e.g. an AI-generated material) and upload it. Returns its id. */
@@ -530,10 +546,8 @@ export class FluidEngine {
 
   /** Spawn ≈`count` particles of one composition as a block at rest packing around `center`
    *  ([0,1]³ coords), skipping cells that already hold fluid. Resolves to the number added. */
-  async spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number, phase: number): Promise<number> {
-    const rng = Math.random
-    const occupied = await this.occupancyNow()
-    return this.addBlock(cubeForCount(center, count), occupied, rng, compId, temperature, phase)
+  spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number, phase: number): Promise<number> {
+    return this.enqueueSpawn(() => cubeForCount(center, count), compId, temperature, phase)
   }
 
   /** Objective motion metrics from a GPU particle readback — positions in the sim's [0,1]³ space. */
@@ -605,17 +619,14 @@ export class FluidEngine {
   /** +N button: pour ≈`count` particles of the selected material as a block at rest packing,
    *  centred horizontally and placed as high as the tank allows (skipping cells already full).
    *  Resolves to the number of particles actually added. */
-  async spawnBatch(count: number): Promise<number> {
-    const rng = Math.random
-    const occupied = await this.occupancyNow()
-    return this.addBlock(cubeForCount([0.5, 1, 0.5], count), occupied, rng, this.selectedComposition, this.spawnTemperature, 1)
+  spawnBatch(count: number): Promise<number> {
+    return this.enqueueSpawn(() => cubeForCount([0.5, 1, 0.5], count), this.selectedComposition, this.spawnTemperature, 1)
   }
 
   /** Click-to-spawn: a ≈512-particle block (~0.29 m) of the selected material at a world point. */
-  async spawnAt(worldPos: THREE.Vector3): Promise<number> {
-    const rng = Math.random
-    const occupied = await this.occupancyNow()
-    return this.addBlock(cubeForCount([worldPos.x, worldPos.y, worldPos.z], 512), occupied, rng, this.selectedComposition, this.spawnTemperature, 1)
+  spawnAt(worldPos: { x: number; y: number; z: number }): Promise<number> {
+    const c: Vec3 = [worldPos.x, worldPos.y, worldPos.z]
+    return this.enqueueSpawn(() => cubeForCount(c, 512), this.selectedComposition, this.spawnTemperature, 1)
   }
 
   /** Raycast a screen click against the glass box and spawn a block there. */
@@ -680,7 +691,7 @@ export class FluidEngine {
       configure: (opts) => {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
-        if (opts.resetClockStats) { this.maxFrameSteps = 0; this.droppedTime = 0; this.presentIntervals = []; this.rtSamples = [] }
+        if (opts.resetClockStats) { this.droppedTime = 0; this.presentIntervals = []; this.frameAdvances = []; this.rtSamples = [] }
         if (opts.resetDiagnostics) { this.gpuSim?.resetDiagnostics(); this.particleSubsteps = 0 }
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
       },
@@ -690,15 +701,25 @@ export class FluidEngine {
       },
       extraStatus: () => {
         const iv = [...this.presentIntervals].sort((a, b) => a - b)
+        const target = this.clock.targetMs
+        const adv = this.frameAdvances
         return {
           clock: this.clockMode,
           simTime: this.simTime,
           substepsTotal: this.substepsTotal,
           rtFactor: this.rtFactor,
           droppedTime: this.droppedTime,
-          maxFrameSteps: this.maxFrameSteps,
+          vsyncMs: this.clock.vsyncMs,
+          presentEvery: this.clock.presentEvery,
+          targetFrameMs: target,
+          overloaded: this.clock.overloaded,
+          framesAdvanced: adv.length,
+          framesWithin1pct: adv.filter(a => Math.abs(a - target) <= 0.01 * target).length,
+          maxFrameAdvanceMs: adv.length ? Math.max(...adv) : 0,
           renderPath: this.ssfrDrewLastFrame ? 'ssfr' : 'points',
           pointsReadbacks: this.pointsReadbacks,
+          pointsReadbacksCompleted: this.fluidScene?.completedReadbacks ?? 0,
+          gpuErrors: this.gpuErrors,
           gravityMs2: this.gravityMs2,
           presentIntervalP50: iv.length ? iv[Math.floor(iv.length * 0.5)] : null,
           presentIntervalP95: iv.length ? iv[Math.floor(iv.length * 0.95)] : null,

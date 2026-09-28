@@ -16,11 +16,26 @@ export const GRID_RES = 64
 /** Code time unit τ in seconds (2026-07-17 units contract). */
 export const TAU_S = 1 / 24
 
-/** Tank edge length in metres (default domain scale, owner decision D2 2026-09-28). */
+/** Edge length of the simulation GRID in metres (default domain scale, owner decision D2
+ *  2026-09-28). The water cannot use all of it: see TANK_INNER_M. */
 export const DOMAIN_L_M = 3.63
 
 /** Grid cell size in metres. */
 export const DX_M = DOMAIN_L_M / GRID_RES
+
+/** Cells between the grid edge and the tank wall on every face: the separating-boundary band
+ *  in gridForces.wgsl (BOUND = 3). The fluid lives inside [3, 61] cells. */
+export const WALL_BAND_CELLS = 3
+
+/** Inside size of the tank, wall to wall, in metres: (64 − 2·3) cells × dx = 3.290 m.
+ *  Scenario metres are measured from the tank's inner (0,0,0) corner, i.e. from the walls. */
+export const TANK_INNER_M = (GRID_RES - 2 * WALL_BAND_CELLS) * DX_M
+
+/** Tank metres (from the inner wall corner) → grid-normalised [0,1] coordinate. */
+export const tankMetresToUnit = (m: number) => WALL_BAND_CELLS / GRID_RES + m / DOMAIN_L_M
+
+/** Grid-normalised [0,1] coordinate → tank metres (from the inner wall corner). */
+export const unitToTankMetres = (u: number) => (u - WALL_BAND_CELLS / GRID_RES) * DOMAIN_L_M
 
 /** Fixed simulation macro-step: every presented frame's worth of physics is 1/60 s of sim time. */
 export const MACRO_DT_S = 1 / 60

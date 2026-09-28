@@ -31,7 +31,7 @@ const [scenarioArg, ...rest] = process.argv.slice(2)
 if (!scenarioArg) die('usage: node scripts/fluid-bench.mjs <scenario.json | lab-experiment> [--frames=..] [--seed=N] [--label=..] [--shots]')
 let frames = [0, 15, 30, 60, 90, 120, 180, 240, 360, 480]
 let seed = 1
-let url = 'http://localhost:5174/bench.html'
+let url = (process.env.FLUID_BASE ?? 'http://localhost:5175') + '/bench.html'
 let label = 'run'
 let shots = false
 for (const a of rest) {

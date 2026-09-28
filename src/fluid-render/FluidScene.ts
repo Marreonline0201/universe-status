@@ -24,6 +24,8 @@ export class FluidScene {
   private device: GPUDevice | null = null
   private readbackBuffer: GPUBuffer | null = null
   private readbackPending = false
+  /** Readbacks whose positions actually reached the Points geometry (for the bench). */
+  completedReadbacks = 0
 
   // Public — checked by FluidTest.tsx render loop
   renderPipeline: any = null
@@ -113,12 +115,18 @@ export class FluidScene {
       posAttr.needsUpdate = true
       colAttr.needsUpdate = true
       geo.setDrawRange(0, n)
+      this.completedReadbacks++
 
       buf.unmap()
       this.readbackPending = false
     }).catch(() => {
       this.readbackPending = false
     })
+  }
+
+  /** Draw nothing (the scene holds no particles): avoids stale "ghost" points from the last readback. */
+  clear() {
+    this.points?.geometry.setDrawRange(0, 0)
   }
 
   dispose() {

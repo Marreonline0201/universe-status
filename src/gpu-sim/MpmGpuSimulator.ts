@@ -432,7 +432,7 @@ export class MpmGpuSimulator {
       Used by the Lab's motion metrics (agent-run experiments) — a few samples per run, so a
       throwaway staging buffer per call is fine (≤16MB at the 200k lab cap). Returns null on
       failure or when empty; never throws into the render loop. */
-  async readParticleSample(): Promise<{ positions: Float32Array; velocities: Float32Array; compIds: Uint32Array } | null> {
+  async readParticleSample(): Promise<{ positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array } | null> {
     if (!this.initialized || this.numParticles === 0) return null
     const n = this.numParticles
     const byteSize = n * PARTICLE_STRIDE
@@ -446,6 +446,7 @@ export class MpmGpuSimulator {
       const f32 = new Float32Array(staging.getMappedRange())
       const u32 = new Uint32Array(f32.buffer)
       const positions = new Float32Array(n * 3)
+      const affine = new Float32Array(n * 9)   // APIC C matrix, row-major C00..C22 (grid units, 1/τ)
       const velocities = new Float32Array(n * 3)
       const compIds = new Uint32Array(n)
       for (let i = 0; i < n; i++) {
@@ -457,9 +458,10 @@ export class MpmGpuSimulator {
         velocities[i * 3] = f32[o + 4]
         velocities[i * 3 + 1] = f32[o + 5]
         velocities[i * 3 + 2] = f32[o + 6]
+        for (let c = 0; c < 9; c++) affine[i * 9 + c] = f32[o + 8 + c]
       }
       staging.unmap()
-      return { positions, velocities, compIds }
+      return { positions, velocities, compIds, affine }
     } catch {
       return null
     } finally {
