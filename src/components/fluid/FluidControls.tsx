@@ -215,7 +215,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
               <div>Clock: real time, substeps ≤ 1/120 s</div>
               <div>Grid: 64x64x64, separating walls</div>
               <div>Render: SSFR (5-pass)</div>
-              <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Water still compresses ~17% under its own weight — the incompressible solver (plan S3) replaces this.</div>
+              <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Water is still springy: a settled shallow pool measured ~17% denser than at rest (deeper water compresses more). The incompressible solver (plan S3) replaces this.</div>
             </div>
           </div>
         )}
