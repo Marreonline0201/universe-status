@@ -1,11 +1,15 @@
 // f64 CPU reference of the incompressible APIC-MAC solver (FINAL-PLAN S3.0). Every GPU kernel of S3 is diffed
 // against this file, so it implements the SAME discrete algorithm — not a nicer one — in plain double precision.
 //
-// Stage covered so far: S3.1a transfers (FINAL-PLAN §5.2 steps 6, 8, 11, 12 without the projection):
-//   P2G (faceScatter) → gridUpdate (u* = mom/mass, + g·Δt) → extrapolate (2 layers) → solid faces → G2P (g2pMac)
-//   → RK2 advection.
-// The projection (S3.1b), density projection (S3.2), ghost-fluid surface (S3.4), variable density (S3.5) and
-// viscosity (S3.6) are added here first, each before its GPU kernel.
+// Stages covered so far:
+// - S3.1a transfers (FINAL-PLAN §5.2 steps 6, 8, 11, 12): P2G (faceScatter) → gridUpdate (u* = mom/mass + g·Δt)
+//   → extrapolate (2 layers) → solid faces → G2P (g2pMac) → RK2 advection.
+// - S3.1b pressure projection (`projection: true`; §5.3, Bridson 2015 ch. 5): voxel free surface (a cell holding a
+//   particle is LIQUID, §5.5 stage 1), Δt·∇·((1/ρ)∇p) = ∇·u* on the 7-point stencil with a_f = Δt/(ρ·dx²), p = 0 in
+//   AIR, SOLID faces keep the wall velocity, Jacobi-preconditioned CG to ‖r‖∞ ≤ tolerance, then u = u* − (Δt/ρ)∇p on
+//   every non-solid face touching a LIQUID cell; those faces are the extrapolation sources.
+// The density projection (S3.2), ghost-fluid surface (S3.4), variable density (S3.5) and viscosity (S3.6) are added
+// here first, each before its GPU kernel.
 //
 // Physics conventions (SI, window-local metres — S3N-5):
 // - APIC on a MAC grid (Jiang et al. 2015 §6): each particle carries, per velocity component a, an affine vector
@@ -55,6 +59,29 @@ export interface FlipRefOptions {
   apic?: boolean
   /** Extrapolation layers (FINAL-PLAN §5.2 step 11: 2). */
   extrapolationLayers?: number
+  /** Pressure projection (S3.1b). Default false: transfer-only (S3.1a). */
+  projection?: boolean
+  /** Liquid density for the projection, kg/m³ (uniform until S3.5 variable density). */
+  density?: number
+  /** Pressure solve stops at ‖r‖∞ ≤ this, in divergence units 1/s (default 1e-9: the reference solves tight). */
+  pressureTolerance?: number
+  /** Pressure solve iteration cap (default 20000; a cap hit is recorded, never hidden). */
+  pressureMaxIterations?: number
+}
+
+/** Cell labels for the projection (a cell holding at least one particle is LIQUID; the ghost layer is SOLID). */
+export const CellLabel = { AIR: 0, LIQUID: 1, SOLID: 2 } as const
+
+export interface SolveStats {
+  liquidCells: number
+  iterations: number
+  /** ‖b − A·p‖∞ at exit, 1/s. */
+  residualInf: number
+  /** ‖b‖∞ (the divergence of u* on liquid cells), 1/s. */
+  rhsInf: number
+  capHit: boolean
+  /** No liquid cell touches air: the operator is singular; solved with the mean pinned (FINAL-PLAN S3.1b). */
+  closed: boolean
 }
 
 export interface RefDiagnostics {
@@ -62,6 +89,8 @@ export interface RefDiagnostics {
   wallClamps: number
   /** Faces still without a velocity after extrapolation that a G2P stencil touched. */
   unsetFaceReads: number
+  /** Non-solid faces of LIQUID cells that had no u* when the divergence was formed (must stay 0). */
+  unsetDivergenceFaces: number
 }
 
 /** Positions are kept this fraction of a cell inside the window (a particle exactly on the far wall would put its
@@ -80,7 +109,15 @@ export class FlipRef {
   readonly u: [Float64Array, Float64Array, Float64Array]
   /** 1 where u holds a velocity (fluid face with mass, extrapolated face, or solid face). */
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
-  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0 }
+  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0 }
+  readonly projection: boolean
+  density: number
+  readonly pressureTolerance: number
+  readonly pressureMaxIterations: number
+  /** Cell labels and pressure (Pa), in layout slots. */
+  readonly label: Uint8Array
+  readonly pressure: Float64Array
+  lastSolve: SolveStats | null = null
 
   constructor(layout: GridLayout, opts: FlipRefOptions = {}) {
     this.layout = layout
@@ -93,16 +130,174 @@ export class FlipRef {
     this.mom = f64()
     this.u = f64()
     this.valid = [new Uint8Array(layout.size), new Uint8Array(layout.size), new Uint8Array(layout.size)]
+    this.projection = opts.projection ?? false
+    this.density = opts.density ?? 998.2072
+    this.pressureTolerance = opts.pressureTolerance ?? 1e-9
+    this.pressureMaxIterations = opts.pressureMaxIterations ?? 20000
+    this.label = new Uint8Array(layout.size)
+    this.pressure = new Float64Array(layout.size)
   }
 
-  /** One substep of the transfer-only algorithm (S3.1a). */
+  /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
   step(p: RefParticles, dt: number): void {
     this.p2g(p)
     this.gridUpdate(dt)
+    if (this.projection) {
+      this.applySolidFaces()
+      this.classify(p)
+      this.solvePressure(dt)
+      this.projectVelocities(dt)
+    }
     this.extrapolate()
     this.applySolidFaces()
     this.g2p(p)
     this.advect(p, dt)
+  }
+
+  /** Voxel free surface (FINAL-PLAN §5.5 stage 1): the ghost layer is SOLID, a window cell holding at least one
+   *  particle is LIQUID, every other window cell is AIR. */
+  classify(p: RefParticles): void {
+    const L = this.layout, lab = this.label
+    lab.fill(CellLabel.SOLID)
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) lab[L.idx(i, j, k)] = CellLabel.AIR
+    for (let q = 0; q < p.n; q++) {
+      const i = cellIndex(p.pos[3 * q], L.dx, L.nx), j = cellIndex(p.pos[3 * q + 1], L.dx, L.ny), k = cellIndex(p.pos[3 * q + 2], L.dx, L.nz)
+      lab[L.idx(i, j, k)] = CellLabel.LIQUID
+    }
+  }
+
+  /** Pressure Poisson solve on the LIQUID cells: Σ_f a·(p_c − p_nbr) = −(∇·u*)_c over non-solid faces, a = Δt/(ρ·dx²),
+   *  p_nbr = 0 in AIR. Jacobi-preconditioned CG to ‖r‖∞ ≤ pressureTolerance. */
+  solvePressure(dt: number): SolveStats {
+    const L = this.layout, lab = this.label, pr = this.pressure
+    pr.fill(0)
+    const cells: number[] = [], coords: [number, number, number][] = []
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const s = L.idx(i, j, k)
+      if (lab[s] === CellLabel.LIQUID) { cells.push(s); coords.push([i, j, k]) }
+    }
+    const n = cells.length
+    const stats: SolveStats = { liquidCells: n, iterations: 0, residualInf: 0, rhsInf: 0, capHit: false, closed: true }
+    if (n === 0) { this.lastSolve = stats; return stats }
+    const a = dt / (this.density * L.dx * L.dx)
+    const row = new Map<number, number>()
+    cells.forEach((s, r) => row.set(s, r))
+    // per row: diagonal and liquid neighbour rows (faces that are SOLID are dropped)
+    const diag = new Float64Array(n), nbr = new Int32Array(6 * n).fill(-1), b = new Float64Array(n)
+    for (let r = 0; r < n; r++) {
+      const [i, j, k] = coords[r]
+      let d = 0, div = 0
+      for (const ax of AXES) {
+        for (const side of [0, 1] as const) {
+          const fi = i + (ax === 0 ? side : 0), fj = j + (ax === 1 ? side : 0), fk = k + (ax === 2 ? side : 0)
+          const fs = L.idx(fi, fj, fk)
+          const uf = this.u[ax][fs]
+          if (this.faceType[ax][fs] !== FaceType.SOLID && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
+          div += side === 1 ? uf : -uf
+          if (this.faceType[ax][fs] === FaceType.SOLID) continue
+          d += a
+          const ni = i + (ax === 0 ? 2 * side - 1 : 0), nj = j + (ax === 1 ? 2 * side - 1 : 0), nk = k + (ax === 2 ? 2 * side - 1 : 0)
+          const ns = L.idx(ni, nj, nk)
+          if (lab[ns] === CellLabel.LIQUID) nbr[6 * r + 2 * ax + side] = row.get(ns)!
+          else if (lab[ns] === CellLabel.AIR) stats.closed = false
+        }
+      }
+      diag[r] = d
+      b[r] = -div / L.dx
+    }
+    for (let r = 0; r < n; r++) stats.rhsInf = Math.max(stats.rhsInf, Math.abs(b[r]))
+    if (stats.closed) {           // consistent singular system: remove the constant from the right-hand side
+      let mean = 0
+      for (let r = 0; r < n; r++) mean += b[r]
+      mean /= n
+      for (let r = 0; r < n; r++) b[r] -= mean
+    }
+    const Ap = (x: Float64Array, out: Float64Array) => {
+      for (let r = 0; r < n; r++) {
+        let v = diag[r] * x[r]
+        for (let f = 0; f < 6; f++) { const c = nbr[6 * r + f]; if (c >= 0) v -= a * x[c] }
+        out[r] = v
+      }
+    }
+    // Jacobi-preconditioned conjugate gradient
+    const x = new Float64Array(n), res = b.slice(), z = new Float64Array(n), d = new Float64Array(n), q = new Float64Array(n)
+    const inf = (v: Float64Array) => { let m = 0; for (let r = 0; r < n; r++) m = Math.max(m, Math.abs(v[r])); return m }
+    for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
+    d.set(z)
+    let rz = 0
+    for (let r = 0; r < n; r++) rz += res[r] * z[r]
+    let it = 0
+    while (inf(res) > this.pressureTolerance && it < this.pressureMaxIterations) {
+      Ap(d, q)
+      let dq = 0
+      for (let r = 0; r < n; r++) dq += d[r] * q[r]
+      if (dq <= 0) break
+      const alpha = rz / dq
+      for (let r = 0; r < n; r++) { x[r] += alpha * d[r]; res[r] -= alpha * q[r] }
+      for (let r = 0; r < n; r++) z[r] = res[r] / diag[r]
+      let rzNew = 0
+      for (let r = 0; r < n; r++) rzNew += res[r] * z[r]
+      const beta = rzNew / rz
+      rz = rzNew
+      for (let r = 0; r < n; r++) d[r] = z[r] + beta * d[r]
+      it++
+    }
+    if (stats.closed) {           // pin the mean: pressure is defined up to a constant
+      let mean = 0
+      for (let r = 0; r < n; r++) mean += x[r]
+      mean /= n
+      for (let r = 0; r < n; r++) x[r] -= mean
+    }
+    // true residual, recomputed from scratch
+    Ap(x, q)
+    let rInf = 0
+    for (let r = 0; r < n; r++) rInf = Math.max(rInf, Math.abs(b[r] - q[r]))
+    for (let r = 0; r < n; r++) pr[cells[r]] = x[r]
+    stats.iterations = it
+    stats.residualInf = rInf
+    stats.capHit = rInf > this.pressureTolerance
+    this.lastSolve = stats
+    return stats
+  }
+
+  /** u = u* − (Δt/ρ)·(p₊ − p₋)/dx on every non-SOLID face with a LIQUID cell on either side (p = 0 in AIR); those
+   *  faces become the only extrapolation sources. */
+  projectVelocities(dt: number): void {
+    const L = this.layout, lab = this.label, pr = this.pressure
+    const g = dt / (this.density * L.dx)
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      const t = this.faceType[a], u = this.u[a], ok = this.valid[a]
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k)
+        if (t[s] === FaceType.SOLID) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        const lm = lab[sm], lp = lab[s]
+        if (lm === CellLabel.LIQUID || lp === CellLabel.LIQUID) {
+          const pp = lp === CellLabel.LIQUID ? pr[s] : 0, pm = lm === CellLabel.LIQUID ? pr[sm] : 0
+          u[s] -= g * (pp - pm)
+          ok[s] = 1
+        } else {
+          ok[s] = 0
+        }
+      }
+    }
+  }
+
+  /** Max |∇·u| over LIQUID cells, 1/s (after projection: the solve's residual expressed as velocity divergence). */
+  maxLiquidDivergence(): number {
+    const L = this.layout
+    let m = 0
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      if (this.label[L.idx(i, j, k)] !== CellLabel.LIQUID) continue
+      let div = 0
+      for (const a of AXES) {
+        const up = L.idx(i + (a === 0 ? 1 : 0), j + (a === 1 ? 1 : 0), k + (a === 2 ? 1 : 0))
+        div += this.u[a][up] - this.u[a][L.idx(i, j, k)]
+      }
+      m = Math.max(m, Math.abs(div / L.dx))
+    }
+    return m
   }
 
   /** faceScatter: particle mass and (APIC) momentum onto the three face grids. */
@@ -241,6 +436,9 @@ const NEIGHBOURS: readonly (readonly [number, number, number])[] = [[-1, 0, 0], 
 
 function clampIn(v: number, lo: number, hi: number): number { return v < lo ? lo : v > hi ? hi : v }
 
+/** Cell index of a coordinate (clamped into the window: positions are kept wallEps inside it). */
+function cellIndex(x: number, dx: number, n: number): number { const i = Math.floor(x / dx); return i < 0 ? 0 : i >= n ? n - 1 : i }
+
 interface Stencil {
   i: Int32Array; j: Int32Array; k: Int32Array
   w: Float64Array; gx: Float64Array; gy: Float64Array; gz: Float64Array
@@ -291,6 +489,20 @@ export function angularMomentum(p: RefParticles, o: Vec3): Vec3 {
     L[2] += m * (rx * vy - ry * vx)
   }
   return L
+}
+
+/** Kinetic energy Σ ½·m·|v|² (J), particle velocities only. */
+export function kineticEnergy(p: RefParticles): number {
+  let e = 0
+  for (let q = 0; q < p.n; q++) e += 0.5 * p.mass[q] * (p.vel[3 * q] ** 2 + p.vel[3 * q + 1] ** 2 + p.vel[3 * q + 2] ** 2)
+  return e
+}
+
+/** Potential energy −Σ m·g·x (J) for a uniform gravity vector g, relative to the window origin. */
+export function potentialEnergy(p: RefParticles, g: Vec3): number {
+  let e = 0
+  for (let q = 0; q < p.n; q++) e -= p.mass[q] * (g[0] * p.pos[3 * q] + g[1] * p.pos[3 * q + 1] + g[2] * p.pos[3 * q + 2])
+  return e
 }
 
 /** Mass-weighted centre of mass (m). */
