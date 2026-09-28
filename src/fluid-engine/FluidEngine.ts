@@ -95,6 +95,9 @@ export class FluidEngine {
   private particleSubsteps = 0      // Σ particles × substeps since the last diagnostics reset
   private steppedFrames = 0         // macro-steps since the last scene load (bench clock)
   private stepLimit = Infinity      // bench: freeze the sim after this many macro-steps
+  private ssfrDrewLastFrame = false  // render path of the previous presented frame
+  private forceSsfrFailure = false   // bench: exercise the Points fallback
+  private pointsReadbacks = 0
   private maxFrameSteps = 0         // realtime: most macro-steps run in one presented frame (≤ MAX_CATCHUP_STEPS)
   private rtSamples: { wall: number; sim: number }[] = []
   private presentIntervals: number[] = []
@@ -436,19 +439,23 @@ export class FluidEngine {
     this.frameCount++
 
     const count = sim.particleCount
-    if (count > 0 && this.simTime !== simBefore) {
-      // Points-fallback position readback (one per presented frame that moved the fluid).
+    // Points-fallback position readback — only while the fallback is what's on screen. SSFR
+    // reads the particle buffer on the GPU directly, so copying 80 B/particle back to the CPU
+    // every frame (8 MB at 100k) was pure waste whenever SSFR drew. Keyed on LAST frame's SSFR
+    // health, so a failing SSFR shows fresh Points positions from the next frame on.
+    if (count > 0 && this.simTime !== simBefore && !this.ssfrDrewLastFrame) {
       const encoder = device.createCommandEncoder()
       this.fluidScene.scheduleReadback(encoder, sim.particleBuffer, count)
       device.queue.submit([encoder.finish()])
       this.fluidScene.startReadback(count)
+      this.pointsReadbacks++
     }
 
     this.controls?.update()
 
     // SSFR render, or the Points fallback.
     let ssfrOk = false
-    if (this.ssfrPipeline && count > 0) {
+    if (this.ssfrPipeline && count > 0 && !this.forceSsfrFailure) {
       try {
         camera.updateMatrixWorld()
         const ctx = renderer.backend.context as GPUCanvasContext
@@ -479,6 +486,7 @@ export class FluidEngine {
       }
     }
     if (!ssfrOk && this.scene) renderer.render(this.scene, camera)
+    this.ssfrDrewLastFrame = ssfrOk
   }
 
   // ── Hands-on controls (shared by FLUID TEST and LABORATORY) ─────────────────
@@ -674,6 +682,7 @@ export class FluidEngine {
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
         if (opts.resetClockStats) { this.maxFrameSteps = 0; this.droppedTime = 0; this.presentIntervals = []; this.rtSamples = [] }
         if (opts.resetDiagnostics) { this.gpuSim?.resetDiagnostics(); this.particleSubsteps = 0 }
+        if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
       },
       diagnostics: async () => {
         const d = await this.gpuSim?.readDiagnostics()
@@ -688,6 +697,8 @@ export class FluidEngine {
           rtFactor: this.rtFactor,
           droppedTime: this.droppedTime,
           maxFrameSteps: this.maxFrameSteps,
+          renderPath: this.ssfrDrewLastFrame ? 'ssfr' : 'points',
+          pointsReadbacks: this.pointsReadbacks,
           gravityMs2: this.gravityMs2,
           presentIntervalP50: iv.length ? iv[Math.floor(iv.length * 0.5)] : null,
           presentIntervalP95: iv.length ? iv[Math.floor(iv.length * 0.95)] : null,

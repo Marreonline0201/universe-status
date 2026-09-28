@@ -58,7 +58,7 @@ export interface BenchTarget {
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
   action?(name: string): void | Promise<unknown>
   /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
-  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean }): void
+  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean; forceSsfrFailure?: boolean }): void
   /** GPU diagnostics counters (e.g. wall safety-clamp hits) + the particle-substeps denominator. */
   diagnostics?(): Promise<Record<string, unknown>>
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
