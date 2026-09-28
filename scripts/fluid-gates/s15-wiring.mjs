@@ -18,7 +18,6 @@
 //    loads Mercury — no Water particles.
 // M7 info panel: Iron's viscosity (solid, no sourced liquid value) shows a dash, never "NaN".
 // Not covered: the AI material path needs an API key (it calls the same spawnCompositionBlock gate).
-import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, makeGate, writeReport, TANK_INNER_M, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -142,7 +141,14 @@ try {
   report.m6 = { eOil, cOil, eLava, cLava }
   gate.check(/scenario refused: .*oil/.test(eOil ?? '') && cOil === 0, `M6 unsourced "oil" scenario refused, tank ${cOil} particles: ${(eOil ?? 'LOADED').slice(0, 150)}`)
   gate.check(/scenario refused: .*Lava/.test(eLava ?? '') && cLava === 0, `M6 lava + water scenario refused, tank ${cLava} particles: ${(eLava ?? 'LOADED').slice(0, 150)}`)
-  const merc = JSON.parse(fs.readFileSync(path.join(repoRoot, 'company/lab/mercury-verify/scenario.json'), 'utf8'))
+  // company/lab/mercury-verify/scenario.json verbatim (office data is untracked, so the gate carries its own copy)
+  const merc = {
+    name: 'mercury-verify', materials: [], gravity: 0.3,
+    spawns: [
+      { material: 'Mercury', count: 14000, center: [0.28, 0.45, 0.5], spread: 0.16 },
+      { material: 'Mercury', count: 900, center: [0.72, 0.75, 0.5], spread: 0.045 },
+    ],
+  }
   const eMerc = await loadRefusal(merc)
   const mNames = eMerc ? {} : await namesOfSample()
   report.m6.mercury = { error: eMerc, names: mNames }
