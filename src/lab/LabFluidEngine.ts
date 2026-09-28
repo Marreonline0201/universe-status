@@ -59,6 +59,7 @@ export class LabFluidEngine {
   private fpsAccum = 0
   private fpsFrames = 0
   private frameCount = 0
+  private steppedFrames = 0 // frames in which the sim actually advanced (reset on loadScenario)
   private resizeObserver: ResizeObserver | null = null
 
   private container: HTMLDivElement
@@ -237,6 +238,7 @@ export class LabFluidEngine {
       }
     }
     this.gpuSim.spawnParticles(particles)
+    this.steppedFrames = 0
     this.currentGravity = s.gravity ?? 0.3
     this.gpuSim.setGravity(this.currentGravity)
 
@@ -298,6 +300,7 @@ export class LabFluidEngine {
 
     const count = sim.particleCount
     if (count > 0) {
+      this.steppedFrames++
       const encoder = device.createCommandEncoder()
       sim.step(encoder)
       this.fluidScene.scheduleReadback(encoder, sim.particleBuffer, count)
@@ -407,6 +410,12 @@ export class LabFluidEngine {
       })),
     }
   }
+
+  /** Frames the sim has advanced since the last loadScenario — the bench's clock. */
+  get framesStepped(): number { return this.steppedFrames }
+
+  /** Raw GPU particle readback (positions/velocities/composition ids) for the bench harness. */
+  readParticleSample() { return this.gpuSim?.readParticleSample() ?? Promise.resolve(null) }
 
   get bgBrightness(): number { return this.currentBgBrightness }
   /** Scale the olive background's brightness (hue fixed) — hits both paint paths:
