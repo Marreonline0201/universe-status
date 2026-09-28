@@ -54,7 +54,9 @@ const M = [
 
 const tmpRoot = await mkdtemp(join(tmpdir(), 'fluid-gate-mut-'))
 const pristine = {}
-for (const f of new Set(M.map(m => m[0]))) pristine[f] = await readFile(join(REPO, 'src/composition', f), 'utf8')
+// LF-normalised: a Windows checkout (core.autocrlf, e.g. the gate worktree) has CRLF files, and the multi-line
+// find strings above are written with \n. The mutated copy is written LF, which changes nothing for the loader.
+for (const f of new Set(M.map(m => m[0]))) pristine[f] = (await readFile(join(REPO, 'src/composition', f), 'utf8')).replace(/\r\n/g, '\n')
 for (const [f, find] of M) {
   const n = pristine[f].split(find).length - 1
   if (n !== 1) { console.error(`ABORT: find string occurs ${n}× in ${f}: ${find.slice(0, 80)}`); process.exit(2) }

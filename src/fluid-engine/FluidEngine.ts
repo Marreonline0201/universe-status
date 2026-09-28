@@ -315,9 +315,15 @@ export class FluidEngine {
     return this.enqueueSpawn(block, g.id, g.tempC, 1)
   }
 
-  /** Material menu for the control panel, evaluated at the spawn temperature (hidden entries removed). */
+  /** Material menu for the control panel, evaluated at the temperature a spawn would really use — the
+   *  slider temperature, or a fixed-temperature preset's single sourced point (as resolveSpawn does), so
+   *  the menu never marks refused what a click would spawn. Hidden entries removed. */
   getMenuEntries(tempC = this.spawnTemperature): MenuEntry[] {
-    return this.compositionTable.getMenuEntries('mpm', tempC).filter(e => e.visibility !== 'hidden')
+    const table = this.compositionTable
+    return table.getMenuEntries('mpm', tempC)
+      .map(e => (e.dataRangeC && e.dataRangeC[0] === e.dataRangeC[1] && e.dataRangeC[0] !== tempC
+        ? table.menuVisibility(e.id, 'mpm', e.dataRangeC[0]) : e))
+      .filter(e => e.visibility !== 'hidden')
   }
 
   /** Cells currently holding fluid, from a fresh GPU readback (spawns must not overlap them). */
