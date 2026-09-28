@@ -40,9 +40,15 @@ export interface SSFRConfig {
 /** ED-2: never render the fluid above a 1280×800-equivalent pixel count. */
 export const MAX_RENDER_PIXELS = 1280 * 800
 
-/** Splat radius / rest lattice spacing (∛V_p). Option A of r6 §6 / FINAL-PLAN D12 (splats sized by the particle
- *  spacing), chosen by the OPT-1-h measurement in scripts/fluid-gates/r0-surface.mjs (numbers in that gate's
- *  report). The rendered volume and colour do not depend on it: thickness is volume-normalised. */
+/** Splat radius / rest lattice spacing s = ∛V_p: r = s, option A of r6 §6 / FINAL-PLAN D12 (splats sized by the
+ *  particle spacing). Chosen by measurement (scripts/fluid-gates/r0-surface.mjs, settled 132k-particle layer, 2026-09-28):
+ *  rendered − simulated free-surface height (top / oblique view) and holes in FLUID TEST's thin scene:
+ *    r = 2.54 s (the legacy 0.025 wu)  +6.9 / +7.4 cm (r6 predicted 7.3 cm), no holes
+ *    r = 1.0 s                         +1.0 / +1.2 cm, holes ≤ 0.76 %      ← smallest measured radius passing both
+ *    r = 0.8 s                         +0.2 / +0.3 cm, holes 1.01 %        (misses the ≤ 1 % hole limit)
+ *    r = 0.62 s (volume-equivalent)    −0.9 / −0.5 cm, holes up to 4.3 %
+ *  (limits: |offset| ≤ 0.25 dx = 1.42 cm, holes ≤ 1 %). The rendered volume and colour do not depend on the radius:
+ *  thickness is volume-normalised. A world-space narrow-range filter (render rung 2) could allow smaller splats. */
 export const SPLAT_RADIUS_FACTOR = 1.0
 
 // ── The sun ───────────────────────────────────────────────────────────────────────────────────────────────

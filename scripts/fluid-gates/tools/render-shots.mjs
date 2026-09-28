@@ -36,6 +36,12 @@ const SCENES = {
         { material: 'Mercury', box: { min: [1.4, 1.6, 1.4], max: [1.9, 2.1, 1.9] } },
       ] },
   },
+  // the drop-ball resting in a mercury pool: the one object in the room a mirror can show
+  'mercury-ball': {
+    frames: 240,
+    scenario: { name: 'render-mercury-ball', materials: [], gravity_mps2: G_STANDARD, ball: { center: [0.5, 0.5, 0.5], radius: 0.1 },
+      spawns: [{ material: 'Mercury', box: { min: [0.3, 0, 0.3], max: [3.0, 0.25, 3.0] } }] },
+  },
 }
 
 const { browser, page } = await openFluidPage()
