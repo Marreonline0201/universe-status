@@ -4,6 +4,8 @@
 //   S3.1a transfers: faceScatter → gridUpdate → extrapolate ×2 → g2pMac + RK2          (gate s31a-gpu.mjs)
 //   S3.1b projection (`projection: true`, create()): labelClear → labelParticles (voxel free surface) → divergence
 //         → PoissonSolver (JPCG until S3.3) → project, between gridUpdate and extrapolate  (gate s31b-gpu.mjs)
+//   S3.2 density projection (`densityProjection: true`), before faceScatter: labels → cellScatter → densityRhs →
+//         ψ solve (second PoissonSolver, unit coefficients, cold) → faceDisplacement → positionCorrect  (gate s32-gpu.mjs)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -24,6 +26,10 @@ import labelClearWGSL from './shaders/labelClear.wgsl?raw'
 import labelParticlesWGSL from './shaders/labelParticles.wgsl?raw'
 import divergenceWGSL from './shaders/divergence.wgsl?raw'
 import projectWGSL from './shaders/project.wgsl?raw'
+import cellScatterWGSL from './shaders/cellScatter.wgsl?raw'
+import densityRhsWGSL from './shaders/densityRhs.wgsl?raw'
+import faceDisplacementWGSL from './shaders/faceDisplacement.wgsl?raw'
+import positionCorrectWGSL from './shaders/positionCorrect.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
@@ -68,6 +74,12 @@ export interface FlipSimOptions {
   pressureCap?: number
   /** 'jpcg' (correctness baseline, S3.1b) or 'mgpcg' (S3.3). */
   solverMethod?: SolverMethod
+  /** Kugelstadt et al. 2019 density projection before P2G (S3.2). Requires projection. */
+  densityProjection?: boolean
+  /** ψ solve tolerance ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3). */
+  psiTolerance?: number
+  /** Encoded iteration cap of the ψ solve. */
+  psiCap?: number
 }
 
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
@@ -88,12 +100,15 @@ export interface FlipParticleInit {
 }
 
 export interface FlipDiagnostics {
-  wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number
+  wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number; densityClamps: number
+  /** ψ solver sticky faults (0 without density projection). */
+  psiSolves: number; psiCapHits: number; psiBreakdowns: number; psiMaxIterations: number
   /** Pressure solver sticky faults since the last reset (0 without projection). */
   solves: number; capHits: number; breakdowns: number; maxIterations: number
 }
 
 type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
+  | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -113,6 +128,17 @@ export class FlipGpuSimulator {
   /** Pressure solver (projection only; created by create()). Its x vector is the pressure in Pa, padded layout. */
   solver: PoissonSolver | null = null
   private solveCfg: SolveConfig | null = null
+  readonly densityProjection: boolean
+  readonly psiTolerance: number
+  readonly psiCap: number
+  /** ψ solver (density projection only): unit coefficients, cold start. x = ψ̂ = ψ/dx², padded layout. */
+  psiSolver: PoissonSolver | null = null
+  private psiCfg: SolveConfig | null = null
+  /** Density projection buffers: volume fraction (i32 fixed point, padded cells), f̃ (f32, padded cells), face displacements (m). */
+  vfracBuf: GPUBuffer | null = null
+  fCompBuf: GPUBuffer | null = null
+  dispBuf: GPUBuffer | null = null
+  private densBg: { cellScatter: GPUBindGroup; densityRhs: GPUBindGroup; faceDisplacement: GPUBindGroup; positionCorrect: GPUBindGroup } | null = null
   private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
@@ -160,6 +186,10 @@ export class FlipGpuSimulator {
     this.pressureTolerance = opts.pressureTolerance ?? 1e-2
     this.pressureCap = opts.pressureCap ?? 400
     this.solverMethod = opts.solverMethod ?? 'jpcg'
+    this.densityProjection = opts.densityProjection ?? false
+    if (this.densityProjection && !this.projection) throw new Error('FlipGpuSimulator: densityProjection requires projection')
+    this.psiTolerance = opts.psiTolerance ?? 1e-3
+    this.psiCap = opts.psiCap ?? 200
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -180,7 +210,7 @@ export class FlipGpuSimulator {
     this.momLoBuf = buf('momLo', 4 * G)
     this.uBuf = [buf('uA', 4 * G), buf('uB', 4 * G)]
     this.validBuf = [buf('validA', 4 * G), buf('validB', 4 * G)]
-    this.diagBuf = buf('diag', 16)
+    this.diagBuf = buf('diag', 32)
     this.paramsBuf = buf('params', PARAMS_BYTES, GPUBufferUsage.UNIFORM | D)
 
     const types = new Uint32Array(G)
@@ -250,6 +280,25 @@ export class FlipGpuSimulator {
       labelParticles: group('labelParticles', [this.posBuf, sb.labels]),
       divergence: group('divergence', [this.faceTypeBuf, uA, vA, sb.labels, sb.rhs, this.diagBuf]),
       project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA]),
+    }
+    if (!this.densityProjection) return
+    const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
+    this.psiSolver = psi
+    this.psiCfg = psi.createSolveConfig({ criterion: 'inf', tol: this.psiTolerance, cap: this.psiCap })
+    psi.writeUnitCoefficients(1)
+    const S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST, R = GPUBufferUsage.COPY_SRC
+    this.vfracBuf = device.createBuffer({ label: 'flip.vfrac', size: 4 * psi.paddedCount, usage: S | D | R })
+    this.fCompBuf = device.createBuffer({ label: 'flip.fComp', size: 4 * psi.paddedCount, usage: S | D | R })
+    this.dispBuf = device.createBuffer({ label: 'flip.disp', size: 4 * 3 * L.size, usage: S | D | R })
+    this.pipelines.cellScatter = pipe('cellScatter', cellScatterWGSL)
+    this.pipelines.densityRhs = pipe('densityRhs', densityRhsWGSL)
+    this.pipelines.faceDisplacement = pipe('faceDisplacement', faceDisplacementWGSL)
+    this.pipelines.positionCorrect = pipe('positionCorrect', positionCorrectWGSL)
+    this.densBg = {
+      cellScatter: group('cellScatter', [this.posBuf, this.velBuf, this.vfracBuf]),
+      densityRhs: group('densityRhs', [this.faceTypeBuf, sb.labels, this.vfracBuf, psi.buffers.rhs, this.fCompBuf]),
+      faceDisplacement: group('faceDisplacement', [this.faceTypeBuf, sb.labels, psi.buffers.x, this.dispBuf]),
+      positionCorrect: group('positionCorrect', [this.posBuf, this.dispBuf, this.diagBuf]),
     }
   }
 
@@ -327,6 +376,15 @@ export class FlipGpuSimulator {
   encodeG2P(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'g2pMac', this.bg.g2pMac[this.finalVelocityBuffer], this.count, 64)
   }
+  /** One substep after the density correction: P2G, grid update, (projection), extrapolation, G2P + advection. */
+  encodeSubstepBody(encoder: GPUCommandEncoder): void {
+    this.encodeScatter(encoder)
+    this.encodeGridUpdate(encoder)
+    if (this.projection) this.encodeProjection(encoder)
+    this.encodeExtrapolate(encoder)
+    this.encodeG2P(encoder)
+  }
+
   /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
   encodeProjection(encoder: GPUCommandEncoder): void {
     this.encodeLabels(encoder)
@@ -358,6 +416,46 @@ export class FlipGpuSimulator {
     this.dispatch(encoder, 'project', bg.project, 3 * this.layout.size, 256)
   }
 
+  /** Kugelstadt density projection (S3.2): labels (pre-correction occupancy), volume fraction, ψ solve (cold),
+   *  face displacements, particle positions corrected — velocities untouched. */
+  encodeDensityCorrection(encoder: GPUCommandEncoder): void {
+    this.encodeLabels(encoder)
+    this.encodeCellScatter(encoder)
+    this.encodeDensityRhs(encoder)
+    this.encodePsiSolve(encoder)
+    this.encodeFaceDisplacement(encoder)
+    this.encodePositionCorrect(encoder)
+  }
+
+  private dens() {
+    if (!this.densBg || !this.psiSolver || !this.psiCfg || !this.vfracBuf || !this.solver) throw new Error('FlipGpuSimulator: density projection not initialised')
+    return { bg: this.densBg, psi: this.psiSolver, cfg: this.psiCfg, vfrac: this.vfracBuf, solver: this.solver, cells: this.layout.nx * this.layout.ny * this.layout.nz }
+  }
+  encodeCellScatter(encoder: GPUCommandEncoder): void {
+    const d = this.dens()
+    encoder.clearBuffer(d.vfrac)
+    if (this.count > 0) this.dispatch(encoder, 'cellScatter', d.bg.cellScatter, this.count, 64)
+  }
+  encodeDensityRhs(encoder: GPUCommandEncoder): void {
+    const d = this.dens()
+    this.dispatch(encoder, 'densityRhs', d.bg.densityRhs, d.cells, 256)
+    // the ψ operator is assembled from ITS labels: the same pre-correction voxel labels (level 0 region)
+    encoder.copyBufferToBuffer(d.solver.buffers.labels, 0, d.psi.buffers.labels, 0, 4 * d.psi.paddedCount)
+  }
+  encodePsiSolve(encoder: GPUCommandEncoder): void {
+    const d = this.dens()
+    d.psi.encodePrepare(encoder)
+    d.psi.encodeSolve(encoder, d.cfg, { warmStart: false })
+  }
+  encodeFaceDisplacement(encoder: GPUCommandEncoder): void {
+    const d = this.dens()
+    this.dispatch(encoder, 'faceDisplacement', d.bg.faceDisplacement, 3 * this.layout.size, 256)
+  }
+  encodePositionCorrect(encoder: GPUCommandEncoder): void {
+    const d = this.dens()
+    if (this.count > 0) this.dispatch(encoder, 'positionCorrect', d.bg.positionCorrect, this.count, 64)
+  }
+
   encodePresent(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'present', this.bg.present, this.count, 64)
   }
@@ -366,11 +464,8 @@ export class FlipGpuSimulator {
   step(encoder: GPUCommandEncoder, substeps = 1): void {
     this.writeParams()
     for (let s = 0; s < substeps; s++) {
-      this.encodeScatter(encoder)
-      this.encodeGridUpdate(encoder)
-      if (this.projection) this.encodeProjection(encoder)
-      this.encodeExtrapolate(encoder)
-      this.encodeG2P(encoder)
+      if (this.densityProjection) this.encodeDensityCorrection(encoder)
+      this.encodeSubstepBody(encoder)
     }
     this.encodePresent(encoder)
   }
@@ -421,14 +516,18 @@ export class FlipGpuSimulator {
   }
 
   resetDiagnostics(): void {
-    this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(4))
+    this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(8))
     if (this.solver) this.device.queue.writeBuffer(this.solver.buffers.faults, 0, new Uint32Array(4))
+    if (this.psiSolver) this.device.queue.writeBuffer(this.psiSolver.buffers.faults, 0, new Uint32Array(4))
   }
 
   async readDiagnostics(): Promise<FlipDiagnostics> {
-    const d = new Uint32Array(await this.readBuffer(this.diagBuf, 16))
+    const d = new Uint32Array(await this.readBuffer(this.diagBuf, 32))
     const f = this.solver ? await this.solver.readFaults() : null
-    return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2], unsetDivergenceFaces: d[3], solves: f?.solves ?? 0, capHits: f?.capHits ?? 0, breakdowns: f?.breakdowns ?? 0, maxIterations: f?.maxIterations ?? 0 }
+    const g = this.psiSolver ? await this.psiSolver.readFaults() : null
+    return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2], unsetDivergenceFaces: d[3], densityClamps: d[4],
+      solves: f?.solves ?? 0, capHits: f?.capHits ?? 0, breakdowns: f?.breakdowns ?? 0, maxIterations: f?.maxIterations ?? 0,
+      psiSolves: g?.solves ?? 0, psiCapHits: g?.capHits ?? 0, psiBreakdowns: g?.breakdowns ?? 0, psiMaxIterations: g?.maxIterations ?? 0 }
   }
 
   /** Pressure (Pa) and labels in the solver's padded layout: index (i+1) + (nx+2)·((j+1) + (ny+2)·(k+1)). */
@@ -441,5 +540,7 @@ export class FlipGpuSimulator {
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
     this.solver?.destroy()
+    this.psiSolver?.destroy()
+    for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf]) b?.destroy()
   }
 }

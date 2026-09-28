@@ -22,7 +22,8 @@
 //    The plan's comparison is still printed.
 //    T = n·t·√(g/a), Z = front/a (Z(0) = 1), τ = t·√(g/a), H = height at the back wall/(n²a) [SRC-r3].
 // INV′ E_K + E_P − ΣΔE_P(δx) never rises more than 2 % above its start; last-second trend ≤ 0 (A1 run).
-// G2 (--g2) double dam break, 30 s, 64×64×8 slab: φ-volume change ≤ 2 % (target 0.5 %) [Kugelstadt: < 0.5 % in 3D].
+// G2 (--g2) double dam break, 30 s, 64×64×8 slab: |φ-volume/(N·V_p) − 1| ≤ 2 % (target 0.5 %) [Kugelstadt: < 0.5 %
+//    in 3D]. Reference N·V_p, not φ(0): the jittered start reads ~2.9 % low (min(f, 1) clips noisy over-full cells).
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const G2 = process.argv.includes('--g2')
@@ -187,8 +188,8 @@ if (G2) {
     if (s % 120 === 0) { const v = sim.phiVolume(); vMin = Math.min(vMin, v); vMax = Math.max(vMax, v) }
   }
   sim.densityCorrect(q)
-  const v1 = sim.phiVolume()
-  check(Math.abs(v1 / v0 - 1) <= 0.02, `G2 double dam break 30 s (64×64×8, ${q.n} particles): φ-volume ${(100 * (v1 / v0 - 1)).toFixed(3)} % (≤ 2 %, target 0.5 %); range over the run ${(100 * (vMin / v0 - 1)).toFixed(2)} … ${(100 * (vMax / v0 - 1)).toFixed(2)} %`)
+  const v1 = sim.phiVolume(), vNp = q.n * DX ** 3 / 8
+  check(Math.abs(v1 / vNp - 1) <= 0.02, `G2 double dam break 30 s (64×64×8, ${q.n} particles): φ-volume / N·V_p = ${(v1 / vNp).toFixed(4)} (${(100 * (v1 / vNp - 1)).toFixed(3)} %, ≤ 2 %, target 0.5 %); t = 0 reading ${(v0 / vNp).toFixed(4)}·N·V_p; range over the run ${(100 * (vMin / vNp - 1)).toFixed(2)} … ${(100 * (vMax / vNp - 1)).toFixed(2)} %`)
 }
 
 console.log(`\ns3.2 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)

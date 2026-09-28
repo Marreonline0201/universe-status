@@ -9,6 +9,7 @@ import { FlipRef } from '../../sim-ref/flipRef'
 import { DX, L_REF, TAU, mulberry32, blob, f32round, toInit, submit, maxDiff } from './util'
 import { FlipGpuSimulator, MASS_SCALE, MOM_SCALE, LO_SCALE } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { projKernels, g1a, settle, damBreak } from './projection'
+import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak } from './density'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -295,6 +296,11 @@ try {
     else if (test === 'g1a') out = await g1a(device)
     else if (test === 'settle') out = await settle(device, params)
     else if (test === 'damBreak') out = await damBreak(device)
+    else if (test === 'densKernels') out = await densKernels(device, params)
+    else if (test === 'direction') out = await direction(device)
+    else if (test === 'restVolume') out = await restVolume(device)
+    else if (test === 'martinMoyce') out = await martinMoyce(device, params as { aCells: number; aPhys?: number })
+    else if (test === 'doubleDamBreak') out = await doubleDamBreak(device, params as { density: boolean; seconds?: number })
     else throw new Error(`unknown test ${test}`)
     return { ...(out as object), gpuErrors: errors.slice(errBefore) }
   }

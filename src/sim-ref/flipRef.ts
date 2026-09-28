@@ -143,6 +143,8 @@ export class FlipRef {
   readonly volumeFraction: Float64Array
   readonly fCompensated: Float64Array
   readonly psi: Float64Array
+  /** Right-hand side f̃ − 1 of the last ψ solve per LIQUID cell slot (kernel-parity tests). */
+  readonly psiRhs: Float64Array
   readonly displacement: [Float64Array, Float64Array, Float64Array]
   lastDensity: DensityStats | null = null
   readonly projection: boolean
@@ -179,6 +181,7 @@ export class FlipRef {
     this.volumeFraction = new Float64Array(layout.size)
     this.fCompensated = new Float64Array(layout.size)
     this.psi = new Float64Array(layout.size)
+    this.psiRhs = new Float64Array(layout.size)
     this.displacement = [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
   }
 
@@ -309,6 +312,8 @@ export class FlipRef {
       if (sys.airNeighbour[r]) ft = Math.max(ft, 1)
       b[r] = ft - 1
     }
+    this.psiRhs.fill(0)
+    for (let r = 0; r < sys.n; r++) this.psiRhs[sys.cells[r]] = b[r]
     const psi = this.psi
     const stats = solveSystem(sys, b, this.psiTolerance, this.pressureMaxIterations, psi)
     // face displacements δx = −dx·(ψ̂₊ − ψ̂₋) on non-SOLID faces touching LIQUID (ψ̂ = 0 in AIR), 0 elsewhere

@@ -30,11 +30,12 @@ const OPEN: u32 = 2u;
 const GHOST: u32 = 3u;
 
 // Diagnostics counters (u32): [0] wall clamps, [1] unset-face reads, [2] OPEN faces met (reserved type),
-// [3] non-solid faces of liquid cells without u* when the divergence was formed.
+// [3] non-solid faces of liquid cells without u* when the divergence was formed, [4] density-correction push-backs.
 const DIAG_WALL_CLAMPS: u32 = 0u;
 const DIAG_UNSET_READS: u32 = 1u;
 const DIAG_OPEN_FACES: u32 = 2u;
 const DIAG_UNSET_DIVERGENCE: u32 = 3u;
+const DIAG_DENSITY_CLAMPS: u32 = 4u;
 
 fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
   if (i < 0) { return 0; }

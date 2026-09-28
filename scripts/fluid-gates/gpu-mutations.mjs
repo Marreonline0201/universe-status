@@ -7,6 +7,7 @@
 //   node scripts/gate-server.mjs HEAD   (in another shell)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31a     (S3.1a transfer kernels, gate s31a-gpu.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31b     (S3.1b projection kernels, gate s31b-gpu.mjs)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s32      (S3.2 density kernels, gate s32-gpu.mjs --quick)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -36,6 +37,15 @@ const SETS = {
     [`${SH}/project.wgsl`, 'let pm = select(0.0, pressure[linIdx(c - e)], lm == LABEL_FLUID);', 'let pm = pressure[linIdx(c - e)];', 'air pressure read from the solver vector'],
     [`${SH}/project.wgsl`, '  } else {\n    valid[s] = 0u;\n  }', '  } else {\n    valid[s] = 1u;\n  }', 'faces away from liquid left marked set'],
   ],
+  s32: [
+    [`${SH}/cellScatter.wgsl`, 'let f = pos[q].xyz / P.dx - vec3<f32>(0.5);', 'let f = pos[q].xyz / P.dx;', 'volume fraction on nodes, not cell centres'],
+    [`${SH}/densityRhs.wgsl`, 'keep *= 1.0 - 0.125 * solid;', 'keep *= 1.0;', 'wall compensation dropped'],
+    [`${SH}/densityRhs.wgsl`, 'if (airNbr) { fc = max(fc, 1.0); }', '', 'air-neighbour clamp dropped'],
+    [`${SH}/densityRhs.wgsl`, 'rhs[li] = fc - 1.0;', 'rhs[li] = 1.0 - fc;', 'density right-hand side sign flipped'],
+    [`${SH}/faceDisplacement.wgsl`, 'disp[s] = -P.dx * (pp - pm);', 'disp[s] = P.dx * (pp - pm);', 'displacement sign flipped'],
+    [`${SH}/faceDisplacement.wgsl`, 'let pm = select(0.0, psi[linIdx(c - e)], lm == LABEL_FLUID);', 'let pm = psi[linIdx(c - e)];', 'air psi read from the solver vector'],
+    [`${SH}/positionCorrect.wgsl`, 'let f = x / P.dx - faceOffset(a);', 'let f = x / P.dx - vec3<f32>(0.5);', 'displacement sampled at cell centres'],
+  ],
 }
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]
@@ -52,7 +62,8 @@ for (const [f, find, , why] of M) {
 
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`)], {
+  // s32: the --quick subset (kernel parity, D0, C4/WALL) — every s32 mutant targets a kernel that parity covers
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(GATE === 's32' ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())
