@@ -11,6 +11,7 @@ import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline } from '../fluid-render/SSFRPipeline'
 import { BG_BASE, clampBrightness, readBgBrightness } from '../fluid-render/bgBrightness'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
+import type { MenuEntry } from '../composition/liquidGate'
 import type { ElementName } from '../composition/PropertyCalculator'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
@@ -43,6 +44,13 @@ export interface FluidMetricsSample {
     meanSpeed: number; meanY: number; maxY: number; comX: number; comZ: number
   }[]
 }
+
+/** A message for the page: a spawn/scene the material gates refused (with the physical reason),
+ *  or a warning they raised. */
+export interface FluidNotice { kind: 'refused' | 'warning'; text: string }
+
+/** Result of loading a scenario through the material gates. */
+export type ScenarioLoad = { ok: true; warnings: string[] } | { ok: false; reason: string }
 
 export interface FluidEngineOptions {
   /** 'default-water' spawns FLUID TEST's 10k-particle water block at init and on reset. */
@@ -98,6 +106,12 @@ export class FluidEngine {
   private gpuErrors = 0             // uncaptured WebGPU errors on this engine's device
   private sceneGeneration = 0       // bumped on every scene load; in-flight spawns then abort
   private spawnChain: Promise<unknown> = Promise.resolve()   // spawns run one at a time
+  private sceneIds = new Set<number>()   // compositions currently in the tank (for the pairwise thermal gate)
+  /** Page hook for refusals/warnings from the material gates. Called with null when a new spawn or scenario
+   *  load starts, so what the page shows always describes the latest action. */
+  onNotice: ((n: FluidNotice | null) => void) | null = null
+  /** Reason of the most recent refusal (for callers that report it themselves, e.g. the AI chat). */
+  lastRefusal: string | null = null
   private resizeObserver: ResizeObserver | null = null
 
   private container: HTMLDivElement
@@ -265,8 +279,45 @@ export class FluidEngine {
     const { lo, size } = cubeForCount([0.5, 0.5, 0.5], 10000)
     const block = latticeBox(lo, size)
     this.gpuSim.spawnParticles(block.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: 0, temperature: 20, phase: 1 })))
+    this.sceneIds = new Set([0])
     this.resetClock()
     this.uploadCompositions()
+  }
+
+  private notify(kind: FluidNotice['kind'], text: string) {
+    if (kind === 'refused') this.lastRefusal = text
+    this.onNotice?.({ kind, text })
+  }
+
+  /** Material gates for one spawn: the id to spawn `baseId` at `tempC` (a fixed-temperature preset such as
+   *  honey uses its single sourced temperature), the per-material gates (phase, sourced data, the legacy
+   *  solver's explicit-viscosity limit) and the pairwise thermal gate against what is already in the tank. */
+  private resolveSpawn(baseId: number, tempC: number): { ok: true; id: number; tempC: number } | { ok: false; reason: string } {
+    const table = this.compositionTable
+    if (!table.get(baseId)) return { ok: false, reason: `unknown material id ${baseId}` }
+    const range = table.menuVisibility(baseId, 'mpm', tempC).dataRangeC
+    const t = range && range[0] === range[1] ? range[0] : tempC
+    const before = table.count
+    const sid = table.spawnIdAt(baseId, t, 'mpm')
+    if (table.count !== before) this.uploadCompositions()      // a new temperature row was registered
+    if (!sid.ok) return sid
+    const chk = table.checkSpawn(sid.id, { method: 'mpm', scene: [...this.sceneIds].map(id => ({ id })) })
+    if (!chk.ok) return { ok: false, reason: chk.reason }
+    for (const w of chk.warnings) this.notify('warning', w)
+    return { ok: true, id: sid.id, tempC: t }
+  }
+
+  /** Spawn through the gates; a refusal is reported (never clamped, never silently swapped for water). */
+  private gatedSpawn(baseId: number, tempC: number, block: () => { lo: Vec3; size: Vec3 }): Promise<number> {
+    this.onNotice?.(null)
+    const g = this.resolveSpawn(baseId, tempC)
+    if (!g.ok) { this.notify('refused', g.reason); return Promise.resolve(0) }
+    return this.enqueueSpawn(block, g.id, g.tempC, 1)
+  }
+
+  /** Material menu for the control panel, evaluated at the spawn temperature (hidden entries removed). */
+  getMenuEntries(tempC = this.spawnTemperature): MenuEntry[] {
+    return this.compositionTable.getMenuEntries('mpm', tempC).filter(e => e.visibility !== 'hidden')
   }
 
   /** Cells currently holding fluid, from a fresh GPU readback (spawns must not overlap them). */
@@ -299,6 +350,7 @@ export class FluidEngine {
     const r = latticeBox(block.lo, block.size, { occupied, rng })
     if (r.positions.length > 0) {
       this.gpuSim.addParticles(r.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: compId, temperature, phase })))
+      this.sceneIds.add(compId)
     }
     return r.positions.length
   }
@@ -311,10 +363,14 @@ export class FluidEngine {
     this.sceneGeneration++
   }
 
-  /** Load (or re-load) a scenario. spawnParticles replaces everything → doubles as RESET. */
-  loadScenario(s: LabScenario) {
-    if (!this.gpuSim || this.destroyed) return
+  /** Load (or re-load) a scenario. spawnParticles replaces everything → doubles as RESET.
+   *  The whole material set is gated BEFORE anything spawns: every material must pass the per-material
+   *  gates at its spawn temperature and the set must pass the pairwise thermal gate (e.g. 1150 °C lava
+   *  with 20 °C water is refused — there is no heat transfer yet). A refused scenario leaves the tank empty. */
+  loadScenario(s: LabScenario): ScenarioLoad {
+    if (!this.gpuSim || this.destroyed) return { ok: false, reason: 'engine not ready' }
     this.lastScenario = s
+    this.onNotice?.(null)
     // Fresh table seeded with defaults, then the scenario's materials — so the material picker
     // and manual spawns keep the built-in materials AND the scenario's.
     const table = new CompositionTable()
@@ -329,12 +385,30 @@ export class FluidEngine {
     }
     this.uploadCompositions()
 
+    // Resolve every spawn's material (scenario materials first, then built-ins by name — never a
+    // silent fallback to water) at its temperature, then gate the whole set before spawning anything.
+    const resolved: { id: number; tempC: number }[] = []
+    for (const sp of s.spawns) {
+      const base = idByName.get(sp.material) ?? table.findByName(sp.material)
+      if (base === null || base === undefined) return this.refuseScenario(`spawn material "${sp.material}" is neither a scenario material nor a built-in one`)
+      const reg = table.get(base)!.temperature
+      const t = sp.temperature ?? s.materials.find(m => m.name === sp.material)?.temperature ?? s.temperature ?? reg
+      const sid = table.spawnIdAt(base, t, 'mpm')
+      if (!sid.ok) return this.refuseScenario(sid.reason)
+      resolved.push({ id: sid.id, tempC: t })
+    }
+    this.uploadCompositions()
+    const verdict = table.checkScene(resolved.map(r => ({ id: r.id })), 'mpm')
+    if (!verdict.ok) return this.refuseScenario(verdict.reason)
+    for (const w of verdict.warnings) this.notify('warning', w)
+
     // Spawns fill blocks at rest packing; later spawns skip cells earlier ones already filled.
     const particles: GpuParticle[] = []
     const occupied = new Set<number>()
-    for (const sp of s.spawns) {
-      const temperature = sp.temperature ?? s.materials.find(m => m.name === sp.material)?.temperature ?? s.temperature ?? 20
-      const compId = idByName.get(sp.material) ?? 0
+    this.sceneIds = new Set(resolved.map(r => r.id))
+    for (const [k, sp] of s.spawns.entries()) {
+      const temperature = resolved[k].tempC
+      const compId = resolved[k].id
       const block = sp.box
         ? { lo: sp.box.min.map(tankMetresToUnit) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
         : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000)
@@ -364,6 +438,15 @@ export class FluidEngine {
       this.gpuSim.clearSphereObstacle()
       if (this.sphereMesh) this.sphereMesh.visible = false
     }
+    return { ok: true, warnings: verdict.warnings }
+  }
+
+  private refuseScenario(reason: string): ScenarioLoad {
+    this.gpuSim?.spawnParticles([])
+    this.sceneIds.clear()
+    this.resetClock()
+    this.notify('refused', `scenario refused: ${reason}`)
+    return { ok: false, reason }
   }
 
   /** Advance the simulation by `intervalS` of sim time: the ball and the GPU fluid, in equal
@@ -546,8 +629,8 @@ export class FluidEngine {
 
   /** Spawn ≈`count` particles of one composition as a block at rest packing around `center`
    *  ([0,1]³ coords), skipping cells that already hold fluid. Resolves to the number added. */
-  spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number, phase: number): Promise<number> {
-    return this.enqueueSpawn(() => cubeForCount(center, count), compId, temperature, phase)
+  spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number): Promise<number> {
+    return this.gatedSpawn(compId, temperature, () => cubeForCount(center, count))
   }
 
   /** Objective motion metrics from a GPU particle readback — positions in the sim's [0,1]³ space. */
@@ -620,13 +703,13 @@ export class FluidEngine {
    *  centred horizontally and placed as high as the tank allows (skipping cells already full).
    *  Resolves to the number of particles actually added. */
   spawnBatch(count: number): Promise<number> {
-    return this.enqueueSpawn(() => cubeForCount([0.5, 1, 0.5], count), this.selectedComposition, this.spawnTemperature, 1)
+    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount([0.5, 1, 0.5], count))
   }
 
   /** Click-to-spawn: a ≈512-particle block (~0.29 m) of the selected material at a world point. */
   spawnAt(worldPos: { x: number; y: number; z: number }): Promise<number> {
     const c: Vec3 = [worldPos.x, worldPos.y, worldPos.z]
-    return this.enqueueSpawn(() => cubeForCount(c, 512), this.selectedComposition, this.spawnTemperature, 1)
+    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount(c, 512))
   }
 
   /** Raycast a screen click against the glass box and spawn a block there. */
@@ -667,7 +750,7 @@ export class FluidEngine {
   reset() {
     if (this.lastScenario) this.loadScenario(this.lastScenario)
     else if (this.options.initialScene === 'default-water') this.loadDefaultScene()
-    else { this.gpuSim?.spawnParticles([]); this.resetClock() }
+    else { this.gpuSim?.spawnParticles([]); this.sceneIds.clear(); this.resetClock() }
   }
 
   // ── Bench/test surface ──────────────────────────────────────────────────────

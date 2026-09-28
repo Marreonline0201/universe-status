@@ -5,7 +5,8 @@
 // This component owns only UI state and the AI features.
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { FluidEngine } from '../fluid-engine/FluidEngine'
+import { FluidEngine, type FluidNotice } from '../fluid-engine/FluidEngine'
+import type { MenuEntry } from '../composition/liquidGate'
 import { G_STANDARD } from '../fluid-engine/units'
 import { readBgBrightness, writeBgBrightness } from '../fluid-render/bgBrightness'
 import type { NamedComposition } from '../composition/CompositionTable'
@@ -33,6 +34,8 @@ export function FluidTest() {
   const [particleCount, setParticleCount] = useState(0)
   const [fpsWarning, setFpsWarning] = useState(false)
   const [rtFactor, setRtFactor] = useState(1)
+  const [menu, setMenu] = useState<MenuEntry[]>([])
+  const [notice, setNotice] = useState<FluidNotice | null>(null)   // latest gate refusal / warning
   const [gpuReady, setGpuReady] = useState(false)
   const [compositions, setCompositions] = useState<NamedComposition[]>([])
   const [ballActive, setBallActive] = useState(false)
@@ -72,7 +75,12 @@ export function FluidTest() {
   // Push UI state into the engine (re-run once the engine is ready).
   useEffect(() => { engineRef.current?.setSelectedComposition(selectedComposition) }, [selectedComposition, gpuReady])
   useEffect(() => { engineRef.current?.setGravity(gravityVal) }, [gravityVal, gpuReady])
-  useEffect(() => { engineRef.current?.setTemperature(temperatureVal) }, [temperatureVal, gpuReady])
+  useEffect(() => {
+    const e = engineRef.current
+    if (!e) return
+    e.setTemperature(temperatureVal)
+    setMenu(e.getMenuEntries(temperatureVal))   // the menu re-evaluates every material at the spawn temperature
+  }, [temperatureVal, gpuReady])
   useEffect(() => {
     // Brightness scales the fixed olive hue on BOTH paint paths (SSFR + fallback);
     // persisted so the Lab page (and reloads) share the preference.
@@ -99,11 +107,16 @@ export function FluidTest() {
     const result = await materialGenRef.current.generate(description)
     if (!result) return 'Could not generate material. Try a different description.'
 
+    // The AI proposes a composition; the material gates decide whether the simulator can represent it
+    // honestly (sourced liquid properties at that temperature, within the solver's limits).
     const compId = engine.addComposition(result.name, result.formula, result.elements, result.temperature)
-    const phase = result.state === 'solid' ? 0 : result.state === 'liquid' ? 1 : 2
-    const added = await engine.spawnCompositionBlock(compId, 3000, [0.5, 0.75, 0.5], result.temperature, phase)
+    engine.lastRefusal = null
+    const added = await engine.spawnCompositionBlock(compId, 3000, [0.5, 0.75, 0.5], result.temperature)
     syncCount()
+    // A refused AI material stays in the menu, disabled, with its reason.
     setCompositions(engine.getCompositions())
+    setMenu(engine.getMenuEntries())
+    if (added === 0 && engine.lastRefusal) return `Not spawned — ${engine.lastRefusal}`
     setSelectedComposition(compId)
 
     return `Spawned ${added} ${result.name} (${result.formula}) at ${result.temperature} C [${result.state}]`
@@ -153,8 +166,10 @@ export function FluidTest() {
     void engine.init().then(ok => {
       if (cancelled) return
       if (!ok) { console.error('[fluid] FluidEngine init failed (WebGPU unavailable?)'); return }
+      engine.onNotice = n => setNotice(n)
       setGpuReady(true)
       setCompositions(engine.getCompositions())
+      setMenu(engine.getMenuEntries())
       setParticleCount(engine.particleCount)
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
@@ -162,8 +177,9 @@ export function FluidTest() {
           loadScenario: (json) => {
             const parsed = parseScenario(json)
             if (!parsed.ok) throw new Error(parsed.error)
-            engine.loadScenario(parsed.scenario)
-            return { warning: parsed.warning }
+            const r = engine.loadScenario(parsed.scenario)
+            if (!r.ok) throw new Error(`scenario refused: ${r.reason}`)
+            return { warning: [parsed.warning, ...r.warnings].filter(Boolean).join('; ') || null }
           },
           action: (name) => {
             if (name === 'reset') return resetSim()
@@ -203,6 +219,7 @@ export function FluidTest() {
     temperature: temperatureVal, setTemperature: setTemperatureVal,
     bgBrightness: bgBrightVal, setBgBrightness: setBgBrightVal,
     reset: resetSim,
+    menu, notice,
   }
 
   return (

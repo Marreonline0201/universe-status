@@ -1,6 +1,29 @@
 // PropertyCalculator.ts — Compute material properties from element composition
 // Implements structure.md §3.1 formulas using real physics
 // Data sourced from docs/element-properties.md (NIST, CRC Handbook, ASM International)
+//
+// S1.5 material-data fixes (fluid-realism plan, r4 §C.1), 2026-09-28:
+//   1. Silicate branch: compositions that used to match the silica-glass signature (Si > 0.2, O > 0.35) — including the
+//      default basalt lava — got 1e6 Pa·s at 1700 °C with Ea = 500 kJ/mol, i.e. 3.1e10 Pa·s at 1200 °C, silently clamped
+//      to 1e8. They now go through the Giordano–Russell–Dingwell 2008 melt model (materialData.grdVft) when the oxide
+//      composition lies inside GRD's calibration; outside it the viscosity is NaN ("unmodelled"), never a guessed number.
+//   2. Water: ρ(T), μ(T) from the NIST 0.101325 MPa isobar, σ(T) from IAPWS R1-76 (materialData), replacing the
+//      ρ = 1000 constant, the Ea = 17 kJ/mol Arrhenius law (−20 % at 100 °C) and the constant σ.
+//   3. debyeFunction() bug (returns up to ≈2, discontinuous at x = 3) is no longer applied: it multiplied MEASURED
+//      room-temperature c_p values, double-counting the lattice correction (Fe 517.5 vs table 449 J/(kg·K)).
+//   4. Placeholder numbers removed: 1e6 Pa·s "solid", 0.001 Pa·s "default liquid", 0.004 "default molten metal",
+//      0.03/0.5 N/m "default" surface tensions, and the Math.min(…, 1e8) / Math.max(1e-4, …) clamps → NaN + a flag.
+//      (Review fix: the display-only σ floors Math.max(0.001, …) / Math.max(0.01, …) are gone too → NaN when ≤ 0.)
+//   5. Review fix: no extrapolation. The GRD branch returns NaN outside GRD 2008's calibrated temperature span and below
+//      Tg; Tg is no longer used as a "melting point" (a silicate's liquidus is unsourced → NaN). Every branch except
+//      water states in DerivedProps.unsourcedReason why its liquid-state values are not sourced, and the spawn gate
+//      (liquidGate.validateSpawn via CompositionTable) refuses those compositions at every temperature.
+//   Every derived value now carries provenance in DerivedProps.flags.
+
+import {
+  waterDensity, waterViscosity, waterSurfaceTension, WATER_T_MIN_C, WATER_T_MAX_C,
+  grdVft, vftViscosity, grdCalibrationViolations, GRD_CALIBRATION_T_C,
+} from './materialData'
 
 // 25 gameplay elements from docs/element-properties.md
 export const ELEMENTS = [
@@ -83,21 +106,60 @@ export const ELEMENT_DATA: Record<ElementName, ElementProps> = {
 // Vegard's law fails for molecular compounds. These define known compounds
 // that need density/property overrides when detected by composition signature.
 interface CompoundOverride {
+  kind: 'water' | 'salt' | 'silicate-grd' | 'silicate-unmodelled' | 'organic-oil'
   density: number
   meltingPoint: number
   boilingPoint: number
   specificHeat: number
   thermalCond: number
-  viscosity_ref: number   // Pa·s at ref temperature
-  viscosity_Ea: number    // kJ/mol
-  viscosity_Tref: number  // °C
-  surfaceTension: number  // N/m at 20°C
+  /** Pa·s at tC (liquid law only; the solid case is handled by the caller). NaN = no validated law. */
+  viscosityAt: (tC: number) => number
+  surfaceTension: number  // N/m at the requested temperature; NaN = unsourced
   color: [number, number, number]
   IOR: number
+  flags: string[]
+  /** Why this branch's liquid-state values are not sourced (null = cited law, currently only water). */
+  unsourcedReason: string | null
 }
 
-// Detect water: H ≈ 0.111, O ≈ 0.889
-function detectCompound(elements: Partial<Record<ElementName, number>>): CompoundOverride | null {
+/** Legacy Arrhenius form μ_ref·exp(Ea/R·(1/T − 1/T_ref)) — kept only for the salt/oil branches, whose parameters are [U]. */
+function arrheniusFromRef(mu_ref: number, Ea_kJmol: number, Tref_C: number, tC: number): number {
+  const T_K = tC + 273.15
+  if (!(T_K > 0)) return NaN
+  return mu_ref * Math.exp((Ea_kJmol * 1000) / R_GAS * (1 / T_K - 1 / (Tref_C + 273.15)))
+}
+
+// GRD oxide per element: [oxide index in materialData.GRD_OXIDES, oxide molar mass (GRD's own values), cations per oxide]
+const GRD_OXIDE_OF: Partial<Record<ElementName, readonly [number, number, number]>> = {
+  Si: [0, 60.0843, 1], Ti: [1, 79.8658, 1], Al: [2, 101.961276, 2], Fe: [3, 71.8444, 1], Mn: [4, 70.937449, 1],
+  Mg: [5, 40.3044, 1], Ca: [6, 56.0774, 1], Na: [7, 61.97894, 2], K: [8, 94.1960, 2], P: [9, 141.9446, 2],
+  H: [10, 18.01528, 2],
+}
+
+/** Element mass fractions → 12 GRD oxide wt% (total iron as FeO, H as H2O), normalised to 100 as the GRD calculator
+ *  does. null if any element that is not a GRD oxide cation (other than O) is present. */
+export function silicateOxidesWt(elements: Partial<Record<ElementName, number>>): number[] | null {
+  const wt = new Array<number>(12).fill(0)
+  for (const [el, frac] of Object.entries(elements) as [ElementName, number][]) {
+    if (!(frac > 0) || el === 'O') continue
+    const ox = GRD_OXIDE_OF[el]
+    if (!ox) return null
+    const [idx, molarMassOxide, nCation] = ox
+    wt[idx] += frac * molarMassOxide / (nCation * ELEMENT_DATA[el].mass)
+  }
+  const sum = wt.reduce((s, v) => s + v, 0)
+  if (!(sum > 0)) return null
+  return wt.map(v => 100 * v / sum)
+}
+
+/** Composition key for materials that have a cited law in materialData (currently: water by element signature). */
+export function detectMaterialKey(elements: Partial<Record<ElementName, number>>): 'water' | null {
+  const h = elements.H ?? 0
+  const o = elements.O ?? 0
+  return h > 0.05 && o > 0.8 && h + o > 0.95 ? 'water' : null
+}
+
+function detectCompound(elements: Partial<Record<ElementName, number>>, tC: number): CompoundOverride | null {
   const h = elements.H ?? 0
   const o = elements.O ?? 0
   const na = elements.Na ?? 0
@@ -105,36 +167,72 @@ function detectCompound(elements: Partial<Record<ElementName, number>>): Compoun
   const c = elements.C ?? 0
   const si = elements.Si ?? 0
 
-  // Water: H₂O → H:0.111, O:0.889
-  if (h > 0.05 && o > 0.8 && h + o > 0.95) {
+  // Water: H₂O → H:0.111, O:0.889. Laws from materialData (NIST isobar + IAPWS R1-76); NaN outside 0.01–99.9743 °C.
+  if (detectMaterialKey(elements) === 'water') {
     return {
-      density: 1000, meltingPoint: 0, boilingPoint: 100, specificHeat: 4186,
-      thermalCond: 0.6, viscosity_ref: 0.001, viscosity_Ea: 17, viscosity_Tref: 20,
-      surfaceTension: 0.0728, color: [0.75, 0.88, 1.0], IOR: 1.333,
+      kind: 'water',
+      density: waterDensity(tC), meltingPoint: WATER_T_MIN_C, boilingPoint: WATER_T_MAX_C,
+      specificHeat: 4186, thermalCond: 0.6,  // legacy, not used by the solver (NIST 20 °C: 4184.0, 0.59803) [unchanged]
+      viscosityAt: waterViscosity, surfaceTension: waterSurfaceTension(tC),
+      color: [0.75, 0.88, 1.0], IOR: 1.333,
+      flags: ['source:primary:NIST-IAPWS'],
+      unsourcedReason: null,
     }
   }
-  // Salt: NaCl → Na:0.393, Cl:0.607
+  // Salt: NaCl → Na:0.393, Cl:0.607. Legacy molten-salt values; parameters not sourced [U].
   if (na > 0.3 && cl > 0.5) {
     return {
+      kind: 'salt',
       density: 2170, meltingPoint: 801, boilingPoint: 1413, specificHeat: 880,
-      thermalCond: 6.5, viscosity_ref: 0.001, viscosity_Ea: 20, viscosity_Tref: 820,
+      thermalCond: 6.5, viscosityAt: (t) => arrheniusFromRef(0.001, 20, 820, t),
       surfaceTension: 0.114, color: [0.95, 0.95, 0.95], IOR: 1.544,
+      flags: ['unverified:molten-salt-parameters'],
+      unsourcedReason: 'molten-salt ρ and μ(T) are legacy values (ρ 2170, μ 1 mPa·s at 820 °C, Ea 20 kJ/mol) with no source',
     }
   }
-  // Glass: SiO₂-dominant
-  if (si > 0.2 && o > 0.35 && si + o > 0.6) {
+  // Silicate melt (was "Glass: SiO₂-dominant", which also caught basalt → the 1e8 Pa·s lava bug).
+  if (si > 0.2 && o > 0.35) {
+    const ox = silicateOxidesWt(elements)
+    const violations = ox ? grdCalibrationViolations(ox) : ['contains elements that are not GRD 2008 oxide components']
+    if (ox && violations.length === 0) {
+      const vft = grdVft(ox)
+      const TgC = vft.TgK - 273.15
+      // GRD 2008 §2: anhydrous data span 535–1705 °C, volatile-bearing data 245–1580 °C → NaN outside (no extrapolation).
+      const span = ox[10] > 0 || ox[11] > 0 ? GRD_CALIBRATION_T_C.volatileBearing : GRD_CALIBRATION_T_C.anhydrous
+      return {
+        kind: 'silicate-grd',
+        // PyFLOWGO basalt DRE default (flowgo_material_lava.py `_density_dre = 2600.`) applied to an element-derived
+        // silicate: an ESTIMATE, flagged — GRD gives no density.
+        density: 2600,
+        // The liquidus (fully molten above it) of an arbitrary composition is not sourced → NaN. GRD's Tg (η = 1e12 Pa·s,
+        // the glass transition) is NOT a melting point and is only used as the lower end of the VFT law's validity.
+        meltingPoint: NaN, boilingPoint: NaN,
+        specificHeat: NaN, thermalCond: NaN,
+        viscosityAt: (t) => (t >= span[0] && t <= span[1] && t >= TgC ? vftViscosity(vft, t) : NaN),
+        surfaceTension: NaN,
+        color: [0.85, 0.9, 0.95], IOR: 1.5,
+        flags: ['model:GRD2008-melt', 'estimate:density:PyFLOWGO-DRE-2600', 'unsourced:liquidus', `GRD-calibrated-span:${span[0]}-${span[1]}C`, 'melt-only:crystallisation-not-modelled'],
+        unsourcedReason: "GRD 2008 gives this silicate melt's viscosity, but its liquidus is not sourced, so a fully molten Newtonian melt cannot be certified at any temperature (use a Lava preset)",
+      }
+    }
     return {
-      density: 2200, meltingPoint: 1700, boilingPoint: 2230, specificHeat: 730,
-      thermalCond: 1.4, viscosity_ref: 1e6, viscosity_Ea: 500, viscosity_Tref: 1700,
-      surfaceTension: 0.30, color: [0.85, 0.9, 0.95], IOR: 1.5,
+      kind: 'silicate-unmodelled',
+      density: NaN, meltingPoint: NaN, boilingPoint: NaN, specificHeat: NaN, thermalCond: NaN,
+      viscosityAt: () => NaN, surfaceTension: NaN,
+      color: [0.85, 0.9, 0.95], IOR: 1.5,
+      flags: ['unmodelled:silicate-outside-GRD-calibration', ...violations],
+      unsourcedReason: `silicate outside the GRD 2008 calibration (${violations.join('; ')}) — no viscosity model`,
     }
   }
-  // Organic oil: high C+H, low everything else
+  // Organic oil: high C+H, low everything else. Legacy values; Ea = 25 kJ/mol and c_p/k are [U] (r4 §C.1-12).
   if (c > 0.6 && h > 0.08 && c + h + (elements.O ?? 0) > 0.95) {
     return {
+      kind: 'organic-oil',
       density: 920, meltingPoint: -6, boilingPoint: 300, specificHeat: 2000,
-      thermalCond: 0.17, viscosity_ref: 0.08, viscosity_Ea: 25, viscosity_Tref: 20,
+      thermalCond: 0.17, viscosityAt: (t) => arrheniusFromRef(0.08, 25, 20, t),
       surfaceTension: 0.032, color: [0.7, 0.65, 0.3], IOR: 1.473,
+      flags: ['unverified:organic-oil-parameters'],
+      unsourcedReason: 'legacy organic-oil parameters (ρ 920, μ 0.08 Pa·s at 20 °C, Ea 25 kJ/mol, melting −6 °C, boiling 300 °C) have no source (use Olive Oil, secondary data)',
     }
   }
   return null
@@ -171,12 +269,21 @@ export interface DerivedProps {
   specularPower: number      // specular highlight sharpness
   opacityDensity: number     // how opaque per unit thickness
   emissivity: number         // 0-1 for thermal radiation
+  /** Provenance of the derived values (S1.5): 'estimate:*', 'unverified:*', 'unmodelled:*', 'solid:*', 'model:*' … */
+  flags?: string[]
+  /** Why the liquid-state (solver) values of this composition are not sourced; null only for a cited law (water).
+   *  The spawn gate refuses every composition with a non-null reason, at every temperature. */
+  unsourcedReason?: string | null
 }
 
-// ── Debye specific heat correction ──────────────────────────────────────────
+// ── Debye specific heat correction — KNOWN BUG, NOT USED (S1.5, r4 §C.1-7) ──
 // §3.1: C_v = 3R × f(T/θ_D)
-// Simplified Debye function approximation (accurate to ~2%)
-function debyeFunction(x: number): number {
+// This "approximation" is not the Debye heat-capacity function: it returns values up to ≈ 2 (x = 2.79 → 1.97, where the
+// true Debye C_v/3R is ≈ 0.99) and jumps to exactly 1.0 at x = 3. It was also applied to MEASURED room-temperature
+// c_p values, which already contain the lattice behaviour. computeProperties no longer calls it; it is exported only
+// so the materials gate can document the defect. Do not use.
+/** @deprecated Known-wrong (see comment above). Kept for the S1.5 gate only. */
+export function debyeFunctionLegacyBuggy(x: number): number {
   // x = T/θ_D
   if (x > 3) return 1.0 // Dulong-Petit limit
   if (x < 0.05) return 0.0
@@ -191,8 +298,9 @@ function debyeFunction(x: number): number {
 // §3.1: μ(T) = A · exp(Ea / (R·T))
 // Given A, Ea from Table 8, compute viscosity at temperature T (°C)
 function arrheniusViscosity(A_mPas: number, Ea_kJmol: number, tempC: number): number {
-  if (A_mPas <= 0) return 0.001 // default to water-like
-  const T_K = Math.max(tempC + 273.15, 200) // prevent division by near-zero
+  if (!(A_mPas > 0)) return NaN // no Andrade parameters → no viscosity law (was a silent 0.001 "water-like" default)
+  const T_K = tempC + 273.15
+  if (!(T_K > 0)) return NaN
   const Ea = Ea_kJmol * 1000 // convert to J/mol
   const mu_mPas = A_mPas * Math.exp(Ea / (R_GAS * T_K))
   return mu_mPas * 0.001 // convert mPa·s to Pa·s
@@ -208,9 +316,11 @@ export function eötvösSurfaceTension(
   // If we have a direct measurement at Tm, use linear interpolation from it
   if (surfaceTension_Tm > 0 && tempC >= meltingPoint_C) {
     // Surface tension decreases linearly with temperature
-    // dγ/dT ≈ -0.0003 N/(m·K) for most metals
+    // dγ/dT ≈ -0.0003 N/(m·K) for most metals — a universal slope that is [U] (r4 §C.1-13: Hg measures −0.2155
+    // mN/(m·K); silicate melts have a small POSITIVE slope). Display-only: the solver has no surface tension.
     const dGamma_dT = -0.0003
-    return Math.max(0.001, surfaceTension_Tm + dGamma_dT * (tempC - meltingPoint_C))
+    const g = surfaceTension_Tm + dGamma_dT * (tempC - meltingPoint_C)
+    return g > 0 ? g : NaN // no floor: a non-positive value means the linear law is outside its range
   }
 
   // Eötvös rule fallback
@@ -218,7 +328,7 @@ export function eötvösSurfaceTension(
   const T_K = tempC + 273.15
   const V_m = (molarMass / 1000) / density // m³/mol
   const gamma = EÖTVÖS_K * (Tc_K - T_K - 6) / Math.pow(V_m, 2 / 3)
-  return Math.max(0.001, gamma)
+  return gamma > 0 ? gamma : NaN // no floor (was Math.max(0.001, …))
 }
 
 // ── Wiedemann-Franz thermal conductivity ────────────────────────────────────
@@ -278,7 +388,8 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
   const entries = Object.entries(elems) as [ElementName, number][]
 
   // ── Check for known compound overrides first ──────────────────────────
-  const compound = detectCompound(elems)
+  const compound = detectCompound(elems, temperature)
+  const flags: string[] = compound ? [...compound.flags] : ['estimate:element-model']
 
   // ── Compute metal fraction ────────────────────────────────────────────
   const metalFrac = entries
@@ -313,22 +424,17 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
     boilingPoint = compound.boilingPoint
   }
 
-  // ── Debye-corrected specific heat (§3.1) ──────────────────────────────
-  // C_p = Σ x_i × (3R/M_i) × f(T/θ_D_i) × M_i × 1000
-  // Simplified: per-element Debye correction on their Cp values
+  // ── Specific heat (§3.1) ──────────────────────────────────────────────
+  // (§3.1 wrote C_p = Σ x_i (3R/M_i) f(T/θ_D) — f was the buggy approximation, see debyeFunctionLegacyBuggy)
+  // S1.5: the per-element Debye "correction" is removed — debyeFunctionLegacyBuggy() is wrong (see above) and the
+  // table values are already MEASURED room-temperature c_p. Mass weighting of element c_p (Kopp–Neumann style) is
+  // itself an estimate for compounds/alloys → flagged. Not used by the solver.
   let specificHeat = 0
   if (compound) {
     specificHeat = compound.specificHeat
   } else {
-    const T_K = temperature + 273.15
-    for (const [el, frac] of entries) {
-      const d = ELEMENT_DATA[el]
-      const theta = d.debyeTemp > 0 ? d.debyeTemp : 300
-      const correction = debyeFunction(T_K / theta)
-      // At high T (T >> θ_D), correction → 1, giving Dulong-Petit
-      // At low T (T << θ_D), correction → 0, reducing Cp
-      specificHeat += d.specificHeat * frac * Math.max(0.3, correction)
-    }
+    for (const [el, frac] of entries) specificHeat += ELEMENT_DATA[el].specificHeat * frac
+    if (entries.length > 1) flags.push('estimate:specific-heat:mass-weighted')
   }
 
   // ── Thermal conductivity ──────────────────────────────────────────────
@@ -346,14 +452,15 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
   }
 
   // ── Andrade viscosity (§3.1) ──────────────────────────────────────────
+  // No clamps: a value outside a law's range is NaN and the solver gate refuses it (liquidGate.validateMpmViscosity).
   let viscosity: number
   if (compound) {
-    // Use compound's Arrhenius parameters
-    const T_K = Math.max(temperature + 273.15, 200)
-    const Tref_K = compound.viscosity_Tref + 273.15
-    const Ea = compound.viscosity_Ea * 1000
-    viscosity = compound.viscosity_ref * Math.exp(Ea / R_GAS * (1 / T_K - 1 / Tref_K))
-    viscosity = Math.max(0.0001, Math.min(viscosity, 1e8))
+    if (temperature < compound.meltingPoint) {
+      viscosity = NaN // solid (or glass, for GRD melts below Tg): a viscosity is not defined
+      flags.push('solid:no-viscosity')
+    } else {
+      viscosity = compound.viscosityAt(temperature)
+    }
   } else if (temperature > meltingPoint && isMetallic) {
     // Liquid metal — Andrade from element table
     // Use weighted average of A and Ea
@@ -370,13 +477,17 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
       A_avg /= metalWeight
       Ea_avg /= metalWeight
       viscosity = arrheniusViscosity(A_avg, Ea_avg, temperature)
+      flags.push('estimate:viscosity:andrade-element-table')
     } else {
-      viscosity = 0.004 // default molten metal
+      viscosity = NaN // was a 0.004 Pa·s "default molten metal" placeholder
+      flags.push('unmodelled:no-viscosity-law')
     }
   } else if (temperature > meltingPoint) {
-    viscosity = 0.001 // default liquid
+    viscosity = NaN // was a 0.001 Pa·s "default liquid" placeholder
+    flags.push('unmodelled:no-viscosity-law')
   } else {
-    viscosity = 1e6 // solid
+    viscosity = NaN // solid: was a 1e6 Pa·s placeholder that the MPM kernel then fed to its ±200 clamp
+    flags.push('solid:no-viscosity')
   }
 
   // ── Surface tension (§3.1) ────────────────────────────────────────────
@@ -396,12 +507,15 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
     if (metalWeight > 0) {
       gamma_avg /= metalWeight
       // Temperature correction: -0.0003 N/(m·K) above melting point
-      surfaceTension = Math.max(0.01, gamma_avg - 0.0003 * Math.max(0, temperature - meltingPoint))
+      // −0.3 mN/(m·K) universal slope is [U] (see eötvösSurfaceTension); display-only.
+      const g = gamma_avg - 0.0003 * Math.max(0, temperature - meltingPoint)
+      surfaceTension = g > 0 ? g : NaN // no floor (was Math.max(0.01, …))
+      flags.push('estimate:surface-tension:universal-slope')
     } else {
-      surfaceTension = 0.5
+      surfaceTension = NaN // was a 0.5 N/m placeholder
     }
   } else {
-    surfaceTension = 0.03 // default surface tension
+    surfaceTension = NaN // was a 0.03 N/m placeholder
   }
 
   // ── Color ─────────────────────────────────────────────────────────────
@@ -438,6 +552,12 @@ export function computeProperties(comp: Composition, temperature: number = 20): 
     viscosity, surfaceTension,
     color, F0, metalness, emissive, IOR, specularPower, opacityDensity,
     emissivity: emissivity_val,
+    flags,
+    unsourcedReason: compound
+      ? compound.unsourcedReason
+      : isMetallic && flags.includes('estimate:viscosity:andrade-element-table')
+        ? 'liquid-metal values from the element table are not sourced for this composition (the density is the solid-state Vegard mix; the Andrade A/Ea table rows are not individually cited and several are 0.3 mPa·s placeholders)'
+        : 'no sourced liquid-state data for this element composition (element-model estimate: Vegard-mixed melting/boiling points and properties)',
   }
 }
 

@@ -2,13 +2,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { LabFluidEngine, type LabStats } from '../../lab/LabFluidEngine'
 import type { LabScenario } from '../../lab/scenario'
+import type { FluidNotice } from '../../fluid-engine/FluidEngine'
 
-export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
+export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded, onNotice }: {
   scenario: LabScenario | null
   runNonce: number
   onStats: (s: LabStats) => void
   onEngine?: (e: LabFluidEngine | null) => void   // hand the engine up so the page can build its control panel
   onLoaded?: () => void                            // fired after a scenario loads (compositions/ball may have changed)
+  onNotice?: (n: FluidNotice | null) => void       // material-gate refusals / warnings (null = cleared)
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<LabFluidEngine | null>(null)
@@ -17,12 +19,14 @@ export function LabSim({ scenario, runNonce, onStats, onEngine, onLoaded }: {
   const onStatsRef = useRef(onStats); onStatsRef.current = onStats
   const onEngineRef = useRef(onEngine); onEngineRef.current = onEngine
   const onLoadedRef = useRef(onLoaded); onLoadedRef.current = onLoaded
+  const onNoticeRef = useRef(onNotice); onNoticeRef.current = onNotice
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     let cancelled = false
     const engine = new LabFluidEngine(container, s => onStatsRef.current(s))
+    engine.onNotice = n => onNoticeRef.current?.(n)
     engineRef.current = engine
     void engine.init().then(ok => {
       if (cancelled) return

@@ -6,9 +6,16 @@
 // The legacy `gravity` field is in the old grid-space code units (0.3 ≙ Earth gravity by the
 // 2026-07-17 units contract) and is converted on load — see scenarioGravityMs2().
 import { ELEMENTS, type ElementName } from '../composition/PropertyCalculator'
-import type { RenderOverride } from '../composition/CompositionTable'
+import { CompositionTable, type RenderOverride } from '../composition/CompositionTable'
 import { DOMAIN_L_M, DX_M, G_STANDARD, TANK_INNER_M, TAU_S } from '../fluid-engine/units'
 import { LATTICE_SPACING } from '../fluid-engine/spawn'
+
+/** Built-in material names (lower-case) a spawn may reference without a "materials" entry. */
+const BUILT_IN_NAMES: ReadonlySet<string> = (() => {
+  const t = new CompositionTable()
+  t.addDefaults()
+  return new Set(t.getAll().map(c => c.name.trim().toLowerCase()))
+})()
 
 export interface LabMaterial {
   name: string
@@ -74,8 +81,9 @@ export function parseScenario(text: string):
     return { ok: false, error: `scenario.json is not valid JSON: ${e instanceof Error ? e.message : e}` }
   }
   const s = raw as LabScenario
-  if (!Array.isArray(s.materials) || s.materials.length === 0) {
-    return { ok: false, error: 'scenario needs a non-empty "materials" array' }
+  if (s.materials === undefined) s.materials = []
+  if (!Array.isArray(s.materials)) {
+    return { ok: false, error: '"materials" must be an array (it may be empty when every spawn names a built-in material)' }
   }
   for (const m of s.materials) {
     if (!m.name || typeof m.name !== 'string') return { ok: false, error: 'every material needs a "name"' }
@@ -108,10 +116,13 @@ export function parseScenario(text: string):
     }
   }
   const names = new Set(s.materials.map(m => m.name))
+  const builtIns = BUILT_IN_NAMES
   let total = 0
   const isVec3 = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(c => typeof c === 'number' && Number.isFinite(c))
   for (const sp of s.spawns) {
-    if (!names.has(sp.material)) return { ok: false, error: `spawn references unknown material "${sp.material}"` }
+    if (typeof sp.material !== 'string' || !(names.has(sp.material) || builtIns.has(sp.material.trim().toLowerCase()))) {
+      return { ok: false, error: `spawn references unknown material "${sp.material}" (not in "materials" and not a built-in material)` }
+    }
     if (sp.initialVelocity !== undefined && !isVec3(sp.initialVelocity)) {
       return { ok: false, error: 'spawn initialVelocity must be [vx,vy,vz] in m/s' }
     }

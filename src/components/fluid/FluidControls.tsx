@@ -6,6 +6,8 @@
 // own sim owner: FluidTest's simRef, or the lab's LabFluidEngine).
 import { useState } from 'react'
 import type { NamedComposition } from '../../composition/CompositionTable'
+import type { MenuEntry } from '../../composition/liquidGate'
+import type { FluidNotice } from '../../fluid-engine/FluidEngine'
 import { G_STANDARD } from '../../fluid-engine/units'
 
 /** The control surface both pages implement. Setters follow FluidTest's model:
@@ -30,12 +32,23 @@ export interface FluidController {
   bgBrightness: number
   setBgBrightness: (b: number) => void
   reset: () => void
+  /** Material menu from the material gates at the spawn temperature: 'show' spawnable, 'refused' listed but
+   *  disabled with its physical reason (hidden entries are already removed). */
+  menu?: MenuEntry[]
+  /** Last refusal or warning from the gates, shown under the spawn buttons. */
+  notice?: FluidNotice | null
 }
+
+/** A number for the info panel, or an honest dash when no sourced value exists at this state. */
+const num = (v: number, digits: number, unit: string) => (Number.isFinite(v) ? `${v.toFixed(digits)} ${unit}` : '— (no sourced value)')
 
 export function FluidControls({ controller }: { controller: FluidController }) {
   const [showInfo, setShowInfo] = useState(true)
   const { compositions, selectedComposition, gpuReady, ballActive, gravity, temperature, bgBrightness } = controller
   const selectedComp = compositions[selectedComposition]
+  const menuById = new Map((controller.menu ?? []).map(m => [m.id, m]))
+  const listed = controller.menu ? compositions.filter(c => menuById.has(c.id)) : compositions
+  const selectedEntry = menuById.get(selectedComposition)
 
   return (
     <div style={{
@@ -51,11 +64,16 @@ export function FluidControls({ controller }: { controller: FluidController }) {
       <div>
         <label style={labelStyle}>MATERIALS</label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
-          {compositions.map((comp) => (
+          {listed.map((comp) => {
+            const entry = menuById.get(comp.id)
+            const refused = entry?.visibility === 'refused'
+            return (
             <button
               key={comp.id}
               onClick={() => controller.setSelectedComposition(comp.id)}
+              title={refused ? `Cannot spawn on the current solver: ${entry?.reason}` : undefined}
               style={{
+                opacity: refused ? 0.45 : 1,
                 display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', cursor: 'pointer',
                 background: selectedComposition === comp.id ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.03)',
                 border: `1px solid ${selectedComposition === comp.id ? 'rgba(0,180,255,0.4)' : 'rgba(0,180,255,0.1)'}`,
@@ -72,9 +90,10 @@ export function FluidControls({ controller }: { controller: FluidController }) {
               <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {comp.name}
               </div>
-              <span style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.4)', flexShrink: 0 }}>{comp.formula}</span>
+              <span style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: refused ? 'rgba(255,140,80,0.7)' : 'rgba(100,150,200,0.4)', flexShrink: 0 }}>{refused ? 'REFUSED' : comp.formula}</span>
             </button>
-          ))}
+            )
+          })}
         </div>
       </div>
 
@@ -101,6 +120,22 @@ export function FluidControls({ controller }: { controller: FluidController }) {
           }}
         >+50K</button>
       </div>
+
+      {selectedEntry?.visibility === 'refused' && (
+        <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(255,160,100,0.85)', lineHeight: 1.5 }}>
+          {selectedEntry.name} can't be spawned at {controller.temperature} °C on the current solver: {selectedEntry.reason}
+        </div>
+      )}
+      {selectedEntry?.dataRangeC && selectedEntry.dataRangeC[0] === selectedEntry.dataRangeC[1] && (
+        <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.6)' }}>
+          Sourced data exist only at {selectedEntry.dataRangeC[0]} °C — spawns use that temperature.
+        </div>
+      )}
+      {controller.notice && (
+        <div style={{ fontSize: 'calc(9px * var(--font-scale, 1))', lineHeight: 1.5, color: controller.notice.kind === 'refused' ? 'rgba(255,120,90,0.9)' : 'rgba(255,200,90,0.85)' }}>
+          {controller.notice.kind === 'refused' ? 'Refused: ' : 'Warning: '}{controller.notice.text}
+        </div>
+      )}
 
       {/* Drop ball button */}
       <button
@@ -165,23 +200,22 @@ export function FluidControls({ controller }: { controller: FluidController }) {
             </div>
             <div style={{ color: 'rgba(100,150,200,0.55)', fontSize: 'calc(9px * var(--font-scale, 1))' }}>{selectedComp.formula}</div>
             <div style={{ marginTop: 4 }}>
-              <InfoRow label="Density" value={`${selectedComp.props.density.toFixed(0)} kg/m3`} symbol={'ρ'} />
-              <InfoRow label="Viscosity" value={`${selectedComp.props.viscosity.toFixed(4)} Pa·s`} symbol={'μ'} />
-              <InfoRow label="Surface Tension" value={`${selectedComp.props.surfaceTension.toFixed(4)} N/m`} symbol={'σ'} />
-              <InfoRow label="Melting Point" value={`${selectedComp.props.meltingPoint.toFixed(0)} C`} symbol={'Tm'} />
-              <InfoRow label="Boiling Point" value={`${selectedComp.props.boilingPoint.toFixed(0)} C`} symbol={'Tb'} />
+              <InfoRow label="Density" value={num(selectedComp.props.density, 0, 'kg/m3')} symbol={'ρ'} />
+              <InfoRow label="Viscosity" value={num(selectedComp.props.viscosity, 4, 'Pa·s')} symbol={'μ'} />
+              <InfoRow label="Surface Tension" value={num(selectedComp.props.surfaceTension, 4, 'N/m')} symbol={'σ'} />
+              <InfoRow label="Melting Point" value={num(selectedComp.props.meltingPoint, 0, 'C')} symbol={'Tm'} />
+              <InfoRow label="Boiling Point" value={num(selectedComp.props.boilingPoint, 0, 'C')} symbol={'Tb'} />
               <InfoRow label="Metalness" value={`${(selectedComp.props.metalness * 100).toFixed(0)}%`} symbol={'M'} />
               <InfoRow label="F0" value={selectedComp.props.F0.toFixed(3)} symbol={'F'} />
               <InfoRow label="IOR" value={selectedComp.props.IOR.toFixed(3)} symbol={'n'} />
             </div>
             <div style={{ marginTop: 8, padding: '6px 8px', background: 'rgba(0,180,255,0.05)', border: '1px solid rgba(0,180,255,0.1)', borderRadius: 3, fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.5)', lineHeight: 1.8 }}>
-              <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>GPU MLS-MPM</div>
-              <div>Solver: WebGPU compute</div>
-              <div>Substeps: 2 per frame</div>
-              <div>Grid: 64x64x64</div>
+              <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>GPU MLS-MPM (legacy, weakly compressible)</div>
+              <div>Tank: 3.29 m wall to wall, cells 5.67 cm</div>
+              <div>Clock: real time, substeps ≤ 1/120 s</div>
+              <div>Grid: 64x64x64, separating walls</div>
               <div>Render: SSFR (5-pass)</div>
-              <div>Transfer: P2G + G2P</div>
-              <div style={{ marginTop: 4, color: 'rgba(0,180,255,0.4)', letterSpacing: 1 }}>From structure.md S3.2</div>
+              <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Water still compresses ~17% under its own weight — the incompressible solver (plan S3) replaces this.</div>
             </div>
           </div>
         )}

@@ -1,0 +1,392 @@
+{
+ "_about": "Independent reference values for scripts/fluid-gates/materials.mjs (S1.5). Printed values are copied from the cited documents; 'r4-derived' values are the plan's approved constants (FINAL-PLAN.md §4.2 / r4-materials-scale.md) and are checked at the precision they were printed with.",
+ "iapws_r1_76_table1_calculated_mN_per_m": {
+  "source": "IAPWS R1-76(2014), Table 1, column 4 (calculated), 2 decimals",
+  "url": "https://iapws.org/technical-guidance/release/Surf-H2O.download",
+  "rows": [
+   [
+    0.01,
+    75.65
+   ],
+   [
+    5,
+    74.94
+   ],
+   [
+    10,
+    74.22
+   ],
+   [
+    15,
+    73.49
+   ],
+   [
+    20,
+    72.74
+   ],
+   [
+    25,
+    71.97
+   ],
+   [
+    30,
+    71.19
+   ],
+   [
+    35,
+    70.4
+   ],
+   [
+    40,
+    69.6
+   ],
+   [
+    45,
+    68.78
+   ],
+   [
+    50,
+    67.94
+   ],
+   [
+    55,
+    67.1
+   ],
+   [
+    60,
+    66.24
+   ],
+   [
+    65,
+    65.37
+   ],
+   [
+    70,
+    64.48
+   ],
+   [
+    75,
+    63.58
+   ],
+   [
+    80,
+    62.67
+   ],
+   [
+    85,
+    61.75
+   ],
+   [
+    90,
+    60.82
+   ],
+   [
+    95,
+    59.87
+   ],
+   [
+    100,
+    58.91
+   ]
+  ]
+ },
+ "assael2012_table3_mercury_viscosity_mPa_s": {
+  "source": "Assael et al. 2012, J. Phys. Chem. Ref. Data 41, 033101, Table 3 (recommended values), liquid mercury, 3 decimals",
+  "url": "https://elib.dlr.de/76579/1/Metal-Pub.pdf",
+  "stated_uncertainty_pct_95": 2.1,
+  "rows_K": [
+   [
+    250,
+    1.875
+   ],
+   [
+    300,
+    1.531
+   ],
+   [
+    350,
+    1.324
+   ],
+   [
+    400,
+    1.187
+   ],
+   [
+    450,
+    1.091
+   ],
+   [
+    500,
+    1.02
+   ],
+   [
+    550,
+    0.965
+   ],
+   [
+    600,
+    0.921
+   ]
+  ]
+ },
+ "bettin_fehlauer_2004_mercury_density_20C": {
+  "source": "Bettin & Fehlauer 2004, Metrologia 41 S16, reference value at 20 C, 101325 Pa (quoted in the Ayrinhac Hg compilation)",
+  "url": "http://www-ext.impmc.upmc.fr/~ayrinhac/documents/Hg_data.pdf",
+  "value": 13545.859
+ },
+ "reading_glycerol_calculator_source_lines": {
+  "source": "Reading glycerol-water calculator (Cheng 2008 viscosity; Volk & Kahler 2018 density), JavaScript source, verbatim right-hand sides (T in C)",
+  "url": "https://www.met.reading.ac.uk/~sws04cdw/viscosity_calc.html",
+  "viscosity_glycerol_Pa_s": "0.001*12100*Math.exp((-1233+T)*T/(9900+70*T))",
+  "density_glycerol_kg_m3": "1273-0.612*T"
+ },
+ "grd2008_table2_example": {
+  "source": "Giordano, Russell & Dingwell 2008, EPSL 271:123, Table 2: iron-free andesite melt with 2.00 wt% H2O; printed B = 7720, C = 334, log eta(1273 K) = 3.67",
+  "url": "https://www.eoas.ubc.ca/~krussell/VISCOSITY/grdViscosity_files/grdViscosityPaper.pdf",
+  "oxides_wt": [
+   62.4,
+   0.55,
+   20.01,
+   0.03,
+   0.02,
+   3.22,
+   9.08,
+   3.52,
+   0.93,
+   0.12,
+   2.0,
+   0.0
+  ],
+  "mol_pct_printed": [
+   62.38,
+   0.41,
+   11.79,
+   0.03,
+   0.02,
+   4.8,
+   9.73,
+   3.41,
+   0.59,
+   0.05,
+   6.8
+  ],
+  "B": 7720,
+  "C": 334,
+  "log_eta_1273K": 3.67,
+  "stated_rmse_log_units": 0.4
+ },
+ "owner_decisions_2026_09_28": {
+  "mercury_mu_20C_Pa_s": 0.001567,
+  "lava_grd_preset": {
+   "A": -4.55,
+   "B": 5963,
+   "C": 600.7,
+   "rho": 2600
+  },
+  "fissure8_oxides_wt": [
+   51.22,
+   3.03,
+   13.1,
+   11.89,
+   0.17,
+   5.96,
+   9.99,
+   2.58,
+   0.57,
+   0.3,
+   0,
+   0
+  ],
+  "fissure8_composition_rounding_wt": 0.005
+ },
+ "halverson_whittington_2024": {
+  "source": "Halverson & Whittington 2024, Geology 53:135 (NSF PAR manuscript): 'average viscosities of 116 Pa s at 1150 C' (line 34); Table 1 vesicularity: zero-time sample (quenched after the 20-min 1175 C hold that starts every run, lines 89-93) 36.1 %, recovered 1150 C product 19.2 % (Table 1 values are shifted one row down in the PDF text extraction; mapping fixed by the prose, lines 116-124).",
+  "url": "https://par.nsf.gov/servlets/purl/10621035",
+  "mu_1150C_Pa_s": 116,
+  "vesicularity_1150C_run_start_end": [
+   0.361,
+   0.192
+  ],
+  "dre_density_kg_m3": 2600,
+  "dre_source": "PyFLOWGO flowgo_material_lava.py `self._density_dre = 2600.`"
+ },
+ "r4_derived_printed": {
+  "source": "FINAL-PLAN.md §4.2 and r4-materials-scale.md (derived from the cited primary laws), checked at printed precision",
+  "water_rho_20C": [
+   998.21,
+   2
+  ],
+  "water_mu_20C_Pa_s_4sig": [
+   0.0010016,
+   7
+  ],
+  "glycerol_mu_20C_Pa_s": [
+   1.414,
+   3
+  ],
+  "glycerol_rho_20C": [
+   1260.8,
+   1
+  ],
+  "ethanol_mu_20C_mPa_s": [
+   1.192,
+   3
+  ],
+  "ethanol_rho_20C": [
+   789.3,
+   1
+  ],
+  "lava_grd_eta_Pa_s_by_C": [
+   [
+    1100,
+    1477
+   ],
+   [
+    1150,
+    501
+   ],
+   [
+    1200,
+    193
+   ],
+   [
+    1250,
+    82
+   ]
+  ],
+  "mu_code_examples_2sig": {
+   "water_20C": 5.2e-05,
+   "olive_oil": 0.0048,
+   "glycerol_20C": 0.058,
+   "lava_193Pa_s_2600": 3.8
+  }
+ },
+ "secondary_S": {
+  "olive_oil": {
+   "rho": 911,
+   "mu_Pa_s": 0.084,
+   "T_C": 20,
+   "url": "https://en.wikipedia.org/wiki/Olive_oil"
+  },
+  "honey_14pct": {
+   "mu_Pa_s": 40,
+   "T_C": 25,
+   "url": "https://en.wikipedia.org/wiki/Honey"
+  },
+  "honey_20pct": {
+   "mu_Pa_s": 2,
+   "T_C": 25,
+   "url": "https://en.wikipedia.org/wiki/Honey"
+  },
+  "honey_density_range_20C_kg_m3": {
+   "value": [
+    1380,
+    1450
+   ],
+   "estimate_used": "midpoint (moisture pairing not given)",
+   "url": "https://en.wikipedia.org/wiki/Honey"
+  }
+ },
+ "plan_estimates_superseded": {
+  "source": "FINAL-PLAN.md §7 S1.5: \"refuse any material with mu_code > 3.3 ... FTCS-analogue explicit estimate [DERIVED-r2/r5; its constant for the MLS stencil is UNVERIFIED]\". Not an owner decision; superseded in the S1.5 review by the bound derived from the kernels (liquidGate.MPM_MU_CODE_LIMIT).",
+  "mpm_mu_code_limit_ftcs": 3.3
+ },
+ "phase_bounds": {
+  "_about": "Cited phase-change temperatures the code must carry exactly (copy integrity).",
+  "water_liquid_C_at_0p101325MPa": {
+   "value": [
+    0.01,
+    99.9743
+   ],
+   "source": "NIST WebBook SRD 69 isobar: first liquid row (triple-point temperature) and saturated-liquid row",
+   "url": "https://webbook.nist.gov/cgi/fluid.cgi?ID=C7732185"
+  },
+  "mercury_K": {
+   "value": [
+    234.31,
+    629.81
+   ],
+   "source": "NIST WebBook (TRC, Marsh 1987): T_fus, T_boil",
+   "url": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C7439976&Mask=4"
+  },
+  "ethanol_K": {
+   "value": [
+    159,
+    351.57
+   ],
+   "source": "Sotiriadou et al. 2023 Eq. 13 validity: triple point 159 K to the 0.1 MPa boiling temperature 351.57 K",
+   "url": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=935954"
+  },
+  "glycerol_boil_K": {
+   "value": 550,
+   "source": "NIST WebBook: average of 6 values, 550 +- 40 K",
+   "url": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C56815&Mask=4"
+  },
+  "iron_melt_K": {
+   "value": 1809,
+   "source": "NIST WebBook condensed-phase Shomate fits (JANAF): solid to 1809 K, liquid from 1809 K",
+   "url": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C7439896&Mask=2"
+  },
+  "salt_melt_K": {
+   "value": 1074,
+   "source": "NIST WebBook condensed-phase Shomate fits (JANAF): liquid NaCl from 1074 K",
+   "url": "https://webbook.nist.gov/cgi/cbook.cgi?ID=C7647145&Mask=2"
+  },
+  "copper_freeze_K": {
+   "value": 1357.77,
+   "source": "ITS-90 defining fixed point, freezing point of copper T90 = 1357.77 K (Preston-Thomas 1990, Metrologia 27:3, Table 1; transcription at its-90.com)",
+   "url": "https://www.its-90.com/fixed-points"
+  }
+ },
+ "sotiriadou2023_table7_0p1MPa": {
+  "source": "Sotiriadou et al. 2023, Int. J. Thermophys. 44:40, Table 7: ethanol at 0.1 MPa from the FULL correlation (Eq. 1, 8-12) and the reference EOS. Independent of Eq. 13 (the simplified 0.1 MPa correlation the code uses, stated 2.3 %) and of the CoolProp saturated-liquid density ancillary (stated max 0.737 % vs the EOS).",
+  "url": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=935954",
+  "rows_K_rho_kg_m3_mu_uPa_s": [
+   [
+    180,
+    887.9,
+    30901
+   ],
+   [
+    200,
+    869.5,
+    13448
+   ],
+   [
+    220,
+    851.8,
+    6974
+   ],
+   [
+    240,
+    834.6,
+    3990
+   ],
+   [
+    260,
+    817.5,
+    2441
+   ],
+   [
+    280,
+    800.6,
+    1570
+   ],
+   [
+    300,
+    783.5,
+    1051
+   ],
+   [
+    320,
+    766.0,
+    728.7
+   ],
+   [
+    340,
+    747.6,
+    520.2
+   ]
+  ]
+ }
+}

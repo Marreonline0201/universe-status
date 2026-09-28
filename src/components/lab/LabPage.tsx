@@ -1,7 +1,7 @@
 // Top-level LABORATORY tab: agents' experiments (company/lab/) run in an
 // embedded WebGPU fluid sim while the owner watches; a live console streams
 // approved real-run output.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OfficeSocket } from '../../hooks/useOfficeSocket'
 import type { LabExperiment } from '../../lib/labTypes'
 import { fetchCompanyFile, fetchLabExperiments } from '../../lib/officeApi'
@@ -14,6 +14,7 @@ import { FluidControls, type FluidController } from '../fluid/FluidControls'
 import { readBgBrightness, writeBgBrightness } from '../../fluid-render/bgBrightness'
 import type { LabFluidEngine } from '../../lab/LabFluidEngine'
 import type { NamedComposition } from '../../composition/CompositionTable'
+import type { FluidNotice } from '../../fluid-engine/FluidEngine'
 import { G_STANDARD } from '../../fluid-engine/units'
 
 const MONO = '"IBM Plex Mono", monospace'
@@ -55,6 +56,11 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [ballActive, setBallActive] = useState(false)
   const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
+  const [notice, setNotice] = useState<FluidNotice | null>(null)   // latest gate refusal / warning
+  // Material menu at the spawn temperature. `compositions` is re-read from the engine whenever its table changes
+  // (scenario load, reset), so it is the dependency that re-evaluates the menu for a new table.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const menu = useMemo(() => engine ? engine.getMenuEntries(temperatureVal) : [], [engine, compositions, temperatureVal])
 
   const webgpu = typeof navigator !== 'undefined' && !!navigator.gpu
 
@@ -162,6 +168,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     bgBrightness: bgBrightVal,
     setBgBrightness: (b) => { engine.setBgBrightness(b); setBgBrightVal(b); writeBgBrightness(b) },
     reset: () => { engine.reset(); setCompositions(engine.getCompositions()); setBallActive(engine.ballActive); setGravityVal(engine.gravity) },
+    menu, notice,
   } : null
 
   const toolbarBtn = (label: string, onClick: () => void, active = false) => (
@@ -256,7 +263,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
 
         <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
           {webgpu
-            ? <LabSim scenario={scenario} runNonce={runNonce} onStats={setStats} onEngine={onLabEngine} onLoaded={onLabLoaded} />
+            ? <LabSim scenario={scenario} runNonce={runNonce} onStats={setStats} onEngine={onLabEngine} onLoaded={onLabLoaded} onNotice={setNotice} />
             : (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 }}>
                 <div style={{ color: '#ff8787', fontSize: 'calc(12px * var(--font-scale, 1))', letterSpacing: 1 }}>WEBGPU UNAVAILABLE</div>
@@ -278,6 +285,15 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
               padding: '6px 14px', color: '#ffdddd', fontSize: 'calc(10px * var(--font-scale, 1))', maxWidth: '80%',
             }}>
               ✗ scenario invalid: {scenarioErr}
+            </div>
+          )}
+          {notice?.kind === 'refused' && !scenarioErr && (
+            <div data-testid="lab-refusal" style={{
+              position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 6,
+              background: 'rgba(120,40,10,0.92)', border: '1px solid #ff8a4c', borderRadius: 4,
+              padding: '6px 14px', color: '#ffe6d6', fontSize: 'calc(10px * var(--font-scale, 1))', maxWidth: '80%',
+            }}>
+              ✗ refused: {notice.text}
             </div>
           )}
           {scenarioWarn && !scenarioErr && (

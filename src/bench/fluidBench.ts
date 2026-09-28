@@ -17,8 +17,9 @@ const { hook } = installBenchHook(engine.benchTarget({
   loadScenario: (json: string) => {
     const parsed = parseScenario(json)
     if (!parsed.ok) throw new Error(parsed.error)
-    engine.loadScenario(parsed.scenario)
-    return { warning: parsed.warning }
+    const r = engine.loadScenario(parsed.scenario)
+    if (!r.ok) throw new Error(`scenario refused: ${r.reason}`)
+    return { warning: [parsed.warning, ...r.warnings].filter(Boolean).join('; ') || null }
   },
   action: (name: string) => {
     if (name === 'dropBall') return engine.dropBall()
