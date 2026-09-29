@@ -38,6 +38,8 @@ export interface RefParticles {
   material: Uint32Array
   /** Reserved enthalpy slot, J (S3N-9; carried, never read, until HEAT-1). */
   enthalpy: Float64Array
+  /** Dynamic viscosity μ, Pa·s (S3.6; absent → FlipRefOptions.viscosityDefault). */
+  mu?: Float64Array
 }
 
 export function makeParticles(n: number): RefParticles {
@@ -83,7 +85,27 @@ export interface FlipRefOptions {
   thetaMin?: number
   /** ψ solve tolerance, ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3; the reference default solves tight). */
   psiTolerance?: number
+  /** S3.6 implicit viscosity (Batty & Bridson 2008; spec fluid/realism-2026-09/S3.6-viscosity-spec.md): 'off' (default),
+   *  'auto' (runs when a particle's ν = μ/ρ ≥ viscosityThreshold), 'force' (always — gate S3.6f). Ghost surface only. */
+  viscosity?: 'off' | 'auto' | 'force'
+  /** ν of the auto rule, m²/s (FINAL-PLAN §5.6: 0.01·ν_num = 1.04e-5 with ν_num = 1.04e-3 from D2). */
+  viscosityThreshold?: number
+  /** μ of particles without their own, Pa·s (default: water at 20 °C, 1.0016e-3 — NIST). */
+  viscosityDefault?: number
+  /** Tank walls in the viscous solve: 'no-slip' (production) or 'free-slip' (the Lamb and Taylor–Green gates only). */
+  viscousWalls?: 'no-slip' | 'free-slip'
+  /** μ at a stress sample from the particles around it: harmonic Σw/Σ(w/μ) (default — gate S3.6c: ≤ 3.5 % shear-rate error
+   *  at μ contrast 1e3/1e5, where arithmetic Σwμ/Σw errs 10–17 %) or arithmetic. */
+  viscosityMean?: 'arithmetic' | 'harmonic'
+  /** Viscous PCG stops at ‖r‖₂ ≤ this·‖b‖₂ (default 1e-10: the reference solves tight). */
+  viscosityTolerance?: number
+  /** GATE-ONLY boundary conditions of the viscous solve (S3.6c layered Couette): x periodic (the x walls vanish from the
+   *  viscous operator), and per-wall slip and wall velocity for the walls named 'x-' … 'z+' (default viscousWalls, 0). */
+  viscousTestBC?: { periodicX?: boolean; walls?: Partial<Record<'x-' | 'x+' | 'y-' | 'y+' | 'z-' | 'z+', { slip: 'no-slip' | 'free-slip'; velocity?: Vec3 }>> }
 }
+
+/** S3.6 viscous solve report. */
+export interface ViscosityStats { ran: boolean; unknowns: number; iterations: number; relResidual: number; capHit: boolean; muFallbacks: number }
 
 /** A solid sphere moving with prescribed velocity during a substep (S3.1c-2, the drop ball): Batty, Bertails & Bridson
  *  2007 — every face's pressure coefficient and divergence term are weighted by the fluid fraction of its control
@@ -200,6 +222,25 @@ export class FlipRef {
   readonly pressureMaxIterations: number
   /** Cell labels and pressure (Pa), in layout slots. */
   readonly label: Uint8Array
+  // S3.6 viscosity
+  readonly viscosity: 'off' | 'auto' | 'force'
+  readonly viscosityThreshold: number
+  readonly viscosityDefault: number
+  readonly viscousWalls: 'no-slip' | 'free-slip'
+  readonly viscosityMean: 'arithmetic' | 'harmonic'
+  readonly viscosityTolerance: number
+  readonly viscousTestBC: FlipRefOptions['viscousTestBC']
+  /** Liquid volume fractions of the stress/mass samples (last viscous solve): faces (3 grids), cell centres, and the
+   *  edges running along x, y, z (the yz-, xz-, xy-shear samples), window slots via layout.idx. */
+  readonly volFace: [Float64Array, Float64Array, Float64Array]
+  readonly volCell: Float64Array
+  readonly volEdge: [Float64Array, Float64Array, Float64Array]
+  /** μ at cell centres and edges (Pa·s, last viscous solve). */
+  readonly muCell: Float64Array
+  readonly muEdge: [Float64Array, Float64Array, Float64Array]
+  lastViscosity: ViscosityStats | null = null
+  /** Faces the last viscous solve wrote (unknowns holding liquid), per axis — diagnostics (GPU parity). */
+  readonly viscWritten: [Uint8Array, Uint8Array, Uint8Array]
   /** The density projection's labels (the voxel rule at its particle positions), kept for phiVolume. */
   readonly densityLabel: Uint8Array
   readonly pressure: Float64Array
@@ -238,6 +279,18 @@ export class FlipRef {
     this.pressureTolerance = opts.pressureTolerance ?? 1e-9
     this.pressureMaxIterations = opts.pressureMaxIterations ?? 20000
     this.label = new Uint8Array(layout.size)
+    this.viscosity = opts.viscosity ?? 'off'
+    this.viscosityThreshold = opts.viscosityThreshold ?? 1.04e-5
+    this.viscosityDefault = opts.viscosityDefault ?? 1.001596e-3
+    this.viscousWalls = opts.viscousWalls ?? 'no-slip'
+    this.viscosityMean = opts.viscosityMean ?? 'harmonic'   // gate S3.6c: arithmetic errs 10–17 % in the soft layer's shear
+    this.viscosityTolerance = opts.viscosityTolerance ?? 1e-10
+    this.viscousTestBC = opts.viscousTestBC
+    if (this.viscosity !== 'off' && opts.freeSurface !== 'ghost') throw new Error('FlipRef: viscosity needs the ghost-fluid surface (its volumes come from φ)')
+    const z3 = (): [Float64Array, Float64Array, Float64Array] => [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
+    this.volFace = z3(); this.volEdge = z3(); this.muEdge = z3()
+    this.volCell = new Float64Array(layout.size); this.muCell = new Float64Array(layout.size)
+    this.viscWritten = [new Uint8Array(layout.size), new Uint8Array(layout.size), new Uint8Array(layout.size)]
     this.densityLabel = new Uint8Array(layout.size)
     this.pressure = new Float64Array(layout.size)
     this.rhs = new Float64Array(layout.size)
@@ -268,8 +321,17 @@ export class FlipRef {
       if (this.freeSurface === 'ghost') { this.classifyLevelSet(p); this.thetaCache.clear() }
       else this.classify(p)
       this.extendLiquidIntoSphere()
+      this.fillUnsetLiquidFaces()
       this.solvePressure(dt)
       this.projectVelocities(dt)
+      // S3.6 (Batty & Bridson 2008 §3): viscosity on the projected, extrapolated field, then a second projection
+      if (this.viscosityRuns(p)) {
+        this.extrapolate()
+        this.applySolidFaces()
+        this.viscositySolve(p, dt)
+        this.solvePressure(dt)
+        this.projectVelocities(dt)
+      } else this.lastViscosity = null
     }
     this.extrapolate()
     this.applySolidFaces()
@@ -371,6 +433,298 @@ export class FlipRef {
     if (!S) return
     const M = densityKgM3 * this.sphereVolumeJ()
     for (let a = 0; a < 3; a++) S.velocity[a] += dt * (this.gravity[a] + this.sphereForce[a] / M)
+  }
+
+  // ── S3.6 implicit viscosity (Batty & Bridson 2008) ─────────────────────────────────────────────────────────
+
+  /** The whole-solve rule (FINAL-PLAN §5.6): 'auto' runs when any particle's ν = μ/ρ reaches viscosityThreshold. */
+  viscosityRuns(p: RefParticles): boolean {
+    if (this.viscosity === 'off') return false
+    if (this.viscosity === 'force') return true
+    const vp = this.layout.dx ** 3 / this.ppc
+    for (let q = 0; q < p.n; q++) {
+      const mu = p.mu ? p.mu[q] : this.viscosityDefault
+      if (mu / (p.mass[q] / vp) >= this.viscosityThreshold) return true
+    }
+    return false
+  }
+
+  /** Liquid fraction of the dx³ cube centred at (x, y, z) m: 2×2×2 subsamples at ±dx/4 of the Zhu–Bridson φ, each
+   *  clamp(½ − φ/(dx/2), 0, 1). Every subsample of every family lies on one lattice, ((2a+1)/4)·dx per axis (the GPU
+   *  computes φ there once). φ is extended into the walls by mirroring (a subsample dx/4 behind a wall reads the one
+   *  dx/4 in front): the solid volume counts as fluid in the viscous solve (Batty & Bridson §5.2) and the extension is
+   *  smooth. */
+  private liquidFraction(x: number, y: number, z: number): number {
+    const h = this.layout.dx, ext = this.layout.extent
+    const mirror = (v: number, e: number) => (v < 0 ? -v : v > e ? 2 * e - v : v)
+    let v = 0
+    for (const ox of [-0.25, 0.25]) for (const oy of [-0.25, 0.25]) for (const oz of [-0.25, 0.25]) {
+      const px = mirror(x + ox * h, ext[0]), py = mirror(y + oy * h, ext[1]), pz = mirror(z + oz * h, ext[2])
+      v += Math.min(1, Math.max(0, 0.5 - this.zhuBridson(px, py, pz) / (h / 2)))
+    }
+    return v / 8
+  }
+
+  /** Volumes of every sample family, subsampled only in the surface band (cells whose 3×3×3 neighbourhood mixes
+   *  LIQUID and AIR labels); elsewhere 1 inside the liquid, 0 outside. Offsets in cell units. */
+  private viscousVolumes(): void {
+    const L = this.layout, h = L.dx, lab = this.label
+    const cellLiquid = (i: number, j: number, k: number) => {
+      const c = L.idx(clampIn(i, 0, L.nx - 1), clampIn(j, 0, L.ny - 1), clampIn(k, 0, L.nz - 1))
+      return lab[c] === CellLabel.LIQUID
+    }
+    const band = new Uint8Array(L.size)
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const me = cellLiquid(i, j, k)
+      let mixed = false
+      for (let dk = -1; dk <= 1 && !mixed; dk++) for (let dj = -1; dj <= 1 && !mixed; dj++) for (let di = -1; di <= 1 && !mixed; di++) if (cellLiquid(i + di, j + dj, k + dk) !== me) mixed = true
+      band[L.idx(i, j, k)] = mixed ? 1 : 0
+    }
+    const inBand = (i: number, j: number, k: number) => band[L.idx(clampIn(i, 0, L.nx - 1), clampIn(j, 0, L.ny - 1), clampIn(k, 0, L.nz - 1))] === 1
+    // a sample at o + (i, j, k) cells: its cube overlaps the cells floor(o + (i,j,k) ± ½) on each axis
+    const volumeAt = (o: Vec3, i: number, j: number, k: number) => {
+      const cx = o[0] + i, cy = o[1] + j, cz = o[2] + k
+      const xs = [Math.floor(cx - 0.5 + 1e-9), Math.floor(cx + 0.5 - 1e-9)], ys = [Math.floor(cy - 0.5 + 1e-9), Math.floor(cy + 0.5 - 1e-9)], zs = [Math.floor(cz - 0.5 + 1e-9), Math.floor(cz + 0.5 - 1e-9)]
+      let anyBand = false, allLiquid = true
+      for (const a of xs) for (const b of ys) for (const c of zs) { if (inBand(a, b, c)) anyBand = true; if (!cellLiquid(a, b, c)) allLiquid = false }
+      if (!anyBand) return allLiquid ? 1 : 0
+      return this.liquidFraction(cx * h, cy * h, cz * h)
+    }
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a), o: Vec3 = [a === 0 ? 0 : 0.5, a === 1 ? 0 : 0.5, a === 2 ? 0 : 0.5], vf = this.volFace[a]
+      vf.fill(0)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        if (i < 0 || j < 0 || k < 0 || i > L.nx || j > L.ny || k > L.nz) continue
+        vf[L.idx(i, j, k)] = volumeAt(o, i, j, k)
+      }
+    }
+    this.volCell.fill(0)
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) this.volCell[L.idx(i, j, k)] = volumeAt([0.5, 0.5, 0.5], i, j, k)
+    for (const e of AXES) {
+      const ve = this.volEdge[e], o: Vec3 = [e === 0 ? 0.5 : 0, e === 1 ? 0.5 : 0, e === 2 ? 0.5 : 0]
+      ve.fill(0)
+      const n = [L.nx + (e === 0 ? 0 : 1), L.ny + (e === 1 ? 0 : 1), L.nz + (e === 2 ? 0 : 1)]
+      for (let k = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++) ve[L.idx(i, j, k)] = volumeAt(o, i, j, k)
+    }
+  }
+
+  /** μ at cell centres and edges: the trilinear kernel of the particles' μ, arithmetic or harmonic (spec); a sample
+   *  that no particle reaches takes viscosityDefault (counted). */
+  private viscousMu(p: RefParticles): number {
+    const L = this.layout, h = L.dx, harmonic = this.viscosityMean === 'harmonic'
+    const fam = [{ o: [0.5, 0.5, 0.5] as Vec3, mu: this.muCell, n: [L.nx, L.ny, L.nz] }, ...AXES.map(e => ({
+      o: [e === 0 ? 0.5 : 0, e === 1 ? 0.5 : 0, e === 2 ? 0.5 : 0] as Vec3, mu: this.muEdge[e], n: [L.nx + (e === 0 ? 0 : 1), L.ny + (e === 1 ? 0 : 1), L.nz + (e === 2 ? 0 : 1)] }))]
+    let fallbacks = 0
+    for (const F of fam) {
+      const sw = new Float64Array(L.size), sm = new Float64Array(L.size)
+      for (let q = 0; q < p.n; q++) {
+        const mu = p.mu ? p.mu[q] : this.viscosityDefault
+        const fx = p.pos[3 * q] / h - F.o[0], fy = p.pos[3 * q + 1] / h - F.o[1], fz = p.pos[3 * q + 2] / h - F.o[2]
+        const i0 = Math.floor(fx), j0 = Math.floor(fy), k0 = Math.floor(fz), tx = fx - i0, ty = fy - j0, tz = fz - k0
+        for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
+          const i = i0 + di, j = j0 + dj, k = k0 + dk
+          if (i < 0 || j < 0 || k < 0 || i >= F.n[0] || j >= F.n[1] || k >= F.n[2]) continue
+          const w = (di ? tx : 1 - tx) * (dj ? ty : 1 - ty) * (dk ? tz : 1 - tz)
+          if (w === 0) continue
+          const s = L.idx(i, j, k)
+          sw[s] += w; sm[s] += harmonic ? w / mu : w * mu
+        }
+      }
+      F.mu.fill(0)
+      for (let k = 0; k < F.n[2]; k++) for (let j = 0; j < F.n[1]; j++) for (let i = 0; i < F.n[0]; i++) {
+        const s = L.idx(i, j, k)
+        if (sw[s] > 0) F.mu[s] = harmonic ? sw[s] / sm[s] : sm[s] / sw[s]
+        else { F.mu[s] = this.viscosityDefault; fallbacks++ }
+      }
+    }
+    return fallbacks
+  }
+
+  /** Batty & Bridson 2008 eq. 11 on the MAC grid (spec): minimise ½Σ ρ_f V_f (u_f − u*_f)² + Δt[Σ_c μ V Σ_a ε_aa² +
+   *  Σ_edges μ V ½γ²] over the face velocities → (M + Δt GᵀWG) u = M u*, SPD, Jacobi-PCG. Unknowns: non-SOLID faces with
+   *  V_f > 0 or inside a positive-volume sample (mass-less ones carry the free surface's zero traction). Walls:
+   *  normal faces 0; tangential ghost faces −u (no-slip) or +u (free-slip) of the interior face across the wall. Faces
+   *  fully inside the ball (S ≥ 1) are Dirichlet V. */
+  viscositySolve(p: RefParticles, dt: number): ViscosityStats {
+    const L = this.layout, h = L.dx
+    this.viscousVolumes()
+    const muFallbacks = this.viscousMu(p)
+    const inRange = (a: Axis, i: number, j: number, k: number) => {
+      const [lo, hi] = L.faceRange(a)
+      return i >= lo[0] && j >= lo[1] && k >= lo[2] && i <= hi[0] && j <= hi[1] && k <= hi[2]
+    }
+    // resolve a face reference (axis, logical c) → { row, sign, konst }: value = sign·x[row] + konst
+    const sphereV = (a: Axis) => (this.sphere ? this.sphere.velocity[a] : 0)
+    const rowOf: Int32Array[] = AXES.map(() => new Int32Array(L.size).fill(-1))
+    const TB = this.viscousTestBC, periodicX = !!TB?.periodicX
+    /** Periodic x (gate only): wrap the x index into the window (faces of axis x: 0 … nx−1; others: 0 … nx−1). */
+    const wrap = (c: number[]) => {
+      if (!periodicX) return c
+      const m = [...c]
+      m[0] = ((m[0] % L.nx) + L.nx) % L.nx
+      return m
+    }
+    /** A tangential ghost face (index −1 or n on an axis b ≠ a): the wall it lies behind, and the interior face it mirrors. */
+    const ghostOf = (a: Axis, c: number[]): { m: number[]; wall: 'x-' | 'x+' | 'y-' | 'y+' | 'z-' | 'z+' } | null => {
+      for (const b of AXES) {
+        if (b === a || (b === 0 && periodicX)) continue
+        const n = [L.nx, L.ny, L.nz][b]
+        if (c[b] === -1 || c[b] === n) {
+          const m = [...c]; m[b] = c[b] === -1 ? 0 : n - 1
+          return { m, wall: ((['x', 'y', 'z'] as const)[b] + (c[b] === -1 ? '-' : '+')) as 'x-' }
+        }
+      }
+      return null
+    }
+    const ghostMirror = (a: Axis, c: number[]) => ghostOf(a, c)?.m ?? null
+    type Ref = { row: number; sign: number; konst: number }
+    const refFace = (a: Axis, c0: number[], sign = 1): Ref => {
+      const c = wrap(c0)
+      const g = ghostOf(a, c)
+      if (g) {
+        // no-slip with wall velocity U: u_ghost = 2U_a − u_interior; free-slip: u_ghost = u_interior. The mirror of a
+        // ghost across a corner may itself be a wall-normal face: its value is 0 either way
+        const bc = TB?.walls?.[g.wall]
+        const slip = bc?.slip ?? this.viscousWalls, U = bc?.velocity?.[a] ?? 0
+        const r = refFace(a, g.m, 1)
+        return slip === 'no-slip' ? { row: r.row, sign: -sign * r.sign, konst: sign * (2 * U - r.konst) } : { row: r.row, sign: sign * r.sign, konst: sign * r.konst }
+      }
+      if (!inRange(a, c[0], c[1], c[2])) return { row: -1, sign: 0, konst: 0 }
+      const fs = L.idx(c[0], c[1], c[2])
+      if (this.faceType[a][fs] === FaceType.SOLID && !(periodicX && a === 0)) return { row: -1, sign: 0, konst: 0 }
+      if (this.solidFraction[a][fs] >= 1) return { row: -1, sign: 0, konst: sign * sphereV(a) }
+      const r = rowOf[a][fs]
+      return r >= 0 ? { row: r, sign, konst: 0 } : { row: -1, sign: 0, konst: sign * this.u[a][fs] }
+    }
+    // unknowns: first every open face with V_f > 0, then faces met by any positive-volume sample
+    const faces: { a: Axis; s: number; c: number[] }[] = []
+    const addUnknown = (a: Axis, c0: number[]) => {
+      const c = wrap(c0)
+      if (ghostMirror(a, c) || !inRange(a, c[0], c[1], c[2])) return
+      const fs = L.idx(c[0], c[1], c[2])
+      if ((this.faceType[a][fs] === FaceType.SOLID && !(periodicX && a === 0)) || this.solidFraction[a][fs] >= 1 || rowOf[a][fs] >= 0) return
+      rowOf[a][fs] = faces.length
+      faces.push({ a, s: fs, c: [...c] })
+    }
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        if (i < 0 || j < 0 || k < 0 || (periodicX && a === 0 && i === L.nx)) continue
+        if (this.volFace[a][L.idx(i, j, k)] > 0) addUnknown(a, [i, j, k])
+      }
+    }
+    // the samples: each a list of (face ref, coefficient) and a weight
+    type Sample = { terms: { a: Axis; c: number[]; coef: number }[]; w: number }
+    const samples: Sample[] = []
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const cs = L.idx(i, j, k), V = this.volCell[cs]
+      if (V <= 0) continue
+      for (const a of AXES) {
+        const cp = [i, j, k]; cp[a] += 1
+        samples.push({ terms: [{ a, c: cp, coef: 1 / h }, { a, c: [i, j, k], coef: -1 / h }], w: 2 * this.muCell[cs] * V })
+      }
+    }
+    for (const e of AXES) {
+      const [a, b] = AXES.filter(x => x !== e) as Axis[]
+      const n = [L.nx + (e === 0 ? 0 : 1), L.ny + (e === 1 ? 0 : 1), L.nz + (e === 2 ? 0 : 1)]
+      for (let k = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++) {
+        if (periodicX && e !== 0 && i === L.nx) continue   // the same edge as x = 0
+        const es = L.idx(i, j, k), V = this.volEdge[e][es]
+        if (V <= 0) continue
+        const c = [i, j, k], cmb = [...c], cma = [...c]; cmb[b] -= 1; cma[a] -= 1
+        samples.push({ terms: [{ a, c, coef: 1 / h }, { a, c: cmb, coef: -1 / h }, { a: b, c, coef: 1 / h }, { a: b, c: cma, coef: -1 / h }], w: this.muEdge[e][es] * V })
+      }
+    }
+    for (const S of samples) for (const t of S.terms) addUnknown(t.a, t.c)
+    // resolve every term once
+    const resolved = samples.map(S => ({ w: S.w, refs: S.terms.map(t => { const r = refFace(t.a, t.c, 1); return { row: r.row, g: r.sign * t.coef, k: r.konst * t.coef } }) }))
+    const N = faces.length
+    const mass = new Float64Array(N), ustar = new Float64Array(N)
+    for (let r = 0; r < N; r++) { const F = faces[r]; mass[r] = this.rhoFace[F.a][F.s] * this.volFace[F.a][F.s]; ustar[r] = this.u[F.a][F.s] }
+    // A·x (homogeneous) and the constant part
+    const apply = (x: Float64Array, out: Float64Array, withConst: boolean, withMass: boolean) => {
+      out.fill(0)
+      if (withMass) for (let r = 0; r < N; r++) out[r] = mass[r] * x[r]
+      for (const S of resolved) {
+        let strain = 0
+        for (const t of S.refs) { if (t.row >= 0) strain += t.g * x[t.row]; if (withConst) strain += t.k }
+        if (strain === 0) continue
+        const f = dt * S.w * strain
+        for (const t of S.refs) if (t.row >= 0) out[t.row] += f * t.g
+      }
+    }
+    const diag = new Float64Array(N)
+    for (let r = 0; r < N; r++) diag[r] = mass[r]
+    for (const S of resolved) {
+      const acc = new Map<number, number>()
+      for (const t of S.refs) if (t.row >= 0) acc.set(t.row, (acc.get(t.row) ?? 0) + t.g)
+      for (const [row, g] of acc) diag[row] += dt * S.w * g * g
+    }
+    const b = new Float64Array(N), tmp = new Float64Array(N), zero = new Float64Array(N)
+    apply(zero, tmp, true, false)
+    for (let r = 0; r < N; r++) b[r] = mass[r] * ustar[r] - tmp[r]
+    // Jacobi-PCG from u*
+    const x = ustar.slice(), rr = new Float64Array(N), z = new Float64Array(N), d = new Float64Array(N), q = new Float64Array(N)
+    apply(x, tmp, false, true)
+    let bn = 0
+    for (let r = 0; r < N; r++) { rr[r] = b[r] - tmp[r]; bn += b[r] * b[r] }
+    bn = Math.sqrt(bn) || 1
+    const cap = 20000
+    let it = 0, rn = 0, rz = 0
+    for (let r = 0; r < N; r++) { z[r] = diag[r] > 0 ? rr[r] / diag[r] : 0; d[r] = z[r]; rz += rr[r] * z[r] }
+    for (; it < cap; it++) {
+      rn = 0
+      for (let r = 0; r < N; r++) rn += rr[r] * rr[r]
+      if (Math.sqrt(rn) <= this.viscosityTolerance * bn) break
+      apply(d, q, false, true)
+      let dq = 0
+      for (let r = 0; r < N; r++) dq += d[r] * q[r]
+      if (dq <= 0) break
+      const alpha = rz / dq
+      let rz2 = 0
+      for (let r = 0; r < N; r++) { x[r] += alpha * d[r]; rr[r] -= alpha * q[r]; z[r] = diag[r] > 0 ? rr[r] / diag[r] : 0; rz2 += rr[r] * z[r] }
+      const beta = rz2 / rz
+      rz = rz2
+      for (let r = 0; r < N; r++) d[r] = z[r] + beta * d[r]
+    }
+    // only faces holding liquid take the solved velocity: a mass-less unknown (V_f = 0, inside a positive-volume
+    // sample) exists to carry the free surface's zero traction inside the solve; its value is not a liquid velocity and
+    // is weakly determined (measured on the GPU: f32 leaves such rows unconverged and they leaked into G2P — +1.8 %
+    // damping on a water wave). It keeps its pre-solve value.
+    for (const w of this.viscWritten) w.fill(0)
+    for (let r = 0; r < N; r++) { const F = faces[r]; if (this.volFace[F.a][F.s] > 0) { this.u[F.a][F.s] = x[r]; this.valid[F.a][F.s] = 1; this.viscWritten[F.a][F.s] = 1 } }
+    const out: ViscosityStats = { ran: true, unknowns: N, iterations: it, relResidual: Math.sqrt(rn) / bn, capHit: it >= cap, muFallbacks }
+    this.lastViscosity = out
+    return out
+  }
+
+  /** Before the divergence: a non-SOLID face of a LIQUID cell that P2G left unset takes the mean of its P2G-valid
+   *  6-neighbours on the same face grid (GPU fillLiquidFaces.wgsl). In f64 this never triggers in practice; on the GPU, f32
+   *  can put a particle exactly on a face so the voxel label floors it into the cell whose far face gets weight 0
+   *  (measured: 1 face in 720 substeps of a settling pool). Faces partly inside the ball are left to the sphere rule.
+   *  Only faces valid from P2G are read, so the result does not depend on the order of the scan. Returns the count. */
+  fillUnsetLiquidFaces(): number {
+    const L = this.layout, lab = this.label
+    let filled = 0
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a), t = this.faceType[a], u = this.u[a], ok = this.valid[a]
+      const src = ok.slice()
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k)
+        if (src[s] || t[s] === FaceType.SOLID || this.solidFraction[a][s] > 0) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        if (lab[s] !== CellLabel.LIQUID && lab[sm] !== CellLabel.LIQUID) continue
+        let sum = 0, cnt = 0
+        for (const [di, dj, dk] of NEIGHBOURS) {
+          const ni = i + di, nj = j + dj, nk = k + dk
+          if (ni < lo[0] || nj < lo[1] || nk < lo[2] || ni > hi[0] || nj > hi[1] || nk > hi[2]) continue
+          const ns = L.idx(ni, nj, nk)
+          if (src[ns] && t[ns] !== FaceType.SOLID) { sum += u[ns]; cnt++ }
+        }
+        if (cnt > 0) { u[s] = sum / cnt; ok[s] = 1; filled++ }
+      }
+    }
+    return filled
   }
 
   /** Push a particle that ended inside the sphere radially out to its surface (+ wallEps); returns true if it did. */

@@ -57,6 +57,7 @@ import sphereFaceVelWGSL from './shaders/sphereFaceVel.wgsl?raw'
 import sphereForceWGSL from './shaders/sphereForce.wgsl?raw'
 import sphereIntegrateWGSL from './shaders/sphereIntegrate.wgsl?raw'
 import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
+import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
 
@@ -164,7 +165,7 @@ export interface FlipDiagnostics {
 type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
   | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'lsResolve' | 'ghostCoef'
   | 'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef' | 'sphereFaceVel'
-  | 'sphereForce' | 'sphereIntegrate' | 'psiCoef'
+  | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'fillLiquidFaces'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -244,7 +245,7 @@ export class FlipGpuSimulator {
   private readonly paramsBuf: GPUBuffer
 
   private readonly pipelines: Partial<Record<Kernel, GPUComputePipeline>>
-  private projBg: { labelClear: GPUBindGroup; labelParticles: GPUBindGroup; divergence: GPUBindGroup; project: GPUBindGroup } | null = null
+  private projBg: { labelClear: GPUBindGroup; labelParticles: GPUBindGroup; divergence: GPUBindGroup; project: GPUBindGroup; fillLiquidFaces: GPUBindGroup } | null = null
   private readonly bg: {
     faceScatter: GPUBindGroup
     gridUpdate: GPUBindGroup
@@ -359,6 +360,7 @@ export class FlipGpuSimulator {
     this.pipelines.labelParticles = pipe('labelParticles', labelParticlesWGSL)
     this.pipelines.divergence = pipe('divergence', divergenceWGSL)
     this.pipelines.project = pipe('project', projectWGSL)
+    this.pipelines.fillLiquidFaces = pipe('fillLiquidFaces', fillLiquidFacesWGSL)
     const group = (k: Kernel, bufs: GPUBuffer[]) => device.createBindGroup({
       label: `flip.${k}`, layout: this.pipelines[k]!.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
@@ -384,6 +386,7 @@ export class FlipGpuSimulator {
       labelParticles: group('labelParticles', [this.posBuf, sb.labels]),
       divergence: group('divergence', [this.faceTypeBuf, uA, vA, sb.labels, sb.rhs, this.diagBuf, this.faceSolidBuf, this.sphereBuf]),
       project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef]),
+      fillLiquidFaces: group('fillLiquidFaces', [this.faceTypeBuf, sb.labels, uA, vA, this.faceSolidBuf]),
     }
     this.lsBg = {
       lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf]),
@@ -518,6 +521,7 @@ export class FlipGpuSimulator {
   /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
   encodeProjection(encoder: GPUCommandEncoder): void {
     this.encodePressureLabels(encoder)
+    this.encodeFillLiquidFaces(encoder)
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
     this.encodeProject(encoder)
@@ -565,6 +569,11 @@ export class FlipGpuSimulator {
     }
   }
 
+  /** Faces of LIQUID cells that P2G left unset take their valid neighbours' mean (fillLiquidFaces.wgsl). */
+  encodeFillLiquidFaces(encoder: GPUCommandEncoder): void {
+    const { bg } = this.proj()
+    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)
+  }
   encodeDivergence(encoder: GPUCommandEncoder): void {
     const { bg, cells } = this.proj()
     this.dispatch(encoder, 'divergence', bg.divergence, cells, 256)
