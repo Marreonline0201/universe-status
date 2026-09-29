@@ -63,6 +63,9 @@ export interface FluidEngineOptions {
   initialScene?: 'default-water' | 'empty'
   /** Solver: 'flip' (incompressible, default) or 'mpm' (legacy); default from the URL (?solver=mpm). */
   solver?: SolverKind
+  /** Drag handles on the tank's faces, edges and corners (a page that also shows the TANK panel and follows
+   *  onTankChange; off by default, so a page without them never gets a tank it cannot display). */
+  tankHandles?: boolean
 }
 
 export class FluidEngine {
@@ -91,6 +94,8 @@ export class FluidEngine {
   private sideMeshes: THREE.Mesh[] = []
   /** While the simulator is being rebuilt the frames render but do not step. */
   private resizing = false
+  /** While renderTiming measures offscreen frames the page draws nothing (no shared-buffer traffic, no extra GPU load). */
+  private timingActive = false
   /** The tank diagonal (world units) the camera distance was framed for. */
   private framedDiag = Math.sqrt(3)
   /** Told after every tank resize (the page's TANK panel). */
@@ -141,7 +146,7 @@ export class FluidEngine {
   constructor(container: HTMLDivElement, onStats: (s: FluidStats) => void, options: FluidEngineOptions = {}) {
     this.container = container
     this.onStats = onStats
-    this.options = { initialScene: options.initialScene ?? 'empty', solver: options.solver ?? solverFromUrl() }
+    this.options = { initialScene: options.initialScene ?? 'empty', solver: options.solver ?? solverFromUrl(), tankHandles: options.tankHandles ?? false }
   }
 
   /** Which solver runs this page, and its HUD name. */
@@ -171,11 +176,20 @@ export class FluidEngine {
     camera.lookAt(0.5, 0.5, 0.5)
 
     // The adapter's own buffer limits (TANK-RESIZE budget): a 5 m tank (88³) needs a 187 MB storage binding (the viscous
-    // lattice) against the default 128 MiB; this GPU allows 2 GB. The default 64³ tank fits either way.
+    // lattice) against the default 128 MiB; this GPU allows 2 GB. The default 64³ tank fits either way. The renderer is
+    // asked for the SAME adapter (three.js passes powerPreference through; left undefined it may pick another GPU than
+    // the one whose limits were read); if its device still refuses them, it starts on the default limits and a resize
+    // then refuses the tanks those cannot hold (resizeTank).
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
     const requiredLimits = adapter ? { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } : {}
-    const renderer = new (THREE as any).WebGPURenderer({ antialias: true, requiredLimits })
-    await renderer.init()
+    let renderer = new (THREE as any).WebGPURenderer({ antialias: true, powerPreference: 'high-performance', requiredLimits })
+    try {
+      await renderer.init()
+    } catch {
+      renderer.dispose?.()
+      renderer = new (THREE as any).WebGPURenderer({ antialias: true, powerPreference: 'high-performance' })
+      await renderer.init()
+    }
     if (this.destroyed) { renderer.dispose(); return false }
     renderer.setSize(this.container.clientWidth, this.container.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -277,7 +291,7 @@ export class FluidEngine {
     this.camera = camera
     this.controls = controls
     // drag handles on the tank's faces, edges and corners (a resizable solver only)
-    if (sim.resize) this.tankHandles = new TankHandles(camera, this.container, controls, (cells, shiftM) => this.resizeTank(cells, shiftM))
+    if (sim.resize && this.options.tankHandles) this.tankHandles = new TankHandles(camera, this.container, controls, (cells, shiftM) => this.resizeTank(cells, shiftM))
     this.device = device
     this.sim = sim
     this.fluidScene = fluidScene
@@ -322,9 +336,9 @@ export class FluidEngine {
   /** FLUID TEST's default scene: a ~0.77 m block of water (≈10k particles at rest packing)
    *  released in the middle of the tank. */
   loadDefaultScene() {
-    if (!this.sim || this.destroyed) return
+    if (!this.sim || this.destroyed || this.rebuilding()) return
     this.lastScenario = null
-    const { lo, size } = cubeForCount([0.5, 0.5, 0.5], 10000, this.packing)
+    const { lo, size } = cubeForCount(this.tankPoint(0.5, 0.5, 0.5), 10000, this.packing)
     const block = latticeBox(lo, size, { packing: this.packing })
     this.sim.setParticles(this.particlesOf(block.positions, [0, 0, 0], 0, 20, 1))
     this.sceneIds = new Set([0])
@@ -335,6 +349,21 @@ export class FluidEngine {
   private notify(kind: FluidNotice['kind'], text: string) {
     if (kind === 'refused') this.lastRefusal = text
     this.onNotice?.({ kind, text })
+  }
+
+  /** True (and the page told why) while the tank is being rebuilt: an action now would reach the simulator that is
+   *  being replaced and be silently undone, so it is refused instead. */
+  private rebuilding(): boolean {
+    if (!this.resizing) return false
+    this.notify('refused', 'the tank is being rebuilt — try again in a moment')
+    return true
+  }
+
+  /** A point given as fractions of the tank, in world units (the tank spans [0, cells/64] per axis): the default
+   *  64³ tank maps (0.5, 0.5, 0.5) to its centre as before, a resized tank to its own. */
+  private tankPoint(fx: number, fy: number, fz: number): Vec3 {
+    const e = this.tank.cells.map(c => c / GRID_RES)
+    return [fx * e[0], fy * e[1], fz * e[2]]
   }
 
   /** Material gates for one spawn: the id to spawn `baseId` at `tempC` (a fixed-temperature preset such as
@@ -358,6 +387,7 @@ export class FluidEngine {
   /** Spawn through the gates; a refusal is reported (never clamped, never silently swapped for water). */
   private gatedSpawn(baseId: number, tempC: number, block: () => { lo: Vec3; size: Vec3 }): Promise<number> {
     this.onNotice?.(null)
+    if (this.rebuilding()) return Promise.resolve(0)
     const g = this.resolveSpawn(baseId, tempC)
     if (!g.ok) { this.notify('refused', g.reason); return Promise.resolve(0) }
     return this.enqueueSpawn(block, g.id, g.tempC, 1)
@@ -431,6 +461,7 @@ export class FluidEngine {
    *  with 20 °C water is refused — there is no heat transfer yet). A refused scenario leaves the tank empty. */
   loadScenario(s: LabScenario): ScenarioLoad {
     if (!this.sim || this.destroyed) return { ok: false, reason: 'engine not ready' }
+    if (this.resizing) return { ok: false, reason: 'the tank is being rebuilt — try again in a moment' }
     this.lastScenario = s
     this.onNotice?.(null)
     // Fresh table seeded with defaults, then the scenario's materials — so the material picker
@@ -473,17 +504,15 @@ export class FluidEngine {
       const compId = resolved[k].id
       const block = sp.box
         ? { lo: sp.box.min.map(m => this.tankToUnit(m)) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
-        : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000, this.packing)
+        : cubeForCount(sp.center ?? this.tankPoint(0.5, 0.5, 0.5), sp.count ?? 1000, this.packing)
       const vel = (sp.initialVelocity ?? [0, 0, 0]).map(v => msToUnitVel(v)) as Vec3
       const r = latticeBox(block.lo, block.size, { occupied, packing: this.packing })
-      const kept: Vec3[] = []
-      for (const pos of r.positions) {
-        if (particles.length + kept.length >= (this.sim.maxParticles ?? 200_000)) break
-        occupied.add(cellKey(pos[0], pos[1], pos[2]))
-        kept.push(pos)
-      }
-      for (const p of this.particlesOf(kept, vel, compId, temperature, sp.phase ?? 1)) particles.push(p)   // no spread: 1e5 arguments overflow the stack
+      for (const pos of r.positions) occupied.add(cellKey(pos[0], pos[1], pos[2]))
+      for (const p of this.particlesOf(r.positions, vel, compId, temperature, sp.phase ?? 1)) particles.push(p)   // no spread: 1e5 arguments overflow the stack
     }
+    // capacity: refused, never clamped (a truncated scenario would be a different experiment than the one asked for)
+    const cap = this.sim.maxParticles ?? 200_000
+    if (particles.length > cap) return this.refuseScenario(`the scenario needs ${particles.length} particles; this tank holds at most ${cap} — make the tank bigger or the spawns smaller`)
     this.sim.setParticles(particles)
     this.resetClock()
     this.setGravity(scenarioGravityMs2(s))
@@ -497,7 +526,7 @@ export class FluidEngine {
     } else if (s.ball) {
       this.ball.active = true
       this.ball.radius = s.ball.radius ?? DEFAULT_BALL_RADIUS
-      this.ball.center = [...(s.ball.center ?? [0.5, 0.9, 0.5])] as Vec3
+      this.ball.center = [...(s.ball.center ?? this.ballStart(this.ball.radius))] as Vec3
       this.ball.velocity = [0, 0, 0]
       if (this.sphereMesh) {
         this.sphereMesh.visible = true
@@ -540,6 +569,7 @@ export class FluidEngine {
     const renderer = this.renderer
     const camera = this.camera
     if (!sim || !device || !renderer || !camera || !this.fluidScene) return
+    if (this.timingActive) return   // renderTiming owns the GPU: no step, no frame
 
     // `ts` is the rAF callback timestamp (vsync-aligned) — never performance.now() here.
     let advanceS: number
@@ -564,7 +594,7 @@ export class FluidEngine {
 
     const simBefore = this.simTime
     if (advanceS > 0 && !this.resizing) this.macroStep(advanceS)
-    this.rtSamples.push({ wall: ts, sim: this.simTime })
+    if (!this.resizing) this.rtSamples.push({ wall: ts, sim: this.simTime })
     while (this.rtSamples.length > 2 && ts - this.rtSamples[0].wall > 2000) this.rtSamples.shift()
 
     this.fpsAccum += wallDt
@@ -749,7 +779,7 @@ export class FluidEngine {
    *  centred horizontally and placed as high as the tank allows (skipping cells already full).
    *  Resolves to the number of particles actually added. */
   spawnBatch(count: number): Promise<number> {
-    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount([0.5, 1, 0.5], count, this.packing))
+    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount(this.tankPoint(0.5, 1, 0.5), count, this.packing))
   }
 
   /** Click-to-spawn: a ≈512-particle block (~0.29 m) of the selected material at a world point. */
@@ -771,10 +801,20 @@ export class FluidEngine {
   async resizeTank(cells: Vec3, shiftM: Vec3 = [0, 0, 0]): Promise<{ ok: boolean; reason?: string; kept?: number; removed?: number }> {
     const sim = this.sim
     if (!sim?.resize || this.destroyed) return { ok: false, reason: 'this solver has a fixed tank' }
+    if (this.resizing) return { ok: false, reason: 'a resize is already running' }
     if (!cells.every(c => Number.isInteger(c) && c % 8 === 0 && c >= 16 && c <= 88)) return { ok: false, reason: `tank cells must be multiples of 8 in [16, 88] (got ${cells.join(' × ')})` }
+    // the largest binding is the viscous lattice, 256 B per padded cell (TANK-RESIZE budget: 187 MB at 88³); on a device
+    // left at the default limits a big tank is refused here instead of failing inside the GPU
+    const latBytes = 256 * (cells[0] + 2) * (cells[1] + 2) * (cells[2] + 2)
+    const lim = this.device?.limits
+    if (lim && (latBytes > lim.maxStorageBufferBindingSize || latBytes > lim.maxBufferSize)) {
+      return { ok: false, reason: `this GPU device binds at most ${(lim.maxStorageBufferBindingSize / 2 ** 20).toFixed(0)} MiB per buffer; a ${cells.join(' × ')} tank needs ${(latBytes / 2 ** 20).toFixed(0)} MiB` }
+    }
     this.resizing = true
+    this.sceneGeneration++   // spawns queued against the old tank's occupancy are cancelled (enqueueSpawn checks it)
     try {
       const r = await sim.resize(cells, shiftM)
+      this.sceneIds = new Set(r.compositions)
       if (this.ball.active) {
         if (r.ballRemoved) { this.ball.active = false; if (this.sphereMesh) this.sphereMesh.visible = false; this.notify('warning', 'the ball was removed: it no longer fits in the tank') }
         else for (let a = 0; a < 3; a++) this.ball.center[a] += shiftM[a] / DOMAIN_L_M
@@ -784,6 +824,7 @@ export class FluidEngine {
       return { ok: true, kept: r.kept, removed: r.removed }
     } finally {
       this.resizing = false
+      this.rtSamples = []   // the rebuild's paused frames are not "cannot keep up with real time"
     }
   }
   /** The glass box, its edges, floor and wall grids and the orbit target follow the tank (world units: cells/64). */
@@ -794,6 +835,9 @@ export class FluidEngine {
     this.floorMesh?.scale.set(ex, ez, 1); this.floorMesh?.position.set(ex / 2, 0.001, ez / 2)
     this.wallMesh?.scale.set(ex, ey, 1); this.wallMesh?.position.set(ex / 2, ey / 2, 0.001)
     this.sideMeshes.forEach((m, k) => { m.scale.set(ez, ey, 1); m.position.set(k === 0 ? 0.001 : ex - 0.001, ey / 2, ez / 2) })
+    // the SSFR composite draws the frame, so three.js never renders this scene and never refreshes world matrices on its
+    // own: click-to-spawn raycasts the glass box, which must carry its new matrix now
+    for (const o of [this.boxMesh, this.glassBox, this.floorMesh, this.wallMesh, ...this.sideMeshes]) o?.updateMatrixWorld(true)
     this.ssfrPipeline?.setTankExtent([ex, ey, ez])
     this.tankHandles?.setCells(this.tank.cells)
     if (this.controls && this.camera) {
@@ -816,14 +860,23 @@ export class FluidEngine {
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1,
     )
+    this.camera.updateMatrixWorld()
+    this.glassBox.updateMatrixWorld()
     this.raycaster.setFromCamera(ndc, this.camera)
     const hit = this.raycaster.intersectObject(this.glassBox, false)[0]
     if (!hit) return 0
     return this.spawnAt(hit.point)
   }
 
+  /** Where a ball is released: centred over the tank's floor, 0.9 of its height (the default tank's 0.9 wu) or lower
+   *  so it fits under the lid. */
+  private ballStart(radius: number): Vec3 {
+    const e = this.tank.cells.map(c => c / GRID_RES)
+    return [e[0] / 2, Math.min(0.9 * e[1], e[1] - radius - 1 / GRID_RES), e[2] / 2]
+  }
+
   dropBall() {
-    if (!this.sim) return
+    if (!this.sim || this.rebuilding()) return
     if (!this.sim.supportsBall) {
       this.notify('refused', 'this solver does not couple the ball; ?solver=mpm runs the legacy ball')
       return
@@ -832,17 +885,18 @@ export class FluidEngine {
     if (why) { this.notify('refused', why); return }
     this.ball.active = true
     this.ball.radius = DEFAULT_BALL_RADIUS
-    this.ball.center = [0.5, 0.9, 0.5]
+    this.ball.center = this.ballStart(DEFAULT_BALL_RADIUS)
     this.ball.velocity = [0, 0, 0]
     if (this.sphereMesh) {
       this.sphereMesh.visible = true
       this.sphereMesh.scale.setScalar(1)
-      this.sphereMesh.position.set(0.5, 0.9, 0.5)
+      this.sphereMesh.position.set(...this.ball.center)
     }
     this.sim.setBall(this.ball)
   }
 
   removeBall() {
+    if (this.rebuilding()) return
     this.ball.active = false
     if (this.sphereMesh) this.sphereMesh.visible = false
     this.sim?.clearBall()
@@ -850,6 +904,7 @@ export class FluidEngine {
 
   /** RESET: re-run the current scenario; otherwise the page's initial scene. */
   reset() {
+    if (this.rebuilding()) return
     if (this.lastScenario) this.loadScenario(this.lastScenario)
     else if (this.options.initialScene === 'default-water') this.loadDefaultScene()
     else { this.sim?.setParticles([]); this.sceneIds.clear(); this.resetClock() }
@@ -883,34 +938,45 @@ export class FluidEngine {
     if (!ssfr || !sim || !device || !this.camera) return null
     const [w, h] = [o.width ?? ssfr.size[0], o.height ?? ssfr.size[1]]
     const m = this.probeMatrices(o, w, h)
-    const rig = await ssfr.offscreenRig(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball: this.probeBall() })
     const frames = Math.max(30, o.frames ?? 120)
-    const timer = new GpuTimer(device, frames)
-    device.pushErrorScope('validation')
-    for (let f = 0; f < (o.warmup ?? 10); f++) { const e = device.createCommandEncoder(); rig.encode(e); device.queue.submit([e.finish()]) }
-    await device.queue.onSubmittedWorkDone()
-    const wall: number[] = []
-    for (let f = 0; f < frames; f++) {
-      const e = device.createCommandEncoder()
-      timer.mark(e, timer.begin(f))
-      rig.encode(e)
-      timer.mark(e, timer.end(f))
-      if (f === frames - 1) timer.resolve(e, frames)
-      const t0 = performance.now()
-      device.queue.submit([e.finish()])
+    // the page's own frames pause while timing: they share the SSFR uniforms and the ellipsoid buffers and would add GPU
+    // load between the timed frames (animate() skips rendering while this is set)
+    this.timingActive = true
+    let rig: Awaited<ReturnType<SSFRPipeline['offscreenRig']>> | null = null
+    let timer: GpuTimer | null = null
+    let scoped = false
+    try {
+      rig = await ssfr.offscreenRig(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball: this.probeBall() })
+      timer = new GpuTimer(device, frames)
+      device.pushErrorScope('validation'); scoped = true
+      for (let f = 0; f < (o.warmup ?? 10); f++) { const e = device.createCommandEncoder(); rig.encode(e); device.queue.submit([e.finish()]) }
       await device.queue.onSubmittedWorkDone()
-      wall.push(performance.now() - t0)
-    }
-    const ns = await timer.read(frames)
-    const err = await device.popErrorScope()
-    timer.destroy()
-    const coverage = await rig.fluidFraction()
-    rig.destroy()
-    if (err) throw new Error(`renderTiming: validation error: ${err.message.split('\n')[0]}`)
-    return {
-      width: w, height: h, frames, count: sim.particleCount, coverage, splatShape: o.splatShape ?? null,
-      gpuMedianMs: median(ns) / 1e6, gpuP95Ms: quantile(ns, 0.95) / 1e6, gpuMeanMs: mean(ns) / 1e6, wallMedianMs: median(wall),
-      invalidTimestamps: timingInvalid(ns),
+      const wall: number[] = []
+      for (let f = 0; f < frames; f++) {
+        const e = device.createCommandEncoder()
+        timer.mark(e, timer.begin(f))
+        rig.encode(e)
+        timer.mark(e, timer.end(f))
+        if (f === frames - 1) timer.resolve(e, frames)
+        const t0 = performance.now()
+        device.queue.submit([e.finish()])
+        await device.queue.onSubmittedWorkDone()
+        wall.push(performance.now() - t0)
+      }
+      const ns = await timer.read(frames)
+      const err = await device.popErrorScope(); scoped = false
+      if (err) throw new Error(`renderTiming: validation error: ${err.message.split('\n')[0]}`)
+      const coverage = await rig.fluidFraction()
+      return {
+        width: w, height: h, frames, count: sim.particleCount, coverage, splatShape: o.splatShape ?? null,
+        gpuMedianMs: median(ns) / 1e6, gpuP95Ms: quantile(ns, 0.95) / 1e6, gpuMeanMs: mean(ns) / 1e6, wallMedianMs: median(wall),
+        invalidTimestamps: timingInvalid(ns),
+      }
+    } finally {
+      if (scoped) await device.popErrorScope()
+      timer?.destroy()
+      rig?.destroy()
+      this.timingActive = false
     }
   }
 

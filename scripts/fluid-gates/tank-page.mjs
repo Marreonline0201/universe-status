@@ -25,6 +25,13 @@
 //     rest is never pinned — the first version of this check passed with the bug put back).
 // (e) FPS recorded (not gated) at 64³ and 88³: a 17 cm pool over the whole floor on the real-time clock for 10 s, in a
 //     window on the PRIMARY display (owner 2026-09-29: timing runs stay there); 0 GPU / console errors over the gate.
+// Revision after the code review (2026-09-29 night, before its run; no tolerance moved):
+//   (a) the size is read from the engine-derived info line ([data-tank-info]), not the panel's typed draft (a refused
+//       resize would have left the draft showing the typed size).
+//   (b) an expected range may not touch the 16/88 clamp at all (an overshoot clamped to 88 passed as "88 expected"), so
+//       the −x drag is 45 px (expected ≈ 72–80) instead of 60 px (80–88); and every GROWING drag also checks where the
+//       liquid went: each particle moved by exactly the shift (−x face: the growth; other faces: 0), ≤ 1e-5 m (f32).
+//   (e) the FPS window opens after the gate page is closed (its SSFR frames were running on the same GPU).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -130,6 +137,7 @@ const clickDefault = async page => {
 }
 
 const { browser, page, errors, adapter } = await openFluidPage()
+let browserClosed = false
 report.adapter = adapter
 try {
   const st0 = await status(page)
@@ -142,13 +150,14 @@ try {
   await page.fill('[data-tank-axis="2"]', '4.08')
   await page.click('[data-tank-apply]')
   const ta = await waitCells(page, [48, 40, 72])
-  const panel = await page.evaluate(() => document.querySelector('[data-tank-apply]')?.parentElement?.parentElement?.textContent ?? '')
   await page.waitForTimeout(300)
+  const info = await page.evaluate(() => document.querySelector('[data-tank-info]')?.textContent ?? '')
+  const shown = ta.sizeM.map(v => v.toFixed(2)).join(' × ')
   const va = await view(page), hA = await H(page, 'face', [[0, 1]]), pA = project(va, handlePos(ta.cells, [[0, 1]]))
   const sizeOk = ta.sizeM.every((m, a) => Math.abs(m - ta.cells[a] * DX) < 1e-9)
-  report.a = { tank: ta, handle: hA, projected: pA }
-  gate.check(ta.cells.join() === '48,40,72' && sizeOk && panel.includes('48 × 40 × 72 cells') && Math.hypot(hA.x - pA.x, hA.y - pA.y) <= 1,
-    `(a) numbers 2.72 / 2.27 / 4.08 m + APPLY → status ${ta.cells.join(' × ')} cells = ${ta.sizeM.map(v => v.toFixed(3)).join(' × ')} m (cells·dx ${sizeOk ? 'ok' : 'WRONG'}); panel shows the cells: ${panel.includes('48 × 40 × 72 cells')}; +x face handle at (${hA.x.toFixed(1)}, ${hA.y.toFixed(1)}) vs the projected face centre (${pA.x.toFixed(1)}, ${pA.y.toFixed(1)})`)
+  report.a = { tank: ta, handle: hA, projected: pA, info }
+  gate.check(ta.cells.join() === '48,40,72' && sizeOk && info.includes(shown) && Math.hypot(hA.x - pA.x, hA.y - pA.y) <= 1,
+    `(a) numbers 2.72 / 2.27 / 4.08 m + APPLY → status ${ta.cells.join(' × ')} cells = ${ta.sizeM.map(v => v.toFixed(3)).join(' × ')} m (cells·dx ${sizeOk ? 'ok' : 'WRONG'}); the page's engine-derived tank line shows ${shown} m: ${info.includes(shown)}; +x face handle at (${hA.x.toFixed(1)}, ${hA.y.toFixed(1)}) vs the projected face centre (${pA.x.toFixed(1)}, ${pA.y.toFixed(1)})`)
 
   // (c) P1/P2 in the 48 × 40 × 72 tank
   await loadScenario(page, poolOver(ta.cells), 1)
@@ -202,12 +211,13 @@ try {
     { name: 'corner (+x, +y, +z), 40 px in along x + 40 px up', kind: 'corner', sides: [[0, 1], [1, 1], [2, 1]], move: async () => {
       const c = [[0, 1], [1, 1], [2, 1]], x = await scr('corner', c, [[0, -1], [1, 1], [2, 1]]), y = await scr('corner', c, [[0, 1], [1, -1], [2, 1]])
       return { from: x.a, to: along(x.a, [[x.u, -40], [y.u, 40]]) } } },
-    { name: '−x face, 60 px outward', kind: 'face', sides: [[0, -1]], move: async () => { const x = await scr('face', [[0, -1]], [[0, 1]]); return { from: x.a, to: along(x.a, [[x.u, 60]]) } } },
+    { name: '−x face, 45 px outward', kind: 'face', sides: [[0, -1]], move: async () => { const x = await scr('face', [[0, -1]], [[0, 1]]); return { from: x.a, to: along(x.a, [[x.u, 45]]) } } },
   ]
   report.b = []
   for (const dg of drags) {
     const t0 = await clickDefault(page)
     await page.waitForTimeout(400)
+    const before = await sample(page)   // the sim is frozen here (the step limit of d0), so only the resize moves particles
     const { from, to } = await dg.move()
     const v0 = await view(page)
     await page.mouse.move(from.x, from.y)
@@ -226,17 +236,33 @@ try {
     for (let a = 0; a < 3; a++) {
       if (!(a in tr)) { ok.push(t1.cells[a] === t0.cells[a]); lines.push(`${'xyz'[a]} ${t1.cells[a]} (unchanged: ${t1.cells[a] === t0.cells[a]})`); continue }
       const lo = t0.cells[a] + snap(tr[a] - 1), hi = t0.cells[a] + snap(tr[a] + 1)
-      const inRange = lo >= 16 && hi <= 88   // a clamp would make the expectation ambiguous: the drag is mis-designed
+      // the expected range must not reach a clamp bound: an overshoot clamped there would pass as "expected"
+      const inRange = lo > 16 && hi < 88
       ok.push(inRange && t1.cells[a] >= lo && t1.cells[a] <= hi)
-      lines.push(`${'xyz'[a]} ${t0.cells[a]} → ${t1.cells[a]} (travel ${tr[a].toFixed(2)} cells → expected ${lo === hi ? lo : `${lo}–${hi}`}${inRange ? '' : ', CLAMPED: drag mis-designed'})`)
+      lines.push(`${'xyz'[a]} ${t0.cells[a]} → ${t1.cells[a]} (travel ${tr[a].toFixed(2)} cells → expected ${lo === hi ? lo : `${lo}–${hi}`}${inRange ? '' : ', REACHES A CLAMP: drag mis-designed'})`)
     }
-    report.b.push({ drag: dg.name, from, to, before: t0.cells, after: t1.cells, travel: tr, still, ghostMid, tankMid })
+    // where the liquid went: on a growing drag every particle stays, moved by exactly the shift (a −x face grows the
+    // tank on its low side, so the grid's origin moves and the liquid with it by the growth; any other face: 0)
+    const grew = t1.cells.every((c, a) => c >= t0.cells[a])
+    let liquid = 'n/a (a shrink removes particles)', liquidOk = true
+    if (grew) {
+      const aft = await sample(page)
+      const shiftX = dg.sides.some(([ax, sg]) => ax === 0 && sg < 0) ? (t1.cells[0] - t0.cells[0]) * DX : 0
+      let worst = 0
+      if (aft.n !== before.n) worst = Infinity
+      else for (let i = 0; i < aft.n; i++) for (let ax = 0; ax < 3; ax++) worst = Math.max(worst, Math.abs((aft.pos[3 * i + ax] - before.pos[3 * i + ax]) * L - (ax === 0 ? shiftX : 0)))
+      liquidOk = worst <= 1e-5
+      liquid = `${aft.n}/${before.n} particles, each moved by the expected (${(100 * shiftX).toFixed(2)} cm, 0, 0) within ${Number.isFinite(worst) ? worst.toExponential(1) : '∞'} m (≤ 1e-5)`
+    }
+    report.b.push({ drag: dg.name, from, to, before: t0.cells, after: t1.cells, travel: tr, still, ghostMid, tankMid, liquid })
     const changed = t1.cells.join() !== t0.cells.join()
-    gate.check(ok.every(Boolean) && changed && still && ghostMid === 12 && tankMid.join() === t0.cells.join(),
-      `(b) drag ${dg.name} (${Math.hypot(to.x - from.x, to.y - from.y).toFixed(0)} px): ${lines.join('; ')}; camera still during the drag: ${still}; mid-drag outline ${ghostMid}/12 lines, tank unchanged until release: ${tankMid.join() === t0.cells.join()}`)
+    gate.check(ok.every(Boolean) && changed && still && ghostMid === 12 && tankMid.join() === t0.cells.join() && liquidOk,
+      `(b) drag ${dg.name} (${Math.hypot(to.x - from.x, to.y - from.y).toFixed(0)} px): ${lines.join('; ')}; camera still during the drag: ${still}; mid-drag outline ${ghostMid}/12 lines, tank unchanged until release: ${tankMid.join() === t0.cells.join()}; liquid: ${liquid}`)
   }
   await clickDefault(page)
   gate.check((await status(page)).gpuErrors === 0, `R GPU: ${(await status(page)).gpuErrors} uncaptured WebGPU errors on the gate page`)
+  await browser.close()   // (e) must not share the GPU with the gate page's own SSFR frames
+  browserClosed = true
 
   // (e) FPS at 64³ and 88³ (recorded), primary display
   const fp = await openFluidPage(undefined, { timing: true })
@@ -265,7 +291,7 @@ try {
   gate.check(gpuE === 0, `R GPU: ${gpuE} uncaptured WebGPU errors in the FPS window`)
   gate.check(errors.length === 0, `R console: ${errors.length} errors${errors.length ? ` — ${errors.slice(0, 3).join(' | ')}` : ''}`)
 } finally {
-  await browser.close()
+  if (!browserClosed) await browser.close()
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 'tank-page', pass, report, gate.results)

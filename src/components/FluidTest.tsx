@@ -166,7 +166,7 @@ export function FluidTest() {
       setRtFactor(s.rtFactor)
       setStokes(s.stokes ?? null)
       setFpsWarning(s.fps < 30 && s.count > 100)
-    }, { initialScene: 'default-water' })
+    }, { initialScene: 'default-water', tankHandles: true })
     engineRef.current = engine
     void engine.init().then(ok => {
       if (cancelled) return
@@ -177,7 +177,8 @@ export function FluidTest() {
       setMenu(engine.getMenuEntries())
       setParticleCount(engine.particleCount)
       setTank(engine.tank)
-      engine.onTankChange = t => { setTank(t); setParticleCount(engine.particleCount) }
+      // a resize may remove a ball that no longer fits: the button follows the engine
+      engine.onTankChange = t => { setTank(t); setParticleCount(engine.particleCount); setBallActive(engine.ballActive) }
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
         uninstallHook = installBenchHook(engine.benchTarget({

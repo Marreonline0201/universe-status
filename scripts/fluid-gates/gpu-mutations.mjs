@@ -31,7 +31,7 @@ const SETS = {
     [`${SH}/gridUpdate.wgsl`, 'u[s] = p / m + P.gravity[a] * P.dt;', 'u[s] = p / m + P.gravity.y * P.dt;', 'gravity applied as a y scalar on every axis'],
     [`${SH}/extrapolate.wgsl`, 'if (validSrc[ns] == 1u && faceType[ns] != SOLID) { sum += uSrc[ns]; cnt++; }', 'if (validSrc[ns] == 1u) { sum += uSrc[ns]; cnt++; }', 'extrapolation reads solid faces'],
     [`${SH}/g2pMac.wgsl`, 'let dw = select(vec3<f32>(-invDx), vec3<f32>(invDx), is1);', 'let dw = select(vec3<f32>(invDx), vec3<f32>(-invDx), is1);', 'G2P weight-gradient sign flipped'],
-    [`${SH}/g2pMac.wgsl`, 'let nx = x + P.dt * sampleVel(mid, &unset);', 'let nx = x + P.dt * v;', 'RK2 midpoint replaced by forward Euler'],
+    [`${SH}/g2pMac.wgsl`, 'let nx = x + P.dt * (sampleVel(mid, &unset) + uV);', 'let nx = x + P.dt * (v + uV);', 'RK2 midpoint replaced by forward Euler'],
     [`${SH}/present.wgsl`, 'let vw = vel[q].xyz * P.tauS / P.lRef;', 'let vw = vel[q].xyz / P.tauS / P.lRef;', 'presentation velocity unit wrong'],
   ],
   s31b: [
@@ -121,7 +121,7 @@ SETS.s35i = [
   [`${SH}/immiscible.wgsl`, 'return 1.0 + 0.15 * pow(Re, 0.687);', 'return 1.0 + 0.15 * pow(Re, 0.5);', 'Schiller–Naumann exponent wrong'],
   [`${SH}/immiscible.wgsl`, 'let muM = muc * pow(max(1e-12, 1.0 - aD), -2.5 * muStar);', 'let muM = muc;', 'hindered mixture viscosity dropped'],
   [`${SH}/immiscible.wgsl`, 'let m = oneMinusExpNeg(P.dt / ((rp + 0.5 * rc) * kd));', 'let m = oneMinusExpNeg(P.dt / (rp * kd));', 'virtual mass dropped from τ'],
-  [`${SH}/immiscible.wgsl`, 'let s = sOld + ((rp - rm) * accelAt(x) * kd - sOld) * m;', 'let s = sOld + ((rp - rc) * accelAt(x) * kd - sOld) * m;', 'buoyancy against ρ_c, not the mixture'],
+  [`${SH}/immiscible.wgsl`, 'let s = sOld + ((rp - rm) * acc * kd - sOld) * m;', 'let s = sOld + ((rp - rc) * acc * kd - sOld) * m;', 'buoyancy against ρ_c, not the mixture'],
   [`${SH}/immiscible.wgsl`, 'if (faceType[s] == SOLID) { accOut[s] = P.gravity[a]; accValidOut[s] = 0u; return; }', 'if (faceType[s] == SOLID) { accOut[s] = 0.0; accValidOut[s] = 0u; return; }', 'wall faces carry a = 0, not g'],
   [`${SH}/immiscible.wgsl`, 'accOut[s] = (uStar[s] - uProj[s]) / P.dt;', 'accOut[s] = (uStar[s] - uProj[s]);', 'face acceleration without 1/Δt'],
   [`${SH}/immiscible.wgsl`, 'lo[bb] = max(0, c[bb] - 1); hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'lo[bb] = c[bb]; hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'strain off-diagonal one-sided'],
@@ -144,6 +144,19 @@ SETS.s37 = [
   [`${SH}/sphereMonoUpdate.wgsl`, 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / M; }', 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / rhoS; }', 'ball update divides by ρ_s, not M'],
   [`${SH}/sphereVolume.wgsl`, 'if (S > 0.0) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'if (S > 0.5) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'V_J from the mostly-solid faces only'],
 ]
+// --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
+// refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2
+// (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them.
+if (process.argv.includes('--check')) {
+  let bad = 0, n = 0
+  for (const [gate, list] of Object.entries(SETS)) for (const [f, find, , why] of list) {
+    n++
+    const c = readFileSync(join(REPO, f), 'utf8').replace(/\r\n/g, '\n').split(find).length - 1
+    if (c !== 1) { bad++; console.error(`${gate}: find occurs ${c}× in ${f} — ${why}`) }
+  }
+  console.log(`${n} mutants in ${Object.keys(SETS).length} sets: ${bad} without a unique match in the working tree`)
+  process.exit(bad ? 1 : 0)
+}
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]
 if (!M) { console.error(`unknown --gate=${GATE} (have: ${Object.keys(SETS).join(', ')})`); process.exit(2) }

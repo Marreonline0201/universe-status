@@ -4,7 +4,7 @@
 // world units (tank-normalised [0,1]³ of the 64³ grid, velocities per τ), so the renderer and every consumer are
 // unchanged; each backend converts to its own solver units here and nowhere else.
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
-import { FlipGpuSimulator, PRESENT_STRIDE_BYTES } from '../gpu-sim/flip/FlipGpuSimulator'
+import { FlipGpuSimulator, PRESENT_STRIDE_BYTES, type FlipParticleInit } from '../gpu-sim/flip/FlipGpuSimulator'
 import { SOLID_REFERENCE, type LiquidKey } from '../composition/materialData'
 import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
@@ -21,7 +21,7 @@ export interface SpawnParticle { pos: Vec3; vel: Vec3; compositionId: number; te
 
 /** `drift` (FLIP with the immiscible drift active): per particle the slip (m/s, xyz) and the drop diameter d (m, 0: not
  *  dispersed) of the last substep — the gates' check of the page's creaming (s31c-page B1). */
-export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array; slipInputs?: Float32Array }
+export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array; slipInputs?: Float32Array; uV?: Float32Array }
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
@@ -70,8 +70,9 @@ export interface SimBackend {
    *  iterations (null: this backend has none). */
   stokesStatus?(): StokesStatus | null
   /** Tank resize (TANK-RESIZE spec): grid cells per axis (dx fixed); the particles inside the new walls are kept, shifted
-   *  by `shiftM` metres first (a −x / −z face moved); the ball is kept when it still fits. Absent: a fixed tank. */
-  resize?(cells: Vec3, shiftM?: Vec3): Promise<{ kept: number; removed: number; ballRemoved: boolean }>
+   *  by `shiftM` metres first (a −x / −z face moved); the ball is kept when it still fits; `compositions` lists what the
+   *  tank still holds. Absent: a fixed tank. */
+  resize?(cells: Vec3, shiftM?: Vec3): Promise<{ kept: number; removed: number; ballRemoved: boolean; compositions: number[] }>
   /** The tank's grid cells per axis (a resizable backend). */
   readonly cells?: Vec3
   /** Most particles the tank holds (scales with the cell count). */
@@ -258,10 +259,10 @@ export class FlipBackend implements SimBackend {
   }
   /** The particle capacity of a tank: FLIP_MAX_PARTICLES per 64³, scaled with the cell count (TANK-RESIZE budget). */
   static capacityFor(cells: Vec3): number { return Math.round(FLIP_MAX_PARTICLES * cells[0] * cells[1] * cells[2] / GRID_RES ** 3) }
-  private static makeSim(device: GPUDevice, cells: Vec3) {
+  private static makeSim(device: GPUDevice, cells: Vec3, capacity = FlipBackend.capacityFor(cells)) {
     return FlipGpuSimulator.create(device, {
       nx: cells[0], ny: cells[1], nz: cells[2], dx: DOMAIN_L_M / GRID_RES, gravity: [0, 0, 0],
-      maxParticles: FlipBackend.capacityFor(cells), lRef: DOMAIN_L_M, tauS: TAU_S,
+      maxParticles: capacity, lRef: DOMAIN_L_M, tauS: TAU_S,
       projection: true, density: waterDensity(20), densityProjection: true, freeSurface: 'ghost', variableDensity: true,
       ppc: FLIP_PACKING.ppc, viscosity: true, immiscible: true,
     })
@@ -277,23 +278,28 @@ export class FlipBackend implements SimBackend {
 
   /** Tank resize (TANK-RESIZE spec): rebuild the simulator at `cells` (every solver is sized at creation), then the
    *  page's settings, the μ table, the tank's liquids (drift slots), gravity; the particles inside the new walls (after
-   *  the shift) with their velocities, affine terms, masses, compositions and temperatures; the ball if it still fits. */
-  async resize(cells: Vec3, shiftM: Vec3 = [0, 0, 0]): Promise<{ kept: number; removed: number; ballRemoved: boolean }> {
+   *  the shift) with their velocities, affine terms, masses, compositions, temperatures and drift memory (slip, drop
+   *  size); the ball if it still fits. Nothing inside the new walls is dropped: the new simulator's capacity is the
+   *  tank's own or, when the liquid inside needs more (a lowered ceiling cuts capacity, not liquid), that count. */
+  async resize(cells: Vec3, shiftM: Vec3 = [0, 0, 0]): Promise<{ kept: number; removed: number; ballRemoved: boolean; compositions: number[] }> {
     if (!cells.every(c => Number.isInteger(c) && c % 8 === 0 && c >= 16 && c <= 88)) throw new RangeError(`tank cells must be multiples of 8 in [16, 88] (got ${cells.join(' × ')})`)
     const old = this.sim
     const state = await old.readParticleState()
+    const slip = old.immiscibleActive ? await old.readSlipState() : null
     const sphere = old.hasSphere ? await old.readSphere() : null
     const coupling = old.sphereCoupling
-    const next = await FlipBackend.makeSim(this.device, cells)
     // Kept: every particle inside the new walls. The solver pins wall-contact particles wallEps (1e-6·dx) inside a wall —
     // below f32 resolution at the far wall, so a resting particle can read back exactly on it: accept a 1e-4·dx band
     // (5.7 µm, far under the 2.8 cm particle spacing), then pin again the solver's way.
-    const ext = cells.map(c => c * this.dx), tol = 1e-4 * this.dx, w = next.wallEps
-    const kept = state
-      .map(p => ({ ...p, pos: [p.pos[0] + shiftM[0], p.pos[1] + shiftM[1], p.pos[2] + shiftM[2]] as Vec3 }))
-      .filter(p => p.pos.every((v, a) => v >= -tol && v <= ext[a] + tol))
-      .map(p => ({ ...p, pos: p.pos.map((v, a) => Math.min(ext[a] - w, Math.max(w, v))) as Vec3 }))
-      .slice(0, next.maxParticles)
+    const ext = cells.map(c => c * this.dx), tol = 1e-4 * this.dx, w = old.wallEps
+    const kept: FlipParticleInit[] = [], keptIdx: number[] = []
+    state.forEach((p, i) => {
+      const pos = p.pos.map((v, a) => v + shiftM[a])
+      if (!pos.every((v, a) => v >= -tol && v <= ext[a] + tol)) return
+      kept.push({ ...p, pos: pos.map((v, a) => Math.min(ext[a] - w, Math.max(w, v))) as Vec3 })
+      keptIdx.push(i)
+    })
+    const next = await FlipBackend.makeSim(this.device, cells, Math.max(FlipBackend.capacityFor(cells), kept.length))
     this.sim = next
     old.destroy()
     this.cells = [...cells] as Vec3
@@ -301,24 +307,40 @@ export class FlipBackend implements SimBackend {
     FlipBackend.configureSim(next)
     next.viscositySolver!.setMuTable(this.muTable)
     next.gravity = [0, -this.gMs2, 0]
-    this.compCount.fill(0)
-    for (const p of kept) this.compCount[p.composition]++
+    // the tank's liquids and viscous extremes from the particles that stayed (a liquid cut away entirely has left)
+    this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
+    for (const p of kept) {
+      const rho = p.mass / this.mPerRho, mu = this.muTable[p.composition]
+      this.maxNu = Math.max(this.maxNu, mu / rho); this.minMu = Math.min(this.minMu, mu)
+      this.compCount[p.composition]++; this.compRho[p.composition] = rho
+    }
     next.setParticles(kept)
-    this.vLag = 0
+    // the lagged max speed (the substep count's input) from the velocities that were kept — not zero
+    this.vLag = kept.reduce((m, p) => Math.max(m, Math.hypot(p.vel[0], p.vel[1], p.vel[2])), 0)
     this.applyViscosity()
     this.applyImmiscible()
+    // the drift's memory travels with each particle (setParticles cleared it; a switch-on does not clear)
+    if (slip && next.immiscibleActive) {
+      const mem = new Float32Array(4 * kept.length)
+      keptIdx.forEach((i, j) => mem.set(slip.subarray(4 * i, 4 * i + 4), 4 * j))
+      next.writeSlipState(mem)
+    }
     this.stokesLast = { iterations: 0, converged: true }; this.stokesMaxIt = 0; this.stokesRecent = []
+    // The ball stays unless it cannot fit: the solver pins a ball touching a wall at exactly its radius
+    // (sphereAdvance.wgsl), so a resting ball reads back with c − R = 0 — the particles' f32 band applies, then the pin.
     let ballRemoved = false
     if (sphere?.active) {
-      const c: Vec3 = [sphere.center[0] + shiftM[0], sphere.center[1] + shiftM[1], sphere.center[2] + shiftM[2]]
-      if (c.every((v, a) => v - sphere.radius > 0 && v + sphere.radius < ext[a])) {
-        next.setSphere({ center: c, radius: sphere.radius, velocity: sphere.velocity, density: FlipBackend.BALL_DENSITY, coupling })
+      const R = sphere.radius, c = sphere.center.map((v, a) => v + shiftM[a])
+      if (c.every((v, a) => 2 * R <= ext[a] && v - R >= -tol && v + R <= ext[a] + tol)) {
+        next.setSphere({ center: c.map((v, a) => Math.min(ext[a] - R, Math.max(R, v))) as Vec3, radius: R, velocity: sphere.velocity, density: FlipBackend.BALL_DENSITY, coupling })
       } else ballRemoved = true
     }
     this.ballLag = null
     this.ballEpoch++
     this.present()
-    return { kept: kept.length, removed: state.length - kept.length, ballRemoved }
+    const compositions: number[] = []
+    for (let id = 0; id < 256; id++) if (this.compCount[id] > 0) compositions.push(id)
+    return { kept: kept.length, removed: state.length - kept.length, ballRemoved, compositions }
   }
 
   get particleBuffer() { return this.sim.presentationBuffer }
@@ -341,14 +363,18 @@ export class FlipBackend implements SimBackend {
     this.device.queue.submit([e.finish()])
   }
   setParticles(ps: readonly SpawnParticle[]) {
+    // capacity first: track() changes the tank's bookkeeping, so a refused load must be refused before it
+    const cap = this.sim.maxParticles
+    if (ps.length > cap) throw new RangeError(`this tank holds at most ${cap} particles; refusing ${ps.length}`)
     this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
     this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
     if (this.sim.stokesSolver) { this.sim.stokesSolver.resetWarm(); this.sim.stokesSolver.cap = FlipBackend.STOKES_CAP_MAX; this.stokesLast = { iterations: 0, converged: true }; this.stokesMaxIt = 0; this.stokesRecent = [] }
   }
   addParticles(ps: readonly SpawnParticle[]) {
-    const room = FLIP_MAX_PARTICLES - this.sim.particleCount
-    if (ps.length > room) throw new RangeError(`the incompressible solver holds at most ${FLIP_MAX_PARTICLES} particles (${room} free); refusing ${ps.length}`)
+    // the resized tank's own capacity, checked before track() touches the bookkeeping (a refusal leaves no trace)
+    const cap = this.sim.maxParticles, room = cap - this.sim.particleCount
+    if (ps.length > room) throw new RangeError(`this tank holds at most ${cap} particles (${room} free); refusing ${ps.length}`)
     this.track(ps)
     this.sim.addParticles(this.toInit(ps)); this.present()
   }
@@ -529,13 +555,15 @@ export class FlipBackend implements SimBackend {
   }
 
   async readParticleSample(): Promise<ParticleSample | null> {
-    const n = this.sim.particleCount
+    const sim = this.sim   // one simulator for the whole sample: a tank resize swaps this.sim during the awaits
+    const n = sim.particleCount
     if (n === 0) return null
     try {
-      const s = decodeLegacy(await this.sim.readBuffer(this.sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n)
-      if (this.sim.immiscibleActive) {
-        s.drift = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipState, 16 * n))
-        s.slipInputs = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipInputs, 32 * n))
+      const s = decodeLegacy(await sim.readBuffer(sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n)
+      if (sim.immiscibleActive) {
+        s.drift = new Float32Array(await sim.readBuffer(sim.immiscibleSolver!.bufs.slipState, 16 * n))
+        s.slipInputs = new Float32Array(await sim.readBuffer(sim.immiscibleSolver!.bufs.slipInputs, 32 * n))
+        s.uV = new Float32Array(await sim.readBuffer(sim.driftBuf, 16 * n))
       }
       return s
     } catch { return null }

@@ -720,19 +720,19 @@ export class SSFRPipeline {
     }
   }
 
-  /** Bench (OPT-1-cov): offscreen targets at width×height; encode() renders one whole frame into them exactly as
-   *  probe() does (the ellipsoid kernel, splats, blur, composite), fluidFraction() renders once more and reads back the
-   *  fraction of pixels the liquid covers (thickness > 0). The canvas is untouched. */
+  /** Bench (OPT-1-cov): offscreen targets at width×height; encode() renders one whole frame into them through the PAGE's
+   *  path (the ellipsoid kernel, splats, blur and the page's composite — not the probe composite, whose extra linear
+   *  rgba32float target the page never writes), fluidFraction() renders once more and reads back the fraction of pixels
+   *  the liquid covers (thickness > 0). The canvas is untouched. */
   async offscreenRig(particleBuffer: GPUBuffer | null, count: number, req: ProbeRequest) {
     await this.ensureProbePipelines()
     const d = this.device
     const t = this.createTargets(req.width, req.height, GPUTextureUsage.COPY_SRC)
     const color = d.createTexture({ size: [req.width, req.height], format: this.canvasFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT })
-    const linear = d.createTexture({ size: [req.width, req.height], format: 'rgba32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
-    const colorView = color.createView(), linearView = linear.createView()
+    const colorView = color.createView()
     const encode = (encoder: GPUCommandEncoder) => this.encodeFrame(encoder, t, {
       particleBuffer, count, view: req.view, proj: req.proj, invProj: req.invProj, invView: req.invView, ball: req.ball, overrides: req,
-    }, colorView, linearView, this.matBuf)
+    }, colorView, null, this.matBuf)
     const fluidFraction = async () => {
       const bpp = this.thicknessFormat === 'r32float' ? 4 : 2, bpr = Math.ceil(req.width * bpp / 256) * 256
       const buf = d.createBuffer({ size: bpr * req.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
@@ -751,7 +751,7 @@ export class SSFRPipeline {
       buf.unmap(); buf.destroy()
       return n / (req.width * req.height)
     }
-    return { encode, fluidFraction, destroy: () => { this.destroyTargets(t); color.destroy(); linear.destroy() } }
+    return { encode, fluidFraction, destroy: () => { this.destroyTargets(t); color.destroy() } }
   }
 
   destroy() {

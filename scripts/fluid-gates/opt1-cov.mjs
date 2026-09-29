@@ -16,7 +16,9 @@
 // camera's direction, at a sweep of distances (coverage from a few % to a full frame), plus a top view (dev6's "top")
 // and an eye-level view (a person 1.2 m above the surface in a corner, looking across); both splat shapes — 'aniso'
 // (the default) and 'sphere' (the pre-resize splat).
-// Coverage = the fraction of the frame's pixels with thickness > 0 (the liquid's footprint).
+// Coverage = the fraction of the frame's pixels with thickness > 0 (the liquid's footprint). dev6's G0-g counted the
+// pixels whose colour changed against a one-particle frame — close to, not identical with, the footprint (a pixel of
+// thin water whose colour barely differs counts here, not there), so the dev6 comparison is approximate.
 // Reported, not gated: median / p95 GPU ms per frame against coverage, and interpolated (piecewise linear in coverage,
 // only inside the measured range) at 7 / 30 / 50 / 80 %. dev6's G0-g reference: 1.71 ms at ≈ 7 % and 10.0 ms at 79 %
 // (100k, 1280 × 800, the old MPM page's splats, the same timer method).
@@ -87,7 +89,8 @@ try {
     const runs = new Map(configs.map(c => [c, []]))
     for (const c of configs) runs.get(c).push(await time(c))                  // pass A
     for (const c of [...configs].reverse()) runs.get(c).push(await time(c))   // pass B, reversed
-    const agree = (a, b) => Math.abs(a.gpuMedianMs / b.gpuMedianMs - 1) <= 0.15
+    // symmetric: |ln(a/b)| ≤ ln 1.15 (a ratio test |a/b − 1| ≤ 0.15 allows 15 % one way and 17.6 % the other)
+    const agree = (a, b) => Math.abs(Math.log(a.gpuMedianMs / b.gpuMedianMs)) <= Math.log(1.15)
     for (const c of configs) {
       const m = runs.get(c)
       if (!agree(m[0], m[1])) m.push(await time(c))                          // a third measurement when A and B differ
@@ -103,7 +106,9 @@ try {
       console.log(`  ${sc.cells.join('×')} ${String(n).padStart(6)} p  ${c.shape.padEnd(6)} ${c.view.padEnd(44)} coverage ${(100 * row.coverage).toFixed(1).padStart(5)} %  GPU median ${row.gpuMedianMs.toFixed(3)} ms  p95 ${row.gpuP95Ms.toFixed(3)} ms  (passes ${row.medians.map(v => v.toFixed(2)).join(' / ')}${row.agreed ? '' : ' — NO AGREEING PAIR'})${row.invalid ? `  INVALID TIMESTAMPS (${row.invalid})` : ''}`)
     }
     for (const shape of ['aniso', 'sphere']) {
-      const pts = scene.rows.filter(r => r.shape === shape)
+      // interpolate along ONE camera geometry (the distance sweep): the top and eye-level views reach similar coverages
+      // with different depth complexity, so one curve through all views would mix geometries (they are reported as rows)
+      const pts = scene.rows.filter(r => r.shape === shape && r.view.startsWith('sweep'))
       scene[shape] = Object.fromEntries(TARGETS.map(c => [`${Math.round(100 * c)}%`, { medianMs: interp(pts, c, 'gpuMedianMs'), p95Ms: interp(pts, c, 'gpuP95Ms') }]))
     }
     report.scenes.push(scene)

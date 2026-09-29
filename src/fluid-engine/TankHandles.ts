@@ -89,7 +89,7 @@ export class TankHandles {
     }
     window.addEventListener('pointermove', this.onMove)
     window.addEventListener('pointerup', this.onUp)
-    window.addEventListener('pointercancel', this.onUp)
+    window.addEventListener('pointercancel', this.onCancel)
     this.setCells([64, 64, 64])
   }
 
@@ -114,9 +114,12 @@ export class TankHandles {
     return { x: (q.x + 1) / 2 * this.container.clientWidth, y: (1 - q.y) / 2 * this.container.clientHeight, visible: v.z < -1e-3 }
   }
 
-  /** Every frame, after the camera moved: the handles and the ghost outline on screen. */
+  /** Every frame, after the camera moved: the handles and the ghost outline on screen. Nearer handles stack above
+   *  farther ones (z-index by view depth), so the handle under the cursor is the visible one. */
   update() {
     this.camera.updateMatrixWorld()
+    const byDepth = this.handles.map(h => ({ h, z: -h.pos.clone().applyMatrix4(this.camera.matrixWorldInverse).z })).sort((a, b) => b.z - a.z)
+    byDepth.forEach(({ h }, k) => { const zi = String(10 + k); if (h.el.style.zIndex !== zi) h.el.style.zIndex = zi })
     for (const h of this.handles) {
       const s = this.toScreen(h.pos)
       const px = PX[h.kind] / 2
@@ -161,14 +164,30 @@ export class TankHandles {
   private onDown(e: PointerEvent, h: Handle) {
     if (e.button !== 0 || this.busy || this.drag) return
     e.stopPropagation(); e.preventDefault()
+    // capture: the release arrives even outside the window
+    try { h.el.setPointerCapture(e.pointerId) } catch { /* the pointer may already be gone */ }
     this.controls.enabled = false
     this.drag = { h, p0: h.pos.clone(), delta: [0, 0, 0], pointerId: e.pointerId }
     h.el.style.background = COLORS.hover
     h.el.style.cursor = 'grabbing'
   }
 
+  /** End a drag without resizing (a cancelled pointer, or a move with no button held — a lost release). */
+  private abort() {
+    const d = this.drag
+    if (!d) return
+    this.drag = null
+    this.ghost = null
+    this.controls.enabled = true
+    d.h.el.style.background = COLORS[d.h.kind]
+    d.h.el.style.cursor = 'grab'
+    this.update()
+  }
+  private onCancel = (e: PointerEvent) => { if (this.drag && e.pointerId === this.drag.pointerId) this.abort() }
+
   private onMove = (e: PointerEvent) => {
     if (!this.drag || e.pointerId !== this.drag.pointerId) return
+    if ((e.buttons & 1) === 0) { this.abort(); return }
     const { h, p0 } = this.drag
     const ray = this.ray(e)
     const sides = this.movable(h)
@@ -232,7 +251,7 @@ export class TankHandles {
   dispose() {
     window.removeEventListener('pointermove', this.onMove)
     window.removeEventListener('pointerup', this.onUp)
-    window.removeEventListener('pointercancel', this.onUp)
+    window.removeEventListener('pointercancel', this.onCancel)
     this.overlay.remove()
   }
 }

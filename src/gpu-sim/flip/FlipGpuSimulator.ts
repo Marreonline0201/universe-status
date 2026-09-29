@@ -907,6 +907,18 @@ export class FlipGpuSimulator {
     }
   }
 
+  /** The drift's per-particle memory — slip s (xyz, m/s) and the breakup-only drop size d (m) — carried through a tank
+   *  resize with each particle (null without the immiscible solver or particles). */
+  async readSlipState(): Promise<Float32Array | null> {
+    if (!this.immiscibleSolver || this.count === 0) return null
+    return new Float32Array(await this.readBuffer(this.immiscibleSolver.bufs.slipState, 16 * this.count))
+  }
+  /** Write slip states for particles [0, data.length / 4) — after setParticles, which clears them. */
+  writeSlipState(data: Float32Array<ArrayBuffer>): void {
+    if (!this.immiscibleSolver || data.length === 0) return
+    this.device.queue.writeBuffer(this.immiscibleSolver.bufs.slipState, 0, data)
+  }
+
   /** Every particle as it would be uploaded again (a tank resize rebuilds the simulator and re-adds them). */
   async readParticleState(): Promise<FlipParticleInit[]> {
     const n = this.count
@@ -971,7 +983,7 @@ export class FlipGpuSimulator {
 
   destroy(): void {
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
-      this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
+      this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, this.weightBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
     this.solver?.destroy()
     this.viscositySolver?.destroy()
     this.stokesSolver?.destroy()

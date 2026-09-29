@@ -237,7 +237,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
                 <div>Surface: ghost fluid (Zhu–Bridson level set)</div>
                 <div>Density: per material (oil floats, mercury sinks)</div>
                 <div>Viscosity: implicit variational solve (Batty & Bridson 2008), harmonic μ between liquids, while a liquid with ν ≥ 1e-5 m²/s is in the tank</div>
-                <div>Tank: {controller.tank ? controller.tank.sizeM.map(v => v.toFixed(2)).join(' × ') : '3.63 × 3.63 × 3.63'} m (W × H × D), cells 5.67 cm, 8 particles/cell</div>
+                <div data-tank-info>Tank: {controller.tank ? controller.tank.sizeM.map(v => v.toFixed(2)).join(' × ') : '3.63 × 3.63 × 3.63'} m (W × H × D), cells 5.67 cm, 8 particles/cell</div>
                 <div>Clock: real time, 1–4 substeps per 1/60 s (CFL 1)</div>
                 <div>Render: SSFR (5-pass)</div>
                 <div>Ball: iron 7874 kg/m³ (NIST), moving solid with fractional face weights, weak coupling</div>
@@ -271,9 +271,19 @@ function TankPanel({ tank, resize, disabled }: { tank: TankInfo; resize: NonNull
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   useEffect(() => { setDraft(tank.cells.map(fmt)) }, [tank.cells[0], tank.cells[1], tank.cells[2]])
-  const cells = draft.map(s => snapCells(Number(s))) as [number, number, number]
-  const same = cells.every((c, a) => c === tank.cells[a])
+  // an empty or unreadable field is invalid (Number('') would read 0 m and shrink that axis to 16 cells)
+  const metres = draft.map(s => (s.trim() === '' ? NaN : Number(s)))
+  const valid = metres.every(m => Number.isFinite(m) && m > 0)
+  const cells = (valid ? metres.map(snapCells) : tank.cells) as [number, number, number]
+  const same = !valid || cells.every((c, a) => c === tank.cells[a])
   const cost = cells[0] * cells[1] * cells[2] / 64 ** 3
+  /** Arrow keys step one grid step (8 cells, 45.4 cm) from the field's own cell count — the page's rounding to 2
+   *  decimals never makes a first press land on the same size. */
+  const stepAxis = (a: number, dir: 1 | -1) => {
+    const now = Number.isFinite(metres[a]) && metres[a] > 0 ? snapCells(metres[a]) : tank.cells[a]
+    const next = Math.min(88, Math.max(16, now + dir * TANK_STEP_CELLS))
+    setDraft(d => d.map((v, k) => (k === a ? fmt(next) : v)))
+  }
   const apply = async (c: [number, number, number]) => {
     setBusy(true); setMsg(null)
     const r = await resize(c)
@@ -288,15 +298,20 @@ function TankPanel({ tank, resize, disabled }: { tank: TankInfo; resize: NonNull
         {axes.map(([name, a]) => (
           <div key={a} style={{ flex: 1 }}>
             <div style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.5)', marginBottom: 2 }}>{name}</div>
-            <input type="number" min={0.91} max={4.99} step={0.45} value={draft[a]} disabled={disabled || busy}
-              aria-label={`tank ${name}`} data-tank-axis={a}
+            <input type="text" inputMode="decimal" value={draft[a]} disabled={disabled || busy}
+              aria-label={`tank ${name} in metres, 0.91 to 4.99, arrow keys step 45 cm`} data-tank-axis={a}
               onChange={e => setDraft(d => d.map((v, k) => (k === a ? e.target.value : v)))}
-              onKeyDown={e => { if (e.key === 'Enter' && !same) void apply(cells) }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !same) void apply(cells)
+                else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); stepAxis(a, e.key === 'ArrowUp' ? 1 : -1) }
+              }}
               style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(0,180,255,0.06)', border: '1px solid rgba(0,180,255,0.25)', borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', padding: '3px 4px' }} />
           </div>
         ))}
       </div>
-      <div style={valueStyle}>{cells.join(' × ')} cells = {cells.map(fmt).join(' × ')} m · work ×{cost.toFixed(2)} of the default</div>
+      <div style={valueStyle}>{valid
+        ? <>{cells.join(' × ')} cells = {cells.map(fmt).join(' × ')} m · work ×{cost.toFixed(2)} of the default</>
+        : <span style={{ color: '#ff8866' }}>enter a width, height and depth in metres (0.91–4.99)</span>}</div>
       <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
         <button data-tank-apply onClick={() => void apply(cells)} disabled={disabled || busy || same}
           style={{ flex: 1, padding: '5px 0', background: same ? 'rgba(0,180,255,0.03)' : 'rgba(0,180,255,0.15)', border: '1px solid rgba(0,180,255,0.3)', borderRadius: 3, color: same ? 'rgba(100,150,200,0.4)' : '#00bbff', fontSize: 'calc(9px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: same ? 'default' : 'pointer' }}
