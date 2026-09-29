@@ -134,8 +134,10 @@ export interface FlipRefOptions {
   stokesFaceMin?: number
   /** Stokes Jacobi-PCG stops at ‖r‖∞ ≤ this, in the rows' units W·1/s (default 1e-9: the reference solves tight). */
   stokesTolerance?: number
-  /** The Zhu–Bridson level set at the tank walls: 'air' (default: only the particles inside the tank) or 'mirror' (their
-   *  images across each wall join the kernel — a flat pool stays flat up to the wall). */
+  /** The Zhu–Bridson level set at the tank walls: 'mirror' (default — the particles' images across each wall join the
+   *  kernel, so a flat pool stays flat up to the wall; the GPU always does this) or 'air' (only the particles inside the
+   *  tank: the surface bends down within R of every wall — kept as the gates' negative control; measured, a lattice
+   *  honey pool at rest moves at 8.3e-4 m/s (split) / 2.3e-2 m/s (Stokes) whatever the tolerance). */
   levelSetWalls?: 'air' | 'mirror'
   /** How the sphere and the liquid exchange momentum (vault fluid/realism-2026-09/S3.7-two-way-ball-spec.md):
    *  'weak' (S3.1c-2, default) — the caller applies integrateSphere after the step (the force one substep late);
@@ -361,7 +363,7 @@ export class FlipRef {
     this.viscosityScheme = opts.viscosityScheme ?? 'split'
     this.stokesFaceMin = opts.stokesFaceMin ?? 1e-2
     this.stokesTolerance = opts.stokesTolerance ?? 1e-9
-    this.levelSetWalls = opts.levelSetWalls ?? 'air'
+    this.levelSetWalls = opts.levelSetWalls ?? 'mirror'
     this.immiscible = opts.immiscible ?? null
     if (this.immiscible && !(opts.projection ?? false)) throw new Error('FlipRef: immiscible needs the projection (the drift is driven by the projection\'s face accelerations)')
     this.sphereCoupling = opts.sphereCoupling ?? 'weak'
@@ -1310,7 +1312,8 @@ export class FlipRef {
   /** Zhu & Bridson 2005 level set (their eqs. 7–10; FINAL-PLAN §5.5 stage 2) at every window cell centre x:
    *  φ(x) = |x − x̄| − r̄, x̄ = Σ k_i x_i / Σ k_i, k_i = max(0, 1 − (|x − x_i|/R)²)³, with particle spacing s = dx/∛ppc,
    *  R = 2s and r̄ = s/2 (r̄ = s/2, not s: for a flat lattice block the surface lies s/2 above the top particle centres).
-   *  Cells with no particle within R get φ = R (air). Labels: LIQUID where φ < 0 or the cell holds a particle, AIR
+   *  The particles' images across the tank walls join the sums (levelSetWalls 'mirror'). Cells with no particle within R
+   *  get φ = R (air). Labels: LIQUID where φ < 0 or the cell holds a particle, AIR
    *  elsewhere, ghost layer SOLID. */
   classifyLevelSet(p: RefParticles): void {
     const L = this.layout, h = L.dx, lab = this.label, phi = this.levelSet
@@ -1332,8 +1335,8 @@ export class FlipRef {
     // A particle-holding cell with φ ≥ 0 stays AIR only where the level set RESOLVES its interface: it borders liquid
     // (a face-neighbour with φ < 0) on one side and empty space (no particle, φ ≥ 0, neither wall nor sphere) on another, so the
     // ghost-fluid θ on the liquid neighbour's face places p = 0 at the sub-cell surface. Every other particle-holding
-    // cell is LIQUID — its liquid is not resolved by φ (the Zhu–Bridson centroid ignores how many particles there are,
-    // and at a wall sees the particle-free side as air), and it must still be incompressible:
+    // cell is LIQUID — its liquid is not resolved by φ (the Zhu–Bridson centroid ignores how many particles there are;
+    // with levelSetWalls 'air' it also saw a wall's particle-free side as air), and it must still be incompressible:
     //  • enclosed by liquid and walls (no empty neighbour): left AIR it is a p = 0 sink inside pressurised liquid, and
     //    the particles draining into it pile up without limit (measured: violent 36-cell column in a 16×40×8 tank,
     //    φ-only labels: 4534 particles in one corner cell at 2.5 s, φ-volume 0.49);

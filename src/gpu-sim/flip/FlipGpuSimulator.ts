@@ -313,6 +313,9 @@ export class FlipGpuSimulator {
     this.variableDensity = opts.variableDensity ?? false
     if (this.variableDensity && !this.projection) throw new Error('FlipGpuSimulator: variableDensity requires projection')
     this.ppc = opts.ppc ?? 8
+    // the level set's wall images (common.wgsl wallImage) take one reflection per axis: no particle may lie within the
+    // kernel radius R = 2·dx/∛ppc of both walls of one axis
+    { const R = 2 * this.layout.dx / Math.cbrt(this.ppc); if (this.layout.extent.some(e => e < 2 * R)) throw new Error(`FlipGpuSimulator: every window axis must be ≥ 2R = ${2 * R} m wide (level-set wall images)`) }
     this.thetaMin = opts.thetaMin ?? THETA_MIN
     this.viscosityEnabled = opts.viscosity ?? false
     this.immiscibleEnabled = opts.immiscible ?? false

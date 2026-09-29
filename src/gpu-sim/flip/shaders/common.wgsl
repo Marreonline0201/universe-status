@@ -118,6 +118,22 @@ fn lsLo(v: vec4<f32>) -> vec4<i32> { return vec4<i32>(round((v - round(v)) * LS_
 
 /// Zhu & Bridson φ (m) from one sample point's sums (hi words, lo words): |x_point − x̄| − r̄, or R where no particle is
 /// in reach (a particle whose k·LS_SCALE < 2^-21 — within 5e-5·R of the kernel edge — rounds to nothing in both words).
+/// Image m ∈ 0…7 of a particle at x for the level-set kernel (flipRef.zhuBridson 'mirror'): bit a of m reflects x across
+/// the wall of axis a that it lies within R of; w = 0 when bit a is set but x is near neither wall (the image does not
+/// exist). The tank walls are not air: without the images the Zhu–Bridson centroid next to a wall shifts away from it
+/// and the surface bends down there. The window is ≥ 2R wide on every axis (FlipGpuSimulator.create), so no particle
+/// lies within R of both walls of one axis.
+fn wallImage(x: vec3<f32>, m: u32) -> vec4<f32> {
+  var y = x;
+  for (var a = 0u; a < 3u; a++) {
+    if (((m >> a) & 1u) == 0u) { continue; }
+    if (x[a] < P.lsR) { y[a] = -x[a]; }
+    else if (x[a] > P.extent[a] - P.lsR) { y[a] = 2.0 * P.extent[a] - x[a]; }
+    else { return vec4<f32>(y, 0.0); }
+  }
+  return vec4<f32>(y, 1.0);
+}
+
 fn phiFromSums(hi: vec4<i32>, lo: vec4<i32>) -> f32 {
   let s = vec4<f32>(hi) + vec4<f32>(lo) / LS_LO_SCALE;
   if (s.x <= 0.0) { return P.lsR; }

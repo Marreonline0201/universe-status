@@ -1,7 +1,8 @@
 // lsScatter.wgsl — Zhu & Bridson level-set sums (FINAL-PLAN §5.5 stage 2; flipRef.classifyLevelSet / zhuBridson):
 // every particle adds k = (1 − |x_p − x_s|²/R²)³ and k·(x_p − x_s)/dx to each sample point x_s within R — the window
 // cell centres (solver padded layout) and the three MAC face-centre grids (the 2× samples that locate θ). Scattering
-// instead of gathering gives the same sums (fixed point, order-independent).
+// instead of gathering gives the same sums (fixed point, order-independent). Each particle also scatters its images
+// across the walls it lies within R of (common.wgsl wallImage — the tank wall is not air).
 
 @group(0) @binding(1) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> cellSums: array<atomic<i32>>;   // 8 per padded cell: w, rx, ry, rz (hi, lo)
@@ -27,7 +28,13 @@ fn addTo(buf: u32, idx: u32, x: vec3<f32>, s: vec3<f32>) {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
-  let x = pos[q].xyz;
+  for (var m = 0u; m < 8u; m++) {
+    let im = wallImage(pos[q].xyz, m);
+    if (im.w > 0.0) { scatterFrom(im.xyz); }
+  }
+}
+
+fn scatterFrom(x: vec3<f32>) {
   let reach = P.lsR / P.dx;
   // cell centres at (c + ½)·dx, window cells only
   let fc = x / P.dx - vec3<f32>(0.5);

@@ -99,7 +99,13 @@ fn latBase(c: vec3<i32>, s: vec3<i32>) -> u32 { return 8u * (8u * linIdx(c) + u3
 fn latScatter(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
-  let x = pos[q].xyz;
+  for (var m = 0u; m < 8u; m++) {   // the particle and its images across the walls (common.wgsl wallImage)
+    let im = wallImage(pos[q].xyz, m);
+    if (im.w > 0.0) { latScatterFrom(im.xyz); }
+  }
+}
+
+fn latScatterFrom(x: vec3<f32>) {
   let R = P.lsR;
   let lo = vec3<i32>(ceil((x - vec3<f32>(R)) / (0.5 * P.dx) - vec3<f32>(0.5)));
   let hi = vec3<i32>(floor((x + vec3<f32>(R)) / (0.5 * P.dx) - vec3<f32>(0.5)));
