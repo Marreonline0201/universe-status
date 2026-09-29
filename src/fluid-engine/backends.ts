@@ -285,10 +285,14 @@ export class FlipBackend implements SimBackend {
     const sphere = old.hasSphere ? await old.readSphere() : null
     const coupling = old.sphereCoupling
     const next = await FlipBackend.makeSim(this.device, cells)
-    const ext = cells.map(c => c * this.dx), eps = 1e-6
+    // Kept: every particle inside the new walls. The solver pins wall-contact particles wallEps (1e-6·dx) inside a wall —
+    // below f32 resolution at the far wall, so a resting particle can read back exactly on it: accept a 1e-4·dx band
+    // (5.7 µm, far under the 2.8 cm particle spacing), then pin again the solver's way.
+    const ext = cells.map(c => c * this.dx), tol = 1e-4 * this.dx, w = next.wallEps
     const kept = state
       .map(p => ({ ...p, pos: [p.pos[0] + shiftM[0], p.pos[1] + shiftM[1], p.pos[2] + shiftM[2]] as Vec3 }))
-      .filter(p => p.pos.every((v, a) => v > eps && v < ext[a] - eps))
+      .filter(p => p.pos.every((v, a) => v >= -tol && v <= ext[a] + tol))
+      .map(p => ({ ...p, pos: p.pos.map((v, a) => Math.min(ext[a] - w, Math.max(w, v))) as Vec3 }))
       .slice(0, next.maxParticles)
     this.sim = next
     old.destroy()

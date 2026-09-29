@@ -18,6 +18,7 @@ import { isLiquidKey, type LiquidKey } from '../composition/materialData'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
 import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, msToUnitVel } from './units'
+import { TankHandles } from './TankHandles'
 import { PresentationClock } from './clock'
 import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
@@ -89,8 +90,11 @@ export class FluidEngine {
   private sideMeshes: THREE.Mesh[] = []
   /** While the simulator is being rebuilt the frames render but do not step. */
   private resizing = false
+  /** The tank diagonal (world units) the camera distance was framed for. */
+  private framedDiag = Math.sqrt(3)
   /** Told after every tank resize (the page's TANK panel). */
   onTankChange: ((t: { cells: Vec3; sizeM: Vec3; resizable: boolean }) => void) | null = null
+  private tankHandles: TankHandles | null = null
   private raycaster = new THREE.Raycaster()
   private gravityMs2 = G_STANDARD   // downward gravity magnitude, m/s²
   private currentBgBrightness = readBgBrightness()
@@ -271,6 +275,8 @@ export class FluidEngine {
     this.scene = scene
     this.camera = camera
     this.controls = controls
+    // drag handles on the tank's faces, edges and corners (a resizable solver only)
+    if (sim.resize) this.tankHandles = new TankHandles(camera, this.container, controls, (cells, shiftM) => this.resizeTank(cells, shiftM))
     this.device = device
     this.sim = sim
     this.fluidScene = fluidScene
@@ -587,6 +593,7 @@ export class FluidEngine {
     }
 
     this.controls?.update()
+    this.tankHandles?.update()
 
     // SSFR render, or the Points fallback.
     let ssfrOk = false
@@ -787,10 +794,15 @@ export class FluidEngine {
     this.wallMesh?.scale.set(ex, ey, 1); this.wallMesh?.position.set(ex / 2, ey / 2, 0.001)
     this.sideMeshes.forEach((m, k) => { m.scale.set(ez, ey, 1); m.position.set(k === 0 ? 0.001 : ex - 0.001, ey / 2, ez / 2) })
     this.ssfrPipeline?.setTankExtent([ex, ey, ez])
+    this.tankHandles?.setCells(this.tank.cells)
     if (this.controls && this.camera) {
-      const t = new THREE.Vector3(ex / 2, ey / 2, ez / 2), d = t.clone().sub(this.controls.target)
-      this.controls.target.copy(t)
-      this.camera.position.add(d)
+      // same view direction, distance and zoom limits scaled with the tank's diagonal: the tank keeps its framing
+      const diag = Math.hypot(ex, ey, ez), k = diag / this.framedDiag
+      const off = this.camera.position.clone().sub(this.controls.target).multiplyScalar(k)
+      this.controls.target.set(ex / 2, ey / 2, ez / 2)
+      this.controls.minDistance *= k; this.controls.maxDistance *= k
+      this.camera.position.copy(this.controls.target).add(off)
+      this.framedDiag = diag
       this.controls.update()
     }
   }
@@ -896,6 +908,7 @@ export class FluidEngine {
       fps: () => this.lastFps,
       count: () => this.particleCount,
       resizeTank: (cells, shiftM) => this.resizeTank(cells, shiftM),
+      tankHandle: (kind, sides) => this.tankHandles?.screenOf(kind, sides) ?? null,
       configure: (opts) => {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
@@ -947,6 +960,7 @@ export class FluidEngine {
   destroy() {
     this.destroyed = true
     cancelAnimationFrame(this.animId)
+    this.tankHandles?.dispose()
     this.resizeObserver?.disconnect()
     this.sim?.destroy()
     this.fluidScene?.dispose()

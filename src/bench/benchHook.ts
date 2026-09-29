@@ -74,6 +74,8 @@ export interface BenchTarget {
   viscosity?(): Promise<unknown>
   /** Tank resize (TANK-RESIZE spec): grid cells per axis, shift in metres. */
   resizeTank?(cells: [number, number, number], shiftM?: [number, number, number]): Promise<unknown>
+  /** Screen position (client px) of a tank drag handle: kind and its sides [[axis, ±1], …] (tests drive the real pointer). */
+  tankHandle?(kind: 'face' | 'edge' | 'corner', sides: [number, number][]): { x: number; y: number } | null
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -105,6 +107,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     configure(opts: Parameters<NonNullable<BenchTarget['configure']>>[0]) {
       if (!target.configure) throw new Error(`${meta.page} cannot be configured`)
       target.configure(opts)
+    },
+
+    tankHandle(kind: 'face' | 'edge' | 'corner', sides: [number, number][]) {
+      if (!target.tankHandle) throw new Error(`${meta.page} has no tank handles`)
+      return target.tankHandle(kind, sides)
     },
 
     resizeTank(cells: [number, number, number], shiftM?: [number, number, number]) {

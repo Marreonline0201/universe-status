@@ -266,7 +266,8 @@ export class FlipGpuSimulator {
   private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
-  private readonly wallEps: number
+  /** Wall-contact particles are pinned this far inside a wall (positionCorrect / g2pMac clamp). */
+  readonly wallEps: number
   private count = 0
 
   // particles
