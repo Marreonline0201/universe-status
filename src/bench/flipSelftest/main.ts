@@ -11,6 +11,7 @@ import { FlipGpuSimulator, MASS_SCALE, MOM_SCALE, LO_SCALE } from '../../gpu-sim
 import { projKernels, g1a, settle, damBreak } from './projection'
 import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak } from './density'
 import { equivalence, tankCaps } from './mg'
+import { ghostKernels, flatSurface, hydrostatic, standingWave, column } from './ghost'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -305,6 +306,11 @@ try {
     else if (test === 'restVolume') out = await restVolume(device)
     else if (test === 'martinMoyce') out = await martinMoyce(device, params as { aCells: number; aPhys?: number })
     else if (test === 'doubleDamBreak') out = await doubleDamBreak(device, params as { density: boolean; seconds?: number })
+    else if (test === 'ghostKernels') out = await ghostKernels(device, params)
+    else if (test === 'flatSurface') out = await flatSurface(device, params as { ppc: number })
+    else if (test === 'hydrostatic') out = await hydrostatic(device)
+    else if (test === 'standingWave') out = await standingWave(device, params as { cellsPerH: number })
+    else if (test === 'column') out = await column(device, params as { aCells: number; n2: number; h: number; nx: number; tauEnd: number; wall?: boolean })
     else throw new Error(`unknown test ${test}`)
     return { ...(out as object), gpuErrors: errors.slice(errBefore) }
   }

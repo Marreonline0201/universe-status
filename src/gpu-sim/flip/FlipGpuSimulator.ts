@@ -4,6 +4,9 @@
 //   S3.1a transfers: faceScatter → gridUpdate → extrapolate ×2 → g2pMac + RK2          (gate s31a-gpu.mjs)
 //   S3.1b projection (`projection: true`, create()): labelClear → labelParticles (voxel free surface) → divergence
 //         → PoissonSolver (JPCG until S3.3) → project, between gridUpdate and extrapolate  (gate s31b-gpu.mjs)
+//   S3.4 ghost-fluid free surface (`freeSurface: 'ghost'`): lsScatter → lsFinalize (Zhu & Bridson φ, LIQUID where φ < 0)
+//         → ghostCoef (a/θ at liquid–air faces) replace the voxel labels of the pressure solve; project uses the ghost
+//         pressure. The density correction keeps the voxel labels (FINAL-PLAN §5.2 step 3)        (gate s34-gpu.mjs)
 //   S3.2 density projection (`densityProjection: true`), before faceScatter: labels → cellScatter → densityRhs →
 //         ψ solve (second PoissonSolver, unit coefficients, cold) → faceDisplacement → positionCorrect  (gate s32-gpu.mjs)
 //
@@ -30,6 +33,9 @@ import cellScatterWGSL from './shaders/cellScatter.wgsl?raw'
 import densityRhsWGSL from './shaders/densityRhs.wgsl?raw'
 import faceDisplacementWGSL from './shaders/faceDisplacement.wgsl?raw'
 import positionCorrectWGSL from './shaders/positionCorrect.wgsl?raw'
+import lsScatterWGSL from './shaders/lsScatter.wgsl?raw'
+import lsFinalizeWGSL from './shaders/lsFinalize.wgsl?raw'
+import ghostCoefWGSL from './shaders/ghostCoef.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
@@ -37,7 +43,7 @@ export const MASS_SCALE = 2 ** 24
 export const MOM_SCALE = 2 ** 19
 /** Legacy presentation layout: 20 words per particle. */
 export const PRESENT_STRIDE_BYTES = 80
-const PARAMS_BYTES = 96
+const PARAMS_BYTES = 112
 
 export interface FlipSimOptions {
   nx: number
@@ -81,6 +87,12 @@ export interface FlipSimOptions {
   psiTolerance?: number
   /** Encoded iteration cap of the ψ solve. Default: MGPCG 10 (S3.3 measured ≤ 8), JPCG 200. */
   psiCap?: number
+  /** Free surface of the pressure solve: 'voxel' (S3.1b) or 'ghost' (S3.4 Zhu & Bridson level set + ghost fluid). */
+  freeSurface?: 'voxel' | 'ghost'
+  /** Particles per cell of the rest packing (level-set spacing s = dx/∛ppc; R = 2s, r̄ = s/2). Default 8. */
+  ppc?: number
+  /** Lower clamp of θ (FINAL-PLAN §5.3: 1e-3). */
+  thetaMin?: number
 }
 
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
@@ -109,7 +121,7 @@ export interface FlipDiagnostics {
 }
 
 type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
-  | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect'
+  | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'ghostCoef'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -140,6 +152,15 @@ export class FlipGpuSimulator {
   fCompBuf: GPUBuffer | null = null
   dispBuf: GPUBuffer | null = null
   private densBg: { cellScatter: GPUBindGroup; densityRhs: GPUBindGroup; faceDisplacement: GPUBindGroup; positionCorrect: GPUBindGroup } | null = null
+  readonly freeSurface: 'voxel' | 'ghost'
+  readonly ppc: number
+  readonly thetaMin: number
+  /** Level-set buffers (projection only): sums at cell centres (4 i32 per padded cell) and face centres (4 i32 per face
+   *  slot, three grids), φ at cell centres (f32, padded layout, m). */
+  lsCellBuf: GPUBuffer | null = null
+  lsFaceBuf: GPUBuffer | null = null
+  phiCellBuf: GPUBuffer | null = null
+  private lsBg: { lsScatter: GPUBindGroup; lsFinalize: GPUBindGroup; ghostCoef: GPUBindGroup } | null = null
   private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
@@ -191,6 +212,9 @@ export class FlipGpuSimulator {
     if (this.densityProjection && !this.projection) throw new Error('FlipGpuSimulator: densityProjection requires projection')
     this.psiTolerance = opts.psiTolerance ?? 1e-3
     this.psiCap = opts.psiCap ?? (this.solverMethod === 'mgpcg' ? 10 : 200)
+    this.freeSurface = opts.freeSurface ?? 'voxel'
+    this.ppc = opts.ppc ?? 8
+    this.thetaMin = opts.thetaMin ?? 1e-3
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -276,11 +300,23 @@ export class FlipGpuSimulator {
       entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
     })
     const sb = solver.buffers, [uA] = this.uBuf, [vA] = this.validBuf
+    const Sg = GPUBufferUsage.STORAGE, Dg = GPUBufferUsage.COPY_DST, Rg = GPUBufferUsage.COPY_SRC
+    this.lsCellBuf = device.createBuffer({ label: 'flip.lsCell', size: 16 * solver.paddedCount, usage: Sg | Dg | Rg })
+    this.lsFaceBuf = device.createBuffer({ label: 'flip.lsFace', size: 16 * 3 * L.size, usage: Sg | Dg | Rg })
+    this.phiCellBuf = device.createBuffer({ label: 'flip.phiCell', size: 4 * solver.paddedCount, usage: Sg | Dg | Rg })
+    this.pipelines.lsScatter = pipe('lsScatter', lsScatterWGSL)
+    this.pipelines.lsFinalize = pipe('lsFinalize', lsFinalizeWGSL)
+    this.pipelines.ghostCoef = pipe('ghostCoef', ghostCoefWGSL)
     this.projBg = {
       labelClear: group('labelClear', [sb.labels]),
       labelParticles: group('labelParticles', [this.posBuf, sb.labels]),
       divergence: group('divergence', [this.faceTypeBuf, uA, vA, sb.labels, sb.rhs, this.diagBuf]),
-      project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA]),
+      project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf]),
+    }
+    this.lsBg = {
+      lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf]),
+      lsFinalize: group('lsFinalize', [this.lsCellBuf, this.phiCellBuf, sb.labels]),
+      ghostCoef: group('ghostCoef', [sb.labels, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef]),
     }
     if (!this.densityProjection) return
     const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
@@ -342,6 +378,8 @@ export class FlipGpuSimulator {
     f.set(L.extent, 12); f[15] = this.dt
     f[16] = 1 / this.massUnit; f[17] = MASS_SCALE; f[18] = MOM_SCALE; f[19] = this.wallEps
     f[20] = this.lRef; f[21] = this.tauS; u[22] = L.size; f[23] = this.density
+    const sp = L.dx / Math.cbrt(this.ppc)
+    f[24] = 2 * sp; f[25] = sp / 2; f[26] = this.thetaMin; u[27] = this.freeSurface === 'ghost' ? 1 : 0
     this.device.queue.writeBuffer(this.paramsBuf, 0, b)
     // a_f = Δt/(ρ·dx²) on every face (uniform until S3.5); rewritten only when Δt changes
     const coef = this.dt / (this.density * L.dx * L.dx)
@@ -388,7 +426,7 @@ export class FlipGpuSimulator {
 
   /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
   encodeProjection(encoder: GPUCommandEncoder): void {
-    this.encodeLabels(encoder)
+    this.encodePressureLabels(encoder)
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
     this.encodeProject(encoder)
@@ -403,6 +441,18 @@ export class FlipGpuSimulator {
     this.dispatch(encoder, 'labelClear', bg.labelClear, cells, 256)
     if (this.count > 0) this.dispatch(encoder, 'labelParticles', bg.labelParticles, this.count, 64)
   }
+  /** Labels of the pressure solve: voxel (S3.1b), or the ghost-fluid level set with its operator coefficients (S3.4). */
+  encodePressureLabels(encoder: GPUCommandEncoder): void {
+    if (this.freeSurface !== 'ghost') { this.encodeLabels(encoder); return }
+    const { cells } = this.proj()
+    if (!this.lsBg || !this.lsCellBuf || !this.lsFaceBuf) throw new Error('FlipGpuSimulator: level set not initialised')
+    encoder.clearBuffer(this.lsCellBuf)
+    encoder.clearBuffer(this.lsFaceBuf)
+    if (this.count > 0) this.dispatch(encoder, 'lsScatter', this.lsBg.lsScatter, this.count, 64)
+    this.dispatch(encoder, 'lsFinalize', this.lsBg.lsFinalize, cells, 256)
+    this.dispatch(encoder, 'ghostCoef', this.lsBg.ghostCoef, cells, 256)
+  }
+
   encodeDivergence(encoder: GPUCommandEncoder): void {
     const { bg, cells } = this.proj()
     this.dispatch(encoder, 'divergence', bg.divergence, cells, 256)
@@ -542,6 +592,6 @@ export class FlipGpuSimulator {
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
     this.solver?.destroy()
     this.psiSolver?.destroy()
-    for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf]) b?.destroy()
+    for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf, this.lsCellBuf, this.lsFaceBuf, this.phiCellBuf]) b?.destroy()
   }
 }

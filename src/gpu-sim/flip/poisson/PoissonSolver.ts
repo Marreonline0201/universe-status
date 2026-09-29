@@ -235,7 +235,7 @@ export class PoissonSolver {
       partials: mk('partials', this.levels[0].nwg * 16, S | CS),
       coef: mk('coef', total * 16, S | CS),
       labels: mk('labels', total * 4, S | CS | CD),
-      faceCoef: mk('faceCoef', p0 * 16, S | CD),
+      faceCoef: mk('faceCoef', p0 * 16, S | CS | CD),   // COPY_SRC: kernel-parity tests read the ghost-fluid coefficients
       x: mk('x', p0 * 4, S | CS | CD),
       d: mk('d', p0 * 4, S | CS | CD),
       q: mk('q', p0 * 4, S | CS),

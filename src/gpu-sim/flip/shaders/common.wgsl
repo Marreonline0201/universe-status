@@ -20,6 +20,10 @@ struct FlipParams {
   tauS: f32,               // s, presentation time unit
   size: u32,               // padded slots per grid = (nx+2)(ny+2)(nz+2)
   rho: f32,                // liquid density for the projection, kg/m³ (uniform until S3.5)
+  lsR: f32,                // Zhu & Bridson kernel radius R = 2s, m (s = dx/∛ppc)
+  lsRbar: f32,             // Zhu & Bridson particle radius r̄ = s/2, m
+  thetaMin: f32,           // lower clamp of the liquid fraction θ of a liquid–air face
+  ghost: u32,              // 1 = ghost-fluid free surface (S3.4), 0 = voxel (S3.1b)
 }
 
 @group(0) @binding(0) var<uniform> P: FlipParams;
@@ -90,6 +94,24 @@ fn linIdx(c: vec3<i32>) -> u32 {
 }
 
 fn encodeFixed(x: f32) -> i32 { return i32(round(x)); }
+
+// Level-set sums (S3.4): per sample point Σw and Σw·(x_i − x_point)/dx, fixed point at LS_SCALE (range ±512).
+const LS_SCALE: f32 = 4194304.0;   // 2^22
+
+/// Zhu & Bridson φ (m) from the four sums of one sample point: |x_point − x̄| − r̄, or R where no particle is in reach.
+fn phiFromSums(w: i32, rx: i32, ry: i32, rz: i32) -> f32 {
+  if (w <= 0) { return P.lsR; }
+  let r = vec3<f32>(f32(rx), f32(ry), f32(rz)) / f32(w) * P.dx;
+  return length(r) - P.lsRbar;
+}
+
+/// Liquid fraction θ of the face between a LIQUID centre (φl) and an AIR centre (φa) with the face-centre sample φm
+/// (flipRef.theta: the zero crossing on the two half-segments, clamped to [thetaMin, 1]).
+fn thetaOf(fl: f32, fm: f32, fa: f32) -> f32 {
+  var t: f32;
+  if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }
+  return clamp(t, P.thetaMin, 1.0);
+}
 
 // Two-word fixed point (PRECISE_P2G): a sum is Σhi + Σlo/LO_SCALE quanta. hi = round(x) keeps the full range of one
 // i32; lo = round((x − hi)·LO_SCALE) carries the remainder (|lo| ≤ LO_SCALE/2 per add), so a face with 64 adds is

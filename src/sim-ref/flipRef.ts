@@ -69,6 +69,13 @@ export interface FlipRefOptions {
   pressureMaxIterations?: number
   /** Kugelstadt et al. 2019 density projection before P2G (S3.2). Default false. */
   densityProjection?: boolean
+  /** Free surface of the pressure solve: 'voxel' (S3.1b: a cell holding a particle is LIQUID, p = 0 in AIR cells) or
+   *  'ghost' (S3.4: Zhu & Bridson level set, LIQUID where φ < 0, Gibou/Bridson ghost-fluid pressure at the interface). */
+  freeSurface?: 'voxel' | 'ghost'
+  /** Particles per cell of the rest packing (sets the level-set particle spacing s = dx/∛ppc). Default 8. */
+  ppc?: number
+  /** Lower clamp of the liquid fraction θ of a liquid–air face (FINAL-PLAN §5.3: 1e-3). */
+  thetaMin?: number
   /** ψ solve tolerance, ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3; the reference default solves tight). */
   psiTolerance?: number
 }
@@ -138,6 +145,11 @@ export class FlipRef {
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
   readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0 }
   readonly densityProjection: boolean
+  readonly freeSurface: 'voxel' | 'ghost'
+  readonly ppc: number
+  readonly thetaMin: number
+  /** Zhu & Bridson level set φ at cell centres (m; negative inside the liquid), layout slots. */
+  readonly levelSet: Float64Array
   readonly psiTolerance: number
   /** Density projection state (layout slots): raw volume fraction, compensated f̃, ψ̂ and the face displacements (m). */
   readonly volumeFraction: Float64Array
@@ -177,6 +189,10 @@ export class FlipRef {
     this.pressure = new Float64Array(layout.size)
     this.rhs = new Float64Array(layout.size)
     this.densityProjection = opts.densityProjection ?? false
+    this.freeSurface = opts.freeSurface ?? 'voxel'
+    this.ppc = opts.ppc ?? 8
+    this.thetaMin = opts.thetaMin ?? 1e-3
+    this.levelSet = new Float64Array(layout.size)
     this.psiTolerance = opts.psiTolerance ?? 1e-9
     this.volumeFraction = new Float64Array(layout.size)
     this.fCompensated = new Float64Array(layout.size)
@@ -192,7 +208,8 @@ export class FlipRef {
     this.gridUpdate(dt)
     if (this.projection) {
       this.applySolidFaces()
-      this.classify(p)
+      if (this.freeSurface === 'ghost') { this.classifyLevelSet(p); this.thetaCache.clear() }
+      else this.classify(p)
       this.solvePressure(dt)
       this.projectVelocities(dt)
     }
@@ -218,7 +235,7 @@ export class FlipRef {
    *  p_nbr = 0 in AIR. Jacobi-preconditioned CG to ‖r‖∞ ≤ pressureTolerance. */
   solvePressure(dt: number): SolveStats {
     const L = this.layout
-    const sys = this.liquidSystem(dt / (this.density * L.dx * L.dx))
+    const sys = this.liquidSystem(dt / (this.density * L.dx * L.dx), this.freeSurface === 'ghost')
     const b = new Float64Array(sys.n)
     for (let r = 0; r < sys.n; r++) {
       const [i, j, k] = sys.coords[r]
@@ -239,8 +256,88 @@ export class FlipRef {
     return stats
   }
 
-  /** Rows of the 7-point operator on the LIQUID cells with face coefficient `a` (SOLID faces dropped, AIR = Dirichlet 0). */
-  private liquidSystem(a: number): LiquidSystem {
+  /** Zhu & Bridson 2005 level set (their eqs. 7–10; FINAL-PLAN §5.5 stage 2) at every window cell centre x:
+   *  φ(x) = |x − x̄| − r̄, x̄ = Σ k_i x_i / Σ k_i, k_i = max(0, 1 − (|x − x_i|/R)²)³, with particle spacing s = dx/∛ppc,
+   *  R = 2s and r̄ = s/2 (r̄ = s/2, not s: for a flat lattice block the surface lies s/2 above the top particle centres).
+   *  Cells with no particle within R get φ = R (air). Labels: LIQUID where φ < 0, AIR elsewhere, ghost layer SOLID. */
+  classifyLevelSet(p: RefParticles): void {
+    const L = this.layout, h = L.dx, lab = this.label, phi = this.levelSet
+    const s = h / Math.cbrt(this.ppc)
+    this.zbR = 2 * s; this.zbRbar = s / 2
+    // bin particles by cell (linked lists over layout slots)
+    this.zbHead = new Int32Array(L.size).fill(-1); this.zbNext = new Int32Array(p.n); this.zbParticles = p
+    for (let q = 0; q < p.n; q++) {
+      const c = L.idx(cellIndex(p.pos[3 * q], h, L.nx), cellIndex(p.pos[3 * q + 1], h, L.ny), cellIndex(p.pos[3 * q + 2], h, L.nz))
+      this.zbNext[q] = this.zbHead[c]; this.zbHead[c] = q
+    }
+    lab.fill(CellLabel.SOLID)
+    phi.fill(this.zbR)
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const c = L.idx(i, j, k)
+      phi[c] = this.zhuBridson((i + 0.5) * h, (j + 0.5) * h, (k + 0.5) * h)
+      lab[c] = phi[c] < 0 ? CellLabel.LIQUID : CellLabel.AIR
+    }
+  }
+
+  // particle bins of the last classifyLevelSet (the θ evaluation re-uses them)
+  private zbHead = new Int32Array(0)
+  private zbNext = new Int32Array(0)
+  private zbParticles: RefParticles | null = null
+  private zbR = 0
+  private zbRbar = 0
+
+  /** φ(x) of Zhu & Bridson at an arbitrary point (the particles binned by the last classifyLevelSet). */
+  zhuBridson(x: number, y: number, z: number): number {
+    const L = this.layout, h = L.dx, p = this.zbParticles, R = this.zbR
+    if (!p) return R
+    const i0 = Math.floor(x / h), j0 = Math.floor(y / h), k0 = Math.floor(z / h), reach = Math.ceil(R / h)
+    let wsum = 0, mx = 0, my = 0, mz = 0
+    for (let dk = -reach; dk <= reach; dk++) for (let dj = -reach; dj <= reach; dj++) for (let di = -reach; di <= reach; di++) {
+      const ni = i0 + di, nj = j0 + dj, nk = k0 + dk
+      if (ni < 0 || nj < 0 || nk < 0 || ni >= L.nx || nj >= L.ny || nk >= L.nz) continue
+      for (let q = this.zbHead[L.idx(ni, nj, nk)]; q >= 0; q = this.zbNext[q]) {
+        const rx = p.pos[3 * q] - x, ry = p.pos[3 * q + 1] - y, rz = p.pos[3 * q + 2] - z
+        const d2 = (rx * rx + ry * ry + rz * rz) / (R * R)
+        if (d2 >= 1) continue
+        const w = (1 - d2) ** 3
+        wsum += w; mx += w * p.pos[3 * q]; my += w * p.pos[3 * q + 1]; mz += w * p.pos[3 * q + 2]
+      }
+    }
+    return wsum > 0 ? Math.hypot(x - mx / wsum, y - my / wsum, z - mz / wsum) - this.zbRbar : R
+  }
+
+  /** Liquid fraction θ of the face between LIQUID cell slot sl and AIR cell slot sa: where the Zhu & Bridson φ
+   *  crosses zero on the segment between the two centres, located with the face-centre sample as well (the 2× grid of
+   *  FINAL-PLAN S3.4a remedy 1 — inside the liquid ZB φ saturates near −r̄ instead of growing like a distance, so
+   *  linear interpolation between the two centres alone sits 0.18 dx low on a flat surface; with the midpoint sample
+   *  −0.016 dx, measured). Clamped to [thetaMin, 1]; 1 in voxel mode (p = 0 at the AIR cell centre). */
+  theta(sl: number, sa: number): number {
+    if (this.freeSurface !== 'ghost') return 1
+    const key = sl * 0x100000 + sa
+    const hit = this.thetaCache.get(key)
+    if (hit !== undefined) return hit
+    const L = this.layout, h = L.dx
+    const a = this.coordsOf(sl), b = this.coordsOf(sa)
+    const fm = this.zhuBridson((a[0] + b[0] + 1) * h / 2, (a[1] + b[1] + 1) * h / 2, (a[2] + b[2] + 1) * h / 2)
+    const fl = this.levelSet[sl], fa = this.levelSet[sa]
+    let t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
+    t = t < this.thetaMin ? this.thetaMin : t > 1 ? 1 : t
+    this.thetaCache.set(key, t)
+    return t
+  }
+  private thetaCache = new Map<number, number>()
+
+  /** Logical cell coordinates of a window cell slot (inverse of layout.idx for interior cells). */
+  private coordsOf(slot: number): [number, number, number] {
+    const L = this.layout, px = L.px, py = L.py
+    const pi = slot % px, pj = Math.floor(slot / px) % py, pk = Math.floor(slot / (px * py))
+    const inv = (ph: number, n: number, ring: number) => ((ph - 1 - ring) % n + n) % n
+    return [inv(pi, L.nx, L.ring[0]), inv(pj, L.ny, L.ring[1]), inv(pk, L.nz, L.ring[2])]
+  }
+
+  /** Rows of the 7-point operator on the LIQUID cells with face coefficient `a` (SOLID faces dropped, AIR = Dirichlet 0;
+   *  with `ghost`, a liquid–air face contributes a/θ — Bridson eq. 4.37, one form only, FINAL-PLAN §5.3). */
+  private liquidSystem(a: number, ghost = false): LiquidSystem {
     const L = this.layout, lab = this.label
     const cells: number[] = [], coords: [number, number, number][] = []
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
@@ -259,10 +356,10 @@ export class FlipRef {
         for (const side of [0, 1] as const) {
           const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
           if (this.faceType[ax][fs] === FaceType.SOLID) continue
-          d += a
           const ns = L.idx(i + (ax === 0 ? 2 * side - 1 : 0), j + (ax === 1 ? 2 * side - 1 : 0), k + (ax === 2 ? 2 * side - 1 : 0))
-          if (lab[ns] === CellLabel.LIQUID) nbr[6 * r + 2 * ax + side] = row.get(ns)!
-          else if (lab[ns] === CellLabel.AIR) { closed = false; airNeighbour[r] = 1 }
+          if (lab[ns] === CellLabel.LIQUID) { nbr[6 * r + 2 * ax + side] = row.get(ns)!; d += a }
+          else if (lab[ns] === CellLabel.AIR) { closed = false; airNeighbour[r] = 1; d += ghost ? a / this.theta(cells[r], ns) : a }
+          else d += a
         }
       }
       diag[r] = d
@@ -381,7 +478,9 @@ export class FlipRef {
         const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
         const lm = lab[sm], lp = lab[s]
         if (lm === CellLabel.LIQUID || lp === CellLabel.LIQUID) {
-          const pp = lp === CellLabel.LIQUID ? pr[s] : 0, pm = lm === CellLabel.LIQUID ? pr[sm] : 0
+          // AIR side: 0 (voxel) or the ghost pressure −((1 − θ)/θ)·p_liquid that puts p = 0 on the interface (ghost)
+          const pp = lp === CellLabel.LIQUID ? pr[s] : lp === CellLabel.AIR ? -((1 - this.theta(sm, s)) / this.theta(sm, s)) * pr[sm] : 0
+          const pm = lm === CellLabel.LIQUID ? pr[sm] : lm === CellLabel.AIR ? -((1 - this.theta(s, sm)) / this.theta(s, sm)) * pr[s] : 0
           u[s] -= g * (pp - pm)
           ok[s] = 1
         } else {
