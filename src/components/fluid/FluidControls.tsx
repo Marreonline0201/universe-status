@@ -4,7 +4,7 @@
 // so the two stay identical instead of drifting. Presentational only — every
 // action is delegated to `controller` (a plain object each page builds over its
 // own sim owner: FluidTest's simRef, or the lab's LabFluidEngine).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { NamedComposition } from '../../composition/CompositionTable'
 import type { MenuEntry } from '../../composition/liquidGate'
 import type { FluidNotice } from '../../fluid-engine/FluidEngine'
@@ -39,7 +39,16 @@ export interface FluidController {
   notice?: FluidNotice | null
   /** The running solver (the info panel states its model and validity limits). */
   solver?: 'mpm' | 'flip'
+  /** The tank (TANK-RESIZE): grid cells per axis and size in metres; absent or not resizable: no TANK section. */
+  tank?: TankInfo | null
+  resizeTank?: (cells: [number, number, number]) => Promise<{ ok: boolean; reason?: string }>
 }
+
+export interface TankInfo { cells: [number, number, number]; sizeM: [number, number, number]; resizable: boolean }
+/** One grid cell (dx fixed at 3.63 m / 64) and the tank's step: 8 cells (the multigrid halves every axis). */
+const TANK_DX = 3.63 / 64
+const TANK_STEP_CELLS = 8
+const snapCells = (m: number) => Math.min(88, Math.max(16, Math.round(m / TANK_DX / TANK_STEP_CELLS) * TANK_STEP_CELLS))
 
 /** A number for the info panel, or an honest dash when no sourced value exists at this state. */
 const num = (v: number, digits: number, unit: string) => (Number.isFinite(v) ? `${v.toFixed(digits)} ${unit}` : '— (no sourced value)')
@@ -152,6 +161,9 @@ export function FluidControls({ controller }: { controller: FluidController }) {
         }}
       >{ballActive ? 'REMOVE BALL' : 'DROP BALL'}</button>
 
+      {/* Tank size */}
+      {controller.tank?.resizable && controller.resizeTank && <TankPanel tank={controller.tank} resize={controller.resizeTank} disabled={!gpuReady} />}
+
       {/* Temperature slider */}
       <div>
         <label style={labelStyle}>TEMPERATURE</label>
@@ -225,7 +237,7 @@ export function FluidControls({ controller }: { controller: FluidController }) {
                 <div>Surface: ghost fluid (Zhu–Bridson level set)</div>
                 <div>Density: per material (oil floats, mercury sinks)</div>
                 <div>Viscosity: implicit variational solve (Batty & Bridson 2008), harmonic μ between liquids, while a liquid with ν ≥ 1e-5 m²/s is in the tank</div>
-                <div>Tank: 3.63 m wall to wall, cells 5.67 cm, 8 particles/cell</div>
+                <div>Tank: {controller.tank ? controller.tank.sizeM.map(v => v.toFixed(2)).join(' × ') : '3.63 × 3.63 × 3.63'} m (W × H × D), cells 5.67 cm, 8 particles/cell</div>
                 <div>Clock: real time, 1–4 substeps per 1/60 s (CFL 1)</div>
                 <div>Render: SSFR (5-pass)</div>
                 <div>Ball: iron 7874 kg/m³ (NIST), moving solid with fractional face weights, weak coupling</div>
@@ -248,6 +260,54 @@ const sliderStyle: React.CSSProperties = {
 }
 const valueStyle: React.CSSProperties = {
   fontSize: 'calc(10px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.6)', marginTop: 4, textAlign: 'right',
+}
+
+/** Width / height / depth in metres (snapped to 8-cell steps of 45.4 cm, 0.91–4.99 m), the cells and the cost it means,
+ *  APPLY rebuilds the simulator (the liquid inside the new walls stays). Dragging the tank's faces, edges and corners in
+ *  the view does the same. */
+function TankPanel({ tank, resize, disabled }: { tank: TankInfo; resize: NonNullable<FluidController['resizeTank']>; disabled: boolean }) {
+  const fmt = (c: number) => (c * TANK_DX).toFixed(2)
+  const [draft, setDraft] = useState<string[]>(tank.cells.map(fmt))
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  useEffect(() => { setDraft(tank.cells.map(fmt)) }, [tank.cells[0], tank.cells[1], tank.cells[2]])
+  const cells = draft.map(s => snapCells(Number(s))) as [number, number, number]
+  const same = cells.every((c, a) => c === tank.cells[a])
+  const cost = cells[0] * cells[1] * cells[2] / 64 ** 3
+  const apply = async (c: [number, number, number]) => {
+    setBusy(true); setMsg(null)
+    const r = await resize(c)
+    setBusy(false)
+    setMsg(r.ok ? null : r.reason ?? 'refused')
+  }
+  const axes: [string, number][] = [['WIDTH (x)', 0], ['HEIGHT (y)', 1], ['DEPTH (z)', 2]]
+  return (
+    <div>
+      <label style={labelStyle}>TANK (m) — or drag its faces, edges, corners</label>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {axes.map(([name, a]) => (
+          <div key={a} style={{ flex: 1 }}>
+            <div style={{ fontSize: 'calc(8px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.5)', marginBottom: 2 }}>{name}</div>
+            <input type="number" min={0.91} max={4.99} step={0.45} value={draft[a]} disabled={disabled || busy}
+              aria-label={`tank ${name}`} data-tank-axis={a}
+              onChange={e => setDraft(d => d.map((v, k) => (k === a ? e.target.value : v)))}
+              onKeyDown={e => { if (e.key === 'Enter' && !same) void apply(cells) }}
+              style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(0,180,255,0.06)', border: '1px solid rgba(0,180,255,0.25)', borderRadius: 3, color: '#c0d0e0', fontFamily: 'inherit', fontSize: 'calc(10px * var(--font-scale, 1))', padding: '3px 4px' }} />
+          </div>
+        ))}
+      </div>
+      <div style={valueStyle}>{cells.join(' × ')} cells = {cells.map(fmt).join(' × ')} m · work ×{cost.toFixed(2)} of the default</div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+        <button data-tank-apply onClick={() => void apply(cells)} disabled={disabled || busy || same}
+          style={{ flex: 1, padding: '5px 0', background: same ? 'rgba(0,180,255,0.03)' : 'rgba(0,180,255,0.15)', border: '1px solid rgba(0,180,255,0.3)', borderRadius: 3, color: same ? 'rgba(100,150,200,0.4)' : '#00bbff', fontSize: 'calc(9px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 2, cursor: same ? 'default' : 'pointer' }}
+        >{busy ? 'REBUILDING…' : 'APPLY'}</button>
+        <button onClick={() => void apply([64, 64, 64])} disabled={disabled || busy || tank.cells.every(c => c === 64)}
+          style={{ padding: '5px 8px', background: 'rgba(180,180,180,0.06)', border: '1px solid rgba(180,180,180,0.25)', borderRadius: 3, color: '#999', fontSize: 'calc(9px * var(--font-scale, 1))', fontFamily: 'inherit', letterSpacing: 1, cursor: 'pointer' }}
+        >DEFAULT</button>
+      </div>
+      {msg && <div style={{ ...valueStyle, color: '#ff8866', textAlign: 'left' }}>{msg}</div>}
+    </div>
+  )
 }
 
 function InfoRow({ label, value, symbol }: { label: string; value: string; symbol: string }) {

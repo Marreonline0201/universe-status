@@ -89,6 +89,8 @@ export class FluidEngine {
   private sideMeshes: THREE.Mesh[] = []
   /** While the simulator is being rebuilt the frames render but do not step. */
   private resizing = false
+  /** Told after every tank resize (the page's TANK panel). */
+  onTankChange: ((t: { cells: Vec3; sizeM: Vec3; resizable: boolean }) => void) | null = null
   private raycaster = new THREE.Raycaster()
   private gravityMs2 = G_STANDARD   // downward gravity magnitude, m/s²
   private currentBgBrightness = readBgBrightness()
@@ -770,6 +772,7 @@ export class FluidEngine {
         else for (let a = 0; a < 3; a++) this.ball.center[a] += shiftM[a] / DOMAIN_L_M
       }
       this.applyTankFurniture()
+      this.onTankChange?.(this.tank)
       return { ok: true, kept: r.kept, removed: r.removed }
     } finally {
       this.resizing = false

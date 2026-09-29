@@ -13,7 +13,7 @@ import type { NamedComposition } from '../composition/CompositionTable'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
 import { AutoExperimenter } from '../ai/AutoExperimenter'
 import { AIChatPanel } from './AIChatPanel'
-import { FluidControls, type FluidController } from './fluid/FluidControls'
+import { FluidControls, type FluidController, type TankInfo } from './fluid/FluidControls'
 import { solverFromUrl } from '../fluid-engine/backends'
 import { packingFor } from '../fluid-engine/spawn'
 import { benchHookEnabled, installBenchHook } from '../bench/benchHook'
@@ -28,6 +28,7 @@ const MAX_PARTICLES = 1_000_000
 export function FluidTest() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<FluidEngine | null>(null)
+  const [tank, setTank] = useState<TankInfo | null>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
   const [gravityVal, setGravityVal] = useState(G_STANDARD)   // m/s²
   const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
@@ -175,6 +176,8 @@ export function FluidTest() {
       setCompositions(engine.getCompositions())
       setMenu(engine.getMenuEntries())
       setParticleCount(engine.particleCount)
+      setTank(engine.tank)
+      engine.onTankChange = t => { setTank(t); setParticleCount(engine.particleCount) }
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
         uninstallHook = installBenchHook(engine.benchTarget({
@@ -225,6 +228,8 @@ export function FluidTest() {
     bgBrightness: bgBrightVal, setBgBrightness: setBgBrightVal,
     reset: resetSim,
     menu, notice,
+    tank,
+    resizeTank: cells => engineRef.current ? engineRef.current.resizeTank(cells) : Promise.resolve({ ok: false, reason: 'engine not ready' }),
   }
 
   return (
