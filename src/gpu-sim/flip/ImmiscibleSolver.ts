@@ -50,7 +50,7 @@ const ENTRIES: Entry[] = [
   { name: 'faceAccel', uses: [0, 11, 24, 25, 26, 27, 28, 30] },
   { name: 'alphaScatter', uses: [0, 1, 2, 3, 4] },
   { name: 'cellInfo', uses: [0, 1, 4, 6, 8] },
-  { name: 'slipParticles', uses: [0, 1, 2, 3, 7, 12, 13, 29] },
+  { name: 'slipParticles', uses: [0, 1, 2, 3, 7, 12, 13, 29, 31] },
   { name: 'driftCells', uses: [0, 1, 7, 13, 15] },
   { name: 'driftParticles', uses: [0, 2, 16, 17, 20] },
 ]
@@ -59,7 +59,7 @@ export class ImmiscibleSolver {
   readonly device: GPUDevice
   private readonly inp: ImmiscibleInputs
   private readonly ip: GPUBuffer
-  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipSums' | 'driftCell' | 'uStar' | 'accA' | 'accB' | 'accValidA' | 'accValidB', GPUBuffer>
+  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipInputs' | 'slipSums' | 'driftCell' | 'uStar' | 'accA' | 'accB' | 'accValidA' | 'accValidB', GPUBuffer>
   private readonly pipelines = new Map<string, GPUComputePipeline>()
   private readonly groups = new Map<string, GPUBindGroup>()
   /** Slots in use (0 until configure). */
@@ -77,6 +77,7 @@ export class ImmiscibleSolver {
       alphaSums: mk('alphaSums', 4 * 10 * inp.size),
       cellInf: mk('cellInf', 4 * 8 * inp.size),
       slipState: mk('slipState', 16 * inp.maxParticles),
+      slipInputs: mk('slipInputs', 32 * inp.maxParticles),   // diagnostics: the slip's inputs per particle (immiscible.wgsl)
       slipSums: mk('slipSums', 4 * (7 * IMMISCIBLE_MAX_SLOTS * inp.size + ST_WORDS)),
       driftCell: mk('driftCell', 16 * inp.size),
       uStar: mk('uStar', 4 * G),
@@ -115,6 +116,7 @@ export class ImmiscibleSolver {
       case 28: return B.accValidA
       case 29: return this.accFinal
       case 30: return I.uProj
+      case 31: return B.slipInputs
     }
     throw new Error(`ImmiscibleSolver: no buffer for binding ${b}`)
   }
@@ -196,7 +198,7 @@ export class ImmiscibleSolver {
 
   /** New particles start with no slip and no drop history. */
   encodeClearParticles(encoder: GPUCommandEncoder, first: number, n: number) {
-    if (n > 0) encoder.clearBuffer(this.bufs.slipState, 16 * first, 16 * n)
+    if (n > 0) { encoder.clearBuffer(this.bufs.slipState, 16 * first, 16 * n); encoder.clearBuffer(this.bufs.slipInputs, 32 * first, 32 * n) }
   }
 
   async readStats(): Promise<ImmiscibleStats> {

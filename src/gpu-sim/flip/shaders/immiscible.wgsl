@@ -44,6 +44,9 @@ struct ImmParams {
 @group(0) @binding(28) var<storage, read_write> accValidOut: array<u32>;
 @group(0) @binding(29) var<storage, read> acc: array<f32>;
 @group(0) @binding(30) var<storage, read> uProj: array<f32>;
+// per particle, 2 × vec4 (diagnostics: the slip's own inputs at the last substep, zero when not dispersed):
+// (a = g − Du/Dt xyz, α_d = 1 − α_c), (ρ_m, μ_m, Re, 0) — the gates split a slip's excess into its inputs vs its law
+@group(0) @binding(31) var<storage, read_write> slipInputs: array<vec4<f32>>;
 
 const MAXK: u32 = 4u;
 fn slotOfComp(id: u32) -> u32 { if (id >= 256u) { return MAXK; } return IP.slots[id / 4u][id % 4u]; }
@@ -190,6 +193,7 @@ fn slipParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
   let k = slotOfComp(aux[q].x);
+  slipInputs[2u * q] = vec4<f32>(0.0); slipInputs[2u * q + 1u] = vec4<f32>(0.0);
   if (k >= IP.K) { slipState[q] = vec4<f32>(0.0); return; }   // untracked: its cell's info may not exist
   let x = pos[q].xyz;
   let li = linIdx(cellOfPos(x));
@@ -217,10 +221,14 @@ fn slipParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   // (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = g − Du/Dt, integrated over the step with f at its start
   // (OpenFOAM-10 MomentumParcel::calc + integrationSchemes::analytical; flipRef.driftFlux)
   let sOld = slipState[q].xyz;
-  let kd = d * d / (18.0 * muM * dragFactor(d * rc * length(sOld) / muM));
+  let Re = d * rc * length(sOld) / muM;
+  let kd = d * d / (18.0 * muM * dragFactor(Re));
   let m = oneMinusExpNeg(P.dt / ((rp + 0.5 * rc) * kd));
-  let s = sOld + ((rp - rm) * accelAt(x) * kd - sOld) * m;
+  let acc = accelAt(x);
+  let s = sOld + ((rp - rm) * acc * kd - sOld) * m;
   slipState[q] = vec4<f32>(s, d);
+  slipInputs[2u * q] = vec4<f32>(acc, aD);
+  slipInputs[2u * q + 1u] = vec4<f32>(rm, muM, Re, 0.0);
   let cb = 7u * (MAXK * li + k);
   let v = s * SLIP_SCALE;
   atomicAdd(&slipSums[cb], fixHi(v.x)); atomicAdd(&slipSums[cb + 1u], fixLo(v.x));

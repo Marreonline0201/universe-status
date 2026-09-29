@@ -48,6 +48,8 @@ export interface ParticleSample {
   affine?: Float32Array
   /** Immiscible drift per particle (slip xyz m/s, drop diameter m), when the drift is active. */
   drift?: Float32Array
+  /** The slip's inputs per particle, 8 floats: a = g − Du/Dt xyz, α_d, ρ_m, μ_m, Re, 0 (zero when not dispersed). */
+  slipInputs?: Float32Array
 }
 
 /** What a page must provide for the hook. Optional members enable the matching hook calls. */
@@ -171,6 +173,7 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
         comp: toBase64(s.compIds),
         ...(opts.affine && s.affine ? { aff: toBase64(s.affine) } : {}),
         ...(s.drift ? { drift: toBase64(s.drift) } : {}),
+        ...(s.slipInputs ? { slipIn: toBase64(s.slipInputs) } : {}),
         materials: target.compositions(),
       }
     },

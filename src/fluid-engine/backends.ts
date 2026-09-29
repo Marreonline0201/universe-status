@@ -21,7 +21,7 @@ export interface SpawnParticle { pos: Vec3; vel: Vec3; compositionId: number; te
 
 /** `drift` (FLIP with the immiscible drift active): per particle the slip (m/s, xyz) and the drop diameter d (m, 0: not
  *  dispersed) of the last substep — the gates' check of the page's creaming (s31c-page B1). */
-export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array }
+export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array; slipInputs?: Float32Array }
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
@@ -533,7 +533,10 @@ export class FlipBackend implements SimBackend {
     if (n === 0) return null
     try {
       const s = decodeLegacy(await this.sim.readBuffer(this.sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n)
-      if (this.sim.immiscibleActive) s.drift = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipState, 16 * n))
+      if (this.sim.immiscibleActive) {
+        s.drift = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipState, 16 * n))
+        s.slipInputs = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipInputs, 32 * n))
+      }
       return s
     } catch { return null }
   }
