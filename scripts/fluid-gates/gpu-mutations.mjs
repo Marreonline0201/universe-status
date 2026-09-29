@@ -12,6 +12,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35      (S3.5 variable-density kernels, gate s35-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31c2    (S3.1c-2 drop-ball kernels, gate s31c2-gpu.mjs, full: ~1 min)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s36      (S3.6 viscosity kernels, gate s36-gpu.mjs --quick)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35i     (S3.5-i immiscible drift kernels, gate s35i-gpu.mjs --quick)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -111,6 +112,30 @@ SETS.s36 = [
   [`${SH}/viscosity.wgsl`, 'for (var a = 0u; a < 3u; a++) { var e = vec3<i32>(0); e[a] = 1; markUnknown(a, c + e); markUnknown(a, c); }', '', 'cell samples add no auxiliary unknowns'],
   [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
 ]
+// S3.5-i: each targets a kernel that K30–K33 cover
+SETS.s35i = [
+  [`${SH}/immiscible.wgsl`, '  if (h < 0.1) { return h * (1.0 - h * (0.5 - h * (1.0 / 6.0 - h * (1.0 / 24.0 - h / 120.0)))); }
+', '', 'series of 1 − e^(−h) dropped (f32 cancellation)'],
+  [`${SH}/immiscible.wgsl`, 'if (Re >= 1000.0) { return 0.44 * Re / 24.0; }', 'if (Re >= 1000.0) { return 0.44 * Re / 12.0; }', "Newton's drag factor doubled"],
+  [`${SH}/immiscible.wgsl`, 'return 1.0 + 0.15 * pow(Re, 0.687);', 'return 1.0 + 0.15 * pow(Re, 0.5);', 'Schiller–Naumann exponent wrong'],
+  [`${SH}/immiscible.wgsl`, 'let muM = muc * pow(max(1e-12, 1.0 - aD), -2.5 * muStar);', 'let muM = muc;', 'hindered mixture viscosity dropped'],
+  [`${SH}/immiscible.wgsl`, 'let m = oneMinusExpNeg(P.dt / ((rp + 0.5 * rc) * kd));', 'let m = oneMinusExpNeg(P.dt / (rp * kd));', 'virtual mass dropped from τ'],
+  [`${SH}/immiscible.wgsl`, 'let s = sOld + ((rp - rm) * (gradP(x) / rm) * kd - sOld) * m;', 'let s = sOld + ((rp - rc) * (gradP(x) / rm) * kd - sOld) * m;', 'buoyancy against ρ_c, not the mixture'],
+  [`${SH}/immiscible.wgsl`, '  if (faceType[gridBase(a) + slotOf(c)] == SOLID) { return 0.0; }
+', '', 'wall faces carry a pressure gradient'],
+  [`${SH}/immiscible.wgsl`, 'lo[bb] = max(0, c[bb] - 1); hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'lo[bb] = c[bb]; hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'strain off-diagonal one-sided'],
+  [`${SH}/immiscible.wgsl`, 'dMax = 0.725 * pow(rc / sig, -0.6) * pow(eps, -0.4);', 'dMax = 0.725 * pow(rc / sig, -0.6) * pow(eps, -0.6);', 'Hinze ε exponent wrong'],
+  [`${SH}/immiscible.wgsl`, 'd = select(dMax, min(dOld, dMax), dOld > 0.0);', 'd = dMax;', 'breakup-only drop memory dropped'],
+  [`${SH}/immiscible.wgsl`, '  for (var k = 1u; k < IP.K; k++) { if (al[k] > al[cm]) { cm = k; } }
+', '', 'continuous phase always the first material'],
+  [`${SH}/immiscible.wgsl`, '    let v = w * LS_SCALE;
+', '    let v = LS_SCALE;
+', 'α counts particles, not kernel weights'],
+  [`${SH}/immiscible.wgsl`, 'J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));', 'J += sum / f32(cnt);', 'counter-drift not α-weighted'],
+  [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, 0.0);', 'no volume-conserving counter-drift'],
+  [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }
+', '', 'advection ignores the drift'],
+]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]
 if (!M) { console.error(`unknown --gate=${GATE} (have: ${Object.keys(SETS).join(', ')})`); process.exit(2) }
@@ -127,7 +152,7 @@ for (const [f, find, , why] of M) {
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36'].includes(GATE) ? ['--quick'] : [])], {
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36', 's35i'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())

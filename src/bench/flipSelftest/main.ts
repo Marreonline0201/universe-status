@@ -16,6 +16,7 @@ import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayle
 import { sphereKernels, spherePhysics } from './sphere'
 import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert, viscCost } from './visc'
 import { solveCost, profileStep } from './perf'
+import { immKernels } from './immiscible'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -321,6 +322,7 @@ try {
     else if (test === 'varKernels') out = await varKernels(device, params)
     else if (test === 'sphereKernels') out = await sphereKernels(device, params)
     else if (test === 'viscKernels') out = await viscKernels(device, params)
+    else if (test === 'immKernels') out = await immKernels(device, params as { kind?: string; seed?: number })
     else if (test === 'viscTaylorGreen') out = await viscTaylorGreen(device, params as { cells: number; material: 'honey' | 'lava'; on: boolean })
     else if (test === 'viscStandingWave') out = await viscStandingWave(device, params as { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number })
     else if (test === 'viscHuppert') out = await viscHuppert(device)

@@ -18,6 +18,9 @@
 //         8–10) → sphereIntegrate (weak coupling V += Δt(g + F/M), s ≥ 1). All state on the GPU (FINAL-PLAN S3.1c).
 //   S3.6 viscosity (`viscosity: true`, then viscosityActive): project → extrapolate → ViscositySolver (Batty & Bridson 2008
 //         variational implicit solve, Jacobi-PCG) → project again; the ball is coupled after the last projection.
+//   S3.5-i immiscible liquids (`immiscible: true`, configure immiscibleSolver, then immiscibleActive): after the final
+//         extrapolation ImmiscibleSolver (Manninen et al. 1996 drift flux, flipRef.driftFlux) writes each particle's drift,
+//         which g2pMac adds to its advection; the step's total pressure (both projections on the viscous path) feeds it.
 //   S3.5 variable density (`variableDensity: true`): faceScatter also sums Σw; ghostCoef forms each face's density
 //         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
@@ -62,6 +65,7 @@ import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { ViscositySolver } from './ViscositySolver'
+import { ImmiscibleSolver } from './ImmiscibleSolver'
 import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
@@ -134,6 +138,8 @@ export interface FlipSimOptions {
   thetaMin?: number
   /** S3.6: create the implicit viscosity solver (ghost surface only); it runs while viscosityActive is set. */
   viscosity?: boolean
+  /** S3.5-i: create the immiscible drift-flux solver (needs projection); it runs while immiscibleActive is set. */
+  immiscible?: boolean
 }
 
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
@@ -225,6 +231,13 @@ export class FlipGpuSimulator {
   viscositySolver: ViscositySolver | null = null
   viscosityActive = false
   readonly viscosityEnabled: boolean
+  /** S3.5-i immiscible drift flux (created with `immiscible: true`, configured by the caller); runs while
+   *  immiscibleActive. Setting it false clears the drift, so g2pMac advects with the grid velocity alone. */
+  immiscibleSolver: ImmiscibleSolver | null = null
+  private immActive = false
+  readonly immiscibleEnabled: boolean
+  /** Per-particle drift (vec4, m/s), read by g2pMac; a 16-byte placeholder without immiscibility. */
+  readonly driftBuf: GPUBuffer
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
     | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw', GPUBindGroup>> = {}
   private coefFor = NaN
@@ -286,6 +299,8 @@ export class FlipGpuSimulator {
     this.ppc = opts.ppc ?? 8
     this.thetaMin = opts.thetaMin ?? THETA_MIN
     this.viscosityEnabled = opts.viscosity ?? false
+    this.immiscibleEnabled = opts.immiscible ?? false
+    if (this.immiscibleEnabled && !this.projection) throw new Error('FlipGpuSimulator: immiscible needs the projection (its slip is driven by ∇p)')
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -311,6 +326,7 @@ export class FlipGpuSimulator {
     this.sphereBuf = buf('sphere', 4 * SPHERE_WORDS)
     this.faceSolidBuf = buf('faceSolid', 4 * G)
     this.paramsBuf = buf('params', PARAMS_BYTES, GPUBufferUsage.UNIFORM | D)
+    this.driftBuf = buf('drift', this.immiscibleEnabled ? 16 * N : 16)
 
     const types = new Uint32Array(G)
     for (const a of [0, 1, 2] as const) types.set(this.layout.defaultFaceTypes(a), a * this.layout.size)
@@ -319,7 +335,7 @@ export class FlipGpuSimulator {
     const pipe = (name: Kernel, code: string) => device.createComputePipeline({
       label: `flip.${name}`, layout: 'auto',
       compute: { module: device.createShaderModule({ label: `flip.${name}`, code: `${commonWGSL}\n${code}` }), entryPoint: 'main',
-        constants: code.includes('PRECISE_P2G') ? { PRECISE_P2G: this.preciseP2G ? 1 : 0 } : undefined },
+        constants: { ...(code.includes('PRECISE_P2G') ? { PRECISE_P2G: this.preciseP2G ? 1 : 0 } : {}), ...(name === 'g2pMac' ? { IMMISCIBLE: this.immiscibleEnabled ? 1 : 0 } : {}) } },
     })
     this.pipelines = {
       faceScatter: pipe('faceScatter', faceScatterWGSL),
@@ -341,8 +357,8 @@ export class FlipGpuSimulator {
         group('extrapolate', [this.faceTypeBuf, uB, vB, uA, vA]),
       ],
       g2pMac: [
-        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uA, vA, this.diagBuf, this.sphereBuf]),
-        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uB, vB, this.diagBuf, this.sphereBuf]),
+        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uA, vA, this.diagBuf, this.sphereBuf, this.driftBuf]),
+        group('g2pMac', [this.posBuf, this.velBuf, this.affBuf, uB, vB, this.diagBuf, this.sphereBuf, this.driftBuf]),
       ],
       present: group('present', [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.presentationBuffer]),
     }
@@ -425,6 +441,13 @@ export class FlipGpuSimulator {
         cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles,
       })
     }
+    if (this.immiscibleEnabled) {
+      this.immiscibleSolver = await ImmiscibleSolver.create({
+        device, params: this.paramsBuf, pos: this.posBuf, aux: this.auxBuf, u: this.uBuf[this.finalVelocityBuffer], labels: sb.labels,
+        faceType: this.faceTypeBuf, pressure: sb.x, drift: this.driftBuf, size: L.size, paddedCount: solver.paddedCount,
+        cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles,
+      })
+    }
     if (!this.densityProjection) return
     const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
     this.psiSolver = psi
@@ -474,6 +497,13 @@ export class FlipGpuSimulator {
     q.writeBuffer(this.affBuf, 48 * o, aff)
     q.writeBuffer(this.auxBuf, 16 * o, aux)
     q.writeBuffer(this.enthalpyBuf, 8 * o, new Uint32Array(2 * n))
+    if (this.immiscibleSolver) {
+      // new particles start with no slip, no drop history and no drift
+      const e = this.device.createCommandEncoder()
+      this.immiscibleSolver.encodeClearParticles(e, o, n)
+      if (n > 0) e.clearBuffer(this.driftBuf, 16 * o, 16 * n)
+      q.submit([e.finish()])
+    }
     this.count += n
   }
 
@@ -527,13 +557,31 @@ export class FlipGpuSimulator {
   encodeG2P(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'g2pMac', this.bg.g2pMac[this.finalVelocityBuffer], this.count, 64)
   }
-  /** One substep after the density correction: P2G, grid update, (projection), extrapolation, G2P + advection. */
+  /** One substep after the density correction: P2G, grid update, (projection), extrapolation, (immiscible drift), G2P +
+   *  advection. */
   encodeSubstepBody(encoder: GPUCommandEncoder): void {
     this.encodeScatter(encoder)
     this.encodeGridUpdate(encoder)
     if (this.projection) this.encodeProjection(encoder)
     this.encodeExtrapolate(encoder)
+    if (this.immActive) this.immiscibleSolver!.encode(encoder, this.count)
     this.encodeG2P(encoder)
+  }
+
+  /** Run the drift flux (the solver must be configured with ≥ 2 materials). Switching it off clears the drift, so g2pMac
+   *  advects with the grid velocity alone, and every slip state — a later switch-on starts all drops from rest. */
+  get immiscibleActive(): boolean { return this.immActive }
+  set immiscibleActive(on: boolean) {
+    if (on && !this.immiscibleSolver) throw new Error('FlipGpuSimulator: immiscibleActive needs `immiscible: true` (and the projection)')
+    if (on && this.immiscibleSolver!.K < 2) throw new Error('FlipGpuSimulator: immiscibleActive needs a configured solver with ≥ 2 materials')
+    if (on === this.immActive) return
+    this.immActive = on
+    if (!on) {
+      const e = this.device.createCommandEncoder()
+      e.clearBuffer(this.driftBuf)
+      this.immiscibleSolver!.encodeClearParticles(e, 0, this.maxParticles)
+      this.device.queue.submit([e.finish()])
+    }
   }
 
   /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
@@ -542,6 +590,7 @@ export class FlipGpuSimulator {
     this.encodeFillLiquidFaces(encoder)
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
+    if (this.immActive) this.immiscibleSolver!.encodeFirstPressure(encoder)
     const visc = this.viscosityActive && this.viscositySolver
     this.encodeProject(encoder, !visc)
     if (visc) {
@@ -551,6 +600,8 @@ export class FlipGpuSimulator {
       this.viscositySolver!.encode(encoder)
       this.encodeDivergence(encoder)
       this.encodePressureSolve(encoder)
+      // the step's total pressure (each projection is an impulse Δt·∇p/ρ): the drift's a = ∇p/ρ_m needs both
+      if (this.immActive) this.immiscibleSolver!.encodeSecondPressure(encoder)
       this.encodeProject(encoder, true)
     }
   }
@@ -793,8 +844,10 @@ export class FlipGpuSimulator {
 
   destroy(): void {
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
-      this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
+      this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
     this.solver?.destroy()
+    this.viscositySolver?.destroy()
+    this.immiscibleSolver?.destroy()
     this.psiSolver?.destroy()
     for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf, this.lsCellBuf, this.lsFaceBuf, this.phiCellBuf, this.occBuf,
       this.cellSolidBuf, this.faceCoefRawBuf, this.forceAccBuf, this.sphereBuf, this.faceSolidBuf]) b?.destroy()
