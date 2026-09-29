@@ -40,17 +40,30 @@ async function makeSim(device: GPUDevice, n: Vec3, count: number, o: { h?: numbe
   })
 }
 
-/** φ (m) from one sample point's four fixed-point sums (common.wgsl phiFromSums; the LS_SCALE cancels in the ratio). */
+/** One of a sample's four level-set sums, in quanta: the two-word fixed point of common.wgsl (hi word q, lo word 4 + q). */
+const lsSum = (sums: Int32Array, at: number, q: number) => sums[at + q] + sums[at + 4 + q] / 2 ** 20
+/** Σk of the sample whose eight sum words start at `at` (LS_SCALE divided out). */
+export const lsW = (sums: Int32Array, at: number) => lsSum(sums, at, 0) / 2 ** 22
+/** φ (m) from one sample point's eight fixed-point sum words (common.wgsl phiFromSums; the LS_SCALE cancels in the ratio). */
 export function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: number) {
-  const w = sums[at]
+  const w = lsSum(sums, at, 0)
   if (w <= 0) return R
-  return Math.hypot(sums[at + 1] / w * h, sums[at + 2] / w * h, sums[at + 3] / w * h) - rbar
+  return Math.hypot(lsSum(sums, at, 1) / w * h, lsSum(sums, at, 2) / w * h, lsSum(sums, at, 3) / w * h) - rbar
 }
-/** Per-sample bound on |φ_GPU − φ_ref| (m), fixed before the first run. Each of the four sums takes ≤ 64 adds, each off
- *  by ≤ 2^-23 (fixed-point rounding) + 1.2e-5 (f32 kernel weight: |x − x_s| rounded to ~1e-6·R, δk ≤ 3·2·2e-6); the
- *  offset x̄ − x_s = (Σk·r/dx)/(Σk)·dx then errs by ≤ 2·64·(2^-23 + 1.2e-5)/w·dx (|r/dx| ≤ R/dx = 1 at 8 ppc), plus
- *  1e-6·dx for f32 length() − r̄. w = Σk from the GPU sums (LS_SCALE units divided out). */
-export const phiTol = (wFixed: number, h: number) => (2 * 64 * (2 ** -23 + 1.2e-5) / Math.max(wFixed / 2 ** 22, 1e-12) + 1e-6) * h
+/** Per-sample bound on |φ_GPU − φ_ref| (m) for R = dx (8 ppc), ≤ N = 64 particles per sample, coordinates ≤ ext (m):
+ *  - the sample point (f32 (c + ½)·dx) and the uploaded particle (f32 of the reference's f64) are each off by ≤ ½ ulp(ext)
+ *    per axis, so r = x − x_s errs by ≤ 1.5·ulp per axis (with the subtraction) and d² = |r|²/R² by
+ *    D ≤ 2√3·1.5·ulp/R + 8·2^-24 (dot, R², divide, 1 − d²);
+ *  - k = (1 − d²)³ then errs by ≤ 3(1 − d²)²·D + 2·2^-24·k = 3D·k^(2/3) + 1.2e-7·k (relative to the particle's own
+ *    weight: the earlier absolute 1.2e-5 per add let any φ through where Σk is a few 2^-22 quanta — K29 at 64³);
+ *  - the two-word fixed point rounds each add by ≤ 2^-43 (common.wgsl).
+ *  x̄ − x_s = Σk·r/Σk then errs by ≤ [2R·Σ|δk_i| + Σk_i·|δr_i| + (√3 + 1)·N·2^-43]/W, with Σk_i^(2/3) ≤ N^(1/3)·W^(2/3)
+ *  (power mean), plus 1e-6·dx for f32 length() − r̄. W = Σk (lsW). */
+export function phiTol(W: number, h: number, ext = 64 * h) {
+  const N = 64, ulp = 2 ** (Math.floor(Math.log2(ext)) - 23)
+  const D = 2 * Math.sqrt(3) * 1.5 * ulp / h + 8 * 2 ** -24, Wc = Math.max(W, 1e-30)
+  return (2 * (3 * D * N ** (1 / 3) * Wc ** (-1 / 3) + 1.2e-7) + Math.sqrt(3) * 1.5 * ulp / h + (Math.sqrt(3) + 1) * N * 2 ** -43 / Wc + 1e-6) * h
+}
 /** common.wgsl thetaOf in f64. */
 export const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => {
   if (fl >= 0) return tMin   // a relabelled cell (φ does not resolve its interface): the face is dry
@@ -88,11 +101,11 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
   // K15 φ at cell centres (lsScatter + lsFinalize) against the reference, sample by sample within phiTol, and labels
   await submit(device, e => gpu.encodePressureLabels(e))
   const phiG = new Float32Array(await gpu.readBuffer(gpu.phiCellBuf!, 4 * pc))
-  const cellSums = new Int32Array(await gpu.readBuffer(gpu.lsCellBuf!, 16 * pc))
+  const cellSums = new Int32Array(await gpu.readBuffer(gpu.lsCellBuf!, 32 * pc))
   const labG = await gpu.solver!.readLabels(0)
   let phiRatio = 0, surfPhiDiff = 0, labelMismatch = 0, nearZero = 0, liquid = 0
   for (let k = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++) {
-    const s = L.idx(i, j, k), li = lin(L, i, j, k), ref = cpu.levelSet[s], tol = phiTol(cellSums[4 * li], DX)
+    const s = L.idx(i, j, k), li = lin(L, i, j, k), ref = cpu.levelSet[s], tol = phiTol(lsW(cellSums, 8 * li), DX)
     const d = Math.abs(phiG[li] - ref)
     phiRatio = Math.max(phiRatio, d / tol)
     if (Math.abs(ref) < DX) surfPhiDiff = Math.max(surfPhiDiff, d)
@@ -105,7 +118,7 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
       for (const [di, dj, dk] of [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]]) {
         const ni = i + di, nj = j + dj, nk = k + dk
         if (near || ni < 0 || nj < 0 || nk < 0 || ni >= n[0] || nj >= n[1] || nk >= n[2]) continue
-        near = Math.abs(cpu.levelSet[L.idx(ni, nj, nk)]) <= phiTol(cellSums[4 * lin(L, ni, nj, nk)], DX)
+        near = Math.abs(cpu.levelSet[L.idx(ni, nj, nk)]) <= phiTol(lsW(cellSums, 8 * lin(L, ni, nj, nk)), DX)
       }
       if (near) nearZero++; else labelMismatch++
     }
@@ -121,7 +134,7 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
   // K16 (a) face-centre φ vs the reference within phiTol; (b) ghostCoef on its own inputs — the extra diagonal
   // recomputed in f64 from the GPU's φ (cells + faces) and labels, |Δ| ≤ 1e-5·(extra + a); (c) reported: θ from the GPU's
   // φ vs the reference θ, end to end
-  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 16 * 3 * S))
+  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 32 * 3 * S))
   const coefG = new Float32Array(await gpu.readBuffer(gpu.solver!.buffers.faceCoef, 16 * pc))
   const a = dt / (RHO * DX * DX)
   const thetaGpu = new Map<string, number>()   // "axis:face-slot" → θ from the GPU's own φ
@@ -137,9 +150,9 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
       const la = lin(L, c[0], c[1], c[2])
       if (labG[la] !== 0) continue
       const f = [i, j, k]; f[ax] += side
-      const fs = 4 * (ax * S + L.idx(f[0], f[1], f[2])), fp = L.facePos(ax, f[0], f[1], f[2])
+      const fs = 8 * (ax * S + L.idx(f[0], f[1], f[2])), fp = L.facePos(ax, f[0], f[1], f[2])
       const fmG = phiOf(faceSums, fs, DX, R, rbar)
-      facePhiRatio = Math.max(facePhiRatio, Math.abs(fmG - cpu.zhuBridson(fp[0], fp[1], fp[2])) / phiTol(faceSums[fs], DX))
+      facePhiRatio = Math.max(facePhiRatio, Math.abs(fmG - cpu.zhuBridson(fp[0], fp[1], fp[2])) / phiTol(lsW(faceSums, fs), DX))
       const thG = thetaOf(phiG[li], fmG, phiG[la], gpu.thetaMin)
       thetaGpu.set(`${ax}:${L.idx(f[0], f[1], f[2])}`, thG)
       extraG += a * (1 - thG) / thG
@@ -211,13 +224,13 @@ export async function flatSurface(device: GPUDevice, o: { ppc: number }) {
   const L = gpu.layout, S = L.size, sp = DX / Math.cbrt(o.ppc)
   const phi = new Float32Array(await gpu.readBuffer(gpu.phiCellBuf!, 4 * gpu.solver!.paddedCount))
   const labels = await gpu.solver!.readLabels(0)
-  const fsum = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 16 * 3 * S))
+  const fsum = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 32 * 3 * S))
   const ys: number[] = []
   let holes = 0
   for (let k = 1; k < 15; k++) for (let j = 1; j < H - 2; j++) for (let i = 1; i < 15; i++) if (labels[lin(L, i, j, k)] !== 1) holes++
   for (let k = 0; k < 16; k++) for (let i = 0; i < 16; i++) for (let j = 0; j + 1 < 20; j++) {
     if (labels[lin(L, i, j, k)] === 1 && labels[lin(L, i, j + 1, k)] === 0) {
-      const fm = phiOf(fsum, 4 * (S + L.idx(i, j + 1, k)), DX, 2 * sp, sp / 2)
+      const fm = phiOf(fsum, 8 * (S + L.idx(i, j + 1, k)), DX, 2 * sp, sp / 2)
       const fl = phi[lin(L, i, j, k)], fa = phi[lin(L, i, j + 1, k)]
       const t = thetaOf(fl, fm, fa, gpu.thetaMin)
       ys.push((j + 0.5 + t) * DX)

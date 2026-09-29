@@ -4,8 +4,8 @@
 // instead of gathering gives the same sums (fixed point, order-independent).
 
 @group(0) @binding(1) var<storage, read> pos: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> cellSums: array<atomic<i32>>;   // 4 per padded cell: w, rx, ry, rz
-@group(0) @binding(3) var<storage, read_write> faceSums: array<atomic<i32>>;   // 4 per face slot (3 grids)
+@group(0) @binding(2) var<storage, read_write> cellSums: array<atomic<i32>>;   // 8 per padded cell: w, rx, ry, rz (hi, lo)
+@group(0) @binding(3) var<storage, read_write> faceSums: array<atomic<i32>>;   // 8 per face slot (3 grids)
 
 fn addTo(buf: u32, idx: u32, x: vec3<f32>, s: vec3<f32>) {
   let r = x - s;
@@ -13,12 +13,13 @@ fn addTo(buf: u32, idx: u32, x: vec3<f32>, s: vec3<f32>) {
   if (d2 >= 1.0) { return; }
   let k = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);
   let v = vec4<f32>(k, k * r / P.dx) * LS_SCALE;
+  let hi = lsHi(v);
+  let lo = lsLo(v);
+  let b = 8u * idx;
   if (buf == 0u) {
-    atomicAdd(&cellSums[4u * idx], encodeFixed(v.x)); atomicAdd(&cellSums[4u * idx + 1u], encodeFixed(v.y));
-    atomicAdd(&cellSums[4u * idx + 2u], encodeFixed(v.z)); atomicAdd(&cellSums[4u * idx + 3u], encodeFixed(v.w));
+    for (var q = 0u; q < 4u; q++) { atomicAdd(&cellSums[b + q], hi[q]); atomicAdd(&cellSums[b + 4u + q], lo[q]); }
   } else {
-    atomicAdd(&faceSums[4u * idx], encodeFixed(v.x)); atomicAdd(&faceSums[4u * idx + 1u], encodeFixed(v.y));
-    atomicAdd(&faceSums[4u * idx + 2u], encodeFixed(v.z)); atomicAdd(&faceSums[4u * idx + 3u], encodeFixed(v.w));
+    for (var q = 0u; q < 4u; q++) { atomicAdd(&faceSums[b + q], hi[q]); atomicAdd(&faceSums[b + 4u + q], lo[q]); }
   }
 }
 

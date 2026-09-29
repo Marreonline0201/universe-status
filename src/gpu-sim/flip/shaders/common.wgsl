@@ -105,14 +105,23 @@ fn linIdx(c: vec3<i32>) -> u32 {
 
 fn encodeFixed(x: f32) -> i32 { return i32(round(x)); }
 
-// Level-set sums (S3.4): per sample point Σw and Σw·(x_i − x_point)/dx, fixed point at LS_SCALE (range ±512).
-const LS_SCALE: f32 = 4194304.0;   // 2^22
+// Level-set sums (S3.4): per sample point Σk and Σk·(x_i − x_point)/dx in a two-word fixed point, 8 words per sample:
+// words 0–3 hi = round(v) with v = the value·LS_SCALE (range ±512), words 4–7 lo = round((v − hi)·LS_LO_SCALE). One word
+// alone quantises every add to 2^-23 absolute, so a sample reached only by particles at the kernel edge (Σk of a quantum
+// or two) had its offsets rounded to 0 and φ = −r̄ where the reference has ≈ R − r̄ (measured at 64³, S3.6 K29: GPU
+// −0.25·dx, reference +0.747·dx, which turned a dry viscosity subsample wet). The remainder word resolves each add to
+// 2^-43 (v − round(v) is exact, the ×2^20 too); |lo| ≤ 2^19 per add, so ≤ 4096 adds per sample before i32 overflow.
+const LS_SCALE: f32 = 4194304.0;      // 2^22
+const LS_LO_SCALE: f32 = 1048576.0;   // 2^20
+fn lsHi(v: vec4<f32>) -> vec4<i32> { return vec4<i32>(round(v)); }
+fn lsLo(v: vec4<f32>) -> vec4<i32> { return vec4<i32>(round((v - round(v)) * LS_LO_SCALE)); }
 
-/// Zhu & Bridson φ (m) from the four sums of one sample point: |x_point − x̄| − r̄, or R where no particle is in reach.
-fn phiFromSums(w: i32, rx: i32, ry: i32, rz: i32) -> f32 {
-  if (w <= 0) { return P.lsR; }
-  let r = vec3<f32>(f32(rx), f32(ry), f32(rz)) / f32(w) * P.dx;
-  return length(r) - P.lsRbar;
+/// Zhu & Bridson φ (m) from one sample point's sums (hi words, lo words): |x_point − x̄| − r̄, or R where no particle is
+/// in reach (a particle whose k·LS_SCALE < 2^-21 — within 5e-5·R of the kernel edge — rounds to nothing in both words).
+fn phiFromSums(hi: vec4<i32>, lo: vec4<i32>) -> f32 {
+  let s = vec4<f32>(hi) + vec4<f32>(lo) / LS_LO_SCALE;
+  if (s.x <= 0.0) { return P.lsR; }
+  return length(s.yzw / s.x * P.dx) - P.lsRbar;
 }
 
 /// Liquid fraction θ of the face between a LIQUID centre (φl) and an AIR centre (φa) with the face-centre sample φm

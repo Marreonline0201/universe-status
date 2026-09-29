@@ -8,7 +8,7 @@ import { fillMaterials, mulberry32 as mb32 } from '../../sim-ref/twoLayer'
 import { FlipGpuSimulator } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { SOLID_REFERENCE } from '../../composition/materialData'
 import { DX, RHO, L_REF, TAU, f32round, toInit, submit, solverConfig, capFor } from './util'
-import { phiOf, phiTol, thetaOf } from './ghost'
+import { lsW, phiOf, phiTol, thetaOf } from './ghost'
 
 const G = 9.80665
 const GRAV: Vec3 = [0, -G, 0]
@@ -83,8 +83,8 @@ export async function sphereKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec
   await submit(device, e => { gpu.encodeScatter(e); gpu.encodeGridUpdate(e); gpu.encodePressureLabels(e) })
   const labG = await gpu.solver!.readLabels(0)
   const phiG = new Float32Array(await gpu.readBuffer(gpu.phiCellBuf!, 4 * pc))
-  const cellSums = new Int32Array(await gpu.readBuffer(gpu.lsCellBuf!, 16 * pc))
-  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 16 * 3 * S))
+  const cellSums = new Int32Array(await gpu.readBuffer(gpu.lsCellBuf!, 32 * pc))
+  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 32 * 3 * S))
   const coefG = new Float32Array(await gpu.readBuffer(gpu.solver!.buffers.faceCoef, 16 * pc))
   const inWin = (c: number[]) => c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < n[0] && c[1] < n[1] && c[2] < n[2]
   let labelMismatch = 0, nearZero = 0, extended = 0
@@ -92,11 +92,11 @@ export async function sphereKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec
     const s = L.idx(i, j, k), li = lin(L, i, j, k), want = cpu.label[s] === CellLabel.LIQUID ? 1 : 0
     if (want && cpu.levelSet[s] >= 0 && cpu.cellSolidFraction[s] >= 0.5) extended++
     if (labG[li] === want) continue
-    let near = Math.abs(cpu.levelSet[s]) <= phiTol(cellSums[4 * li], DX)
+    let near = Math.abs(cpu.levelSet[s]) <= phiTol(lsW(cellSums, 8 * li), DX)
     for (const [di, dj, dk] of [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]]) {
       const m = [i + di, j + dj, k + dk]
       if (near || !inWin(m)) continue
-      near = Math.abs(cpu.levelSet[L.idx(m[0], m[1], m[2])]) <= phiTol(cellSums[4 * lin(L, m[0], m[1], m[2])], DX)
+      near = Math.abs(cpu.levelSet[L.idx(m[0], m[1], m[2])]) <= phiTol(lsW(cellSums, 8 * lin(L, m[0], m[1], m[2])), DX)
     }
     if (near) nearZero++; else labelMismatch++
   }
@@ -116,7 +116,7 @@ export async function sphereKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec
       const c = [i, j, k]; c[ax] += side ? 1 : -1
       if (!inWin(c) || labG[lin(L, c[0], c[1], c[2])] !== 0) continue
       const f = [i, j, k]; f[ax] += side
-      const fmG = phiOf(faceSums, 4 * (ax * S + L.idx(f[0], f[1], f[2])), DX, Rls, rbar)
+      const fmG = phiOf(faceSums, 8 * (ax * S + L.idx(f[0], f[1], f[2])), DX, Rls, rbar)
       const th = thetaOf(phiG[li], fmG, phiG[lin(L, c[0], c[1], c[2])], gpu.thetaMin)
       extra += a * wOf(ax, f) * (1 - th) / th
     }

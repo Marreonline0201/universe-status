@@ -9,6 +9,7 @@ import { FlipGpuSimulator, MASS_SCALE } from '../../gpu-sim/flip/FlipGpuSimulato
 import { G_STD, mulberry32, fillMaterials, lambTwoLayer, interfaceAmplitude, columnCounts, lockFront } from '../../sim-ref/twoLayer'
 import { waterDensity, HG_RHO_20C, LIQUIDS } from '../../composition/materialData'
 import { DX, L_REF, TAU, f32round, toInit, submit, solverConfig, capFor } from './util'
+import { phiOf } from './ghost'
 
 const GRAV: Vec3 = [0, -G_STD, 0]
 const RHO_W20 = waterDensity(20), RHO_W10 = waterDensity(10), RHO_W90 = waterDensity(90), RHO_HG = HG_RHO_20C
@@ -23,10 +24,6 @@ async function makeSim(device: GPUDevice, n: Vec3, count: number, o: { h?: numbe
   })
 }
 const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => (fl >= 0 ? tMin : Math.min(1, Math.max(tMin, fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa))))
-const phiOf = (sums: Int32Array, at: number, h: number, R: number, rbar: number) => {
-  const w = sums[at]
-  return w <= 0 ? R : Math.hypot(sums[at + 1] / w * h, sums[at + 2] / w * h, sums[at + 3] / w * h) - rbar
-}
 
 /** Kernel parity on a two-material block (mercury in the lower-left, water elsewhere, sloped noisy top):
  *  K18 faceScatter Σw; K19 ghostCoef a_f = Δt/(ρ_f·dx²) from the face density (and the ghost extra with per-face a_f);
@@ -69,7 +66,7 @@ export async function varKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3; 
   const coefG = new Float32Array(await gpu.readBuffer(gpu.solver!.buffers.faceCoef, 16 * pc))
   const labG = await gpu.solver!.readLabels(0)
   const phiG = new Float32Array(await gpu.readBuffer(gpu.phiCellBuf!, 4 * pc))
-  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 16 * 3 * S))
+  const faceSums = new Int32Array(await gpu.readBuffer(gpu.lsFaceBuf!, 32 * 3 * S))
   const k0 = dt / (DX * DX)
   let aRatio = 0, nearThreshold = 0, faces = 0, rhoMin = Infinity, rhoMax = 0, extraRatio = 0, extraFaces = 0
   const aTol = (ax: number, s: number) => 64 * 2 ** -25 / Math.max(cpu.weight[ax][s], FACE_WEIGHT_MIN) + 2e-6
@@ -92,7 +89,7 @@ export async function varKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3; 
       if (labG[la] !== 0) continue
       const f = [i, j, k]; f[ax] += side
       const fs = L.idx(f[0], f[1], f[2]), a = k0 / cpu.rhoFace[ax][fs]
-      const th = thetaOf(phiG[li], phiOf(faceSums, 4 * (ax * S + fs), DX, R, rbar), phiG[la], gpu.thetaMin)
+      const th = thetaOf(phiG[li], phiOf(faceSums, 8 * (ax * S + fs), DX, R, rbar), phiG[la], gpu.thetaMin)
       extra += a * (1 - th) / th; tol += (a * (1 - th) / th + a) * (aTol(ax, fs) + 1e-5); extraFaces++
     }
     extraRatio = Math.max(extraRatio, Math.abs(coefG[4 * li + 3] - extra) / Math.max(tol, 1e-30))
@@ -130,7 +127,7 @@ export async function varKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3; 
       const aG = coefG[4 * lin(L, i, j, k) + ax]
       const pv = (c: number[]) => pPad[lin(L, c[0], c[1], c[2])]
       const ghostOf = (cl: number[], ca: number[], face: number[]) => {
-        const th = thetaOf(phiG[lin(L, cl[0], cl[1], cl[2])], phiOf(faceSums, 4 * (ax * S + L.idx(face[0], face[1], face[2])), DX, R, rbar), phiG[lin(L, ca[0], ca[1], ca[2])], gpu.thetaMin)
+        const th = thetaOf(phiG[lin(L, cl[0], cl[1], cl[2])], phiOf(faceSums, 8 * (ax * S + L.idx(face[0], face[1], face[2])), DX, R, rbar), phiG[lin(L, ca[0], ca[1], ca[2])], gpu.thetaMin)
         return -((1 - th) / th) * pv(cl)
       }
       const pp = lp === 1 ? pv(cp) : lp === 0 ? ghostOf(cm, cp, cp) : 0

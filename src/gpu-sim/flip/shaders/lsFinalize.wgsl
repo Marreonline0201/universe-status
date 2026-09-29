@@ -12,7 +12,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (t >= n.x * n.y * n.z) { return; }
   let c = vec3<i32>(vec3<u32>(t % n.x, (t / n.x) % n.y, t / (n.x * n.y)));
   let li = linIdx(c);
-  let phi = phiFromSums(cellSums[4u * li], cellSums[4u * li + 1u], cellSums[4u * li + 2u], cellSums[4u * li + 3u]);
+  let b = 8u * li;
+  let phi = phiFromSums(vec4<i32>(cellSums[b], cellSums[b + 1u], cellSums[b + 2u], cellSums[b + 3u]),
+                        vec4<i32>(cellSums[b + 4u], cellSums[b + 5u], cellSums[b + 6u], cellSums[b + 7u]));
   phiCell[li] = phi;
   labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < 0.0);
 }

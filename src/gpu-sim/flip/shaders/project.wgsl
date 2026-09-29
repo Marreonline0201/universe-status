@@ -16,8 +16,9 @@
 @group(0) @binding(8) var<storage, read> faceCoef: array<vec4<f32>>;
 
 fn facePhi(a: u32, c: vec3<i32>) -> f32 {
-  let s = gridBase(a) + slotOf(c);
-  return phiFromSums(faceSums[4u * s], faceSums[4u * s + 1u], faceSums[4u * s + 2u], faceSums[4u * s + 3u]);
+  let b = 8u * (gridBase(a) + slotOf(c));
+  return phiFromSums(vec4<i32>(faceSums[b], faceSums[b + 1u], faceSums[b + 2u], faceSums[b + 3u]),
+                     vec4<i32>(faceSums[b + 4u], faceSums[b + 5u], faceSums[b + 6u], faceSums[b + 7u]));
 }
 
 @compute @workgroup_size(256)

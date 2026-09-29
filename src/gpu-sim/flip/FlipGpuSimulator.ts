@@ -365,8 +365,8 @@ export class FlipGpuSimulator {
     })
     const sb = solver.buffers, [uA] = this.uBuf, [vA] = this.validBuf
     const Sg = GPUBufferUsage.STORAGE, Dg = GPUBufferUsage.COPY_DST, Rg = GPUBufferUsage.COPY_SRC
-    this.lsCellBuf = device.createBuffer({ label: 'flip.lsCell', size: 16 * solver.paddedCount, usage: Sg | Dg | Rg })
-    this.lsFaceBuf = device.createBuffer({ label: 'flip.lsFace', size: 16 * 3 * L.size, usage: Sg | Dg | Rg })
+    this.lsCellBuf = device.createBuffer({ label: 'flip.lsCell', size: 32 * solver.paddedCount, usage: Sg | Dg | Rg })
+    this.lsFaceBuf = device.createBuffer({ label: 'flip.lsFace', size: 32 * 3 * L.size, usage: Sg | Dg | Rg })
     this.phiCellBuf = device.createBuffer({ label: 'flip.phiCell', size: 4 * solver.paddedCount, usage: Sg | Dg | Rg })
     this.occBuf = device.createBuffer({ label: 'flip.occupancy', size: 4 * solver.paddedCount, usage: Sg | Dg | Rg })
     this.cellSolidBuf = device.createBuffer({ label: 'flip.cellSolid', size: 8 * solver.paddedCount, usage: Sg | Dg | Rg })

@@ -75,7 +75,7 @@ const SETS = {
     [`${SH}/lsResolve.wgsl`, 'if (!(bordersLiquid && bordersEmpty)) {', 'if (!bordersEmpty) {', 'films bordering air left AIR (enclosed-only)'],
     [`${SH}/lsResolve.wgsl`, '} else if (occ[lm] == 0u) { bordersEmpty = true; }', '} else { bordersEmpty = true; }', 'occupied neighbours counted as empty space'],
     [`${SH}/lsFinalize.wgsl`, 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < 0.0);', 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < P.lsRbar);', 'label threshold at r̄ instead of 0'],
-    [`${SH}/common.wgsl`, 'return length(r) - P.lsRbar;', 'return length(r) - 2.0 * P.lsRbar;', 'radius s (design C) instead of s/2'],
+    [`${SH}/common.wgsl`, 'return length(s.yzw / s.x * P.dx) - P.lsRbar;', 'return length(s.yzw / s.x * P.dx) - 2.0 * P.lsRbar;', 'radius s (design C) instead of s/2'],
     [`${SH}/common.wgsl`, 'if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }', 't = fl / (fl - fa);', 'θ without the face-centre sample'],
     [`${SH}/ghostCoef.wgsl`, 'extra += am[ax] * (1.0 - th) / th; }', 'extra += am[ax] / th; }', 'extra diagonal a/θ (face counted twice)'],
     [`${SH}/ghostCoef.wgsl`, 'thetaOf(fl, facePhi(ax, c + e), phiCell[linIdx(c + e)])', 'thetaOf(fl, facePhi(ax, c), phiCell[linIdx(c + e)])', 'upper neighbour uses the lower face'],
