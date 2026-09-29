@@ -69,8 +69,13 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
   const p0 = block([0, 0, 1], [Math.min(n[0] - 3, 10), Math.min(n[1] - 4, 8), Math.min(n[2] - 2, 12)], rng)
   const keep: number[] = []
   for (let q = 0; q < p0.n; q++) if (p0.pos[3 * q + 1] < (4 + 0.4 * p0.pos[3 * q] / DX + 1.5 * rng()) * DX) keep.push(q)
-  const p = makeParticles(keep.length)
+  // plus a sheet one particle thick floating above the block, 0.35·dx below a row of cell centres (φ ≈ +0.1·dx there):
+  // particle-holding φ ≥ 0 cells with no φ < 0 neighbour, which the resolve rule must make LIQUID
+  const sheet: number[][] = []
+  for (let a = 0; a < 10; a++) for (let b = 0; b < 10; b++) sheet.push([(2.25 + 0.5 * a) * DX, 12.15 * DX, (2.25 + 0.5 * b) * DX])
+  const p = makeParticles(keep.length + sheet.length)
   keep.forEach((q, i) => { p.pos.set(p0.pos.subarray(3 * q, 3 * q + 3), 3 * i); p.mass[i] = p0.mass[q]; p.vel.set([rng() - 0.5, rng() - 0.5, rng() - 0.5], 3 * i) })
+  sheet.forEach((x, i) => { const q = keep.length + i; p.pos.set(x, 3 * q); p.mass[q] = p0.mass[0]; p.vel.set([rng() - 0.5, rng() - 0.5, rng() - 0.5], 3 * q) })
   f32round(p)
   const gpu = await makeSim(device, n, p.n, { ring })
   gpu.dt = dt
@@ -93,10 +98,26 @@ export async function ghostKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec3
     if (Math.abs(ref) < DX) surfPhiDiff = Math.max(surfPhiDiff, d)
     const want = cpu.label[s] === CellLabel.LIQUID ? 1 : 0
     if (want) liquid++
-    // a label may legitimately differ only where the reference φ lies within that sample's bound of 0
-    if (labG[li] !== want) { if (Math.abs(ref) <= tol) nearZero++; else labelMismatch++ }
+    // a label may legitimately differ only where the reference φ lies within that sample's bound of 0 — its own, or
+    // (a particle-holding φ ≥ 0 cell, whose label the resolve rule takes from its neighbours' φ) a face-neighbour's
+    if (labG[li] !== want) {
+      let near = Math.abs(ref) <= tol
+      for (const [di, dj, dk] of [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]]) {
+        const ni = i + di, nj = j + dj, nk = k + dk
+        if (near || ni < 0 || nj < 0 || nk < 0 || ni >= n[0] || nj >= n[1] || nk >= n[2]) continue
+        near = Math.abs(cpu.levelSet[L.idx(ni, nj, nk)]) <= phiTol(cellSums[4 * lin(L, ni, nj, nk)], DX)
+      }
+      if (near) nearZero++; else labelMismatch++
+    }
   }
-  out.k15 = { phiRatio, surfPhiDiffDx: surfPhiDiff / DX, labelMismatch, nearZero, liquid }
+  // the resolve rule must be exercised on BOTH branches by this scene: relabelled cells, and φ ≥ 0 particle cells kept AIR
+  const gd = await gpu.readDiagnostics()
+  let keptAir = 0
+  for (let q = 0; q < p.n; q++) {
+    const s = L.idx(Math.floor(p.pos[3 * q] / DX), Math.floor(p.pos[3 * q + 1] / DX), Math.floor(p.pos[3 * q + 2] / DX))
+    if (cpu.label[s] === CellLabel.AIR) keptAir++
+  }
+  out.k15 = { phiRatio, surfPhiDiffDx: surfPhiDiff / DX, labelMismatch, nearZero, liquid, relabelsRef: cpu.diag.enclosedRelabels, relabelsGpu: gd.unresolvedRelabels, particlesInAirCells: keptAir }
   // K16 (a) face-centre φ vs the reference within phiTol; (b) ghostCoef on its own inputs — the extra diagonal
   // recomputed in f64 from the GPU's φ (cells + faces) and labels, |Δ| ≤ 1e-5·(extra + a); (c) reported: θ from the GPU's
   // φ vs the reference θ, end to end

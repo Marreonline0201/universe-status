@@ -52,6 +52,13 @@ const SETS = {
   s34: [
     [`${SH}/lsScatter.wgsl`, 'let k = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);', 'let k = (1.0 - d2) * (1.0 - d2);', 'Zhu–Bridson kernel squared, not cubed'],
     [`${SH}/lsScatter.wgsl`, 'let ff = x / P.dx - faceOffset(a);', 'let ff = x / P.dx - vec3<f32>(0.5);', 'face-sample search offset wrong'],
+    // the resolve rule for particle-holding φ ≥ 0 cells (flipRef.classifyLevelSet): the two measured failure modes and a
+    // half-rule — every occupied cell LIQUID (broke D1: 0.70 → 7.1 %), none (V1: 4534 particles in one cell), and
+    // films bordering air left AIR (V1: compressed wall films); plus occupied neighbours taken for empty space
+    [`${SH}/lsResolve.wgsl`, 'if (!(bordersLiquid && bordersEmpty)) {', 'if (true) {', 'every occupied cell LIQUID (voxel union)'],
+    [`${SH}/lsResolve.wgsl`, 'if (!(bordersLiquid && bordersEmpty)) {', 'if (false) {', 'occupied unresolved cells left AIR (φ-only)'],
+    [`${SH}/lsResolve.wgsl`, 'if (!(bordersLiquid && bordersEmpty)) {', 'if (!bordersEmpty) {', 'films bordering air left AIR (enclosed-only)'],
+    [`${SH}/lsResolve.wgsl`, '} else if (occ[lm] == 0u) { bordersEmpty = true; }', '} else { bordersEmpty = true; }', 'occupied neighbours counted as empty space'],
     [`${SH}/lsFinalize.wgsl`, 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < 0.0);', 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < P.lsRbar);', 'label threshold at r̄ instead of 0'],
     [`${SH}/common.wgsl`, 'return length(r) - P.lsRbar;', 'return length(r) - 2.0 * P.lsRbar;', 'radius s (design C) instead of s/2'],
     [`${SH}/common.wgsl`, 'if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }', 't = fl / (fl - fa);', 'θ without the face-centre sample'],

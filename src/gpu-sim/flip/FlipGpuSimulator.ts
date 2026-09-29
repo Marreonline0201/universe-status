@@ -5,6 +5,7 @@
 //   S3.1b projection (`projection: true`, create()): labelClear → labelParticles (voxel free surface) → divergence
 //         → PoissonSolver (JPCG until S3.3) → project, between gridUpdate and extrapolate  (gate s31b-gpu.mjs)
 //   S3.4 ghost-fluid free surface (`freeSurface: 'ghost'`): lsScatter → lsFinalize (Zhu & Bridson φ, LIQUID where φ < 0)
+//         → occupancy + lsResolve (a particle-holding φ ≥ 0 cell whose interface φ does not resolve becomes LIQUID)
 //         → ghostCoef (a/θ at liquid–air faces) replace the voxel labels of the pressure solve; project uses the ghost
 //         pressure. The density correction keeps the voxel labels (FINAL-PLAN §5.2 step 3)        (gate s34-gpu.mjs)
 //   S3.2 density projection (`densityProjection: true`), before faceScatter: labels → cellScatter → densityRhs →
@@ -38,6 +39,7 @@ import faceDisplacementWGSL from './shaders/faceDisplacement.wgsl?raw'
 import positionCorrectWGSL from './shaders/positionCorrect.wgsl?raw'
 import lsScatterWGSL from './shaders/lsScatter.wgsl?raw'
 import lsFinalizeWGSL from './shaders/lsFinalize.wgsl?raw'
+import lsResolveWGSL from './shaders/lsResolve.wgsl?raw'
 import ghostCoefWGSL from './shaders/ghostCoef.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
@@ -48,6 +50,8 @@ export const MOM_SCALE = 2 ** 19
 /** Legacy presentation layout: 20 words per particle. */
 export const PRESENT_STRIDE_BYTES = 80
 const PARAMS_BYTES = 128
+/** u32 words of the diagnostics buffer (common.wgsl DIAG_*: 0–7, and DIAG_UNRESOLVED_RELABELS = 8). */
+const DIAG_WORDS = 9
 
 export interface FlipSimOptions {
   nx: number
@@ -123,6 +127,8 @@ export interface FlipDiagnostics {
   wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number; densityClamps: number
   /** S3.5 face-density fallbacks: neighbour mean (Σw < wMin), and default density (no neighbour either). */
   densityNeighbourFaces: number; densityDefaultFaces: number
+  /** Ghost labels: particle-holding cells with φ ≥ 0 made LIQUID because φ does not resolve their interface (lsResolve). */
+  unresolvedRelabels: number
   /** ψ solver sticky faults (0 without density projection). */
   psiSolves: number; psiCapHits: number; psiBreakdowns: number; psiMaxIterations: number
   /** Pressure solver sticky faults since the last reset (0 without projection). */
@@ -130,7 +136,7 @@ export interface FlipDiagnostics {
 }
 
 type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
-  | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'ghostCoef'
+  | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'lsResolve' | 'ghostCoef'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -170,7 +176,9 @@ export class FlipGpuSimulator {
   lsCellBuf: GPUBuffer | null = null
   lsFaceBuf: GPUBuffer | null = null
   phiCellBuf: GPUBuffer | null = null
-  private lsBg: { lsScatter: GPUBindGroup; lsFinalize: GPUBindGroup; ghostCoef: GPUBindGroup } | null = null
+  /** Ghost labels: 1 in every cell holding a particle (labelParticles into its own buffer), read by lsResolve. */
+  occBuf: GPUBuffer | null = null
+  private lsBg: { lsScatter: GPUBindGroup; lsFinalize: GPUBindGroup; occupancy: GPUBindGroup; lsResolve: GPUBindGroup; ghostCoef: GPUBindGroup } | null = null
   private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
@@ -250,7 +258,7 @@ export class FlipGpuSimulator {
     this.weightBuf = buf('weight', 4 * G)
     this.uBuf = [buf('uA', 4 * G), buf('uB', 4 * G)]
     this.validBuf = [buf('validA', 4 * G), buf('validB', 4 * G)]
-    this.diagBuf = buf('diag', 32)
+    this.diagBuf = buf('diag', 4 * DIAG_WORDS)
     this.paramsBuf = buf('params', PARAMS_BYTES, GPUBufferUsage.UNIFORM | D)
 
     const types = new Uint32Array(G)
@@ -320,8 +328,10 @@ export class FlipGpuSimulator {
     this.lsCellBuf = device.createBuffer({ label: 'flip.lsCell', size: 16 * solver.paddedCount, usage: Sg | Dg | Rg })
     this.lsFaceBuf = device.createBuffer({ label: 'flip.lsFace', size: 16 * 3 * L.size, usage: Sg | Dg | Rg })
     this.phiCellBuf = device.createBuffer({ label: 'flip.phiCell', size: 4 * solver.paddedCount, usage: Sg | Dg | Rg })
+    this.occBuf = device.createBuffer({ label: 'flip.occupancy', size: 4 * solver.paddedCount, usage: Sg | Dg | Rg })
     this.pipelines.lsScatter = pipe('lsScatter', lsScatterWGSL)
     this.pipelines.lsFinalize = pipe('lsFinalize', lsFinalizeWGSL)
+    this.pipelines.lsResolve = pipe('lsResolve', lsResolveWGSL)
     this.pipelines.ghostCoef = pipe('ghostCoef', ghostCoefWGSL)
     this.projBg = {
       labelClear: group('labelClear', [sb.labels]),
@@ -332,6 +342,8 @@ export class FlipGpuSimulator {
     this.lsBg = {
       lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf]),
       lsFinalize: group('lsFinalize', [this.lsCellBuf, this.phiCellBuf, sb.labels]),
+      occupancy: group('labelParticles', [this.posBuf, this.occBuf]),
+      lsResolve: group('lsResolve', [this.phiCellBuf, this.occBuf, sb.labels, this.diagBuf]),
       ghostCoef: group('ghostCoef', [sb.labels, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef, this.massBuf, this.massLoBuf, this.weightBuf, this.diagBuf]),
     }
     if (!this.densityProjection) return
@@ -475,8 +487,10 @@ export class FlipGpuSimulator {
     encoder.clearBuffer(this.lsFaceBuf)
     if (this.count > 0) this.dispatch(encoder, 'lsScatter', this.lsBg.lsScatter, this.count, 64)
     this.dispatch(encoder, 'lsFinalize', this.lsBg.lsFinalize, cells, 256)
-    // union with occupancy: every cell holding a particle is LIQUID too (flipRef.classifyLevelSet)
-    if (this.count > 0) this.dispatch(encoder, 'labelParticles', this.projBg!.labelParticles, this.count, 64)
+    // particle-holding cells with φ ≥ 0 whose interface φ does not resolve become LIQUID (flipRef.classifyLevelSet)
+    encoder.clearBuffer(this.occBuf!)
+    if (this.count > 0) this.dispatch(encoder, 'labelParticles', this.lsBg.occupancy, this.count, 64)
+    this.dispatch(encoder, 'lsResolve', this.lsBg.lsResolve, cells, 256)
     this.dispatch(encoder, 'ghostCoef', this.lsBg.ghostCoef, cells, 256)
   }
 
@@ -594,17 +608,17 @@ export class FlipGpuSimulator {
   }
 
   resetDiagnostics(): void {
-    this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(8))
+    this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(DIAG_WORDS))
     if (this.solver) this.device.queue.writeBuffer(this.solver.buffers.faults, 0, new Uint32Array(4))
     if (this.psiSolver) this.device.queue.writeBuffer(this.psiSolver.buffers.faults, 0, new Uint32Array(4))
   }
 
   async readDiagnostics(): Promise<FlipDiagnostics> {
-    const d = new Uint32Array(await this.readBuffer(this.diagBuf, 32))
+    const d = new Uint32Array(await this.readBuffer(this.diagBuf, 4 * DIAG_WORDS))
     const f = this.solver ? await this.solver.readFaults() : null
     const g = this.psiSolver ? await this.psiSolver.readFaults() : null
     return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2], unsetDivergenceFaces: d[3], densityClamps: d[4],
-      densityNeighbourFaces: d[5], densityDefaultFaces: d[6],
+      densityNeighbourFaces: d[5], densityDefaultFaces: d[6], unresolvedRelabels: d[8],
       solves: f?.solves ?? 0, capHits: f?.capHits ?? 0, breakdowns: f?.breakdowns ?? 0, maxIterations: f?.maxIterations ?? 0,
       psiSolves: g?.solves ?? 0, psiCapHits: g?.capHits ?? 0, psiBreakdowns: g?.breakdowns ?? 0, psiMaxIterations: g?.maxIterations ?? 0 }
   }
@@ -620,6 +634,6 @@ export class FlipGpuSimulator {
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf]) b.destroy()
     this.solver?.destroy()
     this.psiSolver?.destroy()
-    for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf, this.lsCellBuf, this.lsFaceBuf, this.phiCellBuf]) b?.destroy()
+    for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf, this.lsCellBuf, this.lsFaceBuf, this.phiCellBuf, this.occBuf]) b?.destroy()
   }
 }

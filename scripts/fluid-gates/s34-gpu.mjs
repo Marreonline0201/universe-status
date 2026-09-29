@@ -52,7 +52,8 @@ try {
   for (const c of [{ label: '16³', n: [16, 16, 16] }, { label: '64³ ring(5,11,3)', n: [64, 64, 64], ring: [5, 11, 3] }, { label: '24×16×12 ring(7,2,9)', n: [24, 16, 12], ring: [7, 2, 9] }]) {
     const r = await run('ghostKernels', c)
     report.kernels[c.label] = r
-    gate.check(r.k15.phiRatio <= 1 && r.k15.labelMismatch === 0, `K15 lsScatter+lsFinalize ${c.label} (${r.particles} particles, ${r.k15.liquid} liquid cells): max |Δφ|/bound ${r.k15.phiRatio.toFixed(3)} (≤ 1); surface band |Δφ| ${r.k15.surfPhiDiffDx.toExponential(2)} dx; label mismatches ${r.k15.labelMismatch} (+${r.k15.nearZero} inside the bound of φ = 0)`)
+    gate.check(r.k15.phiRatio <= 1 && r.k15.labelMismatch === 0 && r.k15.relabelsRef > 0 && r.k15.particlesInAirCells > 0 && Math.abs(r.k15.relabelsGpu - r.k15.relabelsRef) <= r.k15.nearZero,
+      `K15 lsScatter+lsFinalize+lsResolve ${c.label} (${r.particles} particles, ${r.k15.liquid} liquid cells): max |Δφ|/bound ${r.k15.phiRatio.toFixed(3)} (≤ 1); surface band |Δφ| ${r.k15.surfPhiDiffDx.toExponential(2)} dx; label mismatches ${r.k15.labelMismatch} (+${r.k15.nearZero} inside the bound of φ = 0, own or a neighbour's); unresolved relabels GPU ${r.k15.relabelsGpu} vs reference ${r.k15.relabelsRef} (> 0), particles left in AIR cells ${r.k15.particlesInAirCells} (> 0: both branches exercised)`)
     gate.check(r.k16.facePhiRatio <= 1 && r.k16.coefRatio <= 1 && r.k16.aDiffRel <= 1e-6 && r.k16.faces > 0, `K16 ghostCoef ${c.label} (${r.k16.faces} liquid–air faces): face φ |Δ|/bound ${r.k16.facePhiRatio.toFixed(3)}, extra diagonal |Δ|/(1e-5·(extra + a)) ${r.k16.coefRatio.toFixed(3)} (max extra ${(r.k16.extraMax / r.k16.a).toFixed(1)}·a), a rel ${r.k16.aDiffRel.toExponential(1)}; θ vs reference end to end ${r.k16.thetaDiff.toExponential(2)}`)
     gate.check(r.k17.bulkDiff <= 1e-5 * r.k17.uRef && r.k17.surfRatio <= 1 && r.k17.validMismatch === 0 && r.k17.surfFaces > 0, `K17 project ghost ${c.label} (air p poisoned): non-surface |Δu| ${r.k17.bulkDiff.toExponential(2)} m/s (≤ ${(1e-5 * r.k17.uRef).toExponential(2)}); ${r.k17.surfFaces} liquid–air faces |Δu|/bound ${r.k17.surfRatio.toFixed(3)} (≤ 1), vs reference end to end ${r.k17.surfEndToEnd.toExponential(2)} m/s; set/unset mismatches ${r.k17.validMismatch}`)
   }
@@ -101,7 +102,7 @@ try {
     const v1 = await run('violentColumn', { ghost: true, seconds: 6 })
     report.v1 = v1
     const v1w = Math.max(...v1.series.map(v => Math.abs(v - 1)))
-    gate.check(v1w <= 0.02 && v1.breakdowns === 0, `V1 on the GPU, violent confined column (8×36 cells in 16×40×8, ghost surface): φ-volume/N·V_p every second ${v1.series.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * v1w).toFixed(2)} % (≤ 2 %); p caps ${v1.capHits}, ψ caps ${v1.psiCapHits}`)
+    gate.check(v1w <= 0.02 && v1.breakdowns === 0 && v1.firstNonFinite < 0, `V1 on the GPU, violent confined column (8×36 cells in 16×40×8, ghost surface): φ-volume/N·V_p every second ${v1.series.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * v1w).toFixed(2)} % (≤ 2 %); p caps ${v1.capHits}, ψ caps ${v1.psiCapHits}, breakdowns ${v1.breakdowns}; non-finite particles ${v1.firstNonFinite < 0 ? 'none' : `from substep ${v1.firstNonFinite}`}; unresolved-cell relabels ${v1.relabels}`)
     const g2 = await run('doubleDamBreak', { density: true, ghost: true })
     report.g2ghost = { ...g2, series: undefined }
     gate.check(Math.abs(g2.endOverNVp - 1) <= 0.02 && g2.breakdowns === 0, `G2 again with the ghost-fluid surface, double dam break 30 s (${g2.particles} particles): φ-volume / N·V_p = ${g2.endOverNVp.toFixed(4)} (${(100 * (g2.endOverNVp - 1)).toFixed(3)} %, ≤ 2 %); p caps ${g2.capHits}/${g2.solves}, ψ caps ${g2.psiCapHits}/${g2.psiSolves}`)

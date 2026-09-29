@@ -85,6 +85,12 @@ export interface FlipRefOptions {
   psiTolerance?: number
 }
 
+/** A solid sphere moving with prescribed velocity during a substep (S3.1c-2, the drop ball): Batty, Bertails & Bridson
+ *  2007 — every face's pressure coefficient and divergence term are weighted by the fluid fraction of its control
+ *  volume (their eqs. 4–7), the sphere's velocity enters the right-hand side (the −JᵀV term of eq. 13 with M_S⁻¹ → 0),
+ *  and the pressure force on it is J·p = −Σ vol_f·(p₊ − p₋)/dx over the faces it occupies (eqs. 8–10). Window metres. */
+export interface RefSphere { center: Vec3; radius: number; velocity: Vec3 }
+
 /** Cell labels for the projection (a cell holding at least one particle is LIQUID; the ghost layer is SOLID). */
 export const CellLabel = { AIR: 0, LIQUID: 1, SOLID: 2 } as const
 
@@ -145,6 +151,9 @@ export interface RefDiagnostics {
    *  FACE_WEIGHT_MIN), and those that fell back to `density` — counted per solve. */
   densityNeighbourFaces: number
   densityDefaultFaces: number
+  /** Ghost mode: particle-holding cells with φ ≥ 0 relabelled LIQUID because φ does not resolve their interface (no
+   *  φ < 0 face-neighbour, or no empty one), summed over classifyLevelSet calls. */
+  enclosedRelabels: number
 }
 
 /** Positions are kept this fraction of a cell inside the window (a particle exactly on the far wall would put its
@@ -163,7 +172,7 @@ export class FlipRef {
   readonly u: [Float64Array, Float64Array, Float64Array]
   /** 1 where u holds a velocity (fluid face with mass, extrapolated face, or solid face). */
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
-  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0, densityNeighbourFaces: 0, densityDefaultFaces: 0 }
+  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0, densityNeighbourFaces: 0, densityDefaultFaces: 0, enclosedRelabels: 0 }
   /** Σw per face (the trilinear weights of the particles scattered to it) and the face density ρ_f (kg/m³). */
   readonly weight: [Float64Array, Float64Array, Float64Array]
   readonly rhoFace: [Float64Array, Float64Array, Float64Array]
@@ -191,10 +200,23 @@ export class FlipRef {
   readonly pressureMaxIterations: number
   /** Cell labels and pressure (Pa), in layout slots. */
   readonly label: Uint8Array
+  /** The density projection's labels (the voxel rule at its particle positions), kept for phiVolume. */
+  readonly densityLabel: Uint8Array
   readonly pressure: Float64Array
   /** Right-hand side −(∇·u*)/1 of the last solve per LIQUID cell slot, 1/s (0 elsewhere; kernel-parity tests). */
   readonly rhs: Float64Array
   lastSolve: SolveStats | null = null
+  /** The drop ball for the next substep (null: none). The caller moves it; the solver only sees its state. */
+  sphere: RefSphere | null = null
+  /** Solid fraction of each face's dx³ control volume and of each cell's dx³ cube inside the sphere (2×2×2 subsamples,
+   *  each a smooth partial volume clamp(½ − d/(dx/2), 0, 1) of its signed distance d), and the kernel-weighted solid
+   *  volume of each cell (the density projection's compensation). Zero without a sphere. */
+  readonly solidFraction: [Float64Array, Float64Array, Float64Array]
+  readonly cellSolidFraction: Float64Array
+  readonly cellSolidKernel: Float64Array
+  /** Pressure force on the sphere from the last projection, J·p (N), and particles pushed out of it. */
+  sphereForce: Vec3 = [0, 0, 0]
+  spherePushOuts = 0
 
   constructor(layout: GridLayout, opts: FlipRefOptions = {}) {
     this.layout = layout
@@ -216,6 +238,7 @@ export class FlipRef {
     this.pressureTolerance = opts.pressureTolerance ?? 1e-9
     this.pressureMaxIterations = opts.pressureMaxIterations ?? 20000
     this.label = new Uint8Array(layout.size)
+    this.densityLabel = new Uint8Array(layout.size)
     this.pressure = new Float64Array(layout.size)
     this.rhs = new Float64Array(layout.size)
     this.densityProjection = opts.densityProjection ?? false
@@ -229,10 +252,14 @@ export class FlipRef {
     this.psi = new Float64Array(layout.size)
     this.psiRhs = new Float64Array(layout.size)
     this.displacement = [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
+    this.solidFraction = f64()
+    this.cellSolidFraction = new Float64Array(layout.size)
+    this.cellSolidKernel = new Float64Array(layout.size)
   }
 
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
   step(p: RefParticles, dt: number): void {
+    this.sphereFractions()
     if (this.densityProjection) this.densityCorrect(p)
     this.p2g(p)
     this.gridUpdate(dt)
@@ -240,6 +267,7 @@ export class FlipRef {
       this.applySolidFaces()
       if (this.freeSurface === 'ghost') { this.classifyLevelSet(p); this.thetaCache.clear() }
       else this.classify(p)
+      this.extendLiquidIntoSphere()
       this.solvePressure(dt)
       this.projectVelocities(dt)
     }
@@ -247,6 +275,81 @@ export class FlipRef {
     this.applySolidFaces()
     this.g2p(p)
     this.advect(p, dt)
+  }
+
+  /** Solid fractions of the sphere (all zero without one): each face's and cell's dx³ control volume from 2×2×2
+   *  subsamples at ±dx/4, each subsample a smooth partial volume clamp(½ − d/(dx/2), 0, 1) of its signed distance d to
+   *  the sphere; the kernel-weighted solid volume of each cell (the trilinear N of the density projection, 4×4×4 samples
+   *  over its [−dx, dx]³ support) — the sphere's analogue of the wall compensation f_solid. */
+  sphereFractions(): void {
+    const L = this.layout, h = L.dx, S = this.sphere
+    for (const a of AXES) this.solidFraction[a].fill(0)
+    this.cellSolidFraction.fill(0); this.cellSolidKernel.fill(0)
+    if (!S) return
+    const [cx, cy, cz] = S.center, R = S.radius
+    const sub = (x: number, y: number, z: number) => Math.min(1, Math.max(0, 0.5 - (Math.hypot(x - cx, y - cy, z - cz) - R) / (h / 2)))
+    const box = (x: number, y: number, z: number) => {
+      let v = 0
+      for (const ox of [-0.25, 0.25]) for (const oy of [-0.25, 0.25]) for (const oz of [-0.25, 0.25]) v += sub(x + ox * h, y + oy * h, z + oz * h)
+      return v / 8
+    }
+    const reach = R + 2 * h
+    const near = (x: number, y: number, z: number) => Math.hypot(x - cx, y - cy, z - cz) <= reach
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const f = L.facePos(a, i, j, k)
+        if (near(f[0], f[1], f[2])) this.solidFraction[a][L.idx(i, j, k)] = box(f[0], f[1], f[2])
+      }
+    }
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const x = (i + 0.5) * h, y = (j + 0.5) * h, z = (k + 0.5) * h
+      if (!near(x, y, z)) continue
+      const c = L.idx(i, j, k)
+      this.cellSolidFraction[c] = box(x, y, z)
+      let kv = 0
+      for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) for (let e = 0; e < 4; e++) {
+        const u = (a - 1.5) / 2, v = (b - 1.5) / 2, w = (e - 1.5) / 2                    // ±0.25, ±0.75 cells
+        kv += (1 - Math.abs(u)) * (1 - Math.abs(v)) * (1 - Math.abs(w)) * sub(x + u * h, y + v * h, z + w * h)
+      }
+      this.cellSolidKernel[c] = kv / 8   // Σ N·ΔV/dx³ with ΔV = (dx/2)³: the trilinear kernel integrates to 1
+    }
+  }
+
+  /** The liquid extended into the sphere (Batty & Bridson extrapolate the liquid level set into solids; FINAL-PLAN §5.5):
+   *  a cell whose centre lies inside the sphere holds no particles and has φ > 0, so it would be AIR — a p = 0 vacuum
+   *  pulling the surrounding water into the ball (measured: 1e5 Pa spikes, 14 m/s at the first substep). Two passes
+   *  relabel such cells LIQUID when a face-neighbour is LIQUID: they become unknowns whose faces carry only the small
+   *  fluid fractions (fully solid ones drop out of the system). */
+  extendLiquidIntoSphere(): void {
+    if (!this.sphere) return
+    const L = this.layout, lab = this.label
+    for (let pass = 0; pass < 2; pass++) {
+      const add: number[] = []
+      for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+        const c = L.idx(i, j, k)
+        if (lab[c] !== CellLabel.AIR || this.cellSolidFraction[c] < 0.5) continue
+        for (const [di, dj, dk] of NEIGHBOURS) {
+          const ni = i + di, nj = j + dj, nk = k + dk
+          if (ni < 0 || nj < 0 || nk < 0 || ni >= L.nx || nj >= L.ny || nk >= L.nz) continue
+          if (lab[L.idx(ni, nj, nk)] === CellLabel.LIQUID) { add.push(c); break }
+        }
+      }
+      for (const c of add) lab[c] = CellLabel.LIQUID
+    }
+  }
+
+  /** Push a particle that ended inside the sphere radially out to its surface (+ wallEps); returns true if it did. */
+  private sphereCollide(p: RefParticles, q: number): boolean {
+    const S = this.sphere
+    if (!S) return false
+    const dx = p.pos[3 * q] - S.center[0], dy = p.pos[3 * q + 1] - S.center[1], dz = p.pos[3 * q + 2] - S.center[2]
+    const r = Math.hypot(dx, dy, dz), R = S.radius + WALL_EPS_CELLS * this.layout.dx
+    if (r >= R) return false
+    const s = r > 0 ? R / r : 0
+    if (s === 0) { p.pos[3 * q + 1] = S.center[1] + R; return true }
+    p.pos[3 * q] = S.center[0] + dx * s; p.pos[3 * q + 1] = S.center[1] + dy * s; p.pos[3 * q + 2] = S.center[2] + dz * s
+    return true
   }
 
   /** Voxel free surface (FINAL-PLAN §5.5 stage 1): the ghost layer is SOLID, a window cell holding at least one
@@ -314,8 +417,10 @@ export class FlipRef {
       for (const ax of AXES) {
         for (const side of [0, 1] as const) {
           const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
-          if (this.faceType[ax][fs] !== FaceType.SOLID && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
-          div += side === 1 ? this.u[ax][fs] : -this.u[ax][fs]
+          // Batty et al. 2007: the face flux is the fluid part (1 − S)·u* plus the sphere's part S·V (the −JᵀV term)
+          const S = this.solidFraction[ax][fs], flux = (1 - S) * this.u[ax][fs] + (S > 0 ? S * this.sphere!.velocity[ax] : 0)
+          if (this.faceType[ax][fs] !== FaceType.SOLID && S < 1 && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
+          div += side === 1 ? flux : -flux
         }
       }
       b[r] = -div / L.dx
@@ -349,14 +454,38 @@ export class FlipRef {
       phi[c] = this.zhuBridson((i + 0.5) * h, (j + 0.5) * h, (k + 0.5) * h)
       lab[c] = phi[c] < 0 ? CellLabel.LIQUID : CellLabel.AIR
     }
-    // every cell holding a particle is LIQUID as well (the union with the voxel rule): the Zhu–Bridson φ can be ≥ 0 in a
-    // cell that holds liquid — a sheet thinner than r̄ from the centre, or particles pressed against a wall, where the
-    // one-sided kernel pulls x̄ away from the wall — and such a cell must still carry the incompressibility constraint,
-    // or particles pile up there without limit (measured: a violent 36-cell column in a 64×40×8 tank kept 0.987 of its
-    // volume with voxel labels and 0.58 with φ-only labels after 6 s). θ falls back to 1 on those cells' faces.
+    // A particle-holding cell with φ ≥ 0 stays AIR only where the level set RESOLVES its interface: it borders liquid
+    // (a face-neighbour with φ < 0) on one side and empty space (no particle, φ ≥ 0, neither wall nor sphere) on another, so the
+    // ghost-fluid θ on the liquid neighbour's face places p = 0 at the sub-cell surface. Every other particle-holding
+    // cell is LIQUID — its liquid is not resolved by φ (the Zhu–Bridson centroid ignores how many particles there are,
+    // and at a wall sees the particle-free side as air), and it must still be incompressible:
+    //  • enclosed by liquid and walls (no empty neighbour): left AIR it is a p = 0 sink inside pressurised liquid, and
+    //    the particles draining into it pile up without limit (measured: violent 36-cell column in a 16×40×8 tank,
+    //    φ-only labels: 4534 particles in one corner cell at 2.5 s, φ-volume 0.49);
+    //  • a film or sheet one cell thick (no φ < 0 neighbour): left AIR it has no pressure and no incompressibility, and
+    //    a decelerating film compresses (measured, same scene, AIR films: 77 particles in one wall cell, φ-volume 0.973).
+    //    LIQUID with θ = θmin on its faces to air, p ≈ 0 — the atmospheric pressure of an unresolved film — while its
+    //    divergence is held to zero by flow through those faces (the film thickens instead of compressing).
+    // Making EVERY occupied cell LIQUID (the voxel union) also pins p ≈ 0 at the centre of a resolved surface cell whose
+    // surface lies in its lower half, erasing the sub-cell height the ghost fluid exists for (measured: D1 standing-wave
+    // period error 0.70 % → 7.1 %, ν_num 1.1e-3 → 1.5e-2 m²/s). The test reads φ and occupancy, which the relabelling
+    // does not change, so one pass suffices.
+    const occupied = (ni: number, nj: number, nk: number) => this.zbHead[L.idx(ni, nj, nk)] >= 0
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const c = L.idx(i, j, k)
-      if (this.zbHead[c] >= 0) lab[c] = CellLabel.LIQUID
+      if (lab[c] !== CellLabel.AIR || !occupied(i, j, k)) continue
+      let bordersEmpty = false, bordersLiquid = false
+      for (const [di, dj, dk] of NEIGHBOURS) {
+        const ni = i + di, nj = j + dj, nk = k + dk
+        if (ni < 0 || nj < 0 || nk < 0 || ni >= L.nx || nj >= L.ny || nk >= L.nz) continue   // SOLID ghost layer
+        const n = L.idx(ni, nj, nk)
+        // a cell mostly inside the sphere is solid, not empty space (measured: counted as empty, the cells touching a
+        // submerged sphere stayed AIR — p = 0 on its surface, 1.7 m/s currents; extendLiquidIntoSphere's threshold)
+        if (this.cellSolidFraction[n] >= 0.5) continue
+        if (phi[n] < 0) bordersLiquid = true
+        else if (!occupied(ni, nj, nk)) bordersEmpty = true
+      }
+      if (!(bordersEmpty && bordersLiquid)) { lab[c] = CellLabel.LIQUID; this.diag.enclosedRelabels++ }
     }
   }
 
@@ -391,8 +520,8 @@ export class FlipRef {
    *  crosses zero on the segment between the two centres, located with the face-centre sample as well (the 2× grid of
    *  FINAL-PLAN S3.4a remedy 1 — inside the liquid ZB φ saturates near −r̄ instead of growing like a distance, so
    *  linear interpolation between the two centres alone sits 0.18 dx low on a flat surface; with the midpoint sample
-   *  −0.016 dx, measured). Clamped to [thetaMin, 1]; 1 in voxel mode (p = 0 at the AIR cell centre); thetaMin on a
-   *  LIQUID-by-occupancy cell whose own φ ≥ 0. */
+   *  −0.016 dx, measured). Clamped to [thetaMin, 1]; 1 in voxel mode (p = 0 at the AIR cell centre); thetaMin on an
+   *  enclosed particle-holding cell (φ ≥ 0, relabelled LIQUID by classifyLevelSet). */
   theta(sl: number, sa: number): number {
     if (this.freeSurface !== 'ghost') return 1
     const key = sl * 0x100000 + sa
@@ -402,10 +531,10 @@ export class FlipRef {
     const a = this.coordsOf(sl), b = this.coordsOf(sa)
     const fm = this.zhuBridson((a[0] + b[0] + 1) * h / 2, (a[1] + b[1] + 1) * h / 2, (a[2] + b[2] + 1) * h / 2)
     const fl = this.levelSet[sl], fa = this.levelSet[sa]
-    // a LIQUID cell whose own φ ≥ 0 (liquid by occupancy, see classifyLevelSet): φ says the surface lies below its
-    // centre, so the face is dry — θ = θmin, p ≈ 0 at the cell (Mantaflow's thetaHelper clamps this case the same way).
-    // θ = 1 here put p = 0 a whole cell ABOVE the true surface in such columns: 5e-2 m/s spurious currents in a pool
-    // whose surface lies mid-cell (measured), against 1e-8 with voxel labels.
+    // a LIQUID cell whose own φ ≥ 0 (relabelled: φ does not resolve its interface, see classifyLevelSet): φ says the
+    // surface lies behind its centre, so the face is dry — θ = θmin, p ≈ 0 at the cell (Mantaflow's thetaHelper clamps
+    // this case the same way). θ = 1 here put p = 0 a whole cell above the true surface (measured under the earlier
+    // all-occupied rule: 5e-2 m/s spurious currents in a pool whose surface lies mid-cell, against 1e-8 with voxel labels).
     if (fl >= 0) { this.thetaCache.set(key, this.thetaMin); return this.thetaMin }
     let t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
     t = t < this.thetaMin ? this.thetaMin : t > 1 ? 1 : t
@@ -424,13 +553,20 @@ export class FlipRef {
 
   /** Rows of the 7-point operator on the LIQUID cells with face coefficients `coef(axis, face slot)` (SOLID faces
    *  dropped, AIR = Dirichlet 0; with `ghost`, a liquid–air face contributes a_f/θ — Bridson eq. 4.37, one form only,
-   *  FINAL-PLAN §5.3). */
+   *  FINAL-PLAN §5.3), each weighted by its fluid fraction 1 − S_f (Batty et al. 2007 eqs. 4–7; 1 without a sphere).
+   *  A LIQUID cell whose every face is fully solid has no row (the GPU solver's zero-diagonal rule). */
   private liquidSystem(coef: (ax: Axis, fs: number) => number, ghost = false): LiquidSystem {
     const L = this.layout, lab = this.label
     const cells: number[] = [], coords: [number, number, number][] = []
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const s = L.idx(i, j, k)
-      if (lab[s] === CellLabel.LIQUID) { cells.push(s); coords.push([i, j, k]) }
+      if (lab[s] !== CellLabel.LIQUID) continue
+      let open = false
+      for (const ax of AXES) for (const side of [0, 1] as const) {
+        const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
+        if (this.faceType[ax][fs] !== FaceType.SOLID && this.solidFraction[ax][fs] < 1) open = true
+      }
+      if (open) { cells.push(s); coords.push([i, j, k]) }
     }
     const n = cells.length
     const row = new Map<number, number>()
@@ -444,7 +580,9 @@ export class FlipRef {
         for (const side of [0, 1] as const) {
           const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
           if (this.faceType[ax][fs] === FaceType.SOLID) continue
-          const a = coef(ax, fs)
+          const w = 1 - this.solidFraction[ax][fs]
+          if (w <= 0) continue
+          const a = coef(ax, fs) * w
           const ns = L.idx(i + (ax === 0 ? 2 * side - 1 : 0), j + (ax === 1 ? 2 * side - 1 : 0), k + (ax === 2 ? 2 * side - 1 : 0))
           if (lab[ns] === CellLabel.LIQUID) { nbr[6 * r + 2 * ax + side] = row.get(ns)!; offd[6 * r + 2 * ax + side] = a; d += a }
           else if (lab[ns] === CellLabel.AIR) { closed = false; airNeighbour[r] = 1; d += ghost ? a / this.theta(cells[r], ns) : a }
@@ -458,13 +596,15 @@ export class FlipRef {
 
   /** Kugelstadt et al. 2019 density projection (FINAL-PLAN §4.1, §5.2 steps 2–5), before P2G:
    *  f = Σ V_p·N(x_p − x_c)/dx³ (V_p = dx³/ppc) with the cell-centred trilinear N (their eq. 12), plus the solid-side kernel volume of a
-   *  rest-density fill f_solid = 1 − Π_axes (1 − 0.125·[solid neighbours on that axis]) (design C §2.4 [DERIVED]);
+   *  rest-density fill f_solid = 1 − Π_axes (1 − 0.125·[solid neighbours on that axis]) (design C §2.4 [DERIVED]) and of
+   *  the sphere (cellSolidKernel);
    *  f̃ = clamp(f, 0.5, 1.5) and ≥ 1 in cells with an AIR neighbour; solve ∇²ψ = 1 − f̃ with ψ = 0 in AIR and Neumann at
    *  solids — in the solver's positive form Σ(ψ̂_c − ψ̂_nbr) = f̃ − 1 with ψ̂ = ψ/dx² — then move every particle by
    *  δx = −∇ψ (trilinear from the face values −dx·(ψ̂₊ − ψ̂₋)), WITHOUT changing its velocity. */
   densityCorrect(p: RefParticles): DensityStats {
     const L = this.layout, h = L.dx
     this.classify(p)
+    this.densityLabel.set(this.label)
     // volume fraction on cell centres (logical −1 … n; ghost cells collect the mass that is lost across the walls)
     const f = this.volumeFraction
     f.fill(0)
@@ -491,7 +631,8 @@ export class FlipRef {
         }
         keep *= 1 - 0.125 * solidNbrs
       }
-      let ft = f[c] + (1 - keep)
+      // walls (analytic f_solid) + the sphere's kernel-weighted solid volume: disjoint solids, so they add
+      let ft = f[c] + (1 - keep) + this.cellSolidKernel[c]
       this.fCompensated[c] = ft
       fMin = Math.min(fMin, ft); fMax = Math.max(fMax, ft)
       ft = Math.min(1.5, Math.max(0.5, ft))
@@ -534,6 +675,7 @@ export class FlipRef {
       dEp -= p.mass[q] * (this.gravity[0] * (cx - x) + this.gravity[1] * (cy - y) + this.gravity[2] * (cz - z))
       maxMove = Math.max(maxMove, Math.hypot(cx - x, cy - y, cz - z))
       p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
+      if (this.sphereCollide(p, q)) this.spherePushOuts++
     }
     const out: DensityStats = { ...stats, fMin, fMax, deltaPotential: dEp, maxMove }
     this.lastDensity = out
@@ -541,14 +683,17 @@ export class FlipRef {
   }
 
   /** Liquid volume Σ min(f, 1)·dx³ over ALL window cells from the last densityCorrect, m³ (FINAL-PLAN S3.2 G2): f̃ with
-   *  the wall compensation in LIQUID cells, the raw fraction in AIR cells — the cell-centred kernel of a surface
-   *  particle spills up to 1/8 of its volume into the AIR cell above, which a LIQUID-only sum would lose. */
+   *  the wall compensation in the density projection's LIQUID cells, the raw fraction in its AIR cells — the
+   *  cell-centred kernel of a surface particle spills up to 1/8 of its volume into the AIR cell above, which a
+   *  LIQUID-only sum would lose. The labels are the density projection's own (densityLabel): f̃ exists only on its cells,
+   *  and the ghost-fluid labels of the pressure solve differ from them. f̃ counts liquid + sphere (it is compensated by
+   *  the sphere's kernel volume), so a cell's liquid is min(f̃, 1) − S_cell. */
   phiVolume(): number {
     const L = this.layout
     let v = 0
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const s = L.idx(i, j, k)
-      v += Math.min(this.label[s] === CellLabel.LIQUID ? this.fCompensated[s] : this.volumeFraction[s], 1)
+      v += this.densityLabel[s] === CellLabel.LIQUID ? Math.max(0, Math.min(this.fCompensated[s], 1) - this.cellSolidFraction[s]) : Math.min(this.volumeFraction[s], 1)
     }
     return v * L.dx ** 3
   }
@@ -564,6 +709,7 @@ export class FlipRef {
       for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
         const s = L.idx(i, j, k)
         if (t[s] === FaceType.SOLID) continue
+        if (this.solidFraction[a][s] >= 1) { u[s] = this.sphere!.velocity[a]; ok[s] = 1; continue }   // inside the sphere: its velocity
         const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
         const lm = lab[sm], lp = lab[s]
         if (lm === CellLabel.LIQUID || lp === CellLabel.LIQUID) {
@@ -577,9 +723,36 @@ export class FlipRef {
         }
       }
     }
+    this.sphereForce = this.pressureForceOnSphere()
   }
 
-  /** Max |∇·u| over LIQUID cells, 1/s (after projection: the solve's residual expressed as velocity divergence). */
+  /** Batty et al. 2007 eqs. 8–10: F = −∯ p n dA = −∭_solid ∇p ≈ −Σ_f S_f·dx³·(p₊ − p₋)/dx over the faces the sphere
+   *  occupies (p of LIQUID cells, 0 elsewhere — interior terms telescope away), N. */
+  pressureForceOnSphere(): Vec3 {
+    const F: Vec3 = [0, 0, 0]
+    if (!this.sphere) return F
+    const L = this.layout, lab = this.label, pr = this.pressure, h = L.dx
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k), S = this.solidFraction[a][s]
+        if (S <= 0 || this.faceType[a][s] === FaceType.SOLID) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        const pp = lab[s] === CellLabel.LIQUID ? pr[s] : 0, pm = lab[sm] === CellLabel.LIQUID ? pr[sm] : 0
+        F[a] -= S * h * h * (pp - pm)
+      }
+    }
+    return F
+  }
+
+  /** Volume flux velocity of a face: (1 − S)·u + S·V_sphere (u without a sphere). */
+  private faceFlux(a: Axis, s: number): number {
+    const S = this.solidFraction[a][s]
+    return S > 0 ? (1 - S) * this.u[a][s] + S * this.sphere!.velocity[a] : this.u[a][s]
+  }
+
+  /** Max |∇·u| over LIQUID cells, 1/s (after projection: the solve's residual expressed as velocity divergence; with a
+   *  sphere, the divergence of the volume flux (1 − S)·u + S·V). */
   maxLiquidDivergence(): number {
     const L = this.layout
     let m = 0
@@ -587,8 +760,8 @@ export class FlipRef {
       if (this.label[L.idx(i, j, k)] !== CellLabel.LIQUID) continue
       let div = 0
       for (const a of AXES) {
-        const up = L.idx(i + (a === 0 ? 1 : 0), j + (a === 1 ? 1 : 0), k + (a === 2 ? 1 : 0))
-        div += this.u[a][up] - this.u[a][L.idx(i, j, k)]
+        const up = L.idx(i + (a === 0 ? 1 : 0), j + (a === 1 ? 1 : 0), k + (a === 2 ? 1 : 0)), lo = L.idx(i, j, k)
+        div += this.faceFlux(a, up) - this.faceFlux(a, lo)
       }
       m = Math.max(m, Math.abs(div / L.dx))
     }
@@ -706,6 +879,7 @@ export class FlipRef {
       const cx = clampIn(nx, eps, ext[0] - eps), cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
       if (cx !== nx || cy !== ny || cz !== nz) this.diag.wallClamps++
       p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
+      if (this.sphereCollide(p, q)) this.spherePushOuts++
     }
   }
 

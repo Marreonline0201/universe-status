@@ -48,6 +48,7 @@ const DIAG_DENSITY_CLAMPS: u32 = 4u;
 const DIAG_RHO_NEIGHBOUR: u32 = 5u;   // faces whose ρ_f came from the neighbour mean (Σw < wMin)
 const DIAG_RHO_DEFAULT: u32 = 6u;     // faces that fell back to rho (no neighbour had a density either)
 const DIAG_MAX_SPEED: u32 = 7u;       // max particle speed after G2P (f32 bits: non-negative floats order like u32), m/s
+const DIAG_UNRESOLVED_RELABELS: u32 = 8u;   // ghost labels: particle-holding φ ≥ 0 cells made LIQUID (lsResolve)
 
 fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
   if (i < 0) { return 0; }

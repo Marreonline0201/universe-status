@@ -173,7 +173,7 @@ export async function densityCancels(device: GPUDevice) {
 /** F2: Hg 12 cells under water 12 cells at rest for 3 s; row-mean pressure of the interior columns. */
 export async function twoLayerHydrostatic(device: GPUDevice) {
   const nx = 16, nz = 8, h1 = 12, h2 = 12
-  const { p } = fillMaterials(nx, h1 + h2, nz, DX, mulberry32(73), (x, y) => (y < h1 * DX ? [RHO_HG, 1] : [RHO_W20, 0]))
+  const { p } = fillMaterials(nx, h1 + h2, nz, DX, mulberry32(73), (_x, y) => (y < h1 * DX ? [RHO_HG, 1] : [RHO_W20, 0]))
   f32round(p)
   const gpu = await makeSim(device, [nx, 32, nz], p.n, { tol: 1e-4 })
   gpu.setParticles(toInit(p))
@@ -253,12 +253,12 @@ export async function lockExchange(device: GPUDevice) {
 export async function overturn(device: GPUDevice, o: { pair: 'hg-water' | 'water-oil'; seconds: number }) {
   const [rhoHeavy, rhoLight, seed] = o.pair === 'hg-water' ? [RHO_HG, RHO_W20, 71] : [RHO_W20, RHO_OIL, 72]
   const nx = 16, nz = 8, h1 = 12, h2 = 12
-  const { p, tag } = fillMaterials(nx, h1 + h2, nz, DX, mulberry32(seed), (x, y) => (y < h1 * DX ? [rhoLight, 0] : [rhoHeavy, 1]))
+  const { p, tag } = fillMaterials(nx, h1 + h2, nz, DX, mulberry32(seed), (_x, y) => (y < h1 * DX ? [rhoLight, 0] : [rhoHeavy, 1]))
   f32round(p)
   const gpu = await makeSim(device, [nx, 40, nz], p.n, { tol: 1e-4 })
   gpu.setParticles(toInit(p))
   const comH: number[] = [], comL: number[] = []
-  let pos = new Float32Array(0)
+  let pos: Float32Array = new Float32Array(0)
   const steps = Math.round(o.seconds * 120)
   for (let s = 1; s <= steps; s++) {
     await submit(device, e => gpu.step(e, 1))

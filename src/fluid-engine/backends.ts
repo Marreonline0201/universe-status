@@ -74,7 +74,9 @@ export class MpmBackend implements SimBackend {
   readonly method: SolverMethod = 'mpm'
   readonly packing = MPM_PACKING
   readonly supportsBall = true
-  private constructor(private readonly device: GPUDevice, private readonly sim: MpmGpuSimulator) {}
+  private readonly device: GPUDevice
+  private readonly sim: MpmGpuSimulator
+  private constructor(device: GPUDevice, sim: MpmGpuSimulator) { this.device = device; this.sim = sim }
 
   static async create(device: GPUDevice): Promise<MpmBackend | null> {
     const sim = new MpmGpuSimulator()
@@ -157,7 +159,10 @@ export class FlipBackend implements SimBackend {
   private cflExceeded = 0
   private substepsTotal = 0
 
-  private constructor(private readonly device: GPUDevice, private readonly sim: FlipGpuSimulator) {
+  private readonly device: GPUDevice
+  private readonly sim: FlipGpuSimulator
+  private constructor(device: GPUDevice, sim: FlipGpuSimulator) {
+    this.device = device; this.sim = sim
     this.mPerRho = this.dx ** 3 / FLIP_PACKING.ppc
     this.speedSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.speed${i}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
   }

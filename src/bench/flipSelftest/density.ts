@@ -269,13 +269,21 @@ export async function violentColumn(device: GPUDevice, o: { ghost: boolean; seco
   gpu.dt = 1 / 120
   gpu.setParticles(toInit(p))
   const nvp = p.n * DX ** 3 / 8
-  const measure = async () => { await submit(device, e => { gpu.writeParams(); gpu.encodeLabels(e); gpu.encodeCellScatter(e); gpu.encodeDensityRhs(e) }); return phiVolume(gpu) / nvp }
+  const measure = async () => { await submit(device, e => { gpu.writeParams(); gpu.encodeLabels(e); gpu.encodeCellScatter(e); gpu.encodeDensityRhs(e) }); return (await phiVolume(gpu)) / nvp }
   const series: number[] = []
+  // the first substep that leaves a non-finite particle position (checked every 12 substeps), with the solver faults
+  // up to then — a NaN φ-volume is otherwise undiagnosable
+  let firstNonFinite = -1, atFault: Awaited<ReturnType<typeof gpu.readDiagnostics>> | null = null
   for (let s = 1; s <= seconds * 120; s++) {
     await submit(device, e => gpu.step(e, 1))
+    if (firstNonFinite < 0 && s % 12 === 0) {
+      const r = await gpu.readParticles()
+      for (let q = 0; q < p.n; q++) if (!Number.isFinite(r.pos[4 * q]) || !Number.isFinite(r.pos[4 * q + 1]) || !Number.isFinite(r.pos[4 * q + 2])) { firstNonFinite = s; atFault = await gpu.readDiagnostics(); break }
+    }
     if (s % 120 === 0) series.push(await measure())
   }
   const d = await gpu.readDiagnostics()
   gpu.destroy()
-  return { series, particles: p.n, wallClamps: d.wallClamps, capHits: d.capHits, psiCapHits: d.psiCapHits, breakdowns: d.breakdowns + d.psiBreakdowns }
+  return { series, particles: p.n, wallClamps: d.wallClamps, capHits: d.capHits, psiCapHits: d.psiCapHits, breakdowns: d.breakdowns + d.psiBreakdowns,
+    pressureBreakdowns: d.breakdowns, psiBreakdowns: d.psiBreakdowns, firstNonFinite, atFault, relabels: d.unresolvedRelabels }
 }

@@ -31,7 +31,7 @@
 //       2 × (t_half-fall − t_peak)), within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s (§5.2.3)
 //       [FINAL-PLAN A2; the sensor is 4.2 mm across and 3 mm above the bed, the cell 5 cm].
 // V1  violent confined column (added after φ-only labels lost 42 % of a violent flow's volume in 6 s — the gentle scenes
-//     above never exercised it): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
+//     above never exercised it; the first fix, every occupied cell LIQUID, then broke D1 — flipRef.classifyLevelSet): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
 //     ~8 m/s and running up to the lid; |φ-volume/(N·V_p) − 1| ≤ 2 % every second for 6 s (S3.2 G2's tolerance).
 // G2  (--g2, slow on the CPU) the 30 s double dam break again with the ghost-fluid surface: ≤ 2 % at 30 s.
 import { loadTsModules } from './lib/loadTs.mjs'
@@ -136,13 +136,13 @@ function standingWave(cellsPerH) {
   const ts = [0], es = [kineticEnergy(p)]
   for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); es.push(kineticEnergy(p)) }
   const wFit = fitOmega(ts, es, omega), d2 = nuNum(ts, es, omega, k)
-  return { cellsPerH, particles: p.n, omega, wFit, err: Math.abs(wFit / omega - 1), nuNum: d2.nu, peaks: d2.peaks, E0: es[0], clamps: sim.diag.wallClamps + sim.diag.densityClamps }
+  return { cellsPerH, particles: p.n, omega, wFit, err: Math.abs(wFit / omega - 1), nuNum: d2.nu, peaks: d2.peaks, E0: es[0], clamps: sim.diag.wallClamps + sim.diag.densityClamps, relabels: sim.diag.enclosedRelabels }
 }
 {
   const s28 = standingWave(28), s14 = standingWave(14)
   check(s28.err <= 0.03 && s28.err < s14.err, `D1 standing wave: E_K period π/ω' vs π/ω (ω = ${s28.omega.toFixed(4)} rad/s, period ${(Math.PI / s28.omega).toFixed(4)} s): error ${(100 * s28.err).toFixed(2)} % at H/dx = 28 (≤ 3 %, ${s28.particles} particles), ${(100 * s14.err).toFixed(2)} % at H/dx = 14 (must be larger)`)
   check(s28.nuNum <= 1.1e-4, `D2 numerical viscosity at H/dx = 28: ν_num ${s28.nuNum.toExponential(2)} m²/s from ${s28.peaks} E_K peaks (≤ 1.1e-4 = ν_glycerol/10; water ν = 1.0e-6); H/dx = 14: ${s14.nuNum.toExponential(2)}${s28.nuNum <= 1.1e-4 ? '' : ` — FINAL-PLAN consequence: glycerol-level viscosity is unresolvable at dx = ${(100 * DX).toFixed(2)} cm (validity HUD); the remedy is resolution, never tuning; S3.6 runs the viscous solve for ν_phys ≥ 0.01·ν_num = ${(0.01 * s28.nuNum).toExponential(2)} m²/s`}`)
-  info(`D1 push-backs (advection + density) ${s28.clamps} at H/dx = 28`)
+  info(`D1 push-backs (advection + density) ${s28.clamps} at H/dx = 28; unresolved-cell relabels ${s28.relabels} at H/dx = 28, ${s14.relabels} at 14 (0 expected: every occupied φ ≥ 0 cell of a gentle surface lies between φ < 0 liquid and empty space)`)
 }
 
 // A1 again + A2 (column collapses with the ghost-fluid surface)
@@ -202,11 +202,11 @@ function column({ aCells, n2, h, nx, tauEnd }) {
     const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4 }))
     const nvp = p.n * L.dx ** 3 / 8, out = []
     for (let s = 1; s * (1 / 120) <= seconds + 1e-9; s++) { sim.step(p, 1 / 120); if (s % 120 === 0) out.push(sim.phiVolume() / nvp) }
-    return { out, clamps: sim.diag.wallClamps }
+    return { out, clamps: sim.diag.wallClamps, relabels: sim.diag.enclosedRelabels }
   }
   const v1 = volumeSeries(new GridLayout({ nx: 16, ny: 40, nz: 8, dx: DX }), block([0, 0, 0], [7, 35, 7], mulberry32(5)), 6)
   const w = Math.max(...v1.out.map(v => Math.abs(v - 1)))
-  check(w <= 0.02, `V1 violent confined column (8×36 cells in 16×40×8): φ-volume/N·V_p every second ${v1.out.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * w).toFixed(2)} % (≤ 2 %); wall push-backs ${v1.clamps}`)
+  check(w <= 0.02, `V1 violent confined column (8×36 cells in 16×40×8): φ-volume/N·V_p every second ${v1.out.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * w).toFixed(2)} % (≤ 2 %); wall push-backs ${v1.clamps}; unresolved-cell relabels ${v1.relabels}`)
   if (process.argv.includes('--g2')) {
     const L = new GridLayout({ nx: 64, ny: 64, nz: 8, dx: DX }), a = block([0, 0, 0], [15, 31, 7], mulberry32(21)), b = block([48, 0, 0], [63, 31, 7], mulberry32(22))
     const p = makeParticles(a.n + b.n)
