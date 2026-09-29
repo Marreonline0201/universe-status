@@ -59,10 +59,12 @@ export function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: 
  *  - the two-word fixed point rounds each add by ≤ 2^-43 (common.wgsl).
  *  x̄ − x_s = Σk·r/Σk then errs by ≤ [2R·Σ|δk_i| + Σk_i·|δr_i| + (√3 + 1)·N·2^-43]/W, with Σk_i^(2/3) ≤ N^(1/3)·W^(2/3)
  *  (power mean), plus 1e-6·dx for f32 length() − r̄. W = Σk (lsW). */
-export function phiTol(W: number, h: number, ext = 64 * h) {
+export function phiTol(W: number, h: number, ext = 64 * h, rUlps = 1.5) {
+  // rUlps: the per-axis error of r = x − x_s in ulp(ext) — 1.5 for a particle; a computed image (the ball's radial
+  // image, S3.6e G0) adds its own f32 construction error (stokes.ts)
   const N = 64, ulp = 2 ** (Math.floor(Math.log2(ext)) - 23)
-  const D = 2 * Math.sqrt(3) * 1.5 * ulp / h + 8 * 2 ** -24, Wc = Math.max(W, 1e-30)
-  return (2 * (3 * D * N ** (1 / 3) * Wc ** (-1 / 3) + 1.2e-7) + Math.sqrt(3) * 1.5 * ulp / h + (Math.sqrt(3) + 1) * N * 2 ** -43 / Wc + 1e-6) * h
+  const D = 2 * Math.sqrt(3) * rUlps * ulp / h + 8 * 2 ** -24, Wc = Math.max(W, 1e-30)
+  return (2 * (3 * D * N ** (1 / 3) * Wc ** (-1 / 3) + 1.2e-7) + Math.sqrt(3) * rUlps * ulp / h + (Math.sqrt(3) + 1) * N * 2 ** -43 / Wc + 1e-6) * h
 }
 /** common.wgsl thetaOf in f64. */
 export const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => {

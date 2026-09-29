@@ -28,7 +28,7 @@ type Entry = { name: string; uses: number[]; constants?: Record<string, number> 
 const ENTRIES: Entry[] = [
   { name: 'bandCells', uses: [0, 5, 6] },
   { name: 'bandDilate', uses: [0, 7, 52] },
-  { name: 'latScatter', uses: [0, 2, 3, 53] },
+  { name: 'latScatter', uses: [0, 2, 3, 26, 53] },
   { name: 'volumes', uses: [0, 4, 5, 7, 8, 9, 10] },
   { name: 'muMinScatter', uses: [0, 2, 11, 13, 51] },
   { name: 'muScatter', uses: [0, 2, 11, 13, 51] },

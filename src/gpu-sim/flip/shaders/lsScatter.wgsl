@@ -2,11 +2,13 @@
 // every particle adds k = (1 − |x_p − x_s|²/R²)³ and k·(x_p − x_s)/dx to each sample point x_s within R — the window
 // cell centres (solver padded layout) and the three MAC face-centre grids (the 2× samples that locate θ). Scattering
 // instead of gathering gives the same sums (fixed point, order-independent). Each particle also scatters its images
-// across the walls it lies within R of (common.wgsl wallImage — the tank wall is not air).
+// across the walls it lies within R of (common.wgsl wallImage — the tank wall is not air), and, when the sphere state
+// asks for it (SPH_LS_IMAGES, the Stokes path), its radial image across the ball (sphereRadialImage — nor is the ball).
 
 @group(0) @binding(1) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> cellSums: array<atomic<i32>>;   // 8 per padded cell: w, rx, ry, rz (hi, lo)
 @group(0) @binding(3) var<storage, read_write> faceSums: array<atomic<i32>>;   // 8 per face slot (3 grids)
+@group(0) @binding(4) var<storage, read> sphere: array<f32>;
 
 fn addTo(buf: u32, idx: u32, x: vec3<f32>, s: vec3<f32>) {
   let r = x - s;
@@ -30,6 +32,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (q >= P.numParticles) { return; }
   for (var m = 0u; m < 8u; m++) {
     let im = wallImage(pos[q].xyz, m);
+    if (im.w > 0.0) { scatterFrom(im.xyz); }
+  }
+  if (sphere[SPH_ACTIVE] > 0.5 && sphere[SPH_LS_IMAGES] > 0.5) {
+    let im = sphereRadialImage(pos[q].xyz, vec3<f32>(sphere[0], sphere[1], sphere[2]), sphere[SPH_R]);
     if (im.w > 0.0) { scatterFrom(im.xyz); }
   }
 }

@@ -103,6 +103,10 @@ fn latScatter(@builtin(global_invocation_id) gid: vec3<u32>) {
     let im = wallImage(pos[q].xyz, m);
     if (im.w > 0.0) { latScatterFrom(im.xyz); }
   }
+  if (sphere[SPH_ACTIVE] > 0.5 && sphere[SPH_LS_IMAGES] > 0.5) {   // and across the ball (the Stokes path)
+    let im = sphereRadialImage(pos[q].xyz, vec3<f32>(sphere[0], sphere[1], sphere[2]), sphere[SPH_R]);
+    if (im.w > 0.0) { latScatterFrom(im.xyz); }
+  }
 }
 
 fn latScatterFrom(x: vec3<f32>) {

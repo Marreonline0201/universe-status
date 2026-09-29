@@ -136,6 +136,9 @@ export interface FlipRefOptions {
   stokesFaceMin?: number
   /** Stokes Jacobi-PCG stops at ‖r‖∞ ≤ this, in the rows' units W·1/s (default 1e-9: the reference solves tight). */
   stokesTolerance?: number
+  /** Stokes: start Jacobi-PCG from the last solve's p and τ at the same rows (rows that were not there start at 0)
+   *  instead of from 0 — the GPU port's scheme (spec §5; default false: the reference solves from 0). */
+  stokesWarmStart?: boolean
   /** The Zhu–Bridson level set at the tank walls: 'mirror' (default — the particles' images across each wall join the
    *  kernel, so a flat pool stays flat up to the wall; the GPU always does this) or 'air' (only the particles inside the
    *  tank: the surface bends down within R of every wall — kept as the gates' negative control; measured, a lattice
@@ -299,6 +302,7 @@ export class FlipRef {
   viscosityScheme: 'split' | 'stokes' | 'auto'
   readonly stokesFaceMin: number
   readonly stokesTolerance: number
+  readonly stokesWarmStart: boolean
   readonly levelSetWalls: 'air' | 'mirror'
   readonly levelSetSphere: 'air' | 'mirror'
   lastStokes: StokesStats | null = null
@@ -373,6 +377,7 @@ export class FlipRef {
     this.viscosityScheme = opts.viscosityScheme ?? 'split'
     this.stokesFaceMin = opts.stokesFaceMin ?? 1e-2
     this.stokesTolerance = opts.stokesTolerance ?? 1e-9
+    this.stokesWarmStart = opts.stokesWarmStart ?? false
     this.levelSetWalls = opts.levelSetWalls ?? 'mirror'
     // the Stokes ball needs the ball-extended level set (stokesSolve asserts it), so the schemes that can take that
     // path default to it
@@ -1176,9 +1181,15 @@ export class FlipRef {
       rhs[r] = s; diag[r] = d
     }
     if (this.stokesExport) this.lastStokesSystem = { rowCols, rowG, rowV, rowC, rowKind, Kinv: Kinv.slice(), KVinv, rhs: rhs.slice(), diag: diag.slice() }
-    // Jacobi-PCG from y = 0 (the paper's solver, §6.3)
+    // Jacobi-PCG from y = 0 (the paper's solver, §6.3), or warm from the last solve's p and τ at the same rows
     const y = new Float64Array(nR), res = rhs.slice(), z = new Float64Array(nR), d = new Float64Array(nR), q = new Float64Array(nR)
     const infNorm = (v: Float64Array) => { let m = 0; for (let r = 0; r < v.length; r++) m = Math.max(m, Math.abs(v[r])); return m }
+    const prev = this.stokesStress
+    if (this.stokesWarmStart && prev) {
+      for (let r = 0; r < nR; r++) { const kind = rowKind[r], at = rowAt[r]; y[r] = kind === 0 ? this.pressure[at] : kind < 4 ? prev.cell[kind - 1][at] : prev.edge[kind - 4][at] }
+      apply(y, q)
+      for (let r = 0; r < nR; r++) res[r] = rhs[r] - q[r]
+    }
     let rz = 0
     for (let r = 0; r < nR; r++) { z[r] = res[r] / diag[r]; d[r] = z[r]; rz += res[r] * z[r] }
     const cap = 100000

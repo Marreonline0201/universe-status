@@ -435,7 +435,7 @@ export class FlipGpuSimulator {
       fillLiquidFaces: group('fillLiquidFaces', [this.faceTypeBuf, sb.labels, uA, vA, this.faceSolidBuf]),
     }
     this.lsBg = {
-      lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf]),
+      lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf, this.sphereBuf]),
       lsFinalize: group('lsFinalize', [this.lsCellBuf, this.phiCellBuf, sb.labels]),
       occupancy: group('labelParticles', [this.posBuf, this.occBuf]),
       lsResolve: group('lsResolve', [this.phiCellBuf, this.occBuf, sb.labels, this.diagBuf, this.cellSolidBuf]),
@@ -757,10 +757,18 @@ export class FlipGpuSimulator {
   setSphere(sp: FlipSphere): void {
     if (!this.projection || this.freeSurface !== 'ghost' || !this.cellSolidBuf) throw new Error('FlipGpuSimulator.setSphere: needs projection with the ghost-fluid surface')
     const w = new Float32Array(SPHERE_WORDS)
-    w.set(sp.center, 0); w[3] = sp.radius; w.set(sp.velocity, 4); w[7] = 1; w[8] = sp.density
+    w.set(sp.center, 0); w[3] = sp.radius; w.set(sp.velocity, 4); w[7] = 1; w[8] = sp.density; w[13] = this.lsImages ? 1 : 0
     this.device.queue.writeBuffer(this.sphereBuf, 0, w)
     this.sphereActive = true
     this.sphereMono = sp.coupling === 'monolithic' && sp.density > 0
+  }
+  private lsImages = false
+  /** S3.6e G0: the Zhu–Bridson level set (lsScatter and the viscous lattice) adds each particle's radial image across the
+   *  ball — required by the Stokes path (a submerged solid is not air: flipRef levelSetSphere 'mirror'). */
+  get sphereLevelSetImages(): boolean { return this.lsImages }
+  set sphereLevelSetImages(on: boolean) {
+    this.lsImages = on
+    this.device.queue.writeBuffer(this.sphereBuf, 4 * 13, new Float32Array([on ? 1 : 0]))
   }
   /** Switch a placed ball's coupling (tests settle a pool around a held ball, then release it monolithically). */
   setSphereCoupling(c: 'weak' | 'monolithic'): void { this.sphereMono = c === 'monolithic' }

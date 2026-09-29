@@ -207,7 +207,10 @@ try {
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))
     gate.check(runs.length >= 2 && spread <= 2 * BAND,
       `B1c-spread: the slip ratio's run-to-run spread ${spread.toFixed(3)} over ${runs.length} identical runs ≤ the band's width ${(2 * BAND).toFixed(1)}`)
-    console.log(`OWNER NOTE B1c: this checks the one thing the drift model claims — how fast an oil drop slips up through the water right around it — against the drag law, with the stirring cancelled out; the drift-off run shows the check would catch a page whose drops stopped slipping. Where the oil ends up after 8 s is set by the blob's stirring (which moves oil even with the drift off), so it is reported, not judged.`)
+    const lo = Math.min(...runs.map(r => r.ratio)), hi = Math.max(...runs.map(r => r.ratio))
+    const how = runs.every(slipOk) ? `at the drag law's speed (× ${lo.toFixed(2)}–${hi.toFixed(2)}, within ±${100 * BAND} %)`
+      : `${lo >= 1 ? 'FASTER' : hi <= 1 ? 'SLOWER' : 'off'} than the drag law predicts (× ${lo.toFixed(2)}–${hi.toFixed(2)}; ±${100 * BAND} % allowed) — an open finding about the drift model`
+    console.log(`OWNER NOTE B1c: the oil drops slip up through the water around them ${how}; the drift-off run ${slipOk(ctl) ? 'did NOT separate from the law — the check has no teeth' : 'shows the check catches a page whose drops stop slipping'}. Where the oil ends up after 8 s is set by the blob's stirring (which moves oil even with the drift off), so it is reported, not judged.`)
   }
 
   // B2: iron floats on mercury

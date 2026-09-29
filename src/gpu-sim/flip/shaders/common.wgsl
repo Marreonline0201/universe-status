@@ -161,13 +161,25 @@ fn encodeLo(x: f32) -> i32 { return i32(round((x - round(x)) * LO_SCALE)); }
 // ── S3.1c-2 the drop ball (flipRef sphere*; Batty, Bertails & Bridson 2007) ──────────────────────────────────────────
 // Sphere state, one storage array<f32> of SPHERE_WORDS: centre (m, window-local) 0–2, radius 3, velocity (m/s) 4–6,
 // active 7 (1/0), density 8 (kg/m³; 0 = scripted: the host sets the velocity, no integration), last pressure force
-// (N) 9–11, discrete volume V_J (m³) 12. Written by the host (setSphere) and by sphereAdvance / sphereIntegrate.
+// (N) 9–11, discrete volume V_J (m³) 12, level-set images 13 (1: the Zhu–Bridson sums add each particle's radial image
+// across the ball — S3.6e's Stokes path, "a solid is not air"). Written by the host (setSphere, sphereLevelSetImages)
+// and by sphereAdvance / sphereIntegrate.
 const SPH_R: u32 = 3u;
 const SPH_V: u32 = 4u;
 const SPH_ACTIVE: u32 = 7u;
 const SPH_DENSITY: u32 = 8u;
 const SPH_FORCE: u32 = 9u;
 const SPH_VJ: u32 = 12u;
+const SPH_LS_IMAGES: u32 = 13u;
+
+/// A particle's radial image across the ball, c + (2R_s − r)·(x − c)/r, for r ∈ [R_s, R_s + lsR) (w = 1), else w = 0
+/// (flipRef.zhuBridson levelSetSphere 'mirror'; a wall's image of a ball image is not added).
+fn sphereRadialImage(x: vec3<f32>, c: vec3<f32>, Rs: f32) -> vec4<f32> {
+  let q = x - c;
+  let r = length(q);
+  if (!(r >= Rs && r < Rs + P.lsR)) { return vec4<f32>(x, 0.0); }
+  return vec4<f32>(c + q * ((2.0 * Rs - r) / r), 1.0);
+}
 // fixed-point scales of the force reduction (atomic i32): N·FORCE_SCALE, and V_J in face units ΣS·SOLID_SCALE
 const FORCE_SCALE: f32 = 1024.0;
 const SOLID_SCALE: f32 = 1048576.0;
