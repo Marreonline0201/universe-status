@@ -51,11 +51,13 @@ export async function provenance() {
   return { sha: head, state: dirty ? 'LIVE-DIRTY' : 'LIVE', attributable: false, base: BASE }
 }
 
-/** timing: a frame-pacing/FPS gate — its window stays on the primary display (lib/window.mjs). */
-export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800, deviceScaleFactor = 1, timing = false } = {}) {
+/** timing: a frame-pacing/FPS gate — its window stays on the primary display (lib/window.mjs).
+ *  gpuTimestamps: Chrome's --enable-webgpu-developer-features (unquantized timestamp queries; without it Chrome rounds
+ *  them to 100 µs — Gate-0's GpuTimer / timingInvalid). */
+export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800, deviceScaleFactor = 1, timing = false, gpuTimestamps = false } = {}) {
   const browser = await chromium.launch({
     executablePath: CHROME, headless: false,
-    args: [...windowArgs({ timing }), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
+    args: [...windowArgs({ timing }), '--enable-unsafe-webgpu', ...(gpuTimestamps ? ['--enable-webgpu-developer-features'] : []), '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
   })
   const errors = []
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor })

@@ -720,6 +720,40 @@ export class SSFRPipeline {
     }
   }
 
+  /** Bench (OPT-1-cov): offscreen targets at width×height; encode() renders one whole frame into them exactly as
+   *  probe() does (the ellipsoid kernel, splats, blur, composite), fluidFraction() renders once more and reads back the
+   *  fraction of pixels the liquid covers (thickness > 0). The canvas is untouched. */
+  async offscreenRig(particleBuffer: GPUBuffer | null, count: number, req: ProbeRequest) {
+    await this.ensureProbePipelines()
+    const d = this.device
+    const t = this.createTargets(req.width, req.height, GPUTextureUsage.COPY_SRC)
+    const color = d.createTexture({ size: [req.width, req.height], format: this.canvasFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    const linear = d.createTexture({ size: [req.width, req.height], format: 'rgba32float', usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    const colorView = color.createView(), linearView = linear.createView()
+    const encode = (encoder: GPUCommandEncoder) => this.encodeFrame(encoder, t, {
+      particleBuffer, count, view: req.view, proj: req.proj, invProj: req.invProj, invView: req.invView, ball: req.ball, overrides: req,
+    }, colorView, linearView, this.matBuf)
+    const fluidFraction = async () => {
+      const bpp = this.thicknessFormat === 'r32float' ? 4 : 2, bpr = Math.ceil(req.width * bpp / 256) * 256
+      const buf = d.createBuffer({ size: bpr * req.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
+      const enc = d.createCommandEncoder()
+      encode(enc)
+      enc.copyTextureToBuffer({ texture: t.thickness }, { buffer: buf, bytesPerRow: bpr }, { width: req.width, height: req.height })
+      d.queue.submit([enc.finish()])
+      await buf.mapAsync(GPUMapMode.READ)
+      const raw = new Uint8Array(buf.getMappedRange())
+      let n = 0
+      for (let y = 0; y < req.height; y++) {
+        const row = raw.slice(y * bpr, y * bpr + req.width * bpp)
+        const v = bpp === 4 ? new Float32Array(row.buffer) : halfToFloat(new Uint16Array(row.buffer))
+        for (let x = 0; x < req.width; x++) if (v[x] > 0) n++
+      }
+      buf.unmap(); buf.destroy()
+      return n / (req.width * req.height)
+    }
+    return { encode, fluidFraction, destroy: () => { this.destroyTargets(t); color.destroy(); linear.destroy() } }
+  }
+
   destroy() {
     if (this.main) this.destroyTargets(this.main)
     for (const b of [this.cameraUBO, this.bgCamUBO, this.sceneUBO, this.blurHUBO, this.blurVUBO, this.compositeUBO, this.slabUBO, this.quadIndexBuf, this.matBuf, this.probeMatBuf, this.lutBuf]) b?.destroy()

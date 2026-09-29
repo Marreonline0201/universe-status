@@ -80,6 +80,9 @@ export interface BenchTarget {
   tankHandle?(kind: 'face' | 'edge' | 'corner', sides: [number, number][]): { x: number; y: number } | null
   /** The camera as raw matrices (column-major) and the view's client rect: a test builds pointer rays with its own code. */
   view?(): { matrixWorld: number[]; projectionMatrixInverse: number[]; rect: { left: number; top: number; width: number; height: number } } | null
+  /** GPU time of whole offscreen SSFR frames with a test camera (timestamp-bracketed) and the liquid's pixel fraction
+   *  (OPT-1-cov coverage sweep). */
+  renderTiming?(opts: ProbeOptions & { frames?: number; warmup?: number }): Promise<unknown>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -136,6 +139,12 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     viscosity() {
       if (!target.viscosity) throw new Error(`${meta.page} has no viscosity probe`)
       return target.viscosity()
+    },
+
+    /** GPU time of whole offscreen SSFR frames + the liquid's pixel fraction (OPT-1-cov). */
+    renderTiming(opts: ProbeOptions & { frames?: number; warmup?: number }) {
+      if (!target.renderTiming) throw new Error(`${meta.page} has no render timing`)
+      return target.renderTiming(opts)
     },
 
     /** Offscreen render probe; every requested target comes back base64-encoded (see SSFRPipeline ProbeResult). */

@@ -20,6 +20,7 @@ import type { BenchTarget } from '../bench/benchHook'
 import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, msToUnitVel } from './units'
 import { TankHandles } from './TankHandles'
 import { PresentationClock } from './clock'
+import { GpuTimer, median, quantile, mean, timingInvalid } from '../bench/gate0/gpu'
 import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
 
@@ -866,9 +867,60 @@ export class FluidEngine {
   /** Bench: render one SSFR frame offscreen (SSFRPipeline.probe) with a gate-specified camera, returning the
    *  targets it asks for plus the exact matrices used. The canvas keeps rendering untouched. */
   async renderProbe(o: ProbeOptions): Promise<ProbeResultWithCamera | null> {
-    const ssfr = this.ssfrPipeline, sim = this.sim, page = this.camera
-    if (!ssfr || !sim || !page) return null
+    const ssfr = this.ssfrPipeline, sim = this.sim
+    if (!ssfr || !sim || !this.camera) return null
     const [w, h] = [o.width ?? ssfr.size[0], o.height ?? ssfr.size[1]]
+    const m = this.probeMatrices(o, w, h)
+    const r = await ssfr.probe(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball: this.probeBall() })
+    return { ...r, view: [...m.view], proj: [...m.proj], invView: [...m.invView], invProj: [...m.invProj] }
+  }
+
+  /** Bench (OPT-1-cov): the GPU time of whole offscreen SSFR frames — the page's own path (ellipsoid kernel, splats,
+   *  blur, composite) with a gate-specified camera, each frame its own submit, bracketed by timestamp marker passes
+   *  (the Gate-0 GpuTimer method) — and the fraction of pixels the liquid covers. The canvas keeps rendering untouched. */
+  async renderTiming(o: ProbeOptions & { frames?: number; warmup?: number }) {
+    const ssfr = this.ssfrPipeline, sim = this.sim, device = this.device
+    if (!ssfr || !sim || !device || !this.camera) return null
+    const [w, h] = [o.width ?? ssfr.size[0], o.height ?? ssfr.size[1]]
+    const m = this.probeMatrices(o, w, h)
+    const rig = await ssfr.offscreenRig(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball: this.probeBall() })
+    const frames = Math.max(30, o.frames ?? 120)
+    const timer = new GpuTimer(device, frames)
+    device.pushErrorScope('validation')
+    for (let f = 0; f < (o.warmup ?? 10); f++) { const e = device.createCommandEncoder(); rig.encode(e); device.queue.submit([e.finish()]) }
+    await device.queue.onSubmittedWorkDone()
+    const wall: number[] = []
+    for (let f = 0; f < frames; f++) {
+      const e = device.createCommandEncoder()
+      timer.mark(e, timer.begin(f))
+      rig.encode(e)
+      timer.mark(e, timer.end(f))
+      if (f === frames - 1) timer.resolve(e, frames)
+      const t0 = performance.now()
+      device.queue.submit([e.finish()])
+      await device.queue.onSubmittedWorkDone()
+      wall.push(performance.now() - t0)
+    }
+    const ns = await timer.read(frames)
+    const err = await device.popErrorScope()
+    timer.destroy()
+    const coverage = await rig.fluidFraction()
+    rig.destroy()
+    if (err) throw new Error(`renderTiming: validation error: ${err.message.split('\n')[0]}`)
+    return {
+      width: w, height: h, frames, count: sim.particleCount, coverage, splatShape: o.splatShape ?? null,
+      gpuMedianMs: median(ns) / 1e6, gpuP95Ms: quantile(ns, 0.95) / 1e6, gpuMeanMs: mean(ns) / 1e6, wallMedianMs: median(wall),
+      invalidTimestamps: timingInvalid(ns),
+    }
+  }
+
+  private probeBall() {
+    return this.ball.active ? { center: [...this.ball.center] as [number, number, number], radius: this.ball.radius, active: true } : undefined
+  }
+
+  /** A probe's camera matrices: the gate-specified camera, or the page's at the probe's aspect. */
+  private probeMatrices(o: ProbeOptions, w: number, h: number) {
+    const page = this.camera!
     let cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
     if (o.camera) {
       const c = o.camera, near = c.near ?? 0.1, far = c.far ?? 50
@@ -888,13 +940,10 @@ export class FluidEngine {
     }
     cam.updateProjectionMatrix()
     cam.updateMatrixWorld()
-    const m = {
+    return {
       view: new Float32Array(cam.matrixWorldInverse.elements), proj: new Float32Array(cam.projectionMatrix.elements),
       invProj: new Float32Array(cam.projectionMatrixInverse.elements), invView: new Float32Array(cam.matrixWorld.elements),
     }
-    const ball = this.ball.active ? { center: [...this.ball.center] as [number, number, number], radius: this.ball.radius, active: true } : undefined
-    const r = await ssfr.probe(sim.particleBuffer, sim.particleCount, { ...o, width: w, height: h, ...m, ball })
-    return { ...r, view: [...m.view], proj: [...m.proj], invView: [...m.invView], invProj: [...m.invProj] }
   }
 
   /** Adapter for installBenchHook; `action` maps page-level user actions for scripted tests. */
@@ -904,6 +953,7 @@ export class FluidEngine {
       setStepLimit: (n) => this.setStepLimit(n),
       readParticleSample: () => this.readParticleSample(),
       probe: (o) => this.renderProbe(o),
+      renderTiming: (o) => this.renderTiming(o),
       compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name, rho: c.solver.rhoKgM3, mu: c.solver.muPaS })),
       fps: () => this.lastFps,
       count: () => this.particleCount,
