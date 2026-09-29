@@ -219,3 +219,118 @@ fn cg_finalize() {
   else if (st.converged == 0u) { flt[1] = flt[1] + 1u; }
   flt[3] = max(flt[3], st.iter);
 }
+
+// ── S3.7 the monolithic ball (Batty, Bertails & Bridson 2007 eq. 13; flipRef.solveSystem `rank`) ─────────────────────
+// A′ = A + Σ_a Ĵ_a Ĵ_aᵀ with Ĵ_a = √(Δt/(M·dx³))·J_a, J_ac = dx²·Σ sgn·S_f over cell c's faces on axis a (rj, level 0; the
+// FLIP side writes it every substep). The three sums Ĵ_aᵀv are packed into the partials' SUM lanes (.x .z .w — .y is
+// the max lane) and reduced into st.j0..j2 before the kernel that multiplies. Every read of rj is gated on the solver's
+// unknown set (diag > 0), so stale values at non-unknowns never enter. The V-cycle / Jacobi preconditioner stays M(A):
+// still SPD; the rank-3 perturbation changes only the iteration count, not the answer.
+fn jPart(c: u32, v: f32) -> vec4<f32> { let j = rj[c].xyz * v; return vec4<f32>(j.x, 0.0, j.y, j.z); }
+fn rankTerm(c: u32) -> f32 { return dot(rj[c].xyz, vec3<f32>(st.j0, st.j1, st.j2)); }
+
+// partials of Ĵᵀx (the warm start), before the init kernel
+@compute @workgroup_size(256)
+fn cg_jdot_x(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let L = P.lv[0];
+  var v = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  if (gid.x < L.n) {
+    let c = cellIndex(L, gid.x);
+    if (coef[c].w > 0.0) { v = jPart(c, vx[c]); }
+  }
+  let s = wgReduce(lid, v);
+  if (lid == 0u) { part[gid.x / WG] = s; }
+}
+
+@compute @workgroup_size(256)
+fn cg_jreduce(@builtin(local_invocation_index) lid: u32) {
+  if (solveDone(lid)) { return; }
+  let s = reducePartials(lid, P.lv[0].nwg);
+  if (lid == 0u) { st.j0 = s.x; st.j1 = s.z; st.j2 = s.w; }
+}
+
+// r = b − A′x (initCell with the rank term)
+fn initCellRank(lid: u32, gid: u32, jacobi: bool) {
+  let L = P.lv[0];
+  var v = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  if (gid < L.n) {
+    let c = cellIndex(L, gid);
+    let k0 = coef[c];
+    var r = 0.0;
+    var z = 0.0;
+    if (k0.w > 0.0) {
+      let sy = L.sy;
+      let sz = L.sz;
+      let cxp = coef[c + 1u];
+      let cyp = coef[c + sy];
+      let czp = coef[c + sz];
+      let m = vec3<f32>(coef[c - 1u].w, coef[c - sy].w, coef[c - sz].w);
+      var off = 0.0;
+      if (cxp.w > 0.0) { off = off + cxp.x * vx[c + 1u]; }
+      if (m.x > 0.0) { off = off + k0.x * vx[c - 1u]; }
+      if (cyp.w > 0.0) { off = off + cyp.y * vx[c + sy]; }
+      if (m.y > 0.0) { off = off + k0.y * vx[c - sy]; }
+      if (czp.w > 0.0) { off = off + czp.z * vx[c + sz]; }
+      if (m.z > 0.0) { off = off + k0.z * vx[c - sz]; }
+      let b = vb[c];
+      r = b - (k0.w * vx[c] - off) - rankTerm(c);
+      v.w = b * b;
+      if (jacobi) { z = r / k0.w; }
+    } else {
+      vx[c] = 0.0;
+    }
+    mb[c] = r;
+    if (jacobi) { mub[c] = z; }
+    v.x = r * z;
+    v.y = abs(r);
+    v.z = r * r;
+  }
+  let s = wgReduce(lid, v);
+  if (lid == 0u) { part[gid / WG] = s; }
+}
+
+@compute @workgroup_size(256)
+fn cg_init_mg_rank(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  initCellRank(lid, gid.x, false);
+}
+
+@compute @workgroup_size(256)
+fn cg_init_jacobi_rank(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  initCellRank(lid, gid.x, true);
+}
+
+// d = z + beta d, and the partials of Ĵᵀd for the matvec that follows (uniform control flow for the reduction)
+@compute @workgroup_size(256)
+fn cg_dupdate_rank(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  if (solveDone(lid)) { return; }
+  let L = P.lv[0];
+  var v = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  if (gid.x < L.n) {
+    let c = cellIndex(L, gid.x);
+    let beta = st.beta;
+    var d = mub[c];
+    if (beta != 0.0) { d = mub[c] + beta * vd[c]; }
+    vd[c] = d;
+    if (coef[c].w > 0.0) { v = jPart(c, d); }
+  }
+  let s = wgReduce(lid, v);
+  if (lid == 0u) { part[gid.x / WG] = s; }
+}
+
+// q = A′d and partial d.q
+@compute @workgroup_size(256)
+fn cg_matvec_rank(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  if (solveDone(lid)) { return; }
+  let L = P.lv[0];
+  var v = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+  if (gid.x < L.n) {
+    let c = cellIndex(L, gid.x);
+    let k0 = coef[c];
+    var q = 0.0;
+    if (k0.w > 0.0) { q = applyD(c, L.sy, L.sz, k0) + rankTerm(c); }
+    vq[c] = q;
+    v.x = vd[c] * q;
+  }
+  let s = wgReduce(lid, v);
+  if (lid == 0u) { part[gid.x / WG] = s; }
+}

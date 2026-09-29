@@ -13,6 +13,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31c2    (S3.1c-2 drop-ball kernels, gate s31c2-gpu.mjs, full: ~1 min)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s36      (S3.6 viscosity kernels, gate s36-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35i     (S3.5-i immiscible drift kernels, gate s35i-gpu.mjs --quick)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s37      (S3.7 monolithic ball kernels, gate s37-gpu.mjs --quick)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -132,6 +133,17 @@ SETS.s35i = [
   [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, driftCellR[li].w);', 'no volume-conserving counter-drift'],
   [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }\n', '', 'advection ignores the drift'],
 ]
+// S3.7: each targets a kernel K35/K36 cover (the jdot-without-unknown-guard mutant is equivalent here: x is 0 at every
+// non-unknown on these inputs — the guard is kept for warm starts across label changes)
+SETS.s37 = [
+  ['src/gpu-sim/flip/poisson/cg.wgsl', 'r = b - (k0.w * vx[c] - off) - rankTerm(c);', 'r = b - (k0.w * vx[c] - off) + rankTerm(c);', 'rank term sign flipped in the warm-start residual'],
+  ['src/gpu-sim/flip/poisson/cg.wgsl', 'if (k0.w > 0.0) { q = applyD(c, L.sy, L.sz, k0) + rankTerm(c); }', 'if (k0.w > 0.0) { q = applyD(c, L.sy, L.sz, k0) - rankTerm(c); }', 'rank term sign flipped in the matvec'],
+  ['src/gpu-sim/flip/poisson/cg.wgsl', '    if (coef[c].w > 0.0) { v = jPart(c, d); }', '    if (coef[c].w > 0.0) { v = jPart(c, mub[c]); }', 'Ĵᵀd formed from z, not d'],
+  [`${SH}/sphereRank.wgsl`, 'rankJ[li] = vec4<f32>(sqrt(P.dt / (M * h3)) * P.dx * P.dx * J, 0.0);', 'rankJ[li] = vec4<f32>((P.dt / (M * h3)) * P.dx * P.dx * J, 0.0);', 'rank scale without the square root'],
+  [`${SH}/sphereGravity.wgsl`, 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * P.gravity[a]; }', 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += 2.0 * P.dt * P.gravity[a]; }', 'gravity applied twice'],
+  [`${SH}/sphereMonoUpdate.wgsl`, 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / M; }', 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / rhoS; }', 'ball update divides by ρ_s, not M'],
+  [`${SH}/sphereVolume.wgsl`, 'if (S > 0.0) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'if (S > 0.5) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'V_J from the mostly-solid faces only'],
+]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]
 if (!M) { console.error(`unknown --gate=${GATE} (have: ${Object.keys(SETS).join(', ')})`); process.exit(2) }
@@ -148,7 +160,7 @@ for (const [f, find, , why] of M) {
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36', 's35i'].includes(GATE) ? ['--quick'] : [])], {
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36', 's35i', 's37'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())

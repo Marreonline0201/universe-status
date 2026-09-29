@@ -384,7 +384,7 @@ export class FluidEngine {
         return 0
       }
       this.sceneIds.add(compId)
-      // a liquid denser than the ball arrived: the weakly coupled ball cannot stay (FlipBackend.ballRefusal)
+      // the new contents may rule the ball out on this backend (ballRefusal; the monolithic FLIP ball never is)
       const why = this.ball.active ? this.sim.ballRefusal?.() ?? null : null
       if (why) { this.removeBall(); this.notify('warning', `the ball was removed: ${why}`) }
     }

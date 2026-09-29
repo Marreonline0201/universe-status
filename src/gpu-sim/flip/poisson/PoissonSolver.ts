@@ -113,7 +113,7 @@ export interface SolveStats {
   history?: { rel2: number[]; inf: number[] }
 }
 
-type BindName = 'P' | 'st' | 'part' | 'coef' | 'lab' | 'fcoef' | 'vx' | 'vd' | 'vq' | 'vb' | 'mb' | 'mua' | 'mub' | 'mres' | 'hist' | 'nom' | 'flt'
+type BindName = 'P' | 'st' | 'part' | 'coef' | 'lab' | 'fcoef' | 'vx' | 'vd' | 'vq' | 'vb' | 'mb' | 'mua' | 'mub' | 'mres' | 'hist' | 'nom' | 'flt' | 'rj'
 
 const BIND: Record<BindName, { binding: number; type: GPUBufferBindingType }> = {
   P: { binding: 0, type: 'uniform' },
@@ -133,6 +133,7 @@ const BIND: Record<BindName, { binding: number; type: GPUBufferBindingType }> = 
   hist: { binding: 14, type: 'storage' },
   nom: { binding: 15, type: 'storage' },
   flt: { binding: 16, type: 'storage' },
+  rj: { binding: 17, type: 'read-only-storage' },
 }
 
 // Per-kernel binding table = the static use of each entry point (≤ 8 storage buffers each, so
@@ -161,6 +162,13 @@ const KERNELS: Record<string, { uses: BindName[]; solveParams?: boolean }> = {
   mg_post_ba: { uses: ['P', 'st', 'coef', 'mb', 'mua', 'mub'] },
   mg_post_ab: { uses: ['P', 'st', 'part', 'coef', 'mb', 'mua', 'mub'] },
   mg_tail: { uses: ['P', 'st', 'coef', 'mb', 'mua', 'mub', 'mres'] },
+  // S3.7 the monolithic ball: A′ = A + Σ_a Ĵ_a Ĵ_aᵀ (cg.wgsl; encodeSolve `rank`)
+  cg_jdot_x: { uses: ['P', 'part', 'coef', 'vx', 'rj'] },
+  cg_jreduce: { uses: ['P', 'st', 'part'] },
+  cg_init_mg_rank: { uses: ['P', 'st', 'part', 'coef', 'vx', 'vb', 'mb', 'mub', 'rj'] },
+  cg_init_jacobi_rank: { uses: ['P', 'st', 'part', 'coef', 'vx', 'vb', 'mb', 'mub', 'rj'] },
+  cg_dupdate_rank: { uses: ['P', 'st', 'part', 'coef', 'vd', 'mub', 'rj'] },
+  cg_matvec_rank: { uses: ['P', 'st', 'part', 'coef', 'vd', 'vq', 'rj'] },
 }
 
 const WG = 256
@@ -204,6 +212,8 @@ export class PoissonSolver {
     faceCoef: GPUBuffer; x: GPUBuffer; d: GPUBuffer; q: GPUBuffer; rhs: GPUBuffer
     mgB: GPUBuffer; mgUA: GPUBuffer; mgUB: GPUBuffer; mgRes: GPUBuffer; history: GPUBuffer
     nominal: GPUBuffer; faults: GPUBuffer
+    /** S3.7: Ĵ_a = √(Δt/(M·dx³))·J_a per padded level-0 cell (vec4, xyz), written by the caller when a solve has `rank`. */
+    rankJ: GPUBuffer
   }
   /** dispatches encoded: prepare pass; a solve = init + cap * perIteration + finalize */
   readonly dispatches: { prepare: number; init: number; perIteration: number; finalize: number; vcycle: number }
@@ -247,6 +257,7 @@ export class PoissonSolver {
       history: mk('history', desc.historyCap * 8, S | CS),
       nominal: mk('nominal', total * 16, S | CS),
       faults: mk('faults', 16, S | CS | CD),
+      rankJ: mk('rankJ', p0 * 16, S | CS | CD),
     }
 
     // static per-level parameter records
@@ -324,6 +335,7 @@ export class PoissonSolver {
       case 'hist': return b.history
       case 'nom': return b.nominal
       case 'flt': return b.faults
+      case 'rj': return b.rankJ
     }
   }
 
@@ -460,43 +472,53 @@ export class PoissonSolver {
   /**
    * Encode one solve A x = b at the config's fixed cap: clears the state (and x unless warmStart),
    * then one compute pass of direct dispatches ending with the fault-counter kernel. Returns the
-   * number of dispatches encoded.
+   * number of dispatches encoded. `rank` (S3.7): solve A′ = A + Σ_a Ĵ_a Ĵ_aᵀ with Ĵ from buffers.rankJ — the
+   * warm-start residual and every matvec carry the term (Ĵᵀd partials fused into the d update, then a one-workgroup
+   * reduce: one extra dispatch per iteration, two before the init); the preconditioner is unchanged.
    */
-  encodeSolve(encoder: GPUCommandEncoder, cfg: SolveConfig, opts: { warmStart: boolean; timestampWrites?: GPUComputePassTimestampWrites }): number {
+  encodeSolve(encoder: GPUCommandEncoder, cfg: SolveConfig, opts: { warmStart: boolean; rank?: boolean; timestampWrites?: GPUComputePassTimestampWrites }): number {
     encoder.clearBuffer(this.buffers.state)
     if (!opts.warmStart) encoder.clearBuffer(this.buffers.x)
     const pass = encoder.beginComputePass({ label: `${this.desc.label}:solve`, timestampWrites: opts.timestampWrites })
-    const nwg = this.levels[0].nwg
+    const nwg = this.levels[0].nwg, rank = opts.rank ?? false
+    const dupdate = () => {
+      if (!rank) { this.dispatch(pass, 'cg_dupdate', 0, nwg); return 1 }
+      this.dispatch(pass, 'cg_dupdate_rank', 0, nwg)
+      this.dispatch(pass, 'cg_jreduce', 0, 1)
+      return 2
+    }
+    const matvec = rank ? 'cg_matvec_rank' : 'cg_matvec'
     let n = 0
+    if (rank) {
+      this.dispatch(pass, 'cg_jdot_x', 0, nwg)
+      this.dispatch(pass, 'cg_jreduce', 0, 1)
+      n += 2
+    }
     if (this.method === 'jpcg') {
-      this.dispatch(pass, 'cg_init_jacobi', 0, nwg)
+      this.dispatch(pass, rank ? 'cg_init_jacobi_rank' : 'cg_init_jacobi', 0, nwg)
       this.dispatch(pass, 'cg_init_reduce', 0, 1, cfg)
-      this.dispatch(pass, 'cg_dupdate', 0, nwg)
-      n += 3
+      n += 2 + dupdate()
       for (let k = 0; k < cfg.cap; k++) {
-        this.dispatch(pass, 'cg_matvec', 0, nwg)
+        this.dispatch(pass, matvec, 0, nwg)
         this.dispatch(pass, 'cg_alpha', 0, 1)
         this.dispatch(pass, 'cg_update_jacobi', 0, nwg)
         this.dispatch(pass, 'cg_check_jacobi', 0, 1, cfg)
-        this.dispatch(pass, 'cg_dupdate', 0, nwg)
-        n += 5
+        n += 4 + dupdate()
       }
     } else {
-      this.dispatch(pass, 'cg_init_mg', 0, nwg)
+      this.dispatch(pass, rank ? 'cg_init_mg_rank' : 'cg_init_mg', 0, nwg)
       this.dispatch(pass, 'cg_init_reduce', 0, 1, cfg)
       n += 2 + this.encodeVcycle(pass)
       this.dispatch(pass, 'cg_rz_init', 0, 1)
-      this.dispatch(pass, 'cg_dupdate', 0, nwg)
-      n += 2
+      n += 1 + dupdate()
       for (let k = 0; k < cfg.cap; k++) {
-        this.dispatch(pass, 'cg_matvec', 0, nwg)
+        this.dispatch(pass, matvec, 0, nwg)
         this.dispatch(pass, 'cg_alpha', 0, 1)
         this.dispatch(pass, 'cg_update_mg', 0, nwg)
         this.dispatch(pass, 'cg_check_mg', 0, 1, cfg)
         n += 4 + this.encodeVcycle(pass)
         this.dispatch(pass, 'cg_beta', 0, 1)
-        this.dispatch(pass, 'cg_dupdate', 0, nwg)
-        n += 2
+        n += 1 + dupdate()
       }
     }
     this.dispatch(pass, 'cg_finalize', 0, 1)

@@ -16,6 +16,11 @@
 //         ghostCoef → sphereCoef (fluid-fraction weights 1 − S_f, eqs. 4–7) → divergence with the flux (1 − S)u + S·V →
 //         solve → project (unweighted coefficients) → sphereFaceVel (S ≥ 1 faces take V) → sphereForce (J·p, eqs.
 //         8–10) → sphereIntegrate (weak coupling V += Δt(g + F/M), s ≥ 1). All state on the GPU (FINAL-PLAN S3.1c).
+//   S3.7 the monolithic ball (setSphere coupling 'monolithic'; Batty et al. 2007 eq. 13): sphereVolume (V_J) → sphereGravity
+//         (V* = V + Δt·g) at the substep start; sphereRank (Ĵ = √(Δt/(M dx³))·J per liquid cell) after the labels; every
+//         pressure solve carries A′ = A + Σ_a Ĵ_a Ĵ_aᵀ (PoissonSolver rank); after EVERY projection sphereForce →
+//         sphereMonoUpdate (V += Δt·F/M). The viscous solve keeps S ≥ 1 faces at V (Dirichlet) — the ball's viscous unknowns
+//         of flipRef are not ported yet (no skin friction on the GPU ball; spec §2).
 //   S3.6 viscosity (`viscosity: true`, then viscosityActive): project → extrapolate → ViscositySolver (Batty & Bridson 2008
 //         variational implicit solve, Jacobi-PCG) → project again; the ball is coupled after the last projection.
 //   S3.5-i immiscible liquids (`immiscible: true`, configure immiscibleSolver, then immiscibleActive): u* snapshot after
@@ -62,6 +67,10 @@ import sphereCoefWGSL from './shaders/sphereCoef.wgsl?raw'
 import sphereFaceVelWGSL from './shaders/sphereFaceVel.wgsl?raw'
 import sphereForceWGSL from './shaders/sphereForce.wgsl?raw'
 import sphereIntegrateWGSL from './shaders/sphereIntegrate.wgsl?raw'
+import sphereVolumeWGSL from './shaders/sphereVolume.wgsl?raw'
+import sphereGravityWGSL from './shaders/sphereGravity.wgsl?raw'
+import sphereRankWGSL from './shaders/sphereRank.wgsl?raw'
+import sphereMonoUpdateWGSL from './shaders/sphereMonoUpdate.wgsl?raw'
 import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
@@ -80,9 +89,10 @@ const DIAG_WORDS = 10
 /** f32 words of the sphere state (common.wgsl SPH_*). */
 const SPHERE_WORDS = 16
 
-/** The drop ball handed to the solver, window-local SI: a free ball integrates with weak two-way coupling (density
- *  kg/m³, FINAL-PLAN S3.1c: s ≥ 1 only); density 0 = scripted (moves with the given velocity, no integration). */
-export interface FlipSphere { center: Vec3; radius: number; velocity: Vec3; density: number }
+/** The drop ball handed to the solver, window-local SI: a free ball (density kg/m³ > 0) integrates with weak two-way
+ *  coupling (FINAL-PLAN S3.1c: s ≥ 1 only) or, with coupling 'monolithic', Batty et al. 2007's coupled solve (S3.7: any
+ *  density ratio); density 0 = scripted (moves with the given velocity, no integration). */
+export interface FlipSphere { center: Vec3; radius: number; velocity: Vec3; density: number; coupling?: 'weak' | 'monolithic' }
 /** The ball as the GPU last left it: after sphereIntegrate, the force of the last projection and its V_J. */
 export interface FlipSphereState { center: Vec3; radius: number; velocity: Vec3; active: boolean; force: Vec3; volumeJ: number }
 
@@ -177,7 +187,7 @@ export interface FlipDiagnostics {
 type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present' | 'labelClear' | 'labelParticles' | 'divergence' | 'project'
   | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'lsResolve' | 'ghostCoef'
   | 'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef' | 'sphereFaceVel'
-  | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'fillLiquidFaces'
+  | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'fillLiquidFaces' | 'sphereVolume' | 'sphereGravity' | 'sphereRank' | 'sphereMonoUpdate'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -228,6 +238,8 @@ export class FlipGpuSimulator {
   faceCoefRawBuf: GPUBuffer | null = null
   forceAccBuf: GPUBuffer | null = null
   private sphereActive = false
+  /** S3.7: the ball is coupled monolithically (setSphere coupling 'monolithic' with density > 0). */
+  private sphereMono = false
   /** S3.6 implicit viscosity (created with `viscosity: true`); runs while viscosityActive. */
   viscositySolver: ViscositySolver | null = null
   viscosityActive = false
@@ -242,7 +254,8 @@ export class FlipGpuSimulator {
   /** The velocity's extrapolation kernel over the immiscible face accelerations: [A→B, B→A]. */
   private accExtrapolate: [GPUBindGroup, GPUBindGroup] | null = null
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
-    | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw', GPUBindGroup>> = {}
+    | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw' | 'sphereVolume' | 'sphereGravity' | 'sphereRank'
+    | 'sphereMonoUpdate', GPUBindGroup>> = {}
   private coefFor = NaN
   private readonly lRef: number
   private readonly tauS: number
@@ -408,7 +421,8 @@ export class FlipGpuSimulator {
     this.pipelines.lsResolve = pipe('lsResolve', lsResolveWGSL)
     for (const [k, code] of [['sphereAdvance', sphereAdvanceWGSL], ['sphereFaces', sphereFacesWGSL], ['sphereCells', sphereCellsWGSL],
       ['sphereExtendMark', sphereExtendMarkWGSL], ['sphereExtendCommit', sphereExtendCommitWGSL], ['sphereCoef', sphereCoefWGSL],
-      ['sphereFaceVel', sphereFaceVelWGSL], ['sphereForce', sphereForceWGSL], ['sphereIntegrate', sphereIntegrateWGSL]] as const) this.pipelines[k] = pipe(k, code)
+      ['sphereFaceVel', sphereFaceVelWGSL], ['sphereForce', sphereForceWGSL], ['sphereIntegrate', sphereIntegrateWGSL],
+      ['sphereVolume', sphereVolumeWGSL], ['sphereGravity', sphereGravityWGSL], ['sphereRank', sphereRankWGSL], ['sphereMonoUpdate', sphereMonoUpdateWGSL]] as const) this.pipelines[k] = pipe(k, code)
     this.pipelines.ghostCoef = pipe('ghostCoef', ghostCoefWGSL)
     this.projBg = {
       labelClear: group('labelClear', [sb.labels]),
@@ -435,6 +449,10 @@ export class FlipGpuSimulator {
       sphereForce: group('sphereForce', [this.faceTypeBuf, sb.labels, sb.x, this.faceSolidBuf, this.forceAccBuf]),
       sphereIntegrate: group('sphereIntegrate', [this.sphereBuf, this.forceAccBuf]),
       projectRaw: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf, this.faceCoefRawBuf]),
+      sphereVolume: group('sphereVolume', [this.faceSolidBuf, this.forceAccBuf]),
+      sphereGravity: group('sphereGravity', [this.sphereBuf, this.forceAccBuf]),
+      sphereRank: group('sphereRank', [this.faceTypeBuf, sb.labels, this.faceSolidBuf, this.sphereBuf, sb.rankJ]),
+      sphereMonoUpdate: group('sphereMonoUpdate', [this.sphereBuf, this.forceAccBuf]),
     }
     if (this.viscosityEnabled) {
       if (this.freeSurface !== 'ghost') throw new Error('FlipGpuSimulator: viscosity needs the ghost-fluid surface (its volumes come from φ)')
@@ -661,6 +679,7 @@ export class FlipGpuSimulator {
     if (this.sphereActive) {
       encoder.copyBufferToBuffer(this.solver!.buffers.faceCoef, 0, this.faceCoefRawBuf!, 0, 16 * this.solver!.paddedCount)
       this.dispatch(encoder, 'sphereCoef', this.sphereBg.sphereCoef!, cells, 256)
+      if (this.sphereMono) this.dispatch(encoder, 'sphereRank', this.sphereBg.sphereRank!, cells, 256)
     }
   }
 
@@ -676,7 +695,7 @@ export class FlipGpuSimulator {
   encodePressureSolve(encoder: GPUCommandEncoder, cfg?: SolveConfig): void {
     const p = this.proj()
     p.solver.encodePrepare(encoder)
-    p.solver.encodeSolve(encoder, cfg ?? p.cfg, { warmStart: true })
+    p.solver.encodeSolve(encoder, cfg ?? p.cfg, { warmStart: true, rank: this.sphereActive && this.sphereMono })
   }
   /** The projection; `couple`: then the ball's force and weak-coupling update (once per substep, after the last one). */
   encodeProject(encoder: GPUCommandEncoder, couple = true): void {
@@ -684,6 +703,17 @@ export class FlipGpuSimulator {
     // with the ball the operator's faceCoef carries the fluid-fraction weights; the velocity update reads ghostCoef's
     // unweighted copy (u −= Δt/(ρ_f·dx)·Δp on every face with 0 < S < 1, as flipRef.projectVelocities)
     this.dispatch(encoder, 'project', this.sphereActive ? this.sphereBg.projectRaw! : bg.project, 3 * this.layout.size, 256)
+    if (this.sphereActive && this.sphereMono) {
+      // S3.7: every projection is an implicit impulse on the ball, V += Δt·F/M (both on the viscous path) — BEFORE the faces
+      // inside the ball take its velocity: the coupled solve's V is V_new, not V* (flipRef updates V inside solvePressure,
+      // then projectVelocities copies it; with V* there, particles by the ball sampled −g·Δt each substep and dragged a
+      // neutral ball down at 3e-4 g)
+      encoder.clearBuffer(this.forceAccBuf!)
+      this.dispatch(encoder, 'sphereForce', this.sphereBg.sphereForce!, 3 * this.layout.size, 256)
+      this.dispatch(encoder, 'sphereMonoUpdate', this.sphereBg.sphereMonoUpdate!, 1, 1)
+      this.dispatch(encoder, 'sphereFaceVel', this.sphereBg.sphereFaceVel!, 3 * this.layout.size, 256)
+      return
+    }
     if (this.sphereActive) this.dispatch(encoder, 'sphereFaceVel', this.sphereBg.sphereFaceVel!, 3 * this.layout.size, 256)
     if (this.sphereActive && couple) {
       encoder.clearBuffer(this.forceAccBuf!)
@@ -699,6 +729,13 @@ export class FlipGpuSimulator {
     this.dispatch(encoder, 'sphereAdvance', this.sphereBg.sphereAdvance!, 1, 1)
     this.encodeSphereFractions(encoder)
     if (this.sphereBg.psiCoef) this.dispatch(encoder, 'psiCoef', this.sphereBg.psiCoef, cells, 256)
+    if (this.sphereMono) this.encodeSphereGravity(encoder)
+  }
+  /** S3.7: V_J of the ball where it is now, then V* = V + Δt·g (before the substep's pressure solves). */
+  encodeSphereGravity(encoder: GPUCommandEncoder): void {
+    encoder.clearBuffer(this.forceAccBuf!)
+    this.dispatch(encoder, 'sphereVolume', this.sphereBg.sphereVolume!, this.layout.size, 256)
+    this.dispatch(encoder, 'sphereGravity', this.sphereBg.sphereGravity!, 1, 1)
   }
   /** Solid fractions of the ball where it is now (faces and cells), without moving it — parity tests use this alone. */
   encodeSphereFractions(encoder: GPUCommandEncoder): void {
@@ -716,12 +753,17 @@ export class FlipGpuSimulator {
     w.set(sp.center, 0); w[3] = sp.radius; w.set(sp.velocity, 4); w[7] = 1; w[8] = sp.density
     this.device.queue.writeBuffer(this.sphereBuf, 0, w)
     this.sphereActive = true
+    this.sphereMono = sp.coupling === 'monolithic' && sp.density > 0
   }
+  /** Switch a placed ball's coupling (tests settle a pool around a held ball, then release it monolithically). */
+  setSphereCoupling(c: 'weak' | 'monolithic'): void { this.sphereMono = c === 'monolithic' }
+  get sphereCoupling(): 'weak' | 'monolithic' { return this.sphereMono ? 'monolithic' : 'weak' }
   /** Overwrite the ball's velocity (a scripted ball's next substeps move with it). */
   setSphereVelocity(v: Vec3): void { this.device.queue.writeBuffer(this.sphereBuf, 16, new Float32Array(v)) }
   /** Remove the ball: zero state and fractions, unit ψ coefficients again. */
   clearSphere(): void {
     this.sphereActive = false
+    this.sphereMono = false
     this.device.queue.writeBuffer(this.sphereBuf, 0, new Float32Array(SPHERE_WORDS))
     const e = this.device.createCommandEncoder()
     e.clearBuffer(this.faceSolidBuf)

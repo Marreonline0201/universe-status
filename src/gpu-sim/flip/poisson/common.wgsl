@@ -49,6 +49,7 @@ struct State {
   rz: f32, alpha: f32, beta: f32, pq: f32,
   rinf: f32, r2: f32, b2: f32, rinf0: f32,
   iter: u32, converged: u32, breakdown: u32, _p: u32,
+  j0: f32, j1: f32, j2: f32, _p2: f32,     // S3.7 rank term: Ĵ_aᵀv of the vector the next kernel multiplies
 };
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -68,6 +69,7 @@ struct State {
 @group(0) @binding(14) var<storage, read_write> hist: array<vec2<f32>>;  // per-iteration (rel2, inf)
 @group(0) @binding(15) var<storage, read_write> nom: array<vec4<f32>>;   // nominal face coefficients, all levels
 @group(0) @binding(16) var<storage, read_write> flt: array<u32>;         // sticky fault counters (see cg_finalize)
+@group(0) @binding(17) var<storage, read> rj: array<vec4<f32>>;           // S3.7: Ĵ_a = √(Δt/(M dx³))·J_a per level-0 cell (xyz)
 @group(1) @binding(0) var<uniform> S: SolveParams;
 
 var<workgroup> wg_flag: u32;

@@ -17,6 +17,7 @@ import { sphereKernels, spherePhysics } from './sphere'
 import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert, viscCost } from './visc'
 import { solveCost, profileStep } from './perf'
 import { immKernels, immRest, immLayered, immCost } from './immiscible'
+import { s37Kernels, s37Physics } from './s37'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -323,6 +324,8 @@ try {
     else if (test === 'sphereKernels') out = await sphereKernels(device, params)
     else if (test === 'viscKernels') out = await viscKernels(device, params)
     else if (test === 'immKernels') out = await immKernels(device, params as { kind?: string; seed?: number })
+    else if (test === 's37Kernels') out = await s37Kernels(device, params as { seed?: number; tol?: number })
+    else if (test === 's37Physics') out = await s37Physics(device, params as { test: 'A1' | 'A3' | 'A4' | 'F0' | 'T0'; Rc?: number; s?: number; tol?: number; seed?: number })
     else if (test === 'immCost') out = await immCost(device, params as { settle?: number; reps?: number })
     else if (test === 'immRest') out = await immRest(device, params as { light: 'water' | 'honey'; tol?: number })
     else if (test === 'immLayered') out = await immLayered(device, params as { lower: 'water' | 'oil' | 'mercury' | 'ethanol'; upper: 'water' | 'oil' | 'mercury' | 'ethanol'; seconds: number; seed: number; immiscible: boolean })

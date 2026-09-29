@@ -11,12 +11,16 @@
 // B1 buoyancy order (the owner's check "oil floats, mercury sinks"): the same pool with an olive-oil block and a mercury
 //    block released above it; after 8 s COM_y(mercury) < COM_y(water) < COM_y(oil), each gap ≥ ½·dx; ≥ 90 % of the oil
 //    above the water's median height and ≥ 90 % of the mercury below it.
+// B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
+//    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
+//    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
+//    fraction from the ball's centre and the level L = (N·V_p + f·V)/A, solved together — s37-ref A4's measure).
 // R  the page runs the incompressible solver; SSFR drew; no NaN positions; 0 uncaptured GPU errors; 0 console errors.
 // FPS (recorded): the B1 scene on the real-time clock for 10 s — present interval p50/p95, real-time factor, substeps — in
 //     its own window on the PRIMARY display (owner 2026-09-29: timing runs stay there; lib/window.mjs).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openFluidPage, loadScenario, status, sample, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
+import { openFluidPage, loadScenario, status, sample, sampleAtFrame, waitStepped, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S3.1c (incompressible solver on the FLUID TEST page)')
@@ -68,6 +72,30 @@ try {
   gate.check(cH + 0.5 * DX <= cW && cW + 0.5 * DX <= cO && nan === 0,
     `B1 order after 8 s (water ${ys.Water.length}, oil ${ys['Olive Oil'].length}, mercury ${ys.Mercury.length} particles): COM height mercury ${(100 * cH).toFixed(1)} cm < water ${(100 * cW).toFixed(1)} cm < oil ${(100 * cO).toFixed(1)} cm (each gap ≥ ½·dx = ${(50 * DX).toFixed(1)} cm)`)
   gate.check(oilAbove >= 0.9 && hgBelow >= 0.9, `B1 separation: ${(100 * oilAbove).toFixed(1)} % of the oil above the water's median height ${(100 * wMedian).toFixed(1)} cm (≥ 90 %), ${(100 * hgBelow).toFixed(1)} % of the mercury below it (≥ 90 %)`)
+
+  // B2: iron floats on mercury
+  {
+    const depth = 0.28, Rw = 0.05, R = Rw * L, RHO_FE = 7874, RHO_HG = 13545.859
+    const cy = depth / L + Rw + 0.005
+    await loadScenario(page, { name: 's31c-iron-on-mercury', materials: [], spawns: [{ material: 'Mercury', box: { min: [0, 0, 0], max: [3.63, depth, 3.63] } }], gravity_mps2: G_STANDARD, ball: { center: [0.5, cy, 0.5], radius: Rw } }, 3)
+    const A = L * L, V = 4 / 3 * Math.PI * R ** 3, fRef = RHO_FE / RHO_HG
+    const fs = []
+    let nHg = 0, ballGone = false
+    for (let f = 360; f <= 480; f += 12) {
+      await page.evaluate(fr => window.__fluidBench.setStepLimit(fr), f)
+      const st = await waitStepped(page, f)
+      if (!st.ball) { ballGone = true; break }
+      if (!nHg) nHg = (await sample(page)).n
+      const yc = st.ball.center[1] * L
+      let fr = 0.5
+      for (let it = 0; it < 50; it++) { const Lv = (nHg * VP + fr * V) / A, h = Math.min(2 * R, Math.max(0, Lv - (yc - R))); fr = h * h * (3 * R - h) / (4 * R ** 3) }
+      fs.push(fr)
+    }
+    const fMean = fs.length ? fs.reduce((a, b) => a + b, 0) / fs.length : NaN
+    report.ironOnMercury = { fs, fMean, fRef, nHg, ballGone }
+    gate.check(!ballGone && Math.abs(fMean / fRef - 1) <= 0.05,
+      `B2 iron floats on mercury (${nHg} mercury particles, ball R = ${(100 * R).toFixed(1)} cm): mean submerged fraction over 6–8 s ${fMean.toFixed(4)} (range ${Math.min(...fs).toFixed(3)}–${Math.max(...fs).toFixed(3)}) vs ρ_Fe/ρ_Hg ${fRef.toFixed(4)} (${(100 * (fMean / fRef - 1)).toFixed(2)} %, ±5 %)`)
+  }
 
   // R: render path, then FPS on the real-time clock (the B1 scene again, settled 8 s, in a primary-display window)
   const r = await status(page)

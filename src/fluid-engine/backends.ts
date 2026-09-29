@@ -166,11 +166,11 @@ export class FlipBackend implements SimBackend {
   readonly packing = FLIP_PACKING
   readonly supportsBall = true
   private readonly dx = DOMAIN_L_M / GRID_RES
-  /** The ball's density drop: solid iron, NIST SRD 126 (materialData). Weak two-way coupling needs s = ρ_ball/ρ_liquid ≥ 1
-   *  (FINAL-PLAN S3.1c; lighter solids make explicit coupling unstable, Causin et al. 2005) until S3.7's monolithic
-   *  coupling — so the densest liquid spawned is tracked and the ball refused above it. */
+  /** The ball: solid iron, NIST SRD 126 (materialData), coupled monolithically (S3.7, Batty et al. 2007 eq. 13: the fluid's
+   *  response, added mass included, arrives in the same solve — any density ratio, so iron floats on mercury). Limit
+   *  (disclosed): in a viscous liquid the GPU viscous solve holds the ball's faces at its velocity — no skin friction on
+   *  the ball yet (flipRef couples V into the viscous solve; spec S3.7 §2). */
   static readonly BALL_DENSITY = SOLID_REFERENCE.iron.solidDensityKgM3!
-  private maxRho = 0
   /** S3.6: μ per composition id (Pa·s), and the viscous extremes of what is in the tank: the solve runs while the largest
    *  ν = μ/ρ reaches VISCOUS_RUN_NU; the smallest μ fills samples no particle reaches (the harmonic mean's own bias: the
    *  least viscous liquid dominates a mixed sample). */
@@ -245,7 +245,7 @@ export class FlipBackend implements SimBackend {
     this.device.queue.submit([e.finish()])
   }
   setParticles(ps: readonly SpawnParticle[]) {
-    this.maxRho = 0; this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
+    this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
     this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
   }
@@ -258,7 +258,6 @@ export class FlipBackend implements SimBackend {
   /** The tank's densest liquid (the ball gate) and viscous extremes (the S3.6 run rule) after a spawn. */
   private track(ps: readonly SpawnParticle[]) {
     for (const p of ps) {
-      this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
       const mu = this.muTable[p.compositionId]
       if (!(mu > 0)) throw new Error(`composition ${p.compositionId} has no viscosity in the solver's table (spawned before its row was uploaded)`)
       this.maxNu = Math.max(this.maxNu, mu / p.rhoKgM3)
@@ -330,19 +329,15 @@ export class FlipBackend implements SimBackend {
     }
     return { active: true, fullCells: n, muMin: lo, muMax: hi, distinct: [...seen].sort((a, b) => a - b) }
   }
-  ballRefusal(): string | null {
-    const rb = FlipBackend.BALL_DENSITY
-    if (this.maxRho <= rb) return null
-    return `the iron ball (${rb} kg/m³, NIST SRD 126) is lighter than a liquid in the tank (${this.maxRho.toFixed(0)} kg/m³): the ball's weak two-way coupling needs ball/liquid density ≥ 1 (FINAL-PLAN S3.1c; the monolithic coupling of S3.7 lifts this)`
-  }
-  /** Place the ball (world units → window metres, velocity per τ → m/s): an iron sphere, weakly two-way coupled. */
+  /** The monolithic coupling takes any liquid (S3.7) — nothing refuses the ball any more. */
+  ballRefusal(): string | null { return null }
+  /** Place the ball (world units → window metres, velocity per τ → m/s): an iron sphere, monolithically coupled. */
   setBall(ball: BallState) {
-    const why = this.ballRefusal()
-    if (why) throw new Error(why)
     const L = DOMAIN_L_M
     this.sim.setSphere({
       center: [ball.center[0] * L, ball.center[1] * L, ball.center[2] * L], radius: ball.radius * L,
       velocity: [unitVelToMs(ball.velocity[0]), unitVelToMs(ball.velocity[1]), unitVelToMs(ball.velocity[2])], density: FlipBackend.BALL_DENSITY,
+      coupling: 'monolithic',
     })
     this.ballLag = null
     this.ballEpoch++

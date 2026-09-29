@@ -18,7 +18,7 @@ const FORCE_SCALE = 1024, SOLID_SCALE = 1048576
 
 /** A pool of 8-ppc water (twoLayer.fillMaterials, the reference gate's fill) with the particles inside the sphere
  *  removed; positions and masses rounded to f32 so both sides start bit-identical. */
-function pool(n: Vec3, depth: number, c: Vec3, R: number, seed: number): RefParticles {
+export function pool(n: Vec3, depth: number, c: Vec3, R: number, seed: number): RefParticles {
   const { p } = fillMaterials(n[0], depth, n[2], DX, mb32(seed), () => [RHO, 0])
   const keep: number[] = []
   for (let q = 0; q < p.n; q++) if (Math.hypot(p.pos[3 * q] - c[0], p.pos[3 * q + 1] - c[1], p.pos[3 * q + 2] - c[2]) >= R) keep.push(q)
