@@ -42,7 +42,7 @@
 //   Inconclusive bands: K in 1.03–1.05 or M in 1.05–1.10 → no single-cause claim.
 // Power: a GPU study — refuses to run on battery (owner rule 2026-09-29; scripts/lib/power.mjs).
 import path from 'node:path'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, sampleAtFrame, waitStepped, provenance, G_STANDARD, DOMAIN_L_M, unitVelToMs } from '../lib/fluid-page.mjs'
 import { powerState, describePower } from '../lib/power.mjs'
@@ -56,6 +56,9 @@ const SCENE = { name: 's31c-buoyancy', materials: [], gravity_mps2: G_STANDARD, 
 const ARMS = {
   E3: {}, 'E6-0': { from0: ['mercury'] }, E5p: { atT0: { immExcludeLiquids: ['olive-oil'] } },
   'E6-t0': { atT0: { immExcludeLiquids: ['mercury'] } }, E5: { atT0: { disableImmiscible: true } },
+  // added after the first pass (E6-0 was void: excluding mercury did not restore the film) — the drift off from t = 0,
+  // film metrics only (no drift state, so no set): does the film survive without any drift at this commit?
+  'E5-0': { from0Disable: true, filmOnly: true },
 }
 const argv = process.argv.slice(2), opt = k => argv.find(a => a.startsWith(`--${k}=`))?.slice(k.length + 3)
 const arms = opt('arms')?.split(',') ?? Object.keys(ARMS), RUNS = Number(opt('runs') ?? 3)
@@ -111,6 +114,16 @@ async function runArm(page, arm, run) {
   await loadScenario(page, SCENE, 2)
   // E6-0: after the load (the scene's own material table now holds mercury), before the first step — i.e. from t = 0
   if (cfg.from0) await page.evaluate(k => window.__fluidBench.configure({ immExcludeLiquids: k }), cfg.from0)
+  if (cfg.from0Disable) await page.evaluate(() => window.__fluidBench.configure({ disableImmiscible: true }))
+  if (cfg.filmOnly) {
+    await page.evaluate(() => window.__fluidBench.setStepLimit(420)); await waitStepped(page, 420)
+    await page.evaluate(() => window.__fluidBench.configure({ resetDiagnostics: true }))
+    const s8 = await sampleAtFrame(page, 480), dg = await page.evaluate(() => window.__fluidBench.diagnostics())
+    const ids = laws(s8).ids, hgY = [], wY = []
+    for (let i = 0; i < s8.n; i++) { if (s8.comp[i] === ids.hg) hgY.push(s8.pos[3 * i + 1] * L); else if (s8.comp[i] === ids.w) wY.push(s8.pos[3 * i + 1] * L) }
+    await page.evaluate(() => window.__fluidBench.configure({ immExcludeLiquids: [], disableImmiscible: false }))
+    return { arm, run, filmOnly: true, film: { hgComMm: 1000 * hgY.reduce((q, v) => q + v, 0) / hgY.length, waterMedianCm: 100 * med(wY), clampsPerSubstep: dg.clampHits / Math.max(1, dg.substeps), pushBacksPerSubstep: dg.densityPushBacks / Math.max(1, dg.substeps), vLag: dg.vLag } }
+  }
   let s = await sampleAtFrame(page, F0)
   const Lw = laws(s), { ids } = Lw
   if (!s.drift) throw new Error(`${arm}: no drift state at t0 — is the drift active?`)
@@ -240,9 +253,13 @@ try {
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
   if (!(await selfCheck(page))) throw new Error('hook X self-check failed — no arm is valid')
   if (argv.includes('--selfcheck-only')) arms.length = 0
+  mkdirSync(path.join(repoRoot, 'bench-results', 'studies'), { recursive: true })
+  const partial = path.join(repoRoot, 'bench-results', 'studies', `b1c-arms-partial-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.jsonl`)
   for (const arm of arms) for (let k = 1; k <= RUNS; k++) {
     const r = await runArm(page, arm, k)
     results.push(r)
+    appendFileSync(partial, JSON.stringify(r) + '\n')   // a stall later must not lose this run
+    if (r.filmOnly) { console.log(`${arm.padEnd(6)} run ${k}: film only — Hg COM ${r.film.hgComMm.toFixed(2)} mm (physical 4.99), water median ${r.film.waterMedianCm.toFixed(2)} cm, clamps ${r.film.clampsPerSubstep.toFixed(0)}/substep (pre-drift 62–123), push-backs ${r.film.pushBacksPerSubstep.toFixed(0)}/substep`); continue }
     const st = r.strata
     console.log(`${arm.padEnd(6)} run ${k}: set ${r.n} (row0 ${st.row0.n}, row1 ${st.row1.n}; exposed ${st.exposed.n}) R ${fmt(st.all.R)}  M ${fmt(st.all.M)}  K ${fmt(st.all.K)} | never-exposed R ${fmt(st.never.R)} M ${fmt(st.never.M)} K ${fmt(st.never.K)} | W-null ${r.wnull.ofUeq.toFixed(3)} U_eq | film: Hg COM ${r.film.hgComMm.toFixed(2)} mm, water median ${r.film.waterMedianCm.toFixed(2)} cm, clamps ${r.film.clampsPerSubstep.toFixed(0)}/substep | transient ${r.transientProxyMm.toFixed(3)} mm | substeps/frame ${r.substepsPerFrame.toFixed(2)} | DC4 ${r.dc4.ratio.toFixed(3)} (${r.dc4.n})`)
   }
@@ -266,6 +283,12 @@ if (of('E6-0').length) {
   const valid = every('E6-0', r => r.film.hgComMm >= 2.5 && r.film.clampsPerSubstep <= 150)
   lines.push(`E6-0 film self-check: ${valid ? 'VALID' : 'VOID'} (Hg COM ${of('E6-0').map(r => r.film.hgComMm.toFixed(2)).join('/')} mm ≥ 2.5; clamps ${of('E6-0').map(r => r.film.clampsPerSubstep.toFixed(0)).join('/')} ≤ 150/substep)` +
     (valid ? `; K ${of('E6-0').map(r => r.strata.all.K.v.toFixed(3)).join('/')} (1 ± 0.03?), M ${of('E6-0').map(r => r.strata.all.M.v.toFixed(3)).join('/')} (≤ 1.05?)` : ''))
+}
+if (of('E5-0').length) {
+  // written before E5-0's first run (after the first pass found E6-0 void): the same film bar as E6-0's self-check
+  const kept = every('E5-0', r => r.film.hgComMm >= 2.5 && r.film.clampsPerSubstep <= 150)
+  const lost = every('E5-0', r => r.film.hgComMm < 2.5)
+  lines.push(`E5-0 film without any drift (Hg COM ${of('E5-0').map(r => r.film.hgComMm.toFixed(2)).join('/')} mm, clamps ${of('E5-0').map(r => r.film.clampsPerSubstep.toFixed(0)).join('/')}/substep): ${kept ? 'the film SURVIVES — the drift (mercury\'s own slip and the others\' −J at the floor) causes its collapse' : lost ? 'the film collapses WITHOUT the drift — another cause at this commit' : 'mixed across runs — no single reading'}`)
 }
 for (const l of lines) console.log(`READING ${l}`)
 const outDir = path.join(repoRoot, 'bench-results', 'studies'); mkdirSync(outDir, { recursive: true })

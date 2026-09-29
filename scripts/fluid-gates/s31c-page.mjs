@@ -57,7 +57,7 @@
 //      0.40; the law with the kernel's inputs × 0.969–0.991 of U_eq (the mercury diagnosis holds), the model × 1.07–1.16
 //      of its own law and the measured slip × 1.09–1.42 of the model's: a second gap (transport or this observable in a
 //      still-convecting plume), OPEN — the band is not moved.
-//    RE-SCOPE, REGISTERED 2026-09-29 19:15 BEFORE ANY E3/E6 DATA (the B1c synthesis memo's recommendation (a); vault
+//    RE-SCOPE, REGISTERED 2026-09-29 19:12 BEFORE ANY E3/E6 DATA (the B1c synthesis memo's recommendation (a); vault
 //      active-plan step 1; the arms study scripts/studies/b1c-arms.mjs was running, its output unread). For reasons that
 //      do not depend on any E3/E6 result: (1) this observable does not measure the slip — per drop it measures A + B +
 //      C + D (the model's slip, the drop–cohort difference of the resolved velocity, of J, and of the density
