@@ -906,6 +906,25 @@ export class FlipGpuSimulator {
     }
   }
 
+  /** Every particle as it would be uploaded again (a tank resize rebuilds the simulator and re-adds them). */
+  async readParticleState(): Promise<FlipParticleInit[]> {
+    const n = this.count
+    if (n === 0) return []
+    const { pos, vel, aff } = await this.readParticles()
+    const aux = new Uint32Array(await this.readBuffer(this.auxBuf, 16 * n))
+    const tU = new Uint32Array(1), tF = new Float32Array(tU.buffer)
+    const out: FlipParticleInit[] = []
+    for (let i = 0; i < n; i++) {
+      tU[0] = aux[4 * i + 2]
+      out.push({
+        pos: [pos[4 * i], pos[4 * i + 1], pos[4 * i + 2]], vel: [vel[4 * i], vel[4 * i + 1], vel[4 * i + 2]],
+        c: [0, 1, 2].map(a => [aff[12 * i + 4 * a], aff[12 * i + 4 * a + 1], aff[12 * i + 4 * a + 2]]) as [Vec3, Vec3, Vec3],
+        mass: vel[4 * i + 3] * this.massUnit, composition: aux[4 * i], phase: aux[4 * i + 1], temperatureC: tF[0],
+      })
+    }
+    return out
+  }
+
   async readGrid(which: 0 | 1 = 0): Promise<{ mass: Int32Array; mom: Int32Array; massLo: Int32Array; momLo: Int32Array; u: Float32Array; valid: Uint32Array }> {
     const G = 3 * this.layout.size
     return {

@@ -8,7 +8,7 @@
 import { ELEMENTS, type ElementName } from '../composition/PropertyCalculator'
 import { CompositionTable, type RenderOverride } from '../composition/CompositionTable'
 import { DOMAIN_L_M, DX_M, G_STANDARD, TAU_S } from '../fluid-engine/units'
-import { MPM_PACKING, type Packing } from '../fluid-engine/spawn'
+import { MPM_PACKING, packingHi, type Packing } from '../fluid-engine/spawn'
 
 /** Built-in material names (lower-case) a spawn may reference without a "materials" entry. */
 const BUILT_IN_NAMES: ReadonlySet<string> = (() => {
@@ -131,10 +131,10 @@ export function parseScenario(text: string, opts: { packing?: Packing } = {}):
       return { ok: false, error: 'spawn initialVelocity must be [vx,vy,vz] in m/s' }
     }
     if (sp.box !== undefined) {
-      const pk = opts.packing ?? MPM_PACKING, tankInner = (pk.tankMax - pk.tankMin) * DOMAIN_L_M
-      const inner = +tankInner.toFixed(4)
-      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > tankInner + 1e-9)) {
-        return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres from the tank's inner corner, 0 ≤ min < max ≤ ${inner}` }
+      const pk = opts.packing ?? MPM_PACKING, hi = packingHi(pk), tankInner = hi.map(h => (h - pk.tankMin) * DOMAIN_L_M)
+      const inner = tankInner.map(v => +v.toFixed(4))
+      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > tankInner[i] + 1e-9)) {
+        return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres from the tank's inner corner, 0 ≤ min < max ≤ [${inner.join(', ')}]` }
       }
       // Same count the lattice spawner will place: floor(size / spacing) per axis.
       total += sp.box.max.reduce((acc, v, i) => acc * Math.max(1, Math.floor((v - sp.box!.min[i]) / DOMAIN_L_M / pk.spacing + 1e-9)), 1)

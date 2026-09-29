@@ -8,7 +8,7 @@ import { FlipGpuSimulator, PRESENT_STRIDE_BYTES } from '../gpu-sim/flip/FlipGpuS
 import { SOLID_REFERENCE, type LiquidKey } from '../composition/materialData'
 import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
-import { FLIP_PACKING, MPM_PACKING, type Packing, type Vec3 } from './spawn'
+import { FLIP_PACKING, MPM_PACKING, flipPacking, type Packing, type Vec3 } from './spawn'
 import { waterDensity } from '../composition/materialData'
 import { VISCOUS_RUN_NU, INCOMPRESSIBLE_NU_NUM } from '../composition/liquidGate'
 import { interfacialTension } from '../composition/interfacialTension'
@@ -69,6 +69,13 @@ export interface SimBackend {
   /** S3.6e: the unified pressure–viscosity solve for a ball in a thick liquid — whether it runs, and its last solve's
    *  iterations (null: this backend has none). */
   stokesStatus?(): StokesStatus | null
+  /** Tank resize (TANK-RESIZE spec): grid cells per axis (dx fixed); the particles inside the new walls are kept, shifted
+   *  by `shiftM` metres first (a −x / −z face moved); the ball is kept when it still fits. Absent: a fixed tank. */
+  resize?(cells: Vec3, shiftM?: Vec3): Promise<{ kept: number; removed: number; ballRemoved: boolean }>
+  /** The tank's grid cells per axis (a resizable backend). */
+  readonly cells?: Vec3
+  /** Most particles the tank holds (scales with the cell count). */
+  readonly maxParticles?: number
   destroy(): void
 }
 
@@ -171,7 +178,9 @@ export class FlipBackend implements SimBackend {
   readonly kind = 'flip' as const
   readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density, implicit viscosity, immiscible drift)'
   readonly method: SolverMethod = 'incompressible'
-  readonly packing = FLIP_PACKING
+  packing: Packing = FLIP_PACKING
+  /** Grid cells per axis (TANK-RESIZE: multiples of 8, 16…88, dx fixed at 3.63 m / 64). */
+  cells: Vec3 = [GRID_RES, GRID_RES, GRID_RES]
   readonly supportsBall = true
   private readonly dx = DOMAIN_L_M / GRID_RES
   /** The ball: solid iron, NIST SRD 126 (materialData), coupled monolithically (S3.7, Batty et al. 2007 eq. 13: the fluid's
@@ -227,29 +236,85 @@ export class FlipBackend implements SimBackend {
   private substepsTotal = 0
 
   private readonly device: GPUDevice
-  private readonly sim: FlipGpuSimulator
+  private sim: FlipGpuSimulator
+  /** The last gravity set (m/s², downward): a rebuilt simulator gets it again. */
+  private gMs2 = 0
   private constructor(device: GPUDevice, sim: FlipGpuSimulator) {
     this.device = device; this.sim = sim
     this.mPerRho = this.dx ** 3 / FLIP_PACKING.ppc
     this.speedSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.speed${i}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
     this.ballSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.ball${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
     this.viscSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.visc${i}`, size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
-    sim.viscositySolver!.cap = FlipBackend.VISC_CAP_MAX
     // S3.6e (owner decision 2026-09-29): the unified solve where a ball meets a thick liquid, the split path elsewhere
     this.stokesSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.stokes${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
+    FlipBackend.configureSim(sim)
+  }
+  /** The page's solver settings on a (new) simulator. */
+  private static configureSim(sim: FlipGpuSimulator) {
+    sim.viscositySolver!.cap = FlipBackend.VISC_CAP_MAX
     sim.viscosityScheme = 'auto'
     sim.stokesSolver!.tol = FlipBackend.STOKES_TOL
     sim.stokesSolver!.cap = FlipBackend.STOKES_CAP_MAX
   }
-
-  static async create(device: GPUDevice): Promise<FlipBackend> {
-    const sim = await FlipGpuSimulator.create(device, {
-      nx: GRID_RES, ny: GRID_RES, nz: GRID_RES, dx: DOMAIN_L_M / GRID_RES, gravity: [0, 0, 0],
-      maxParticles: FLIP_MAX_PARTICLES, lRef: DOMAIN_L_M, tauS: TAU_S,
+  /** The particle capacity of a tank: FLIP_MAX_PARTICLES per 64³, scaled with the cell count (TANK-RESIZE budget). */
+  static capacityFor(cells: Vec3): number { return Math.round(FLIP_MAX_PARTICLES * cells[0] * cells[1] * cells[2] / GRID_RES ** 3) }
+  private static makeSim(device: GPUDevice, cells: Vec3) {
+    return FlipGpuSimulator.create(device, {
+      nx: cells[0], ny: cells[1], nz: cells[2], dx: DOMAIN_L_M / GRID_RES, gravity: [0, 0, 0],
+      maxParticles: FlipBackend.capacityFor(cells), lRef: DOMAIN_L_M, tauS: TAU_S,
       projection: true, density: waterDensity(20), densityProjection: true, freeSurface: 'ghost', variableDensity: true,
       ppc: FLIP_PACKING.ppc, viscosity: true, immiscible: true,
     })
-    return new FlipBackend(device, sim)
+  }
+
+  static async create(device: GPUDevice, cells: Vec3 = [GRID_RES, GRID_RES, GRID_RES]): Promise<FlipBackend> {
+    const b = new FlipBackend(device, await FlipBackend.makeSim(device, cells))
+    b.cells = [...cells] as Vec3
+    b.packing = cells.every(c => c === GRID_RES) ? FLIP_PACKING : flipPacking(cells)
+    return b
+  }
+  get maxParticles(): number { return this.sim.maxParticles }
+
+  /** Tank resize (TANK-RESIZE spec): rebuild the simulator at `cells` (every solver is sized at creation), then the
+   *  page's settings, the μ table, the tank's liquids (drift slots), gravity; the particles inside the new walls (after
+   *  the shift) with their velocities, affine terms, masses, compositions and temperatures; the ball if it still fits. */
+  async resize(cells: Vec3, shiftM: Vec3 = [0, 0, 0]): Promise<{ kept: number; removed: number; ballRemoved: boolean }> {
+    if (!cells.every(c => Number.isInteger(c) && c % 8 === 0 && c >= 16 && c <= 88)) throw new RangeError(`tank cells must be multiples of 8 in [16, 88] (got ${cells.join(' × ')})`)
+    const old = this.sim
+    const state = await old.readParticleState()
+    const sphere = old.hasSphere ? await old.readSphere() : null
+    const coupling = old.sphereCoupling
+    const next = await FlipBackend.makeSim(this.device, cells)
+    const ext = cells.map(c => c * this.dx), eps = 1e-6
+    const kept = state
+      .map(p => ({ ...p, pos: [p.pos[0] + shiftM[0], p.pos[1] + shiftM[1], p.pos[2] + shiftM[2]] as Vec3 }))
+      .filter(p => p.pos.every((v, a) => v > eps && v < ext[a] - eps))
+      .slice(0, next.maxParticles)
+    this.sim = next
+    old.destroy()
+    this.cells = [...cells] as Vec3
+    this.packing = flipPacking(cells)
+    FlipBackend.configureSim(next)
+    next.viscositySolver!.setMuTable(this.muTable)
+    next.gravity = [0, -this.gMs2, 0]
+    this.compCount.fill(0)
+    for (const p of kept) this.compCount[p.composition]++
+    next.setParticles(kept)
+    this.vLag = 0
+    this.applyViscosity()
+    this.applyImmiscible()
+    this.stokesLast = { iterations: 0, converged: true }; this.stokesMaxIt = 0; this.stokesRecent = []
+    let ballRemoved = false
+    if (sphere?.active) {
+      const c: Vec3 = [sphere.center[0] + shiftM[0], sphere.center[1] + shiftM[1], sphere.center[2] + shiftM[2]]
+      if (c.every((v, a) => v - sphere.radius > 0 && v + sphere.radius < ext[a])) {
+        next.setSphere({ center: c, radius: sphere.radius, velocity: sphere.velocity, density: FlipBackend.BALL_DENSITY, coupling })
+      } else ballRemoved = true
+    }
+    this.ballLag = null
+    this.ballEpoch++
+    this.present()
+    return { kept: kept.length, removed: state.length - kept.length, ballRemoved }
   }
 
   get particleBuffer() { return this.sim.presentationBuffer }
@@ -336,7 +401,7 @@ export class FlipBackend implements SimBackend {
     this.sim.viscosityActive = this.maxNu >= VISCOUS_RUN_NU
     if (Number.isFinite(this.minMu)) vs.muDefault = this.minMu
   }
-  setGravity(gMs2: number) { this.sim.gravity = [0, -gMs2, 0] }
+  setGravity(gMs2: number) { this.gMs2 = gMs2; this.sim.gravity = [0, -gMs2, 0] }
   setCompositionProps() { /* masses carry each material's density (toInit); μ comes through setViscosities */ }
   setViscosities(muPaS: Float32Array) {
     this.muTable.set(muPaS.subarray(0, this.muTable.length))

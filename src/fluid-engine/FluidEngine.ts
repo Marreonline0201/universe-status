@@ -82,6 +82,13 @@ export class FluidEngine {
   private spawnTemperature = 20
   private lastScenario: LabScenario | null = null
   private glassBox: THREE.Mesh | null = null
+  // the tank's furniture, resized with it (TANK-RESIZE)
+  private boxMesh: THREE.LineSegments | null = null
+  private floorMesh: THREE.Mesh | null = null
+  private wallMesh: THREE.Mesh | null = null
+  private sideMeshes: THREE.Mesh[] = []
+  /** While the simulator is being rebuilt the frames render but do not step. */
+  private resizing = false
   private raycaster = new THREE.Raycaster()
   private gravityMs2 = G_STANDARD   // downward gravity magnitude, m/s²
   private currentBgBrightness = readBgBrightness()
@@ -156,7 +163,11 @@ export class FluidEngine {
     camera.position.set(2.0, 1.5, 2.0)
     camera.lookAt(0.5, 0.5, 0.5)
 
-    const renderer = new (THREE as any).WebGPURenderer({ antialias: true })
+    // The adapter's own buffer limits (TANK-RESIZE budget): a 5 m tank (88³) needs a 187 MB storage binding (the viscous
+    // lattice) against the default 128 MiB; this GPU allows 2 GB. The default 64³ tank fits either way.
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+    const requiredLimits = adapter ? { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } : {}
+    const renderer = new (THREE as any).WebGPURenderer({ antialias: true, requiredLimits })
     await renderer.init()
     if (this.destroyed) { renderer.dispose(); return false }
     renderer.setSize(this.container.clientWidth, this.container.clientHeight)
@@ -194,6 +205,7 @@ export class FluidEngine {
     )
     boxMesh.position.set(0.5, 0.5, 0.5)
     scene.add(boxMesh)
+    this.boxMesh = boxMesh
 
     const glassBox = new THREE.Mesh(boxGeo, new THREE.MeshPhysicalMaterial({
       color: 0x88ccff, transparent: true, opacity: 0.06, roughness: 0.05, metalness: 0.0, side: THREE.DoubleSide,
@@ -208,6 +220,7 @@ export class FluidEngine {
     floorMesh.rotation.x = -Math.PI / 2
     floorMesh.position.set(0.5, 0.001, 0.5)
     scene.add(floorMesh)
+    this.floorMesh = floorMesh
 
     const wallMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(0.98, 0.98, 20, 15),
@@ -215,6 +228,7 @@ export class FluidEngine {
     )
     wallMesh.position.set(0.5, 0.5, 0.001)
     scene.add(wallMesh)
+    this.wallMesh = wallMesh
 
     const sideMat = new THREE.MeshBasicMaterial({ color: 0x1a3050, wireframe: true, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
     const sideGeo = new THREE.PlaneGeometry(0.98, 0.98, 15, 15)
@@ -223,6 +237,7 @@ export class FluidEngine {
       side.rotation.y = Math.PI / 2
       side.position.set(x, 0.5, 0.5)
       scene.add(side)
+      this.sideMeshes.push(side)
     }
 
     const sphereMesh = new THREE.Mesh(
@@ -454,7 +469,7 @@ export class FluidEngine {
       const r = latticeBox(block.lo, block.size, { occupied, packing: this.packing })
       const kept: Vec3[] = []
       for (const pos of r.positions) {
-        if (particles.length + kept.length >= 200_000) break
+        if (particles.length + kept.length >= (this.sim.maxParticles ?? 200_000)) break
         occupied.add(cellKey(pos[0], pos[1], pos[2]))
         kept.push(pos)
       }
@@ -539,7 +554,7 @@ export class FluidEngine {
     }
 
     const simBefore = this.simTime
-    if (advanceS > 0) this.macroStep(advanceS)
+    if (advanceS > 0 && !this.resizing) this.macroStep(advanceS)
     this.rtSamples.push({ wall: ts, sim: this.simTime })
     while (this.rtSamples.length > 2 && ts - this.rtSamples[0].wall > 2000) this.rtSamples.shift()
 
@@ -733,6 +748,49 @@ export class FluidEngine {
     return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount(c, 512, this.packing))
   }
 
+  /** The tank: grid cells per axis and its inner size in metres (dx fixed). */
+  get tank(): { cells: Vec3; sizeM: Vec3; resizable: boolean } {
+    const cells = (this.sim?.cells ?? [GRID_RES, GRID_RES, GRID_RES]) as Vec3
+    return { cells: [...cells] as Vec3, sizeM: cells.map(c => c * DOMAIN_L_M / GRID_RES) as Vec3, resizable: !!this.sim?.resize }
+  }
+  /** The running tank's packing (scenario validation against the tank as it is now). */
+  get tankPacking() { return this.sim?.packing ?? null }
+  /** Tank resize (TANK-RESIZE spec): cells per axis, multiples of 8 in [16, 88] (0.91–4.99 m at dx = 5.67 cm). The
+   *  simulator is rebuilt; particles inside the new walls stay (shifted by `shiftM` metres first — a −x / −z face moved);
+   *  the ball stays if it fits. Frames keep rendering while the rebuild runs, without stepping. */
+  async resizeTank(cells: Vec3, shiftM: Vec3 = [0, 0, 0]): Promise<{ ok: boolean; reason?: string; kept?: number; removed?: number }> {
+    const sim = this.sim
+    if (!sim?.resize || this.destroyed) return { ok: false, reason: 'this solver has a fixed tank' }
+    if (!cells.every(c => Number.isInteger(c) && c % 8 === 0 && c >= 16 && c <= 88)) return { ok: false, reason: `tank cells must be multiples of 8 in [16, 88] (got ${cells.join(' × ')})` }
+    this.resizing = true
+    try {
+      const r = await sim.resize(cells, shiftM)
+      if (this.ball.active) {
+        if (r.ballRemoved) { this.ball.active = false; if (this.sphereMesh) this.sphereMesh.visible = false; this.notify('warning', 'the ball was removed: it no longer fits in the tank') }
+        else for (let a = 0; a < 3; a++) this.ball.center[a] += shiftM[a] / DOMAIN_L_M
+      }
+      this.applyTankFurniture()
+      return { ok: true, kept: r.kept, removed: r.removed }
+    } finally {
+      this.resizing = false
+    }
+  }
+  /** The glass box, its edges, floor and wall grids and the orbit target follow the tank (world units: cells/64). */
+  private applyTankFurniture() {
+    const [ex, ey, ez] = this.tank.cells.map(c => c / GRID_RES)
+    this.boxMesh?.scale.set(ex, ey, ez); this.boxMesh?.position.set(ex / 2, ey / 2, ez / 2)
+    this.glassBox?.scale.set(ex, ey, ez); this.glassBox?.position.set(ex / 2, ey / 2, ez / 2)
+    this.floorMesh?.scale.set(ex, ez, 1); this.floorMesh?.position.set(ex / 2, 0.001, ez / 2)
+    this.wallMesh?.scale.set(ex, ey, 1); this.wallMesh?.position.set(ex / 2, ey / 2, 0.001)
+    this.sideMeshes.forEach((m, k) => { m.scale.set(ez, ey, 1); m.position.set(k === 0 ? 0.001 : ex - 0.001, ey / 2, ez / 2) })
+    if (this.controls && this.camera) {
+      const t = new THREE.Vector3(ex / 2, ey / 2, ez / 2), d = t.clone().sub(this.controls.target)
+      this.controls.target.copy(t)
+      this.camera.position.add(d)
+      this.controls.update()
+    }
+  }
+
   /** Raycast a screen click against the glass box and spawn a block there. */
   async spawnAtPointer(clientX: number, clientY: number): Promise<number> {
     if (!this.camera || !this.glassBox) return 0
@@ -833,6 +891,7 @@ export class FluidEngine {
       compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name, rho: c.solver.rhoKgM3, mu: c.solver.muPaS })),
       fps: () => this.lastFps,
       count: () => this.particleCount,
+      resizeTank: (cells, shiftM) => this.resizeTank(cells, shiftM),
       configure: (opts) => {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
@@ -872,6 +931,7 @@ export class FluidEngine {
           gpuErrors: this.gpuErrors,
           gravityMs2: this.gravityMs2,
           stokes: this.sim?.stokesStatus?.() ?? null,
+          tank: this.tank,
           presentIntervalP50: iv.length ? iv[Math.floor(iv.length * 0.5)] : null,
           presentIntervalP95: iv.length ? iv[Math.floor(iv.length * 0.95)] : null,
         }

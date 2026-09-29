@@ -72,6 +72,8 @@ export interface BenchTarget {
   extraStatus?(): Record<string, unknown>
   /** The incompressible viscous solve's μ over full cells at its last run (s36-page; null on a solver without it). */
   viscosity?(): Promise<unknown>
+  /** Tank resize (TANK-RESIZE spec): grid cells per axis, shift in metres. */
+  resizeTank?(cells: [number, number, number], shiftM?: [number, number, number]): Promise<unknown>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -103,6 +105,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     configure(opts: Parameters<NonNullable<BenchTarget['configure']>>[0]) {
       if (!target.configure) throw new Error(`${meta.page} cannot be configured`)
       target.configure(opts)
+    },
+
+    resizeTank(cells: [number, number, number], shiftM?: [number, number, number]) {
+      if (!target.resizeTank) throw new Error(`${meta.page} cannot resize the tank`)
+      return target.resizeTank(cells, shiftM)
     },
 
     diagnostics() {

@@ -179,7 +179,7 @@ export function FluidTest() {
         // Scripted tests drive the same callbacks the buttons call.
         uninstallHook = installBenchHook(engine.benchTarget({
           loadScenario: (json) => {
-            const parsed = parseScenario(json, { packing: packingFor(solverFromUrl()) })
+            const parsed = parseScenario(json, { packing: engineRef.current?.tankPacking ?? packingFor(solverFromUrl()) })
             if (!parsed.ok) throw new Error(parsed.error)
             const r = engine.loadScenario(parsed.scenario)
             if (!r.ok) throw new Error(`scenario refused: ${r.reason}`)
