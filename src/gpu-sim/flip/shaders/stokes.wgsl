@@ -10,6 +10,11 @@
 // Face coefficients (skFaces, one vec4 per face slot): (g = 1 − S, gv, K⁻¹, kind); kind 1 unknown (gv = S), 2 V-only
 // (below the fluid-mass floor: the face moves with the ball, gv = 1), 3 free (mass-less, non-wall: its rows drop),
 // 0 none (wall-normal, ghost slot, outside the range).
+// The live rows are COMPACTED once per solve (skCount → skScan → skCompact: a deterministic prefix sum, row order kept)
+// and every PCG row kernel runs over that list (threads past the live count return) — so an iteration costs what the live
+// rows cost (the page's shallow pool: ~8 % of the 7·size slots). Measured at 64³ on the page scene: an active iteration
+// 420 → ~146 µs, an idle one (past convergence) 85 → ~20 µs. Indirect dispatches sized by the live count were measured
+// SLOWER in Chrome (≈ 25–30 µs each — the implementation validates every indirect dispatch), so the loop stays direct.
 
 struct StokesParams {
   wMin: f32,    // face-mass floor W_min (volume fraction)
@@ -35,14 +40,17 @@ struct StokesParams {
 @group(0) @binding(72) var<storage, read> skDR: array<f32>;
 @group(0) @binding(73) var<storage, read_write> skQ: array<f32>;
 @group(0) @binding(74) var<storage, read> skQR: array<f32>;
-@group(0) @binding(75) var<storage, read_write> skW: array<f32>;     // per face K⁻¹·g·(Bᵀ·in)
-@group(0) @binding(76) var<storage, read> skWR: array<f32>;
+@group(0) @binding(75) var<storage, read_write> skW: array<vec4<f32>>;   // per face (K⁻¹·g·(Bᵀ·in), g, gv, 0)
+@group(0) @binding(76) var<storage, read> skWR: array<vec4<f32>>;
 @group(0) @binding(77) var<storage, read_write> skPart: array<vec4<f32>>;
 @group(0) @binding(78) var<storage, read_write> skSt: array<f32>;
 @group(0) @binding(79) var<storage, read> skStR: array<f32>;
 @group(0) @binding(80) var<storage, read_write> skFaults: array<u32>;   // solves, cap hits, breakdowns, max iterations
 @group(0) @binding(81) var<storage, read> skCellSolid: array<vec2<f32>>;
 @group(0) @binding(82) var<storage, read_write> skSphere: array<f32>;
+@group(0) @binding(83) var<storage, read_write> skList: array<vec2<u32>>;   // live rows: (row, bits of diag), row order
+@group(0) @binding(84) var<storage, read> skListR: array<vec2<u32>>;
+@group(0) @binding(85) var<storage, read_write> skCounts: array<u32>;       // live rows per row-workgroup → offsets
 
 /// The loop kernels return once the solve has converged; the init and finish variants run regardless.
 override SK_FORCE: bool = false;
@@ -59,6 +67,7 @@ const SK_RINF: u32 = 6u;
 const SK_BRK: u32 = 7u;
 const SK_WV: u32 = 8u;
 const SK_BTV: u32 = 11u;
+const SK_LIVE: u32 = 15u;   // live rows (f32: exact to 2^24)
 
 // ── indexing ────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -205,7 +214,7 @@ fn skRowsB(@builtin(global_invocation_id) gid: vec3<u32>) {
   let r = gid.x;
   if (r >= 7u * P.size) { return; }
   var info = skRow[r];
-  if (info.x < 0.0) { skRow[r] = vec4<f32>(-1.0, 0.0, 0.0, 0.0); skY[r] = 0.0; return; }
+  if (info.x < 0.0) { skRow[r] = vec4<f32>(-1.0, 0.0, 0.0, 0.0); skY[r] = 0.0; skD[r] = 0.0; return; }
   let row = skRowAt(r);
   let h = info.z / P.dx;
   var slots: array<u32, 6>;
@@ -238,13 +247,57 @@ fn skRowsB(@builtin(global_invocation_id) gid: vec3<u32>) {
   let kv = skKvInv();
   if (SP.ball == 0u) { vg = vec3<f32>(0.0); }
   if (!dead && nCols == 0u && all(vg == vec3<f32>(0.0)) && info.x == 0.0) { dead = true; }
-  if (dead) { skRow[r] = vec4<f32>(info.x, 0.0, info.z, 0.0); skY[r] = 0.0; return; }
+  if (dead) { skRow[r] = vec4<f32>(info.x, 0.0, info.z, 0.0); skY[r] = 0.0; skD[r] = 0.0; return; }
   var d = info.x + dot(vg, vg) * kv;
   for (var m = 0u; m < nCols; m++) { d += gs[m] * gs[m] * skFaceR[slots[m]].z; }
   b += dot(vg, vec3<f32>(sphere[SPH_V], sphere[SPH_V + 1u], sphere[SPH_V + 2u]));
   skRow[r] = vec4<f32>(info.x, d, info.z, b);
   if (SP.warm == 0u) { skY[r] = 0.0; }
 }
+
+// ── compaction of the live rows (deterministic: per-workgroup counts, one prefix sum, per-workgroup scatter) ────
+
+var<workgroup> skScanW: array<u32, 256>;
+/// Exclusive prefix of v over the workgroup (Hillis–Steele); skScanW[255] holds the inclusive total afterwards.
+fn skExclusiveScan(lid: u32, v: u32) -> u32 {
+  skScanW[lid] = v;
+  workgroupBarrier();
+  for (var off = 1u; off < 256u; off <<= 1u) {
+    var add = 0u;
+    if (lid >= off) { add = skScanW[lid - off]; }
+    workgroupBarrier();
+    skScanW[lid] += add;
+    workgroupBarrier();
+  }
+  return skScanW[lid] - v;
+}
+fn skLive(r: u32) -> bool { return r < 7u * P.size && skRowR[r].y > 0.0; }
+@compute @workgroup_size(256)
+fn skCount(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  let e = skExclusiveScan(lid, select(0u, 1u, skLive(gid.x)));
+  if (lid == 255u) { skCounts[wg.x] = e + select(0u, 1u, skLive(gid.x)); }
+}
+/// One workgroup: the counts → exclusive offsets (each thread a contiguous chunk) and the live total.
+@compute @workgroup_size(256)
+fn skScan(@builtin(local_invocation_index) lid: u32) {
+  let n = SP.nWgR;
+  let C = (n + 255u) / 256u;
+  let lo = lid * C;
+  let hi = min(lo + C, n);
+  var acc = 0u;
+  for (var j = lo; j < hi; j++) { acc += skCounts[j]; }
+  var run = skExclusiveScan(lid, acc);
+  for (var j = lo; j < hi; j++) { let c = skCounts[j]; skCounts[j] = run; run += c; }
+  if (lid == 0u) { skSt[SK_LIVE] = f32(skScanW[255]); }
+}
+@compute @workgroup_size(256)
+fn skCompact(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  let live = skLive(gid.x);
+  let e = skExclusiveScan(lid, select(0u, 1u, live));
+  if (live) { skList[skCounts[wg.x] + e] = vec2<u32>(gid.x, bitcast<u32>(skRowR[gid.x].y)); }
+}
+/// Workgroups of the compacted row passes (their partials count).
+fn skLiveWg() -> u32 { return (u32(skSt[SK_LIVE]) + 255u) / 256u; }
 
 // ── the operator: skT (faces) → skReduceV → skApply (rows) ─────────────────────────────────────────────────────
 
@@ -293,6 +346,8 @@ fn skT(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_
     let f = skFaceR[s];
     let kind = u32(f.w + 0.5);
     var w = 0.0;
+    var gg = 0.0;
+    var gvv = 0.0;
     if (kind == 1u || kind == 2u) {
       let c = skLogicalOfSlot(t % P.size);
       var sum = 0.0;
@@ -321,11 +376,12 @@ fn skT(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_
           sum += g * skRowR[r].z / P.dx * skInAt(r);
         }
       }
-      if (kind == 1u) { w = f.z * f.x * sum; }
+      if (kind == 1u) { w = f.z * f.x * sum; gg = f.x; }
+      gvv = f.y;
       let v = f.y * sum;
       if (a == 0u) { part.x = v; } else if (a == 1u) { part.z = v; } else { part.w = v; }
     }
-    skW[s] = w;
+    skW[s] = vec4<f32>(w, gg, gvv, 0.0);
   }
   let rs = skReduce(lid, part);
   if (lid == 0u) { skPart[wg.x] = rs; }
@@ -348,29 +404,26 @@ fn skReduceV(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn skApply(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   if (skDone(lid)) { return; }
-  let r = gid.x;
+  let i = gid.x;
   var part = vec4<f32>(0.0);
-  if (r < 7u * P.size) {
+  if (f32(i) < skStR[SK_LIVE]) {
+    let r = skListR[i].x;
     let info = skRowR[r];
-    var q = 0.0;
-    if (info.y > 0.0) {
-      let row = skRowAt(r);
-      let h = info.z / P.dx;
-      let wV = vec3<f32>(skStR[SK_WV], skStR[SK_WV + 1u], skStR[SK_WV + 2u]);
-      var s = info.x * skIn[r];
-      let nt = skNTerms(row.kind);
-      for (var t = 0u; t < nt; t++) {
-        let tm = skTermOf(row.kind, row.c, t);
-        let fr = resolve(tm.a, tm.c);
-        if (!fr.ok) { continue; }
-        let f = skFaceR[fr.slot];
-        let k = tm.coef * fr.sign * h;
-        s += k * (f.x * skWR[fr.slot] + f.y * wV[tm.a]);
-      }
-      q = s;
+    let row = skRowAt(r);
+    let h = info.z / P.dx;
+    let wV = vec3<f32>(skStR[SK_WV], skStR[SK_WV + 1u], skStR[SK_WV + 2u]);
+    var s = info.x * skIn[r];
+    let nt = skNTerms(row.kind);
+    for (var t = 0u; t < nt; t++) {
+      let tm = skTermOf(row.kind, row.c, t);
+      let fr = resolve(tm.a, tm.c);
+      if (!fr.ok) { continue; }
+      let f = skWR[fr.slot];
+      let k = tm.coef * fr.sign * h;
+      s += k * (f.y * f.x + f.z * wV[tm.a]);
     }
-    skQ[r] = q;
-    part = vec4<f32>(skIn[r] * q, 0.0, 0.0, 0.0);
+    skQ[r] = s;
+    part = vec4<f32>(skIn[r] * s, 0.0, 0.0, 0.0);
   }
   let rs = skReduce(lid, part);
   if (lid == 0u) { skPart[wg.x] = rs; }
@@ -381,13 +434,13 @@ fn skApply(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocat
 /// r = b − A·y (skQR = A·y), z = r/diag, d = z; partials: r·z, max|r|.
 @compute @workgroup_size(256)
 fn skInit(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
-  let r = gid.x;
+  let i = gid.x;
   var part = vec4<f32>(0.0);
-  if (r < 7u * P.size) {
+  if (f32(i) < skStR[SK_LIVE]) {
+    let r = skListR[i].x;
     let info = skRowR[r];
-    var res = 0.0;
-    var z = 0.0;
-    if (info.y > 0.0) { res = info.w - skQR[r]; z = res / info.y; }
+    let res = info.w - skQR[r];
+    let z = res / info.y;
     skRes[r] = res; skZ[r] = z; skD[r] = z;
     part = vec4<f32>(res * z, abs(res), 0.0, 0.0);
   }
@@ -396,7 +449,7 @@ fn skInit(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocati
 }
 @compute @workgroup_size(256)
 fn skReduceInit(@builtin(local_invocation_index) lid: u32) {
-  let s = skSumPartials(lid, SP.nWgR);
+  let s = skSumPartials(lid, skLiveWg());
   if (lid == 0u) {
     skSt[SK_RZ] = s.x; skSt[SK_R0] = s.y; skSt[SK_RINF] = s.y; skSt[SK_IT] = 0.0; skSt[SK_BRK] = 0.0;
     skSt[SK_CONV] = select(0.0, 1.0, s.y <= SP.tol);
@@ -406,7 +459,7 @@ fn skReduceInit(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn skReduceAlpha(@builtin(local_invocation_index) lid: u32) {
   if (skDoneRW(lid)) { return; }
-  let s = skSumPartials(lid, SP.nWgR);
+  let s = skSumPartials(lid, skLiveWg());
   if (lid == 0u) {
     skSt[14] = s.x;
     if (s.x > 0.0) { skSt[SK_ALPHA] = skSt[SK_RZ] / s.x; } else { skSt[SK_ALPHA] = 0.0; skSt[SK_CONV] = 1.0; skSt[SK_BRK] = 1.0; }
@@ -416,16 +469,16 @@ fn skReduceAlpha(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn skUpdate(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
   if (skDone(lid)) { return; }
-  let r = gid.x;
+  let i = gid.x;
   var part = vec4<f32>(0.0);
-  if (r < 7u * P.size) {
+  if (f32(i) < skStR[SK_LIVE]) {
+    let e = skListR[i];
+    let r = e.x;
     let al = skStR[SK_ALPHA];
-    let diag = skRowR[r].y;
     skY[r] += al * skDR[r];
     let res = skRes[r] - al * skQR[r];
     skRes[r] = res;
-    var z = 0.0;
-    if (diag > 0.0) { z = res / diag; }
+    let z = res / bitcast<f32>(e.y);
     skZ[r] = z;
     part = vec4<f32>(res * z, abs(res), 0.0, 0.0);
   }
@@ -436,7 +489,7 @@ fn skUpdate(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
 @compute @workgroup_size(256)
 fn skReduceBeta(@builtin(local_invocation_index) lid: u32) {
   if (skDoneRW(lid)) { return; }
-  let s = skSumPartials(lid, SP.nWgR);
+  let s = skSumPartials(lid, skLiveWg());
   if (lid == 0u) {
     skSt[SK_BETA] = select(0.0, s.x / skSt[SK_RZ], skSt[SK_RZ] != 0.0);
     skSt[SK_RZ] = s.x; skSt[SK_RINF] = s.y; skSt[SK_IT] += 1.0;
@@ -446,8 +499,8 @@ fn skReduceBeta(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn skDupdate(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (!SK_FORCE && skStR[SK_CONV] > 0.5) { return; }
-  let r = gid.x;
-  if (r < 7u * P.size) { skD[r] = skZR[r] + skStR[SK_BETA] * skD[r]; }
+  let i = gid.x;
+  if (f32(i) < skStR[SK_LIVE]) { let r = skListR[i].x; skD[r] = skZR[r] + skStR[SK_BETA] * skD[r]; }
 }
 
 // ── finish ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -472,7 +525,7 @@ fn skWrite(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s = gridBase(a) + (t % P.size);
   if (faceType[s] == SOLID) { return; }
   let kind = u32(skFaceR[s].w + 0.5);
-  if (kind == 1u) { uOut[s] = uOut[s] - skWR[s]; validOut[s] = 1u; }
+  if (kind == 1u) { uOut[s] = uOut[s] - skWR[s].x; validOut[s] = 1u; }
   else if (kind == 2u && SP.ball == 1u) { uOut[s] = sphere[SPH_V + a]; validOut[s] = 1u; }
   else { validOut[s] = 0u; }
 }

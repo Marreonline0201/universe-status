@@ -21,25 +21,28 @@ export interface StokesInputs {
   size: number               // padded slots per grid
 }
 
-export interface StokesStats { iterations: number; converged: boolean; residualInf: number; residualInf0: number; breakdown: boolean; btV: [number, number, number] }
+export interface StokesStats { iterations: number; converged: boolean; residualInf: number; residualInf0: number; breakdown: boolean; btV: [number, number, number]; liveRows: number }
 export interface StokesFaults { solves: number; capHits: number; breakdowns: number; maxIterations: number }
 
 type Entry = { name: string; uses: number[]; entry?: string; constants?: Record<string, number> }
 const ENTRIES: Entry[] = [
   { name: 'skFaces', uses: [0, 1, 16, 17, 19, 33, 60, 61] },
   { name: 'skRowsC', uses: [0, 1, 13, 20, 21, 26, 63, 81] },
-  { name: 'skRowsB', uses: [0, 1, 16, 26, 37, 60, 62, 63, 65] },
+  { name: 'skRowsB', uses: [0, 1, 16, 26, 37, 60, 62, 63, 65, 71] },
+  { name: 'skCount', uses: [0, 64, 85] },
+  { name: 'skScan', uses: [60, 78, 85] },
+  { name: 'skCompact', uses: [0, 64, 83, 85] },
   { name: 'skT', uses: [0, 1, 62, 64, 67, 75, 77, 79] },
   { name: 'skTF', uses: [0, 1, 62, 64, 67, 75, 77, 79], entry: 'skT', constants: { SK_FORCE: 1 } },
   { name: 'skReduceV', uses: [0, 26, 60, 77, 78] },
   { name: 'skReduceVF', uses: [0, 26, 60, 77, 78], entry: 'skReduceV', constants: { SK_FORCE: 1 } },
-  { name: 'skApply', uses: [0, 1, 16, 62, 64, 67, 73, 76, 77, 79] },
-  { name: 'skInit', uses: [0, 64, 68, 69, 71, 74, 77] },
+  { name: 'skApply', uses: [0, 1, 16, 64, 67, 73, 76, 77, 79, 84] },
+  { name: 'skInit', uses: [64, 68, 69, 71, 74, 77, 79, 84] },
   { name: 'skReduceInit', uses: [60, 77, 78] },
-  { name: 'skReduceAlpha', uses: [60, 77, 78] },
-  { name: 'skUpdate', uses: [0, 64, 65, 68, 69, 72, 74, 77, 79] },
+  { name: 'skReduceAlpha', uses: [77, 78] },
+  { name: 'skUpdate', uses: [65, 68, 69, 72, 74, 77, 79, 84] },
   { name: 'skReduceBeta', uses: [60, 77, 78] },
-  { name: 'skDupdate', uses: [0, 70, 71, 79] },
+  { name: 'skDupdate', uses: [70, 71, 79, 84] },
   { name: 'skBall', uses: [0, 60, 79, 82] },
   { name: 'skWrite', uses: [0, 16, 26, 48, 49, 60, 62, 76] },
   { name: 'skTally', uses: [79, 80] },
@@ -79,7 +82,8 @@ export class StokesSolver {
     const N = 4 * this.rows
     this.bufs = {
       face: mk('face', 16 * 3 * inp.size), row: mk('row', 16 * this.rows),
-      y: mk('y', N), res: mk('res', N), z: mk('z', N), d: mk('d', N), q: mk('q', N), w: mk('w', 4 * 3 * inp.size),
+      y: mk('y', N), res: mk('res', N), z: mk('z', N), d: mk('d', N), q: mk('q', N), w: mk('w', 16 * 3 * inp.size),
+      list: mk('list', 8 * this.rows), counts: mk('counts', 4 * this.nWgR),
       part: mk('part', 16 * Math.max(this.nWgR, this.nWgF)), st: mk('st', 4 * 16), faults: mk('faults', 16),
     }
   }
@@ -120,6 +124,8 @@ export class StokesSolver {
       case 78: case 79: return B.st
       case 80: return B.faults
       case 81: return I.cellSolid
+      case 83: case 84: return B.list
+      case 85: return B.counts
     }
     throw new Error(`StokesSolver: no buffer for binding ${b}`)
   }
@@ -176,23 +182,29 @@ export class StokesSolver {
     encoder.clearBuffer(this.bufs.st)
     let n = 0
     const one = (pass: GPUComputePassEncoder, name: string, group?: string) => { pass.setPipeline(this.pipelines.get(name)!); pass.setBindGroup(0, this.groups.get(group ?? name)!); pass.dispatchWorkgroups(1); n++ }
+    // row passes over the compacted list (threads past the live count return), face passes over every face slot
+    const rows = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, Rw, group); n++ }
+    const faces = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, F, group); n++ }
     let pass = encoder.beginComputePass({ label: 'stokes.setup' })
     this.run(pass, 'skFaces', F); this.run(pass, 'skRowsC', Rw); this.run(pass, 'skRowsB', Rw); n += 3
+    // the live rows, compacted (the dispatch args follow from their count)
+    this.run(pass, 'skCount', Rw); one(pass, 'skScan'); this.run(pass, 'skCompact', Rw); n += 2
     // r₀ = b − A·y (warm) — the operator on y
     this.run(pass, 'skT', F, 'skTY'); n++
     if (ball) one(pass, 'skReduceV')
-    this.run(pass, 'skApply', Rw, 'skApplyY'); this.run(pass, 'skInit', Rw); n += 2
+    rows(pass, 'skApply', 'skApplyY'); rows(pass, 'skInit')
     one(pass, 'skReduceInit')
     pass.end()
+    // the loop (converged iterations return at entry, whole workgroups at once)
     pass = encoder.beginComputePass({ label: 'stokes.pcg' })
     for (let k = 0; k < this.cap; k++) {
-      this.run(pass, 'skT', F); n++
+      faces(pass, 'skT')
       if (ball) one(pass, 'skReduceV')
-      this.run(pass, 'skApply', Rw); n++
+      rows(pass, 'skApply')
       one(pass, 'skReduceAlpha')
-      this.run(pass, 'skUpdate', Rw); n++
+      rows(pass, 'skUpdate')
       one(pass, 'skReduceBeta')
-      this.run(pass, 'skDupdate', Rw); n++
+      rows(pass, 'skDupdate')
     }
     pass.end()
     pass = encoder.beginComputePass({ label: 'stokes.finish' })
@@ -202,6 +214,18 @@ export class StokesSolver {
     one(pass, 'skTally')
     pass.end()
     return n
+  }
+
+  /** Profiling (the budget): `reps` direct dispatches of one iteration kernel, with the solve marked converged (idle —
+   *  what an iteration past convergence costs) or not (full work). */
+  encodeProfile(encoder: GPUCommandEncoder, name: 'skT' | 'skApply' | 'skUpdate' | 'skDupdate' | 'skReduceAlpha', reps: number, idle: boolean) {
+    this.device.queue.writeBuffer(this.bufs.st, 16, new Float32Array([idle ? 1 : 0]))
+    // after a solve the list holds its live rows; the profile dispatches cover the whole row range (threads past the
+    // live count return), so the numbers are upper bounds of the indirect passes
+    const threads: Record<string, number> = { skT: 3 * this.inp.size, skApply: this.rows, skUpdate: this.rows, skDupdate: this.rows, skReduceAlpha: 1 }
+    const pass = encoder.beginComputePass({ label: 'stokes.profile' })
+    for (let k = 0; k < reps; k++) this.run(pass, name, threads[name])
+    pass.end()
   }
 
   /** Forget the warm start (a new scene). */
@@ -225,7 +249,7 @@ export class StokesSolver {
   }
   async readStats(): Promise<StokesStats> {
     const s = new Float32Array(await this.read(this.bufs.st, 64))
-    return { iterations: s[5], converged: s[4] > 0.5, residualInf: s[6], residualInf0: s[3], breakdown: s[7] > 0.5, btV: [s[11], s[12], s[13]] }
+    return { iterations: s[5], converged: s[4] > 0.5, residualInf: s[6], residualInf0: s[3], breakdown: s[7] > 0.5, btV: [s[11], s[12], s[13]], liveRows: s[15] }
   }
   resetFaults() { this.device.queue.writeBuffer(this.bufs.faults, 0, new Uint32Array(4)) }
   async readFaults(): Promise<StokesFaults> {

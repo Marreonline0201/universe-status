@@ -31,6 +31,8 @@ export interface FluidStats {
   count: number
   /** Sim seconds advanced per wall second over the last ~2 s (1.0 = real time). */
   rtFactor: number
+  /** S3.6e: the unified pressure–viscosity solve for a ball in a thick liquid, while it runs (null otherwise). */
+  stokes?: { iterations: number; converged: boolean; capHits: number } | null
 }
 
 /** One motion-metrics sample from a GPU particle readback (sim [0,1]³ coords). */
@@ -545,7 +547,8 @@ export class FluidEngine {
     this.fpsFrames++
     if (this.fpsAccum >= 0.5) {
       this.lastFps = Math.round(this.fpsFrames / this.fpsAccum)
-      this.onStats({ fps: this.lastFps, count: sim.particleCount, rtFactor: this.rtFactor })
+      const sk = sim.stokesStatus?.() ?? null
+      this.onStats({ fps: this.lastFps, count: sim.particleCount, rtFactor: this.rtFactor, stokes: sk && sk.active ? { iterations: sk.iterations, converged: sk.converged, capHits: sk.capHits } : null })
       this.fpsAccum = 0
       this.fpsFrames = 0
     }
@@ -867,6 +870,7 @@ export class FluidEngine {
           pointsReadbacksCompleted: this.fluidScene?.completedReadbacks ?? 0,
           gpuErrors: this.gpuErrors,
           gravityMs2: this.gravityMs2,
+          stokes: this.sim?.stokesStatus?.() ?? null,
           presentIntervalP50: iv.length ? iv[Math.floor(iv.length * 0.5)] : null,
           presentIntervalP95: iv.length ? iv[Math.floor(iv.length * 0.95)] : null,
         }

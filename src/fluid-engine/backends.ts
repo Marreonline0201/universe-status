@@ -66,8 +66,14 @@ export interface SimBackend {
   readDiagnostics(): Promise<BackendDiagnostics | null>
   /** Test hook: the μ the incompressible viscous solve used at its last run, over the cells it counted full. */
   readViscosityProbe?(): Promise<ViscosityProbe>
+  /** S3.6e: the unified pressure–viscosity solve for a ball in a thick liquid — whether it runs, and its last solve's
+   *  iterations (null: this backend has none). */
+  stokesStatus?(): StokesStatus | null
   destroy(): void
 }
+
+/** The page's view of the S3.6e solve (FlipBackend.stokesStatus). */
+export interface StokesStatus { active: boolean; iterations: number; converged: boolean; cap: number; capHits: number; maxIterations: number }
 
 /** Decode the 80-byte legacy layout (present.wgsl / MpmGpuSimulator): pos 0–2, composition 3 (u32), vel 4–6, C 8–16. */
 function decodeLegacy(buf: ArrayBuffer, n: number): ParticleSample {
@@ -186,6 +192,18 @@ export class FlipBackend implements SimBackend {
   private readonly viscSlots: { buf: GPUBuffer; busy: boolean }[]
   static readonly VISC_CAP_MIN = 16
   static readonly VISC_CAP_MAX = 200
+  /** S3.6e (spec §5): tolerance 1e-2 moves the A5 fall by ≤ 0.25 % (CPU study); warm solves need a few to ~100 iterations
+   *  on the page (a ball entering the lava: jumps from ~5 to ~80 within a frame), a scene's first (cold) one ~110 — the cap
+   *  follows the most any of the last 32 solves needed (2·that + 16, doubled on a miss), with a floor of 128: an idle
+   *  iteration costs ~20 µs at 64³ (measured), so the floor costs ≤ 2.6 ms per substep and absorbs the jumps. */
+  static readonly STOKES_TOL = 1e-2
+  static readonly STOKES_CAP_MIN = 128
+  static readonly STOKES_CAP_MAX = 800
+  private stokesSlots: { buf: GPUBuffer; busy: boolean }[] = []
+  private stokesLast: { iterations: number; converged: boolean } = { iterations: 0, converged: true }
+  private stokesCapHits = 0
+  private stokesMaxIt = 0
+  private stokesRecent: number[] = []
   /** S3.5-i immiscible drift flux: the cited liquid of each composition id, the ρ each composition spawned with, and how
    *  many of its particles are in the tank. The drift runs while ≥ 2 liquids with a sourced σ between them are in the
    *  tank; its material slots are the tank's LIQUIDS (temperature variants of one liquid are one miscible slot). */
@@ -217,6 +235,11 @@ export class FlipBackend implements SimBackend {
     this.ballSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.ball${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
     this.viscSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.visc${i}`, size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
     sim.viscositySolver!.cap = FlipBackend.VISC_CAP_MAX
+    // S3.6e (owner decision 2026-09-29): the unified solve where a ball meets a thick liquid, the split path elsewhere
+    this.stokesSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.stokes${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
+    sim.viscosityScheme = 'auto'
+    sim.stokesSolver!.tol = FlipBackend.STOKES_TOL
+    sim.stokesSolver!.cap = FlipBackend.STOKES_CAP_MAX
   }
 
   static async create(device: GPUDevice): Promise<FlipBackend> {
@@ -252,6 +275,7 @@ export class FlipBackend implements SimBackend {
     this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
     this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
+    if (this.sim.stokesSolver) { this.sim.stokesSolver.resetWarm(); this.sim.stokesSolver.cap = FlipBackend.STOKES_CAP_MAX; this.stokesLast = { iterations: 0, converged: true }; this.stokesMaxIt = 0; this.stokesRecent = [] }
   }
   addParticles(ps: readonly SpawnParticle[]) {
     const room = FLIP_MAX_PARTICLES - this.sim.particleCount
@@ -335,6 +359,11 @@ export class FlipBackend implements SimBackend {
     }
     return { active: true, fullCells: n, muMin: lo, muMax: hi, distinct: [...seen].sort((a, b) => a - b) }
   }
+  stokesStatus(): StokesStatus | null {
+    const sk = this.sim.stokesSolver
+    if (!sk) return null
+    return { active: this.sim.stokesRuns, iterations: this.stokesLast.iterations, converged: this.stokesLast.converged, cap: sk.cap, capHits: this.stokesCapHits, maxIterations: this.stokesMaxIt }
+  }
   /** The monolithic coupling takes any liquid (S3.7) — nothing refuses the ball any more. */
   ballRefusal(): string | null { return null }
   /** Place the ball (world units → window metres, velocity per τ → m/s): an iron sphere, monolithically coupled. */
@@ -375,9 +404,27 @@ export class FlipBackend implements SimBackend {
     const bslot = ball.active && this.sim.hasSphere ? this.ballSlots.find(s => !s.busy) : undefined
     if (bslot) e.copyBufferToBuffer(this.sim.sphereBuf, 0, bslot.buf, 0, 64)
     const vs = this.sim.viscositySolver!
-    const vslot = this.sim.viscosityActive ? this.viscSlots.find(s => !s.busy) : undefined
+    const vslot = this.sim.viscosityActive && !this.sim.stokesRuns ? this.viscSlots.find(s => !s.busy) : undefined
     if (vslot) e.copyBufferToBuffer(vs.bufs.st, 0, vslot.buf, 0, 32)
+    const sk = this.sim.stokesSolver
+    const sslot = sk && this.sim.stokesRuns ? this.stokesSlots.find(s => !s.busy) : undefined
+    if (sslot) e.copyBufferToBuffer(sk!.bufs.st, 0, sslot.buf, 0, 64)
     q.submit([e.finish()])
+    if (sslot) {
+      sslot.busy = true
+      sslot.buf.mapAsync(GPUMapMode.READ).then(() => {
+        const st = new Float32Array(sslot.buf.getMappedRange().slice(0))
+        sslot.buf.unmap()
+        sslot.busy = false
+        const it = st[5], converged = st[4] > 0.5
+        this.stokesLast = { iterations: it, converged }
+        this.stokesMaxIt = Math.max(this.stokesMaxIt, it)
+        this.stokesRecent.push(it)
+        if (this.stokesRecent.length > 32) this.stokesRecent.shift()
+        if (!converged) this.stokesCapHits++
+        sk!.cap = converged ? Math.min(FlipBackend.STOKES_CAP_MAX, Math.max(FlipBackend.STOKES_CAP_MIN, 2 * Math.max(...this.stokesRecent) + 16)) : Math.min(FlipBackend.STOKES_CAP_MAX, 2 * sk!.cap)
+      }, () => { sslot.busy = false })
+    }
     if (vslot) {
       vslot.busy = true
       vslot.buf.mapAsync(GPUMapMode.READ).then(() => {
@@ -436,7 +483,7 @@ export class FlipBackend implements SimBackend {
       viscousSolve: this.sim.viscosityActive ? 1 : 0, maxNu: this.maxNu,
     }
   }
-  destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots, ...this.viscSlots]) s.buf.destroy() }
+  destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots, ...this.viscSlots, ...this.stokesSlots]) s.buf.destroy() }
 }
 
 /** The solver for this page: `?solver=mpm` keeps the legacy MLS-MPM (D8); default the incompressible solver. */

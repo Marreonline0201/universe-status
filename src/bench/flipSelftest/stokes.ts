@@ -182,6 +182,59 @@ export async function stokesPhysics(device: GPUDevice, o: { test: 'A1S' | 'A5S';
     iterationsSampled: its, faults: f, msPerStep: wall / (k + 1), psiCaps: d.capHits }
 }
 
+/** The budget at the page's scale (spec §5, recorded): the FLUID TEST scene of s36e-page — 64³, a 5-cell (0.28 m) pool of
+ *  the GRD melt at 1100 °C over the whole floor (163 840 particles, the page's count), the page's iron ball (R = 0.18 m)
+ *  resting in it — at production settings. Wall time per submitted-and-completed unit (the ~3 ms submit floor included:
+ *  compare rows): a whole substep at Stokes caps 24 / 128 / 400, the solve alone at cap 0 (setup + finish), the shared
+ *  viscous preparation, and per-dispatch µs of each iteration kernel active and idle (past convergence). */
+export async function stokesCost(device: GPUDevice, o: { reps?: number } = {}) {
+  const reps = o.reps ?? 20, n = 64, depth = 5
+  const MU = vftViscosity(LAVA_GRD_PRESET, 1100), RHOM = 2600, RHO_FE = SOLID_REFERENCE.iron.solidDensityKgM3!, R = 0.05 * 3.63
+  const ctr: Vec3 = [Math.fround(32 * DX), Math.fround(R + 0.1 * DX), Math.fround(32 * DX)]
+  const { p: all } = fillMaterials(n, depth, n, DX, mb32(71), () => [RHOM, 0])
+  const keep: number[] = []
+  for (let q = 0; q < all.n; q++) if (Math.hypot(all.pos[3 * q] - ctr[0], all.pos[3 * q + 1] - ctr[1], all.pos[3 * q + 2] - ctr[2]) >= R) keep.push(q)
+  const p = makeParticles(keep.length)
+  keep.forEach((q, i) => { p.pos.set(all.pos.subarray(3 * q, 3 * q + 3), 3 * i); p.mass[i] = all.mass[q] })
+  f32round(p)
+  const gpu = await FlipGpuSimulator.create(device, {
+    nx: n, ny: n, nz: n, dx: DX, gravity: [0, -G, 0], maxParticles: p.n, lRef: L_REF, tauS: TAU,
+    projection: true, density: RHOM, variableDensity: true, densityProjection: true, freeSurface: 'ghost', viscosity: true,
+  })
+  gpu.viscositySolver!.setMuTable(new Float32Array([MU]))
+  gpu.viscositySolver!.muDefault = MU
+  gpu.dt = 1 / 120
+  gpu.setParticles(toInit(p))
+  gpu.viscosityActive = true
+  gpu.viscosityScheme = 'auto'
+  gpu.setSphere({ center: ctr, radius: R, velocity: [0, 0, 0], density: RHO_FE, coupling: 'monolithic' })
+  const sk = gpu.stokesSolver!
+  sk.tol = 1e-2; sk.cap = 800
+  const its: number[] = []
+  for (let s = 0; s < 30; s++) { await submit(device, e => gpu.step(e, 1)); its.push((await sk.readStats()).iterations) }
+  const time = async (f: () => Promise<void>) => { const t0 = performance.now(); for (let r = 0; r < reps; r++) await f(); return (performance.now() - t0) / reps }
+  const stepMs: Record<number, number> = {}
+  for (const c of [24, 128, 400]) { sk.cap = c; stepMs[c] = await time(() => submit(device, e => gpu.step(e, 1))) }
+  sk.cap = 0
+  const solveOnlyMs = await time(() => submit(device, e => { sk.encode(e) }))
+  const prepareMs = await time(() => submit(device, e => gpu.viscositySolver!.encodePrepare(e)))
+  const emptyMs = await time(() => submit(device, () => {}))
+  gpu.viscosityScheme = 'split'
+  const splitStepMs = await time(() => submit(device, e => gpu.step(e, 1)))
+  gpu.viscosityScheme = 'auto'
+  const kernelUs: Record<string, { active: number; idle: number }> = {}
+  for (const k of ['skT', 'skApply', 'skUpdate', 'skDupdate', 'skReduceAlpha'] as const) {
+    const m = async (idle: boolean) => {
+      const one = await time(() => submit(device, e => sk.encodeProfile(e, k, 1, idle)))
+      const many = await time(() => submit(device, e => sk.encodeProfile(e, k, 101, idle)))
+      return 1000 * (many - one) / 100
+    }
+    kernelUs[k] = { active: await m(false), idle: await m(true) }
+  }
+  gpu.destroy()
+  return { particles: p.n, rows: sk.rows, itsFirst30: its, stepMsByCap: stepMs, splitStepMs, solveOnlyMs, prepareMs, emptyMs, kernelUs }
+}
+
 /** K40 (the K35 pattern, spec §5 G2): one Stokes step of the A5 scene, then the next (warm-started). Per step the TRUE
  *  residual of the GPU's y against the operator assembled here in f64 from the GPU's OWN read-back coefficients (face
  *  g, gv, K⁻¹, kinds; row C, W, b; the ball's V_J and ρ_s) with the rows' terms enumerated independently of the shader;

@@ -36,6 +36,7 @@ export function FluidTest() {
   const [particleCount, setParticleCount] = useState(0)
   const [fpsWarning, setFpsWarning] = useState(false)
   const [rtFactor, setRtFactor] = useState(1)
+  const [stokes, setStokes] = useState<{ iterations: number; converged: boolean; capHits: number } | null>(null)
   const [menu, setMenu] = useState<MenuEntry[]>([])
   const [notice, setNotice] = useState<FluidNotice | null>(null)   // latest gate refusal / warning
   const [gpuReady, setGpuReady] = useState(false)
@@ -162,6 +163,7 @@ export function FluidTest() {
       setFps(s.fps)
       setParticleCount(s.count)
       setRtFactor(s.rtFactor)
+      setStokes(s.stokes ?? null)
       setFpsWarning(s.fps < 30 && s.count > 100)
     }, { initialScene: 'default-water' })
     engineRef.current = engine
@@ -279,6 +281,15 @@ export function FluidTest() {
           }}>
             FPS: {fps}
           </span>
+          {stokes && (
+            <span title={`A ball is in a thick liquid, so pressure and viscosity are solved together in one step (Larionov, Batty & Bridson 2017). With separate steps a heavy ball in lava fell ~10× too slowly (measured: 0.05 vs 0.52 of Stokes' law in the test tank); together it falls within 10 % of the published reference for that tank (+9.7 %, converging as the ball is resolved finer). The cost: ${Math.round(stokes.iterations)} solver iterations per step, so time may run slower than real time (TIME ×) — physics per second of simulated time is unchanged. A faster preconditioner is planned.${stokes.capHits ? ` ${stokes.capHits} solves stopped at the iteration cap.` : ''}`} style={{
+              fontSize: 'calc(10px * var(--font-scale, 1))',
+              color: stokes.converged ? '#66ccff' : '#ff4444',
+              letterSpacing: 1,
+            }}>
+              BALL IN THICK LIQUID · {Math.round(stokes.iterations)} it/step
+            </span>
+          )}
           {rtFactor < 0.98 && (
             <span title="The simulation cannot keep up with real time; physics is unchanged, time runs slower." style={{
               fontSize: 'calc(10px * var(--font-scale, 1))',
