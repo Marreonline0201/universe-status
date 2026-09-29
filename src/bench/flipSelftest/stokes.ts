@@ -235,6 +235,84 @@ export async function stokesCost(device: GPUDevice, o: { reps?: number } = {}) {
   return { particles: p.n, rows: sk.rows, itsFirst30: its, stepMsByCap: stepMs, splitStepMs, solveOnlyMs, prepareMs, emptyMs, kernelUs }
 }
 
+/** GPU time vs main-thread encode time of one production substep of the page scene (advisor: the "idle iteration ~80 µs"
+ *  came from submit-and-wait wall time, which includes encoding every dispatch) — per cap: the JS time to encode the
+ *  substep (no submit), the GPU time of every compute pass summed by label (timestamp queries), and the wall time. */
+export async function stokesProfile(device: GPUDevice, o: { caps?: number[]; reps?: number } = {}) {
+  if (!device.features.has('timestamp-query')) return { error: 'timestamp-query not available on this adapter' }
+  const reps = o.reps ?? 10, n = 64, depth = 5
+  const MU = vftViscosity(LAVA_GRD_PRESET, 1100), RHOM = 2600, RHO_FE = SOLID_REFERENCE.iron.solidDensityKgM3!, R = 0.05 * 3.63
+  const ctr: Vec3 = [Math.fround(32 * DX), Math.fround(R + 0.1 * DX), Math.fround(32 * DX)]
+  const { p: all } = fillMaterials(n, depth, n, DX, mb32(71), () => [RHOM, 0])
+  const keep: number[] = []
+  for (let q = 0; q < all.n; q++) if (Math.hypot(all.pos[3 * q] - ctr[0], all.pos[3 * q + 1] - ctr[1], all.pos[3 * q + 2] - ctr[2]) >= R) keep.push(q)
+  const p = makeParticles(keep.length)
+  keep.forEach((q, i) => { p.pos.set(all.pos.subarray(3 * q, 3 * q + 3), 3 * i); p.mass[i] = all.mass[q] })
+  f32round(p)
+  const gpu = await FlipGpuSimulator.create(device, {
+    nx: n, ny: n, nz: n, dx: DX, gravity: [0, -G, 0], maxParticles: p.n, lRef: L_REF, tauS: TAU,
+    projection: true, density: RHOM, variableDensity: true, densityProjection: true, freeSurface: 'ghost', viscosity: true,
+  })
+  gpu.viscositySolver!.setMuTable(new Float32Array([MU]))
+  gpu.viscositySolver!.muDefault = MU
+  gpu.dt = 1 / 120
+  gpu.setParticles(toInit(p))
+  gpu.viscosityActive = true
+  gpu.viscosityScheme = 'auto'
+  gpu.setSphere({ center: ctr, radius: R, velocity: [0, 0, 0], density: RHO_FE, coupling: 'monolithic' })
+  const sk = gpu.stokesSolver!
+  sk.tol = 1e-2; sk.cap = 800
+  for (let s = 0; s < 30; s++) await submit(device, e => gpu.step(e, 1))
+  const MAX = 64
+  const qs = device.createQuerySet({ type: 'timestamp', count: 2 * MAX })
+  const resolveBuf = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC })
+  const read = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  const out: Record<string, unknown> = { particles: p.n }
+  for (const cap of o.caps ?? [24, 128, 400]) {
+    sk.cap = cap
+    // main-thread encode time of one substep (encoded and discarded)
+    let encodeMs = 0
+    for (let r = 0; r < reps; r++) { const e = device.createCommandEncoder(); const t0 = performance.now(); gpu.step(e, 1); encodeMs += performance.now() - t0; e.finish() }
+    encodeMs /= reps
+    // GPU time per pass label
+    const byLabel: Record<string, number> = {}
+    let spanUs = 0, wallMs = 0, its = 0
+    for (let r = 0; r < reps; r++) {
+      const labels: string[] = []
+      const e = device.createCommandEncoder()
+      const wrapped = new Proxy(e, {
+        get(t, prop) {
+          if (prop === 'beginComputePass') return (d: GPUComputePassDescriptor = {}) => {
+            const i = labels.length
+            if (i >= MAX) return t.beginComputePass(d)
+            labels.push(d.label ?? '?')
+            return t.beginComputePass({ ...d, timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 2 * i, endOfPassWriteIndex: 2 * i + 1 } })
+          }
+          const v = (t as unknown as Record<string | symbol, unknown>)[prop]
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v
+        },
+      })
+      gpu.step(wrapped as GPUCommandEncoder, 1)
+      const nq = labels.length
+      e.resolveQuerySet(qs, 0, 2 * nq, resolveBuf, 0)
+      e.copyBufferToBuffer(resolveBuf, 0, read, 0, 16 * nq)
+      const t0 = performance.now()
+      device.queue.submit([e.finish()])
+      await read.mapAsync(GPUMapMode.READ)
+      wallMs += performance.now() - t0
+      const ts = new BigUint64Array(read.getMappedRange().slice(0, 16 * nq))
+      read.unmap()
+      for (let i = 0; i < nq; i++) { const k = labels[i].startsWith('stokes.') || labels[i].startsWith('visc.') ? labels[i] : 'other'; byLabel[k] = (byLabel[k] ?? 0) + Number(ts[2 * i + 1] - ts[2 * i]) / 1000 }
+      spanUs += Number(ts[2 * nq - 1] - ts[0]) / 1000
+      its += (await sk.readStats()).iterations
+    }
+    for (const k of Object.keys(byLabel)) byLabel[k] = Math.round(byLabel[k] / reps)
+    out[`cap${cap}`] = { encodeMs: +encodeMs.toFixed(2), gpuPassUs: byLabel, gpuSpanUs: Math.round(spanUs / reps), wallMs: +(wallMs / reps).toFixed(2), iterations: its / reps }
+  }
+  qs.destroy(); resolveBuf.destroy(); read.destroy(); gpu.destroy()
+  return out
+}
+
 /** K40 (the K35 pattern, spec §5 G2): one Stokes step of the A5 scene, then the next (warm-started). Per step the TRUE
  *  residual of the GPU's y against the operator assembled here in f64 from the GPU's OWN read-back coefficients (face
  *  g, gv, K⁻¹, kinds; row C, W, b; the ball's V_J and ρ_s) with the rows' terms enumerated independently of the shader;

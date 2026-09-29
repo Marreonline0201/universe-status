@@ -32,17 +32,17 @@ const ENTRIES: Entry[] = [
   { name: 'skCount', uses: [0, 64, 85] },
   { name: 'skScan', uses: [60, 78, 85] },
   { name: 'skCompact', uses: [0, 64, 83, 85] },
-  { name: 'skT', uses: [0, 1, 62, 64, 67, 75, 77, 79] },
-  { name: 'skTF', uses: [0, 1, 62, 64, 67, 75, 77, 79], entry: 'skT', constants: { SK_FORCE: 1 } },
+  { name: 'skT', uses: [0, 1, 60, 62, 64, 67, 75, 77, 79] },
+  { name: 'skTF', uses: [0, 1, 60, 62, 64, 67, 75, 77, 79], entry: 'skT', constants: { SK_FORCE: 1 } },
   { name: 'skReduceV', uses: [0, 26, 60, 77, 78] },
   { name: 'skReduceVF', uses: [0, 26, 60, 77, 78], entry: 'skReduceV', constants: { SK_FORCE: 1 } },
-  { name: 'skApply', uses: [0, 1, 16, 64, 67, 73, 76, 77, 79, 84] },
-  { name: 'skInit', uses: [64, 68, 69, 71, 74, 77, 79, 84] },
+  { name: 'skApply', uses: [0, 1, 16, 60, 64, 67, 73, 76, 77, 79, 84] },
+  { name: 'skInit', uses: [60, 64, 68, 69, 71, 74, 77, 79, 84] },
   { name: 'skReduceInit', uses: [60, 77, 78] },
-  { name: 'skReduceAlpha', uses: [77, 78] },
-  { name: 'skUpdate', uses: [65, 68, 69, 72, 74, 77, 79, 84] },
+  { name: 'skReduceAlpha', uses: [60, 77, 78] },
+  { name: 'skUpdate', uses: [60, 65, 68, 69, 72, 74, 77, 79, 84] },
   { name: 'skReduceBeta', uses: [60, 77, 78] },
-  { name: 'skDupdate', uses: [70, 71, 79, 84] },
+  { name: 'skDupdate', uses: [60, 70, 71, 79, 84] },
   { name: 'skBall', uses: [0, 60, 79, 82] },
   { name: 'skWrite', uses: [0, 16, 26, 48, 49, 60, 62, 76] },
   { name: 'skTally', uses: [79, 80] },
@@ -58,6 +58,9 @@ export class StokesSolver {
   readonly rows: number
   private readonly nWgR: number
   private readonly nWgF: number
+  /** Workgroups of the grid-stride loop passes: one wave (≤ 1024) however many rows are live. */
+  private readonly nGsR: number
+  private readonly nGsF: number
   /** Face-mass floor W_min (flipRef stokesFaceMin). */
   wMin = 1e-2
   /** ‖r‖∞ stop in the rows' units W·1/s (the page: 1e-2 — the CPU study, spec §5). */
@@ -78,6 +81,8 @@ export class StokesSolver {
     this.rows = 7 * inp.size
     this.nWgR = Math.ceil(this.rows / 256)
     this.nWgF = Math.ceil(3 * inp.size / 256)
+    this.nGsR = Math.min(this.nWgR, 1024)
+    this.nGsF = Math.min(this.nWgF, 1024)
     this.sp = d.createBuffer({ label: 'stokes.params', size: 32, usage: GPUBufferUsage.UNIFORM | D })
     const N = 4 * this.rows
     this.bufs = {
@@ -163,7 +168,7 @@ export class StokesSolver {
 
   private writeParams() {
     const b = new ArrayBuffer(32), f = new Float32Array(b), u = new Uint32Array(b)
-    f[0] = this.wMin; f[1] = this.tol; u[2] = this.nWgR; u[3] = this.nWgF; u[4] = this.warm ? 1 : 0; u[5] = this.ball ? 1 : 0
+    f[0] = this.wMin; f[1] = this.tol; u[2] = this.nWgR; u[3] = this.nWgF; u[4] = this.warm ? 1 : 0; u[5] = this.ball ? 1 : 0; u[6] = this.nGsR; u[7] = this.nGsF
     this.device.queue.writeBuffer(this.sp, 0, b)
   }
 
@@ -182,15 +187,15 @@ export class StokesSolver {
     encoder.clearBuffer(this.bufs.st)
     let n = 0
     const one = (pass: GPUComputePassEncoder, name: string, group?: string) => { pass.setPipeline(this.pipelines.get(name)!); pass.setBindGroup(0, this.groups.get(group ?? name)!); pass.dispatchWorkgroups(1); n++ }
-    // row passes over the compacted list (threads past the live count return), face passes over every face slot
-    const rows = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, Rw, group); n++ }
-    const faces = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, F, group); n++ }
+    // grid-stride passes: rows over the compacted list, faces over every face slot — one wave each
+    const rows = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, 256 * this.nGsR, group); n++ }
+    const faces = (pass: GPUComputePassEncoder, name: string, group?: string) => { this.run(pass, name, 256 * this.nGsF, group); n++ }
     let pass = encoder.beginComputePass({ label: 'stokes.setup' })
     this.run(pass, 'skFaces', F); this.run(pass, 'skRowsC', Rw); this.run(pass, 'skRowsB', Rw); n += 3
     // the live rows, compacted (the dispatch args follow from their count)
     this.run(pass, 'skCount', Rw); one(pass, 'skScan'); this.run(pass, 'skCompact', Rw); n += 2
     // r₀ = b − A·y (warm) — the operator on y
-    this.run(pass, 'skT', F, 'skTY'); n++
+    faces(pass, 'skT', 'skTY')
     if (ball) one(pass, 'skReduceV')
     rows(pass, 'skApply', 'skApplyY'); rows(pass, 'skInit')
     one(pass, 'skReduceInit')
@@ -208,7 +213,7 @@ export class StokesSolver {
     }
     pass.end()
     pass = encoder.beginComputePass({ label: 'stokes.finish' })
-    this.run(pass, 'skTF', F, 'skTFY'); n++
+    this.run(pass, 'skTF', 256 * this.nGsF, 'skTFY'); n++
     if (ball) { one(pass, 'skReduceVF'); one(pass, 'skBall') }
     this.run(pass, 'skWrite', F); n++
     one(pass, 'skTally')
@@ -222,7 +227,7 @@ export class StokesSolver {
     this.device.queue.writeBuffer(this.bufs.st, 16, new Float32Array([idle ? 1 : 0]))
     // after a solve the list holds its live rows; the profile dispatches cover the whole row range (threads past the
     // live count return), so the numbers are upper bounds of the indirect passes
-    const threads: Record<string, number> = { skT: 3 * this.inp.size, skApply: this.rows, skUpdate: this.rows, skDupdate: this.rows, skReduceAlpha: 1 }
+    const threads: Record<string, number> = { skT: 256 * this.nGsF, skApply: 256 * this.nGsR, skUpdate: 256 * this.nGsR, skDupdate: 256 * this.nGsR, skReduceAlpha: 1 }
     const pass = encoder.beginComputePass({ label: 'stokes.profile' })
     for (let k = 0; k < reps; k++) this.run(pass, name, threads[name])
     pass.end()
