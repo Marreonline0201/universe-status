@@ -167,8 +167,11 @@ try {
       const meanOf = f => dilute.length ? dilute.reduce((q, r) => q + f(r), 0) / dilute.length : NaN
       const slip = meanOf(r => ((s45.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L - wRise[r.c] / nW[r.c]) / SLIP_DT)
       const slipLaw = meanOf(r => uSlip(r.d, r.a))
+      // diagnostic (INFO): the drift model's OWN slip (slipState s_y, averaged over the window's two samples) — splits the
+      // excess into the model vs its law (its inputs α and a = g − Du/Dt, or its integration) and the transport vs the model
+      const modelSlip = s4.drift && s45.drift ? meanOf(r => 0.5 * (s4.drift[4 * r.i + 1] + s45.drift[4 * r.i + 1])) : NaN
       return {
-        wMed, n: set.length, nDilute: dilute.length, slip, slipLaw, ratio: slip / slipLaw,
+        wMed, n: set.length, nDilute: dilute.length, slip, slipLaw, ratio: slip / slipLaw, modelSlip,
         rise: meanOf(r => (s5.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L), riseLaw: meanOf(r => (1 - r.a) * uSlip(r.d, r.a)),
         floor: march(0.9), measured: set.filter(r => s8.pos[3 * r.i + 1] * L > wMed).length / set.length,
         resolved: resolved.length, resolvedUp: resolved.filter(i => s8.pos[3 * i + 1] * L > wMed).length,
@@ -197,7 +200,7 @@ try {
     const ctl = analyse(c4, c45, c5, c8, dCtl)
     report.creaming = { runs, control: ctl, dControl: dCtl, band: BAND }
 
-    const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDilute}), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
+    const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDilute}), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); the model's own slip ${Number.isFinite(r.modelSlip) ? `${cms(r.modelSlip)} cm/s (× ${(r.modelSlip / r.slipLaw).toFixed(3)} of U_eq; measured/model × ${(r.slip / r.modelSlip).toFixed(3)})` : 'n/a (drift off)'}; lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
     runs.forEach((r, k) => console.log(line(`run ${k + 1}`, r)))
     console.log(line(`control (drift off, d = ${(1e3 * dCtl).toFixed(2)} mm)`, ctl))
     gate.check(runs.every(slipOk),
