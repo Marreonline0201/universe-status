@@ -783,6 +783,7 @@ export class FluidEngine {
     this.floorMesh?.scale.set(ex, ez, 1); this.floorMesh?.position.set(ex / 2, 0.001, ez / 2)
     this.wallMesh?.scale.set(ex, ey, 1); this.wallMesh?.position.set(ex / 2, ey / 2, 0.001)
     this.sideMeshes.forEach((m, k) => { m.scale.set(ez, ey, 1); m.position.set(k === 0 ? 0.001 : ex - 0.001, ey / 2, ez / 2) })
+    this.ssfrPipeline?.setTankExtent([ex, ey, ez])
     if (this.controls && this.camera) {
       const t = new THREE.Vector3(ex / 2, ey / 2, ez / 2), d = t.clone().sub(this.controls.target)
       this.controls.target.copy(t)

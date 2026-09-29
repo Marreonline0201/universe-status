@@ -27,6 +27,7 @@ struct Scene {
     testFloor: vec4<f32>,    // test environment: radiance of every direction with y < 0
     marker: vec4<f32>,       // test marker disc on the floor (room mode): x, z, radius (world units), w = on
     markerColor: vec4<f32>,  // rgb linear radiance of the marker
+    tank: vec4<f32>,         // xyz: the tank's extent in world units (the default tank is [0,1]³; TANK-RESIZE)
 };
 
 struct SceneHit {
@@ -82,12 +83,12 @@ fn traceScene(ro: vec3<f32>, rd: vec3<f32>, cone: f32) -> SceneHit {
     var L = scene.backdrop.rgb + sunAlong(rd, cone);
     var nearestT = 1e9;
 
-    // Floor (y = 0) over the tank footprint [0,1]² with a small margin: olive with darker grid lines.
+    // Floor (y = 0) over the tank footprint [0, tank.x] × [0, tank.z] with a small margin: olive with darker grid lines.
     if (abs(rd.y) > 1e-6) {
         let t = -ro.y / rd.y;
         if (t > 0.0) {
             let p = ro + t * rd;
-            if (p.x > -0.02 && p.x < 1.02 && p.z > -0.02 && p.z < 1.02) {
+            if (p.x > -0.02 && p.x < scene.tank.x + 0.02 && p.z > -0.02 && p.z < scene.tank.z + 0.02) {
                 let gridSize = 0.05;      // 20 divisions across the unit box
                 let lineWidth = 0.003;
                 let onX = abs(fract(p.x / gridSize + 0.5) - 0.5) < lineWidth / gridSize;
@@ -99,20 +100,20 @@ fn traceScene(ro: vec3<f32>, rd: vec3<f32>, cone: f32) -> SceneHit {
         }
     }
 
-    // Tank box edges of [0,1]³ (drawn as thin lines, the box has no walls).
+    // Tank box edges of [0, tank] (drawn as thin lines, the box has no walls).
     let edgeWidth = 0.004;
     let invDir = 1.0 / rd;
     let t1 = (vec3<f32>(0.0) - ro) * invDir;
-    let t2 = (vec3<f32>(1.0) - ro) * invDir;
+    let t2 = (scene.tank.xyz - ro) * invDir;
     let tmin = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
     let tmax = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
     if (tmax > max(tmin, 0.0)) {
         let hitT = select(tmin, tmax, tmin < 0.0);
         if (hitT < nearestT) {
             let p = ro + hitT * rd;
-            let nearX = abs(p.x) < edgeWidth || abs(p.x - 1.0) < edgeWidth;
-            let nearY = abs(p.y) < edgeWidth || abs(p.y - 1.0) < edgeWidth;
-            let nearZ = abs(p.z) < edgeWidth || abs(p.z - 1.0) < edgeWidth;
+            let nearX = abs(p.x) < edgeWidth || abs(p.x - scene.tank.x) < edgeWidth;
+            let nearY = abs(p.y) < edgeWidth || abs(p.y - scene.tank.y) < edgeWidth;
+            let nearZ = abs(p.z) < edgeWidth || abs(p.z - scene.tank.z) < edgeWidth;
             if (u32(nearX) + u32(nearY) + u32(nearZ) >= 2u) {
                 L = scene.edge.rgb;
                 nearestT = hitT;

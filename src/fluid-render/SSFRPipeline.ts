@@ -245,6 +245,11 @@ export class SSFRPipeline {
   }
 
   /** Splat radius in world units for a particle volume: factor × the rest lattice spacing ∛V_p. */
+  /** The tank's extent in world units (TANK-RESIZE; [1, 1, 1] = the default 3.63 m cube): the room's floor and box edges,
+   *  and the splat shapes' neighbour grid. */
+  private tankExtent: [number, number, number] = [1, 1, 1]
+  setTankExtent(e: [number, number, number]) { this.tankExtent = [...e] }
+
   /** The splat shape of the frames that follow (bench A/B; the default is SPLAT_SHAPE). */
   setSplatShape(s: SplatShape) { this.config.splatShape = s }
   get splatShape(): SplatShape { return this.config.splatShape }
@@ -295,7 +300,7 @@ export class SSFRPipeline {
     const ubo = (size: number) => d.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.cameraUBO = ubo(224)      // 3 mat4 + screenSize + radius + count + chordToMetres + pad
     this.bgCamUBO = ubo(208)       // 3 mat4 + screenSize + pad
-    this.sceneUBO = ubo(192)       // 12 vec4 (Scene in ssfr_scene.wgsl)
+    this.sceneUBO = ubo(208)       // 13 vec4 (Scene in ssfr_scene.wgsl)
     this.blurHUBO = ubo(32)
     this.blurVUBO = ubo(32)
     this.compositeUBO = ubo(288)   // 4 mat4 + screenSize + lutN + lutLmax + outputSize + pad
@@ -518,7 +523,7 @@ export class SSFRPipeline {
   /** The Scene uniform (ssfr_scene.wgsl): one sun, the room's decoded colours, the ball, probe test settings. */
   private sceneData(f: FrameInputs): Float32Array<ArrayBuffer> {
     const o = f.overrides ?? {}
-    const s = new Float32Array(48)
+    const s = new Float32Array(52)
     const bb = this.bgBrightness
     const dec = (c: Rgb, k = 1): Rgb => [srgbDecode(c[0] * k), srgbDecode(c[1] * k), srgbDecode(c[2] * k)]
     const sunOn = o.sun ?? true
@@ -535,6 +540,7 @@ export class SSFRPipeline {
       s.set(o.env.floor ?? [0, 0, 0], 36)
     }
     if (o.marker) { s.set([o.marker.x, o.marker.z, o.marker.radius, 1], 40); s.set(o.marker.color, 44) }
+    s.set(this.tankExtent, 48)
     return s
   }
 
@@ -578,7 +584,7 @@ export class SSFRPipeline {
     } else {
       const draw = f.count > 0 && f.particleBuffer !== null && !f.overrides?.hideParticles
       const shape = f.overrides?.splatShape ?? this.config.splatShape ?? SPLAT_SHAPE
-      const anisoBuf = draw && shape === 'aniso' && this.aniso ? this.aniso.encode(encoder, f.particleBuffer!, f.count, f.overrides?.particleVolume ?? this.config.particleVolume) : null
+      const anisoBuf = draw && shape === 'aniso' && this.aniso ? this.aniso.encode(encoder, f.particleBuffer!, f.count, f.overrides?.particleVolume ?? this.config.particleVolume, this.tankExtent) : null
       const depthPass = encoder.beginRenderPass({
         colorAttachments: [
           { view: t.depthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } },

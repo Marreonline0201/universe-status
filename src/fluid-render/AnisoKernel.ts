@@ -15,7 +15,7 @@ export const ANISO_INTERIOR_MIN = 20
 export class AnisoKernel {
   readonly device: GPUDevice
   private capacity = 0
-  private gridN = 0
+  private grid: [number, number, number] = [0, 0, 0]
   private bufs: { count: GPUBuffer; start: GPUBuffer; cursor: GPUBuffer; sorted: GPUBuffer; aniso: GPUBuffer } | null = null
   private readonly params: GPUBuffer
   private pipelines = new Map<string, GPUComputePipeline>()
@@ -47,13 +47,13 @@ export class AnisoKernel {
   }
   private bgl!: GPUBindGroupLayout
 
-  private ensure(count: number, s: number) {
-    const gridN = Math.max(1, Math.ceil(1 / (ANISO.riFactor * s)))
-    if (this.bufs && count <= this.capacity && gridN === this.gridN) return
+  private ensure(count: number, s: number, extent: [number, number, number]) {
+    const grid = extent.map(e => Math.max(1, Math.ceil(e / (ANISO.riFactor * s)))) as [number, number, number]
+    if (this.bufs && count <= this.capacity && grid.every((g, a) => g === this.grid[a])) return
     if (this.bufs) for (const b of Object.values(this.bufs)) b.destroy()
     const d = this.device, S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
     const cap = Math.max(1024, Math.ceil(count * 1.25))
-    const cells = gridN ** 3
+    const cells = grid[0] * grid[1] * grid[2]
     this.bufs = {
       count: d.createBuffer({ label: 'aniso.count', size: 4 * cells, usage: S }),
       start: d.createBuffer({ label: 'aniso.start', size: 4 * cells, usage: S }),
@@ -62,14 +62,15 @@ export class AnisoKernel {
       aniso: d.createBuffer({ label: 'aniso.out', size: 48 * cap, usage: S }),
     }
     this.capacity = cap
-    this.gridN = gridN
+    this.grid = grid
     this.group = null
   }
 
-  /** The shapes of this frame's particles (s = ∛V_p in world units). Returns the output buffer. */
-  encode(encoder: GPUCommandEncoder, particles: GPUBuffer, count: number, particleVolume: number): GPUBuffer {
+  /** The shapes of this frame's particles (s = ∛V_p in world units; the tank [0, extent] in world units). Returns the
+   *  output buffer. */
+  encode(encoder: GPUCommandEncoder, particles: GPUBuffer, count: number, particleVolume: number, extent: [number, number, number] = [1, 1, 1]): GPUBuffer {
     const s = Math.cbrt(particleVolume)
-    this.ensure(count, s)
+    this.ensure(count, s, extent)
     const B = this.bufs!
     if (!this.group || this.groupFor !== particles) {
       this.group = this.device.createBindGroup({
@@ -83,8 +84,9 @@ export class AnisoKernel {
       this.groupFor = particles
     }
     const p = new ArrayBuffer(64), u = new Uint32Array(p), f = new Float32Array(p)
-    u[0] = count; u[1] = this.gridN; u[2] = this.interiorMin
+    u[0] = count; u[1] = this.grid[0]; u[2] = this.grid[1]; u[3] = this.grid[2]
     f[4] = s; f[5] = ANISO.riFactor * s; f[6] = ANISO.rb; f[7] = ANISO.aMin; f[8] = ANISO.aMax; f[9] = ANISO.alpha; f[10] = ANISO.kappa; f[11] = ANISO.lo; f[12] = ANISO.hi
+    u[13] = this.interiorMin
     this.device.queue.writeBuffer(this.params, 0, p)
     encoder.clearBuffer(B.count)
     const pass = encoder.beginComputePass({ label: 'ssfr.aniso' })

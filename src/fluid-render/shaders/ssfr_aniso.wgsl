@@ -14,9 +14,9 @@
 
 struct AnisoParams {
   count: u32,        // particles
-  gridN: u32,        // cells per axis (the tank [0, 1]³ in world units, cell size r_i)
-  interiorMin: u32,  // particles per cell for the interior skip (0: never skip)
-  pad0: u32,
+  gx: u32,           // cells per axis over the tank's extent (world units), cell size r_i
+  gy: u32,
+  gz: u32,
   s: f32,            // rest spacing ∛V_p, world units
   ri: f32,           // neighbour radius r_i = 3 s (world units) = the cell size
   rb: f32,           // bulk splat radius (s units)
@@ -26,7 +26,7 @@ struct AnisoParams {
   kappa: f32,
   lo: f32,
   hi: f32,
-  pad1: f32,
+  interiorMin: u32,  // particles per cell for the interior skip (0: never skip)
   pad2: f32,
   pad3: f32,
 }
@@ -51,8 +51,9 @@ struct Particle {
 @group(0) @binding(6) var<storage, read_write> aniso: array<vec4<f32>>;   // 3 per particle
 
 fn posOf(i: u32) -> vec3<f32> { let p = particles[i]; return vec3<f32>(p.pos_x, p.pos_y, p.pos_z); }
-fn cellCoord(x: vec3<f32>) -> vec3<i32> { return clamp(vec3<i32>(floor(x / AP.ri)), vec3<i32>(0), vec3<i32>(i32(AP.gridN) - 1)); }
-fn cellIdx(c: vec3<i32>) -> u32 { let n = AP.gridN; return u32(c.x) + n * (u32(c.y) + n * u32(c.z)); }
+fn gridDims() -> vec3<i32> { return vec3<i32>(i32(AP.gx), i32(AP.gy), i32(AP.gz)); }
+fn cellCoord(x: vec3<f32>) -> vec3<i32> { return clamp(vec3<i32>(floor(x / AP.ri)), vec3<i32>(0), gridDims() - vec3<i32>(1)); }
+fn cellIdx(c: vec3<i32>) -> u32 { return u32(c.x) + AP.gx * (u32(c.y) + AP.gy * u32(c.z)); }
 
 @compute @workgroup_size(64)
 fn aCount(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -77,7 +78,7 @@ fn exclusiveScan(lid: u32, v: u32) -> u32 {
 /// One workgroup: exclusive prefix of the cell counts (each thread a contiguous chunk); cursors reset.
 @compute @workgroup_size(256)
 fn aScan(@builtin(local_invocation_index) lid: u32) {
-  let n = AP.gridN * AP.gridN * AP.gridN;
+  let n = AP.gx * AP.gy * AP.gz;
   let C = (n + 255u) / 256u;
   let lo = lid * C;
   let hi = min(lo + C, n);
@@ -143,13 +144,13 @@ fn aAniso(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (i >= AP.count) { return; }
   let xi = posOf(i);
   let ci = cellCoord(xi);
-  let n = i32(AP.gridN);
+  let n = gridDims();
   // interior skip
   if (AP.interiorMin > 0u) {
     var interior = true;
     for (var dz = -1; dz <= 1 && interior; dz++) { for (var dy = -1; dy <= 1 && interior; dy++) { for (var dx = -1; dx <= 1 && interior; dx++) {
       let cc = ci + vec3<i32>(dx, dy, dz);
-      if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(n))) { interior = false; }
+      if (any(cc < vec3<i32>(0)) || any(cc >= n)) { interior = false; }
       else if (atomicLoad(&cellCount[cellIdx(cc)]) < AP.interiorMin) { interior = false; }
     } } }
     if (interior) { writeSphere(i, AP.rb); return; }
@@ -162,7 +163,7 @@ fn aAniso(@builtin(global_invocation_id) gid: vec3<u32>) {
   var cxx = 0.0; var cyy = 0.0; var czz = 0.0; var cxy = 0.0; var cxz = 0.0; var cyz = 0.0;
   for (var dz = -1; dz <= 1; dz++) { for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {
     let cc = ci + vec3<i32>(dx, dy, dz);
-    if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(n))) { continue; }
+    if (any(cc < vec3<i32>(0)) || any(cc >= n)) { continue; }
     let c = cellIdx(cc);
     let st = cellStart[c];
     let en = st + atomicLoad(&cellCount[c]);
