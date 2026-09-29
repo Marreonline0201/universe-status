@@ -5,6 +5,7 @@
 // unchanged; each backend converts to its own solver units here and nowhere else.
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FlipGpuSimulator, PRESENT_STRIDE_BYTES } from '../gpu-sim/flip/FlipGpuSimulator'
+import { SOLID_REFERENCE } from '../composition/materialData'
 import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
 import { FLIP_PACKING, MPM_PACKING, type Packing, type Vec3 } from './spawn'
@@ -35,6 +36,8 @@ export interface SimBackend {
   readonly packing: Packing
   /** false: the drop-ball obstacle is not coupled on this solver yet. */
   readonly supportsBall: boolean
+  /** Why the ball cannot be coupled with the current tank contents (null = it can). */
+  ballRefusal?(): string | null
   /** The 80-byte legacy particle layout the renderer reads. */
   readonly particleBuffer: GPUBuffer
   readonly particleCount: number
@@ -149,8 +152,17 @@ export class FlipBackend implements SimBackend {
   readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density)'
   readonly method: SolverMethod = 'incompressible'
   readonly packing = FLIP_PACKING
-  readonly supportsBall = false
+  readonly supportsBall = true
   private readonly dx = DOMAIN_L_M / GRID_RES
+  /** The ball's density drop: solid iron, NIST SRD 126 (materialData). Weak two-way coupling needs s = ρ_ball/ρ_liquid ≥ 1
+   *  (FINAL-PLAN S3.1c; lighter solids make explicit coupling unstable, Causin et al. 2005) until S3.7's monolithic
+   *  coupling — so the densest liquid spawned is tracked and the ball refused above it. */
+  static readonly BALL_DENSITY = SOLID_REFERENCE.iron.solidDensityKgM3!
+  private maxRho = 0
+  /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
+  private ballLag: { center: Vec3; velocity: Vec3 } | null = null
+  private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
+  private ballEpoch = 0
   private readonly mPerRho: number
   /** Max particle speed (m/s) from the GPU, read back asynchronously 1–2 frames late (FINAL-PLAN §5.1 v_lag). */
   private vLag = 0
@@ -165,6 +177,7 @@ export class FlipBackend implements SimBackend {
     this.device = device; this.sim = sim
     this.mPerRho = this.dx ** 3 / FLIP_PACKING.ppc
     this.speedSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.speed${i}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
+    this.ballSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.ball${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
   }
 
   static async create(device: GPUDevice): Promise<FlipBackend> {
@@ -196,26 +209,51 @@ export class FlipBackend implements SimBackend {
     this.sim.encodePresent(e)
     this.device.queue.submit([e.finish()])
   }
-  setParticles(ps: readonly SpawnParticle[]) { this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present() }
+  setParticles(ps: readonly SpawnParticle[]) {
+    this.maxRho = 0
+    for (const p of ps) this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
+    this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
+  }
   addParticles(ps: readonly SpawnParticle[]) {
     const room = FLIP_MAX_PARTICLES - this.sim.particleCount
     if (ps.length > room) throw new RangeError(`the incompressible solver holds at most ${FLIP_MAX_PARTICLES} particles (${room} free); refusing ${ps.length}`)
+    for (const p of ps) this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
     this.sim.addParticles(this.toInit(ps)); this.present()
   }
   setGravity(gMs2: number) { this.sim.gravity = [0, -gMs2, 0] }
   setCompositionProps() { /* masses carry each material's density; viscosity is not simulated until S3.6 */ }
-  setBall() { /* not coupled until S3.1c-2 (supportsBall = false) */ }
-  clearBall() { /* nothing coupled */ }
+  ballRefusal(): string | null {
+    const rb = FlipBackend.BALL_DENSITY
+    if (this.maxRho <= rb) return null
+    return `the iron ball (${rb} kg/m³, NIST SRD 126) is lighter than a liquid in the tank (${this.maxRho.toFixed(0)} kg/m³): the ball's weak two-way coupling needs ball/liquid density ≥ 1 (FINAL-PLAN S3.1c; the monolithic coupling of S3.7 lifts this)`
+  }
+  /** Place the ball (world units → window metres, velocity per τ → m/s): an iron sphere, weakly two-way coupled. */
+  setBall(ball: BallState) {
+    const why = this.ballRefusal()
+    if (why) throw new Error(why)
+    const L = DOMAIN_L_M
+    this.sim.setSphere({
+      center: [ball.center[0] * L, ball.center[1] * L, ball.center[2] * L], radius: ball.radius * L,
+      velocity: [unitVelToMs(ball.velocity[0]), unitVelToMs(ball.velocity[1]), unitVelToMs(ball.velocity[2])], density: FlipBackend.BALL_DENSITY,
+    })
+    this.ballLag = null
+    this.ballEpoch++
+  }
+  clearBall() { if (this.sim.hasSphere) this.sim.clearSphere(); this.ballLag = null; this.ballEpoch++ }
 
   /** FINAL-PLAN §5.1: n = ⌈T·(1.25·v_lag + g·T)/(C·dx)⌉ equal substeps of T/n, at least ⌈T/Δt_max⌉ (FLIP_MAX_DT), at most
    *  4 per 1/60 s of T. */
-  advance(intervalS: number, _ball: BallState, gMs2: number): number {
+  advance(intervalS: number, ball: BallState, gMs2: number): number {
     const T = intervalS
-    const cfl = Math.ceil(T * (1.25 * this.vLag + Math.abs(gMs2) * T) / (FLIP_CFL * this.dx) - 1e-9)
+    // the ball moves through the grid too: its lagged speed enters the count like the particles' (a ball falling
+    // through air has no particles near it, and a jump of more than dx per substep would throw them a cell on push-out)
+    const vBall = ball.active && this.ballLag ? Math.hypot(...this.ballLag.velocity) : 0
+    const vEff = Math.max(this.vLag, vBall)
+    const cfl = Math.ceil(T * (1.25 * vEff + Math.abs(gMs2) * T) / (FLIP_CFL * this.dx) - 1e-9)
     const nMax = FLIP_MAX_SUBSTEPS_PER_60HZ * Math.max(1, Math.ceil(T * 60 - 1e-9))
     const n = Math.min(nMax, Math.max(1, Math.ceil(T / FLIP_MAX_DT - 1e-9), cfl))
     const dt = T / n
-    if (this.vLag * dt / this.dx > FLIP_CFL) this.cflExceeded += n
+    if (vEff * dt / this.dx > FLIP_CFL) this.cflExceeded += n
     this.substepsTotal += n
     if (this.sim.particleCount === 0) return n
     this.sim.dt = dt
@@ -225,7 +263,22 @@ export class FlipBackend implements SimBackend {
     this.sim.step(e, n)
     const slot = this.speedSlots.find(s => !s.busy)
     if (slot) e.copyBufferToBuffer(this.sim.diagBuf, 28, slot.buf, 0, 4)
+    const bslot = ball.active && this.sim.hasSphere ? this.ballSlots.find(s => !s.busy) : undefined
+    if (bslot) e.copyBufferToBuffer(this.sim.sphereBuf, 0, bslot.buf, 0, 64)
     q.submit([e.finish()])
+    if (bslot) {
+      bslot.busy = true
+      const epoch = this.ballEpoch
+      bslot.buf.mapAsync(GPUMapMode.READ).then(() => {
+        const w = new Float32Array(bslot.buf.getMappedRange().slice(0))
+        bslot.buf.unmap()
+        bslot.busy = false
+        if (epoch !== this.ballEpoch || !ball.active) return   // the ball was replaced or removed meanwhile
+        const L = DOMAIN_L_M
+        this.ballLag = { center: [w[0], w[1], w[2]], velocity: [w[4], w[5], w[6]] }
+        for (let a = 0; a < 3; a++) { ball.center[a] = w[a] / L; ball.velocity[a] = w[4 + a] * TAU_S / L }
+      }, () => { bslot.busy = false })
+    }
     if (slot) {
       slot.busy = true
       slot.buf.mapAsync(GPUMapMode.READ).then(() => {
@@ -252,7 +305,7 @@ export class FlipBackend implements SimBackend {
       vLag: this.vLag, cflExceeded: this.cflExceeded, substeps: this.substepsTotal,
     }
   }
-  destroy() { this.sim.destroy(); for (const s of this.speedSlots) s.buf.destroy() }
+  destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots]) s.buf.destroy() }
 }
 
 /** The solver for this page: `?solver=mpm` keeps the legacy MLS-MPM (D8); default the incompressible solver. */

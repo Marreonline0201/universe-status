@@ -10,6 +10,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s32      (S3.2 density kernels, gate s32-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s34      (S3.4 ghost-fluid kernels, gate s34-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35      (S3.5 variable-density kernels, gate s35-gpu.mjs --quick)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31c2    (S3.1c-2 drop-ball kernels, gate s31c2-gpu.mjs, full: ~1 min)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -48,6 +49,20 @@ const SETS = {
     [`${SH}/faceDisplacement.wgsl`, 'disp[s] = -P.dx * (pp - pm);', 'disp[s] = P.dx * (pp - pm);', 'displacement sign flipped'],
     [`${SH}/faceDisplacement.wgsl`, 'let pm = select(0.0, psi[linIdx(c - e)], lm == LABEL_FLUID);', 'let pm = psi[linIdx(c - e)];', 'air psi read from the solver vector'],
     [`${SH}/positionCorrect.wgsl`, 'let f = x / P.dx - faceOffset(a);', 'let f = x / P.dx - vec3<f32>(0.5);', 'displacement sampled at cell centres'],
+  ],
+  s31c2: [
+    [`${SH}/sphereCoef.wgsl`, 'let am = raw.xyz * vec3<f32>(weight(0u, c), weight(1u, c), weight(2u, c));', 'let am = raw.xyz;', 'fluid-fraction weights not applied'],
+    [`${SH}/divergence.wgsl`, 'div += ((1.0 - sh) * uHi + sh * vb) - ((1.0 - sl) * uLo + sl * vb);', 'div += ((1.0 - sh) * uHi) - ((1.0 - sl) * uLo);', "the ball's flux S·V dropped (no −JᵀV)"],
+    [`${SH}/sphereFaceVel.wgsl`, '  u[s] = sphere[SPH_V + a];', '  u[s] = 0.0;', 'faces inside the ball set to 0, not V'],
+    [`${SH}/sphereForce.wgsl`, 'let f = -S * P.dx * P.dx * (pp - pm);', 'let f = S * P.dx * P.dx * (pp - pm);', 'pressure force sign flipped'],
+    [`${SH}/sphereExtendMark.wgsl`, 'cellSolid[li].x < 0.5', 'cellSolid[li].x < 0.95', 'liquid extended only into nearly full cells'],
+    [`${SH}/densityRhs.wgsl`, 'let ft = f + (1.0 - keep) + cellSolid[li].y;', 'let ft = f + (1.0 - keep);', 'ball kernel volume dropped from f̃'],
+    [`${SH}/sphereCells.wgsl`, 'out.y = kv / 8.0;', 'out.y = kv / 4.0;', 'ball kernel volume normalised wrong'],
+    [`${SH}/g2pMac.wgsl`, 'fx = sphereOut(cx, vec3<f32>(sphere[0], sphere[1], sphere[2]), sphere[SPH_R]);', 'fx = cx;', 'no push-out after advection'],
+    [`${SH}/sphereIntegrate.wgsl`, 'sphere[SPH_V + a] += P.dt * (P.gravity[a] + F[a] / M);', 'sphere[SPH_V + a] += P.dt * P.gravity[a];', 'fluid force ignored (free fall)'],
+    [`${SH}/sphereAdvance.wgsl`, 'if (c < R) { c = R; v = max(v, 0.0); }', 'if (c < R) { v = max(v, 0.0); }', 'ball passes into the floor'],
+    [`${SH}/lsResolve.wgsl`, '      if (cellSolid[lm].x >= 0.5) { continue; }\n', '', 'ball cells counted as empty space'],
+    [`${SH}/psiCoef.wgsl`, 'w[a] = max(0.0, 1.0 - faceSolid[gridBase(a) + slotOf(c)]);', 'w[a] = 1.0;', 'ψ operator without the fluid-fraction weights'],
   ],
   s34: [
     [`${SH}/lsScatter.wgsl`, 'let k = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);', 'let k = (1.0 - d2) * (1.0 - d2);', 'Zhu–Bridson kernel squared, not cubed'],

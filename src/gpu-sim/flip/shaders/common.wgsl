@@ -49,6 +49,7 @@ const DIAG_RHO_NEIGHBOUR: u32 = 5u;   // faces whose ρ_f came from the neighbou
 const DIAG_RHO_DEFAULT: u32 = 6u;     // faces that fell back to rho (no neighbour had a density either)
 const DIAG_MAX_SPEED: u32 = 7u;       // max particle speed after G2P (f32 bits: non-negative floats order like u32), m/s
 const DIAG_UNRESOLVED_RELABELS: u32 = 8u;   // ghost labels: particle-holding φ ≥ 0 cells made LIQUID (lsResolve)
+const DIAG_SPHERE_PUSHOUTS: u32 = 9u;       // particles pushed out of the drop ball (advection + density correction)
 
 fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
   if (i < 0) { return 0; }
@@ -117,7 +118,8 @@ fn phiFromSums(w: i32, rx: i32, ry: i32, rz: i32) -> f32 {
 /// Liquid fraction θ of the face between a LIQUID centre (φl) and an AIR centre (φa) with the face-centre sample φm
 /// (flipRef.theta: the zero crossing on the two half-segments, clamped to [thetaMin, 1]).
 fn thetaOf(fl: f32, fm: f32, fa: f32) -> f32 {
-  // a LIQUID cell whose own φ ≥ 0 is liquid by occupancy only (flipRef.classifyLevelSet/theta): its face is dry, θ = θmin
+  // a LIQUID cell whose own φ ≥ 0 was relabelled (φ does not resolve its interface, flipRef.classifyLevelSet/theta):
+  // its face is dry, θ = θmin
   if (fl >= 0.0) { return P.thetaMin; }
   var t: f32;
   if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }
@@ -130,3 +132,43 @@ fn thetaOf(fl: f32, fm: f32, fa: f32) -> f32 {
 const LO_SCALE: f32 = 4096.0;
 override PRECISE_P2G: bool = true;
 fn encodeLo(x: f32) -> i32 { return i32(round((x - round(x)) * LO_SCALE)); }
+
+// ── S3.1c-2 the drop ball (flipRef sphere*; Batty, Bertails & Bridson 2007) ──────────────────────────────────────────
+// Sphere state, one storage array<f32> of SPHERE_WORDS: centre (m, window-local) 0–2, radius 3, velocity (m/s) 4–6,
+// active 7 (1/0), density 8 (kg/m³; 0 = scripted: the host sets the velocity, no integration), last pressure force
+// (N) 9–11, discrete volume V_J (m³) 12. Written by the host (setSphere) and by sphereAdvance / sphereIntegrate.
+const SPH_R: u32 = 3u;
+const SPH_V: u32 = 4u;
+const SPH_ACTIVE: u32 = 7u;
+const SPH_DENSITY: u32 = 8u;
+const SPH_FORCE: u32 = 9u;
+const SPH_VJ: u32 = 12u;
+// fixed-point scales of the force reduction (atomic i32): N·FORCE_SCALE, and V_J in face units ΣS·SOLID_SCALE
+const FORCE_SCALE: f32 = 1024.0;
+const SOLID_SCALE: f32 = 1048576.0;
+
+/// Smooth partial volume of one subsample at x: clamp(½ − d/(dx/2), 0, 1), d = signed distance to the sphere surface.
+fn sphereSub(x: vec3<f32>, c: vec3<f32>, R: f32) -> f32 {
+  return clamp(0.5 - (length(x - c) - R) / (0.5 * P.dx), 0.0, 1.0);
+}
+
+/// Solid fraction of the dx³ control volume centred at x: 2×2×2 subsamples at ±dx/4 (flipRef.sphereFractions).
+fn sphereBox(x: vec3<f32>, c: vec3<f32>, R: f32) -> f32 {
+  var v = 0.0;
+  for (var k = 0; k < 8; k++) {
+    let o = vec3<f32>(f32(k & 1), f32((k >> 1) & 1), f32((k >> 2) & 1)) * 0.5 - vec3<f32>(0.25);
+    v += sphereSub(x + o * P.dx, c, R);
+  }
+  return v / 8.0;
+}
+
+/// A particle position x pushed radially out of the sphere to its surface + wallEps (flipRef.sphereCollide); x itself
+/// when it is outside. A particle exactly at the centre goes straight up.
+fn sphereOut(x: vec3<f32>, c: vec3<f32>, R: f32) -> vec3<f32> {
+  let d = x - c;
+  let r = length(d);
+  let Re = R + P.wallEps;
+  if (r >= Re) { return x; }
+  if (r <= 0.0) { return c + vec3<f32>(0.0, Re, 0.0); }
+  return c + d * (Re / r);
+}

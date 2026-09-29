@@ -451,9 +451,14 @@ export class FlipRef {
       for (const ax of AXES) {
         for (const side of [0, 1] as const) {
           const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
-          // Batty et al. 2007: the face flux is the fluid part (1 − S)·u* plus the sphere's part S·V (the −JᵀV term)
-          const S = this.solidFraction[ax][fs], flux = (1 - S) * this.u[ax][fs] + (S > 0 ? S * this.sphere!.velocity[ax] : 0)
-          if (this.faceType[ax][fs] !== FaceType.SOLID && S < 1 && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
+          // Batty et al. 2007: the face flux is the fluid part (1 − S)·u* plus the sphere's part S·V (the −JᵀV term). A
+          // partly solid face that no particle reached (beside a cell extended into the sphere) holds no liquid: its open
+          // sliver moves with the sphere (u* := V — Batty's solvers extrapolate the velocity into the solid), else the
+          // missing u* = 0 is a spurious source (measured: 10 such faces per substep around an R = 3·dx ball)
+          const S = this.solidFraction[ax][fs], open = this.faceType[ax][fs] !== FaceType.SOLID
+          const uf = S > 0 && open && !this.valid[ax][fs] ? this.sphere!.velocity[ax] : this.u[ax][fs]
+          const flux = (1 - S) * uf + (S > 0 ? S * this.sphere!.velocity[ax] : 0)
+          if (open && S === 0 && !this.valid[ax][fs]) this.diag.unsetDivergenceFaces++
           div += side === 1 ? flux : -flux
         }
       }

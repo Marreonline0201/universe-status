@@ -381,6 +381,9 @@ export class FluidEngine {
         return 0
       }
       this.sceneIds.add(compId)
+      // a liquid denser than the ball arrived: the weakly coupled ball cannot stay (FlipBackend.ballRefusal)
+      const why = this.ball.active ? this.sim.ballRefusal?.() ?? null : null
+      if (why) { this.removeBall(); this.notify('warning', `the ball was removed: ${why}`) }
     }
     return r.positions.length
   }
@@ -456,11 +459,12 @@ export class FluidEngine {
     this.resetClock()
     this.setGravity(scenarioGravityMs2(s))
 
-    if (s.ball && !this.sim.supportsBall) {
+    const ballWhy = s.ball ? (!this.sim.supportsBall ? 'this solver does not couple the ball; ?solver=mpm runs the legacy ball' : this.sim.ballRefusal?.() ?? null) : null
+    if (s.ball && ballWhy) {
       this.ball.active = false
       this.sim.clearBall()
       if (this.sphereMesh) this.sphereMesh.visible = false
-      this.notify('warning', 'this scenario\'s ball was left out: the incompressible solver does not couple the ball yet (plan S3.1c-2); ?solver=mpm runs the legacy ball')
+      this.notify('warning', `this scenario's ball was left out: ${ballWhy}`)
     } else if (s.ball) {
       this.ball.active = true
       this.ball.radius = s.ball.radius ?? DEFAULT_BALL_RADIUS
@@ -470,6 +474,7 @@ export class FluidEngine {
         this.sphereMesh.visible = true
         this.sphereMesh.scale.setScalar(this.ball.radius / DEFAULT_BALL_RADIUS)
       }
+      this.sim.setBall(this.ball)
     } else {
       this.ball.active = false
       this.sim.clearBall()
@@ -739,9 +744,11 @@ export class FluidEngine {
   dropBall() {
     if (!this.sim) return
     if (!this.sim.supportsBall) {
-      this.notify('refused', 'the incompressible solver does not couple the ball yet (plan S3.1c-2: a moving solid with fractional face weights); ?solver=mpm runs the legacy ball')
+      this.notify('refused', 'this solver does not couple the ball; ?solver=mpm runs the legacy ball')
       return
     }
+    const why = this.sim.ballRefusal?.() ?? null
+    if (why) { this.notify('refused', why); return }
     this.ball.active = true
     this.ball.radius = DEFAULT_BALL_RADIUS
     this.ball.center = [0.5, 0.9, 0.5]
@@ -838,6 +845,7 @@ export class FluidEngine {
         return {
           clock: this.clockMode,
           solver: this.options.solver,
+          ball: this.ball.active ? { center: [...this.ball.center], velocity: [...this.ball.velocity], radius: this.ball.radius } : null,
           simTime: this.simTime,
           substepsTotal: this.substepsTotal,
           rtFactor: this.rtFactor,

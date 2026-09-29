@@ -1,7 +1,8 @@
 // g2pMac.wgsl — G2P from the three MAC face grids, then RK2 (midpoint) advection
 // (FINAL-PLAN §5.2 step 12; flipRef.g2p followed by flipRef.advect).
 //   v_a = Σ w·u_f,   c_a = Σ ∇w·u_f   (APIC-MAC; PIC control: c := 0)
-//   x_mid = x + ½Δt·u(x),  x ← x + Δt·u(x_mid), kept wallEps inside the window (each push-back counted).
+//   x_mid = x + ½Δt·u(x),  x ← x + Δt·u(x_mid), kept wallEps inside the window (each push-back counted), then pushed
+//   radially out of the drop ball if it ended inside (flipRef.advect → sphereCollide; counted).
 
 @group(0) @binding(1) var<storage, read_write> pos: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> vel: array<vec4<f32>>;
@@ -9,6 +10,7 @@
 @group(0) @binding(4) var<storage, read> u: array<f32>;
 @group(0) @binding(5) var<storage, read> valid: array<u32>;
 @group(0) @binding(6) var<storage, read_write> diag: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read> sphere: array<f32>;
 
 struct Sample { v: f32, g: vec3<f32>, unset: u32 }
 
@@ -73,7 +75,12 @@ fn advance(q: u32) -> f32 {
   let cx = clamp(nx, lo, hi);
   if (any(cx != nx)) { atomicAdd(&diag[DIAG_WALL_CLAMPS], 1u); }
   if (unset > 0u) { atomicAdd(&diag[DIAG_UNSET_READS], unset); }
-  pos[q] = vec4<f32>(cx, pos[q].w);
+  var fx = cx;
+  if (sphere[SPH_ACTIVE] > 0.5) {
+    fx = sphereOut(cx, vec3<f32>(sphere[0], sphere[1], sphere[2]), sphere[SPH_R]);
+    if (any(fx != cx)) { atomicAdd(&diag[DIAG_SPHERE_PUSHOUTS], 1u); }
+  }
+  pos[q] = vec4<f32>(fx, pos[q].w);
   return length(v);
 }
 

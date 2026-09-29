@@ -49,17 +49,17 @@ try {
   const n10 = (await st()).count
   check(n10 - n0 >= 9000, `+10K pours ≈10k particles (${n0}→${n10})`)
 
-  if ((s0.solver ?? 'mpm') === 'mpm') {
-    await btn('DROP BALL').click(); await page.waitForTimeout(200)
-    check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')
-    await btn('REMOVE BALL').click(); await page.waitForTimeout(200)
-    check(await btn('DROP BALL').count() === 1, 'REMOVE BALL toggles back')
-  } else {
-    // the incompressible solver does not couple the ball yet (S3.1c-2): the click must be refused visibly, never faked
-    await btn('DROP BALL').click(); await page.waitForTimeout(300)
-    check(await btn('DROP BALL').count() === 1 && await btn('REMOVE BALL').count() === 0 && await page.getByText(/S3.1c-2/).count() > 0,
-      'DROP BALL on the incompressible solver is refused with its reason (no ball coupling until S3.1c-2)')
+  await btn('DROP BALL').click(); await page.waitForTimeout(200)
+  check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')
+  if ((s0.solver ?? 'mpm') !== 'mpm') {
+    // S3.1c-2: the ball is a moving solid on the incompressible solver — it must actually fall (state read back from the GPU)
+    const b0 = (await st()).ball
+    await page.waitForTimeout(800)
+    const b1 = (await st()).ball
+    check(b0 && b1 && b1.center[1] < b0.center[1] - 0.05, `the ball falls on the incompressible solver (y ${b0?.center[1].toFixed(3)} → ${b1?.center[1].toFixed(3)} world units in 0.8 s)`)
   }
+  await btn('REMOVE BALL').click(); await page.waitForTimeout(200)
+  check(await btn('DROP BALL').count() === 1, 'REMOVE BALL toggles back')
 
   const box = await canvas.boundingBox()
   const before = (await st()).count

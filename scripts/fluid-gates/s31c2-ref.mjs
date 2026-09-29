@@ -29,7 +29,7 @@
 //    N·V_p at every 0.1 s (the violent-flow tolerance of V1 / G2 — an impact at ~1.8 m/s); every pressure solve
 //    converged (no cap hit); mechanical energy E_K + E_P of liquid and ball, minus the density projection's ΣΔE_P
 //    (S3.2 INV′), never above E(0) by more than 2 % of E(0) (S3.1b E1's bound); the ball ends resting on the floor
-//    (centre within 0.01·dx of y = R for the last 0.5 s).
+//    (centre within 0.01·dx of y = R for the last 0.5 s) and never below it (centre − R ≥ 0: non-penetration).
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
@@ -132,7 +132,7 @@ const rms = p => { let v = 0; for (let i = 0; i < p.vel.length; i++) v += p.vel[
     return e
   }
   const E0 = energy()
-  let inside = 0, worstVol = 0, unconverged = 0, dEpDensity = 0, maxRise = -Infinity, tFloor = NaN, vMax = 0, restOk = true
+  let inside = 0, worstVol = 0, unconverged = 0, dEpDensity = 0, maxRise = -Infinity, tFloor = NaN, vMax = 0, restOk = true, minClearance = Infinity
   for (let s = 1; s * dt <= 2 + 1e-9; s++) {
     sim.advanceSphere(dt)
     sim.step(p, dt)
@@ -143,12 +143,13 @@ const rms = p => { let v = 0; for (let i = 0; i < p.vel.length; i++) v += p.vel[
     if (s % 12 === 0) worstVol = Math.max(worstVol, Math.abs(sim.phiVolume() / nvp - 1))
     maxRise = Math.max(maxRise, (energy() - dEpDensity - E0) / E0)
     vMax = Math.max(vMax, Math.hypot(...sim.sphere.velocity))
+    minClearance = Math.min(minClearance, sim.sphere.center[1] - R)
     const onFloor = sim.sphere.center[1] - R <= 0.01 * DX
     if (onFloor && Number.isNaN(tFloor)) tFloor = s * dt
     if (s * dt > 1.5 && !onFloor) restOk = false
   }
-  check(inside === 0 && worstVol <= 0.02 && unconverged === 0 && maxRise <= 0.02 && restOk && !Number.isNaN(tFloor),
-    `FS iron ball (ρ_s ${RHO_IRON}) dropped 3·dx onto the pool, 2 s (${p.n} particles): particles inside after a substep ${inside} (0); max |φ-volume/N·V_p − 1| ${(100 * worstVol).toFixed(2)} % (≤ 2 %); unconverged solves ${unconverged} (0); energy (minus density ΣΔE_P) max rise ${(100 * maxRise).toFixed(3)} % of E(0) (≤ 2 %); on the floor from t = ${tFloor.toFixed(3)} s, resting for the last 0.5 s: ${restOk}; peak ball speed ${vMax.toFixed(2)} m/s; push-outs ${sim.spherePushOuts}`)
+  check(inside === 0 && worstVol <= 0.02 && unconverged === 0 && maxRise <= 0.02 && restOk && !Number.isNaN(tFloor) && minClearance >= 0,
+    `FS iron ball (ρ_s ${RHO_IRON}) dropped 3·dx onto the pool, 2 s (${p.n} particles): particles inside after a substep ${inside} (0); max |φ-volume/N·V_p − 1| ${(100 * worstVol).toFixed(2)} % (≤ 2 %); unconverged solves ${unconverged} (0); energy (minus density ΣΔE_P) max rise ${(100 * maxRise).toFixed(3)} % of E(0) (≤ 2 %); on the floor from t = ${tFloor.toFixed(3)} s, resting for the last 0.5 s: ${restOk}, never into it (min clearance ${minClearance.toExponential(1)} m ≥ 0); peak ball speed ${vMax.toFixed(2)} m/s; push-outs ${sim.spherePushOuts}`)
 }
 
 console.log(`\ns3.1c-2 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)

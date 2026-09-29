@@ -41,7 +41,7 @@ async function makeSim(device: GPUDevice, n: Vec3, count: number, o: { h?: numbe
 }
 
 /** φ (m) from one sample point's four fixed-point sums (common.wgsl phiFromSums; the LS_SCALE cancels in the ratio). */
-function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: number) {
+export function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: number) {
   const w = sums[at]
   if (w <= 0) return R
   return Math.hypot(sums[at + 1] / w * h, sums[at + 2] / w * h, sums[at + 3] / w * h) - rbar
@@ -50,10 +50,10 @@ function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: number)
  *  by ≤ 2^-23 (fixed-point rounding) + 1.2e-5 (f32 kernel weight: |x − x_s| rounded to ~1e-6·R, δk ≤ 3·2·2e-6); the
  *  offset x̄ − x_s = (Σk·r/dx)/(Σk)·dx then errs by ≤ 2·64·(2^-23 + 1.2e-5)/w·dx (|r/dx| ≤ R/dx = 1 at 8 ppc), plus
  *  1e-6·dx for f32 length() − r̄. w = Σk from the GPU sums (LS_SCALE units divided out). */
-const phiTol = (wFixed: number, h: number) => (2 * 64 * (2 ** -23 + 1.2e-5) / Math.max(wFixed / 2 ** 22, 1e-12) + 1e-6) * h
+export const phiTol = (wFixed: number, h: number) => (2 * 64 * (2 ** -23 + 1.2e-5) / Math.max(wFixed / 2 ** 22, 1e-12) + 1e-6) * h
 /** common.wgsl thetaOf in f64. */
-const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => {
-  if (fl >= 0) return tMin   // liquid by occupancy only: the face is dry
+export const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => {
+  if (fl >= 0) return tMin   // a relabelled cell (φ does not resolve its interface): the face is dry
   const t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
   return Math.min(1, Math.max(tMin, t))
 }

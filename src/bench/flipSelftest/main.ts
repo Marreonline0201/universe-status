@@ -13,6 +13,7 @@ import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak, violen
 import { equivalence, tankCaps } from './mg'
 import { ghostKernels, flatSurface, hydrostatic, standingWave, column } from './ghost'
 import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayleighTaylor, lockExchange, overturn, mixedCaps } from './varDensity'
+import { sphereKernels, spherePhysics } from './sphere'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -314,6 +315,8 @@ try {
     else if (test === 'standingWave') out = await standingWave(device, params as { cellsPerH: number })
     else if (test === 'column') out = await column(device, params as { aCells: number; n2: number; h: number; nx: number; tauEnd: number; wall?: boolean })
     else if (test === 'varKernels') out = await varKernels(device, params)
+    else if (test === 'sphereKernels') out = await sphereKernels(device, params)
+    else if (test === 'spherePhysics') out = await spherePhysics(device, params as { test: 'AR' | 'MV' | 'WK' | 'FS' })
     else if (test === 'densityCancels') out = await densityCancels(device)
     else if (test === 'twoLayerHydrostatic') out = await twoLayerHydrostatic(device)
     else if (test === 'interfacialWave') out = await interfacialWave(device, params as { scale: number })
