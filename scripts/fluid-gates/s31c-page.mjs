@@ -43,6 +43,16 @@
 //    First run of this design (2026-09-29, live checkout): slip × 1.442 / 1.377 / 1.237 of U_eq, spread 0.205; control
 //      × −0.057 — the observable is clean, so the in-situ drift slips 24–44 % faster than its own equilibrium law: an
 //      OPEN finding about the drift model (vault active-plan, B1c), not a reason to move this band.
+//    Design change 4 (2026-09-29 evening, fixed before its run; the band is unchanged): the drift kernel's own inputs,
+//      logged per drop (slipInputs), put the excess in its mixture density — the law with the kernel's inputs × 1.32–1.42
+//      of U_eq, the model × 1.005–1.045 of that — because the scene's mercury (0.13 m³ over the floor: a 1 cm film,
+//      thinner than a cell) sits in the bottom-row water cells, where the kernel counts it as dispersed and the drops feel
+//      MTK's suspension density (a model limitation at a resolved interface, recorded in the vault, not changed here).
+//      The law checked here is the OIL-IN-WATER law (Jeelani & Hartland's system), so B1c-slip's set is restricted to
+//      the two-liquid drops: their kernel mixture holds no mercury — α_Hg = (ρ_m − (1 − α_d)ρ_w − α_d·ρ_o)/(ρ_Hg − ρ_o)
+//      ≤ 1e-4 at BOTH samples (ρ_m, α_d the kernel's own, water the carrier). The drift-off control has no kernel inputs:
+//      its drops qualify with no mercury particle in their own cell or the 26 around it at 4 s (the trilinear reach).
+//      The unrestricted ratio stays in the INFO line.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
@@ -163,7 +173,25 @@ try {
         }
         return ys.filter(y => y > wMed).length / set.length
       }
-      const dilute = set.filter(r => r.a < 0.3 && nW[r.c] > 0)
+      // design change 4: two-liquid drops only (no mercury in the kernel's mixture at either sample; control: within a cell)
+      const hgMat = mat.Mercury, RH = hgMat?.rho
+      const nHg = new Uint16Array(64 ** 3)
+      if (hgMat) for (let i = 0; i < s4.n; i++) if (s4.comp[i] === hgMat.id) nHg[cellOf(i)]++
+      const hgNear = c => {
+        const x = c % 64, y = Math.floor(c / 64) % 64, z = Math.floor(c / 4096)
+        for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const X = x + dx, Y = y + dy, Z = z + dz
+          if (X >= 0 && X < 64 && Y >= 0 && Y < 64 && Z >= 0 && Z < 64 && nHg[X + 64 * (Y + 64 * Z)] > 0) return true
+        }
+        return false
+      }
+      const alphaHg = (s, i) => { const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4]; return rm > 0 ? (rm - (1 - aD) * RW - aD * RO) / (RH - RO) : Infinity }
+      const twoLiquid = r => !hgMat || (dFixed !== undefined ? !hgNear(r.c) : (s4.slipIn && s45.slipIn && alphaHg(s4, r.i) <= 1e-4 && alphaHg(s45, r.i) <= 1e-4))
+      const diluteAll = set.filter(r => r.a < 0.3 && nW[r.c] > 0)
+      const dilute = diluteAll.filter(twoLiquid)
+      const slipOf = rs => rs.length ? rs.reduce((q, r) => q + ((s45.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L - wRise[r.c] / nW[r.c]) / SLIP_DT, 0) / rs.length : NaN
+      const lawOf = rs => rs.length ? rs.reduce((q, r) => q + uSlip(r.d, r.a), 0) / rs.length : NaN
+      const ratioAll = slipOf(diluteAll) / lawOf(diluteAll)
       const meanOf = f => dilute.length ? dilute.reduce((q, r) => q + f(r), 0) / dilute.length : NaN
       const slip = meanOf(r => ((s45.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L - wRise[r.c] / nW[r.c]) / SLIP_DT)
       const slipLaw = meanOf(r => uSlip(r.d, r.a))
@@ -189,7 +217,7 @@ try {
         if (nK) { lawK = sl / nK; modelK = sm / nK }
       }
       return {
-        wMed, n: set.length, nDilute: dilute.length, slip, slipLaw, ratio: slip / slipLaw, modelSlip, lawK, modelK, nK, nRhoUp,
+        wMed, n: set.length, nDilute: dilute.length, nDiluteAll: diluteAll.length, ratioAll, slip, slipLaw, ratio: slip / slipLaw, modelSlip, lawK, modelK, nK, nRhoUp,
         rise: meanOf(r => (s5.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L), riseLaw: meanOf(r => (1 - r.a) * uSlip(r.d, r.a)),
         floor: march(0.9), measured: set.filter(r => s8.pos[3 * r.i + 1] * L > wMed).length / set.length,
         resolved: resolved.length, resolvedUp: resolved.filter(i => s8.pos[3 * i + 1] * L > wMed).length,
@@ -218,13 +246,13 @@ try {
     const ctl = analyse(c4, c45, c5, c8, dCtl)
     report.creaming = { runs, control: ctl, dControl: dCtl, band: BAND }
 
-    const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDilute}), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); the model's own slip ${Number.isFinite(r.modelSlip) ? `${cms(r.modelSlip)} cm/s (× ${(r.modelSlip / r.slipLaw).toFixed(3)} of U_eq; measured/model × ${(r.slip / r.modelSlip).toFixed(3)})` : 'n/a (drift off)'}${Number.isFinite(r.lawK) ? `; the law with the kernel's own inputs (ρ_m, μ_m, a; ${r.nK} drops dispersed at both samples) ${cms(r.lawK)} cm/s = × ${(r.lawK / r.slipLaw).toFixed(3)} of U_eq, the model × ${(r.modelK / r.lawK).toFixed(3)} of it; ${r.nRhoUp} drops with ρ_m > water + oil at their α + 50 kg/m³ (another liquid in the kernel's cell)` : ''}; lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
+    const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDiluteAll}, of them two-liquid ${r.nDilute}; all dilute: slip × ${r.ratioAll.toFixed(3)} of the law), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); the model's own slip ${Number.isFinite(r.modelSlip) ? `${cms(r.modelSlip)} cm/s (× ${(r.modelSlip / r.slipLaw).toFixed(3)} of U_eq; measured/model × ${(r.slip / r.modelSlip).toFixed(3)})` : 'n/a (drift off)'}${Number.isFinite(r.lawK) ? `; the law with the kernel's own inputs (ρ_m, μ_m, a; ${r.nK} drops dispersed at both samples) ${cms(r.lawK)} cm/s = × ${(r.lawK / r.slipLaw).toFixed(3)} of U_eq, the model × ${(r.modelK / r.lawK).toFixed(3)} of it; ${r.nRhoUp} drops with ρ_m > water + oil at their α + 50 kg/m³ (another liquid in the kernel's cell)` : ''}; lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
     runs.forEach((r, k) => console.log(line(`run ${k + 1}`, r)))
     console.log(line(`control (drift off, d = ${(1e3 * dCtl).toFixed(2)} mm)`, ctl))
     gate.check(runs.every(slipOk),
-      `B1c-slip (validated): the dilute drops' (α < 0.3) mean slip through the water that shared their cell, over 4 → 4.5 s, ÷ the drag law's mean U_eq(d, α) = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (1 ± ${BAND})`)
+      `B1c-slip (validated): the dilute (α < 0.3) two-liquid drops' (no mercury in the kernel's mixture, design change 4) mean slip through the water that shared their cell, over 4 → 4.5 s, ÷ the drag law's mean U_eq(d, α) = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (1 ± ${BAND})`)
     gate.check(ctl.nDilute > 0 && !slipOk(ctl),
-      `B1c-control: with the drift switched off the would-be-dispersed dilute oil (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
+      `B1c-control: with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))
     gate.check(runs.length >= 2 && spread <= 2 * BAND,
       `B1c-spread: the slip ratio's run-to-run spread ${spread.toFixed(3)} over ${runs.length} identical runs ≤ the band's width ${(2 * BAND).toFixed(1)}`)
