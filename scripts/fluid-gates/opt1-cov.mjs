@@ -23,6 +23,13 @@
 // Checks (validity of the measurement only): every timing's timestamps valid and unquantized; the liquid is drawn in
 // every view (coverage > 0); coverage grows as the camera approaches (the sweep is doing what it claims); a repeat of
 // the first configuration at the end within ±20 % of its first median (G0-g's contention check); 0 GPU / console errors.
+// Protocol revision 2 (2026-09-29, after the first two clean-tree runs, before the third): run 1 failed the start/end
+// check (× 1.32: another session resumed mid-run); run 2 passed it (× 1.016) while three mid-run 64³ configurations read
+// 1.6–2.2 × their values in the other two runs — the owner is at the machine and timing runs use the primary display,
+// so contention can come and go within a run. Now EVERY configuration is measured in two passes (the second in reverse
+// order, so a drift or a burst does not hit the same configuration twice) and a third time if they differ by more than
+// 15 %; a configuration counts only when two of its measurements agree within 15 %, and the lower of that pair is
+// reported (contention can only add time). Check: no configuration left without an agreeing pair.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -72,15 +79,30 @@ try {
       { name: 'page camera', camera: null },
     ]
     const scene = { cells: sc.cells, particles: n, depthM: Hm, rows: [] }
-    for (const shape of ['aniso', 'sphere']) {
-      for (const c of cams) {
-        const opts = { width: W, height: H, splatShape: shape, frames: FRAMES, ...(c.camera ? { camera: c.camera } : {}) }
-        const r = await page.evaluate(o => window.__fluidBench.renderTiming(o), opts)
-        const row = { shape, view: c.name, coverage: r.coverage, gpuMedianMs: r.gpuMedianMs, gpuP95Ms: r.gpuP95Ms, gpuMeanMs: r.gpuMeanMs, wallMedianMs: r.wallMedianMs, invalid: r.invalidTimestamps, count: r.count }
-        scene.rows.push(row)
-        if (!first) first = { opts, row }
-        console.log(`  ${sc.cells.join('×')} ${String(n).padStart(6)} p  ${shape.padEnd(6)} ${c.name.padEnd(44)} coverage ${(100 * r.coverage).toFixed(1).padStart(5)} %  GPU median ${r.gpuMedianMs.toFixed(3)} ms  p95 ${r.gpuP95Ms.toFixed(3)} ms${r.invalidTimestamps ? `  INVALID TIMESTAMPS (${r.invalidTimestamps})` : ''}`)
+    const configs = ['aniso', 'sphere'].flatMap(shape => cams.map(c => ({ shape, view: c.name, opts: { width: W, height: H, splatShape: shape, frames: FRAMES, ...(c.camera ? { camera: c.camera } : {}) } })))
+    const time = async cfg => {
+      const r = await page.evaluate(o => window.__fluidBench.renderTiming(o), cfg.opts)
+      return { coverage: r.coverage, gpuMedianMs: r.gpuMedianMs, gpuP95Ms: r.gpuP95Ms, gpuMeanMs: r.gpuMeanMs, wallMedianMs: r.wallMedianMs, invalid: r.invalidTimestamps, count: r.count }
+    }
+    const runs = new Map(configs.map(c => [c, []]))
+    for (const c of configs) runs.get(c).push(await time(c))                  // pass A
+    for (const c of [...configs].reverse()) runs.get(c).push(await time(c))   // pass B, reversed
+    const agree = (a, b) => Math.abs(a.gpuMedianMs / b.gpuMedianMs - 1) <= 0.15
+    for (const c of configs) {
+      const m = runs.get(c)
+      if (!agree(m[0], m[1])) m.push(await time(c))                          // a third measurement when A and B differ
+      let best = null
+      for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
+        if (!agree(m[i], m[j])) continue
+        const lo = m[i].gpuMedianMs <= m[j].gpuMedianMs ? m[i] : m[j]
+        if (!best || lo.gpuMedianMs < best.gpuMedianMs) best = lo
       }
+      const row = { shape: c.shape, view: c.view, ...(best ?? m[0]), agreed: !!best, medians: m.map(x => x.gpuMedianMs), invalid: m.map(x => x.invalid).find(Boolean) ?? null }
+      scene.rows.push(row)
+      if (!first) first = { opts: c.opts, row }
+      console.log(`  ${sc.cells.join('×')} ${String(n).padStart(6)} p  ${c.shape.padEnd(6)} ${c.view.padEnd(44)} coverage ${(100 * row.coverage).toFixed(1).padStart(5)} %  GPU median ${row.gpuMedianMs.toFixed(3)} ms  p95 ${row.gpuP95Ms.toFixed(3)} ms  (passes ${row.medians.map(v => v.toFixed(2)).join(' / ')}${row.agreed ? '' : ' — NO AGREEING PAIR'})${row.invalid ? `  INVALID TIMESTAMPS (${row.invalid})` : ''}`)
+    }
+    for (const shape of ['aniso', 'sphere']) {
       const pts = scene.rows.filter(r => r.shape === shape)
       scene[shape] = Object.fromEntries(TARGETS.map(c => [`${Math.round(100 * c)}%`, { medianMs: interp(pts, c, 'gpuMedianMs'), p95Ms: interp(pts, c, 'gpuP95Ms') }]))
     }
@@ -107,6 +129,8 @@ try {
   }
   gate.check(mono, 'coverage grows as the camera approaches, in every sweep (the sweep does what it claims)')
   gate.check(Math.abs(report.contention.ratio - 1) <= 0.2, `contention: the first configuration re-measured at the end ${report.contention.again.toFixed(3)} ms vs ${report.contention.first.toFixed(3)} ms (× ${report.contention.ratio.toFixed(3)}, ±20 %)`)
+  const lone = all.filter(r => !r.agreed), thirds = all.filter(r => r.medians.length > 2).length
+  gate.check(lone.length === 0, `every configuration has two measurements within 15 % (revision 2): ${lone.length ? `${lone.length} without — ${lone.map(b => `${b.shape}/${b.view} ${b.medians.map(v => v.toFixed(2)).join('/')}`).join(', ')}` : `all ${all.length}`}; ${thirds} needed a third measurement`)
   const gpuErr = (await status(page)).gpuErrors
   gate.check(gpuErr === 0, `GPU: ${gpuErr} uncaptured WebGPU errors`)
   gate.check(errors.length === 0, `console: ${errors.length} errors${errors.length ? ` — ${errors.slice(0, 3).join(' | ')}` : ''}`)
