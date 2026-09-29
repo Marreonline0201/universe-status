@@ -11,6 +11,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s34      (S3.4 ghost-fluid kernels, gate s34-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35      (S3.5 variable-density kernels, gate s35-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31c2    (S3.1c-2 drop-ball kernels, gate s31c2-gpu.mjs, full: ~1 min)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s36      (S3.6 viscosity kernels, gate s36-gpu.mjs --quick)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -93,6 +94,22 @@ const SETS = {
     ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'f[28] = (this.massUnit / L.dx ** 3) * this.ppc;', 'f[28] = this.massUnit / L.dx ** 3;', 'rho_ref·ppc without ppc'],
   ],
 }
+// S3.6: each targets a kernel that K26–K29 cover (the Jacobi preconditioner is left out: a wrong diagonal only slows a
+// converging PCG, it does not change the answer)
+SETS.s36 = [
+  [`${SH}/common.wgsl`, 'fn lsLo(v: vec4<f32>) -> vec4<i32> { return vec4<i32>(round((v - round(v)) * LS_LO_SCALE)); }', 'fn lsLo(v: vec4<f32>) -> vec4<i32> { return vec4<i32>(0); }', 'level-set remainder word dropped (one word)'],
+  [`${SH}/viscosity.wgsl`, 'let xs = (vec3<f32>(n) * 0.5 + vec3<f32>(0.25)) * P.dx;', 'let xs = (vec3<f32>(n) * 0.5) * P.dx;', 'quarter lattice shifted by dx/4'],
+  [`${SH}/viscosity.wgsl`, 'v += clamp(0.5 - latPhi((cc + s) * P.dx) / (0.5 * P.dx), 0.0, 1.0);', 'v += clamp(0.5 - latPhi((cc + s) * P.dx) / P.dx, 0.0, 1.0);', 'volume smooth step over dx, not dx/2'],
+  [`${SH}/viscosity.wgsl`, 'if (!anyBand) { return select(0.0, 1.0, allLiquid); }', 'if (!anyBand) { return 1.0; }', 'samples off the band all full'],
+  [`${SH}/viscosity.wgsl`, 'if (tp.ok) { atomicMax(&muAcc[tp.slot], key); }', '', 'μ_min pass skipped (default μ everywhere)'],
+  [`${SH}/viscosity.wgsl`, 'return bitcast<f32>(~key) * select(w / m, 1.0, w == m);', 'return bitcast<f32>(~key);', 'harmonic quotient dropped (μ_min at mixed samples)'],
+  [`${SH}/viscosity.wgsl`, 'wCell[linIdx(c)] = 2.0 * muAt(muSlot(0u, c)) * volCellR[linIdx(c)];', 'wCell[linIdx(c)] = muAt(muSlot(0u, c)) * volCellR[linIdx(c)];', 'cell strain weight μV, not 2μV'],
+  [`${SH}/viscosity.wgsl`, 'sv = wEdgeR[s] * ((val(a, c) - val(a, c - eb)) / P.dx + (val(b, c) - val(b, c - ea)) / P.dx);', 'sv = wEdgeR[s] * ((val(a, c) - val(a, c - eb)) / P.dx);', 'shear strain γ without its second term'],
+  [`${SH}/viscosity.wgsl`, 'if (c[b] == -1) { c[b] = 0; sign *= VP.walls[b]; }', 'if (c[b] == -1) { c[b] = 0; }', 'low-side wall ghost sign ignored'],
+  [`${SH}/viscosity.wgsl`, 'let visc = P.dt * sumStress(a, c);', 'let visc = sumStress(a, c);', 'viscous operator without Δt'],
+  [`${SH}/viscosity.wgsl`, '} else if (volFaceR[s] > 0.0) { k = 1u; } else { k = 2u; }', '} else if (volFaceR[s] > 0.5) { k = 1u; } else { k = 2u; }', 'faces with V ≤ ½ not unknowns'],
+  [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
+]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]
 if (!M) { console.error(`unknown --gate=${GATE} (have: ${Object.keys(SETS).join(', ')})`); process.exit(2) }
@@ -109,7 +126,7 @@ for (const [f, find, , why] of M) {
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35'].includes(GATE) ? ['--quick'] : [])], {
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())

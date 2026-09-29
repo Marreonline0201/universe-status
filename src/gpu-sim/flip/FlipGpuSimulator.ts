@@ -16,6 +16,8 @@
 //         ghostCoef → sphereCoef (fluid-fraction weights 1 − S_f, eqs. 4–7) → divergence with the flux (1 − S)u + S·V →
 //         solve → project (unweighted coefficients) → sphereFaceVel (S ≥ 1 faces take V) → sphereForce (J·p, eqs.
 //         8–10) → sphereIntegrate (weak coupling V += Δt(g + F/M), s ≥ 1). All state on the GPU (FINAL-PLAN S3.1c).
+//   S3.6 viscosity (`viscosity: true`, then viscosityActive): project → extrapolate → ViscositySolver (Batty & Bridson 2008
+//         variational implicit solve, Jacobi-PCG) → project again; the ball is coupled after the last projection.
 //   S3.5 variable density (`variableDensity: true`): faceScatter also sums Σw; ghostCoef forms each face's density
 //         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
@@ -59,6 +61,7 @@ import sphereIntegrateWGSL from './shaders/sphereIntegrate.wgsl?raw'
 import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
+import { ViscositySolver } from './ViscositySolver'
 import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
@@ -129,6 +132,8 @@ export interface FlipSimOptions {
   ppc?: number
   /** Lower clamp of θ (default THETA_MIN = 1e-2, the measured G0-e choice; flipRef). */
   thetaMin?: number
+  /** S3.6: create the implicit viscosity solver (ghost surface only); it runs while viscosityActive is set. */
+  viscosity?: boolean
 }
 
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
@@ -216,6 +221,10 @@ export class FlipGpuSimulator {
   faceCoefRawBuf: GPUBuffer | null = null
   forceAccBuf: GPUBuffer | null = null
   private sphereActive = false
+  /** S3.6 implicit viscosity (created with `viscosity: true`); runs while viscosityActive. */
+  viscositySolver: ViscositySolver | null = null
+  viscosityActive = false
+  readonly viscosityEnabled: boolean
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
     | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw', GPUBindGroup>> = {}
   private coefFor = NaN
@@ -276,6 +285,7 @@ export class FlipGpuSimulator {
     if (this.variableDensity && !this.projection) throw new Error('FlipGpuSimulator: variableDensity requires projection')
     this.ppc = opts.ppc ?? 8
     this.thetaMin = opts.thetaMin ?? THETA_MIN
+    this.viscosityEnabled = opts.viscosity ?? false
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -407,6 +417,14 @@ export class FlipGpuSimulator {
       sphereIntegrate: group('sphereIntegrate', [this.sphereBuf, this.forceAccBuf]),
       projectRaw: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf, this.faceCoefRawBuf]),
     }
+    if (this.viscosityEnabled) {
+      if (this.freeSurface !== 'ghost') throw new Error('FlipGpuSimulator: viscosity needs the ghost-fluid surface (its volumes come from φ)')
+      this.viscositySolver = await ViscositySolver.create({
+        device, params: this.paramsBuf, pos: this.posBuf, aux: this.auxBuf, labels: sb.labels, faceType: this.faceTypeBuf, faceSolid: this.faceSolidBuf,
+        sphere: this.sphereBuf, coefRaw: this.faceCoefRawBuf!, u: uA, valid: vA, size: L.size, paddedCount: solver.paddedCount,
+        cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles,
+      })
+    }
     if (!this.densityProjection) return
     const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
     this.psiSolver = psi
@@ -524,7 +542,17 @@ export class FlipGpuSimulator {
     this.encodeFillLiquidFaces(encoder)
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
-    this.encodeProject(encoder)
+    const visc = this.viscosityActive && this.viscositySolver
+    this.encodeProject(encoder, !visc)
+    if (visc) {
+      // Batty & Bridson 2008 §3: viscosity on the projected, extrapolated field, then a second projection
+      this.encodeExtrapolate(encoder)
+      if (!this.sphereActive) encoder.copyBufferToBuffer(this.solver!.buffers.faceCoef, 0, this.faceCoefRawBuf!, 0, 16 * this.solver!.paddedCount)
+      this.viscositySolver!.encode(encoder)
+      this.encodeDivergence(encoder)
+      this.encodePressureSolve(encoder)
+      this.encodeProject(encoder, true)
+    }
   }
 
   private proj() {
@@ -583,13 +611,14 @@ export class FlipGpuSimulator {
     p.solver.encodePrepare(encoder)
     p.solver.encodeSolve(encoder, cfg ?? p.cfg, { warmStart: true })
   }
-  encodeProject(encoder: GPUCommandEncoder): void {
+  /** The projection; `couple`: then the ball's force and weak-coupling update (once per substep, after the last one). */
+  encodeProject(encoder: GPUCommandEncoder, couple = true): void {
     const { bg } = this.proj()
     // with the ball the operator's faceCoef carries the fluid-fraction weights; the velocity update reads ghostCoef's
     // unweighted copy (u −= Δt/(ρ_f·dx)·Δp on every face with 0 < S < 1, as flipRef.projectVelocities)
     this.dispatch(encoder, 'project', this.sphereActive ? this.sphereBg.projectRaw! : bg.project, 3 * this.layout.size, 256)
-    if (this.sphereActive) {
-      this.dispatch(encoder, 'sphereFaceVel', this.sphereBg.sphereFaceVel!, 3 * this.layout.size, 256)
+    if (this.sphereActive) this.dispatch(encoder, 'sphereFaceVel', this.sphereBg.sphereFaceVel!, 3 * this.layout.size, 256)
+    if (this.sphereActive && couple) {
       encoder.clearBuffer(this.forceAccBuf!)
       this.dispatch(encoder, 'sphereForce', this.sphereBg.sphereForce!, 3 * this.layout.size, 256)
       this.dispatch(encoder, 'sphereIntegrate', this.sphereBg.sphereIntegrate!, 1, 1)
