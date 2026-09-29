@@ -18,6 +18,7 @@
 //  S34a, G1c, D1, D2, A1, A1c, A2 front, A2 impulse, V1 — exactly as s34-ref.mjs (see its header)
 //  G2 again with the ghost-fluid surface: 30 s double dam break, |φ-volume/(N·V_p) − 1| ≤ 2 % (S3.2 G2's tolerance)
 //  and: 0 solver breakdowns, 0 uncaptured WebGPU errors, 0 console errors.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -30,7 +31,7 @@ const gate = makeGate(`GATE S3.4 (ghost-fluid free surface on the GPU)${QUICK ? 
 const report = { prov: await provenance() }
 const G = 9.80665, DX = 3.63 / 64, RHO = 998.2072
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

@@ -17,6 +17,7 @@
 //  P3 ballistic: g_fit ±0.5 %; error ratio 0.45–0.55 when Δt halves; GPU COM within 1e-5·window of the reference path
 //  P4 ring (3,5,7) bit-identical to ring 0 (fixed-point atomics make P2G order-independent)
 //  and: 0 uncaptured WebGPU errors, 0 console errors.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -28,7 +29,7 @@ const gate = makeGate('GATE S3.0/S3.1a (APIC-MAC kernels + transfer physics on t
 const report = { prov: await provenance() }
 const G = 9.80665
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

@@ -21,6 +21,7 @@
 //       1e-4 (the reference's own condition: its solves run to 1e-9). The viscous path projects twice (paper §3), so at the
 //       production 1e-2 the on/off difference measures the pressure solver's residual, not viscosity (measured: +0.96 %
 //       at 1e-2, −0.16 % at 1e-4; the tolerance alone moves ν_num by 3.7 %) — the production pair is reported as INFO.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -65,7 +66,7 @@ const slope = (ts, ys) => {
   return sxy / sxx
 }
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

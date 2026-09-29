@@ -18,6 +18,7 @@
 //     throttled to ~0 fps and "pass" by never rendering a frame that could fail);
 //   - each sample records the sim frame it was taken at, not a wall-clock guess;
 //   - non-finite and out-of-box particles are counted, never filtered away.
+import { windowArgs } from './lib/window.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -137,7 +138,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const consoleErrors = []
   const watchdog = setTimeout(() => { console.error('✗ watchdog: 240s exceeded'); try { browser?.process()?.kill() } catch { /* */ } process.exit(3) }, 240_000)
   try {
-    browser = await chromium.launch({ executablePath: chromePath, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+    browser = await chromium.launch({ executablePath: chromePath, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
     page.on('console', m => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 300)) })
     page.on('pageerror', e => consoleErrors.push(String(e).slice(0, 300)))

@@ -5,6 +5,7 @@
 // Default server: the CLEAN gate tree (`node scripts/gate-server.mjs [ref]`, port 5175) — results
 // are attributable to one commit. FLUID_BASE=http://localhost:5174 measures the live checkout
 // (development only; results are marked NON-ATTRIBUTABLE).
+import { windowArgs } from './window.mjs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,10 +51,11 @@ export async function provenance() {
   return { sha: head, state: dirty ? 'LIVE-DIRTY' : 'LIVE', attributable: false, base: BASE }
 }
 
-export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800, deviceScaleFactor = 1 } = {}) {
+/** timing: a frame-pacing/FPS gate — its window stays on the primary display (lib/window.mjs). */
+export async function openFluidPage(url = FLUID_TEST_URL, { width = 1280, height = 800, deviceScaleFactor = 1, timing = false } = {}) {
   const browser = await chromium.launch({
     executablePath: CHROME, headless: false,
-    args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
+    args: [...windowArgs({ timing }), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
   })
   const errors = []
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor })

@@ -11,6 +11,7 @@
 //  M2 caps, the 64³ tank (3.63 m) dam break (16×32×64-cell column), 2 s, MGPCG at the Gate 0 dev caps (p 18, ψ 10):
 //     ≤ 1 % of solves hit their cap (FINAL-PLAN G5), 0 breakdowns.
 //  and: 0 uncaptured WebGPU errors, 0 console errors.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -21,7 +22,7 @@ const gate = makeGate('GATE S3.3 (MGPCG replaces JPCG)')
 const report = { prov: await provenance() }
 const RHO = 998.2072, DX = 3.63 / 64
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

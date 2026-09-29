@@ -19,6 +19,7 @@
 //  B1   dam break front speed on t√(g/h0) ∈ [1,3] in [1.0, 2.1]·√(gh0); far wall never reached in the window
 //  E1   E_K + E_P never above E(0) by more than 2 %; last-second trend ≤ 0
 //  and: 0 uncaptured WebGPU errors, 0 console errors.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -29,7 +30,7 @@ const gate = makeGate('GATE S3.1b (pressure projection on the GPU)')
 const report = { prov: await provenance() }
 const G = 9.80665, RHO = 998.2072, DX = 3.63 / 64
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

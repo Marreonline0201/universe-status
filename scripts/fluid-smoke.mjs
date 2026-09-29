@@ -7,6 +7,7 @@
 // websocket refusal — the office is deliberately never started).
 //
 //   node scripts/fluid-smoke.mjs [--url=http://localhost:5174/?tab=fluid&bench=1] [--shot=path.jpg]
+import { windowArgs } from './lib/window.mjs'
 import crypto from 'node:crypto'
 import { chromium } from 'playwright-core'
 
@@ -21,7 +22,7 @@ const EXPECTED_NOISE = /ws:\/\/localhost:4571/
 const fails = []
 const check = (ok, msg) => { console.log(`${ok ? '✓' : '✗'} ${msg}`); if (!ok) fails.push(msg) }
 
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })

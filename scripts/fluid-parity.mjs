@@ -7,6 +7,7 @@
 // capture drives the owner's real page through its user actions (RESET, +10K, DROP BALL) with
 // seeded randomness, freezes the sim at exactly FRAMES stepped frames, and stores the raw
 // particle buffers. compare reports bit-identity per sequence, else the max position delta.
+import { windowArgs } from './lib/window.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -58,7 +59,7 @@ if (mode === 'compare') {
 if (mode !== 'capture' || !a) die('usage: capture <label> | compare <labelA> <labelB>')
 
 const chromePath = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-const browser = await chromium.launch({ executablePath: chromePath, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: chromePath, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Development helper (not a gate): open FLUID TEST, print every console message, the render path and a small probe.
 //   node scripts/fluid-gates/tools/probe-dev.mjs
+import { windowArgs } from '../../lib/window.mjs'
 import { chromium } from 'playwright-core'
 import { CHROME, FLUID_TEST_URL } from '../../lib/fluid-page.mjs'
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu'] })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   page.on('console', m => console.log(`[${m.type()}] ${m.text().slice(0, 400)}`))

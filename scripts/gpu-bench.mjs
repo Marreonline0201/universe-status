@@ -21,6 +21,7 @@
 //   - every number in report.md is labelled MEASURED (this run) or EST (a model built on measured
 //     parts); a dev run on a busy machine is not the official Gate 0 result: re-run on an idle GPU,
 //     AC power.
+import { windowArgs } from './lib/window.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -126,7 +127,7 @@ const hashesAtStart = hashFiles()
 const results = { stamp, label, gitSha, gitDirty: gitDirtyCount, gpuAtStart: gpuSnapshot(), gpuAtEnd: null, fileSha256: hashesAtStart, filesChangedDuringRun: null, url, chromeFlags: FLAGS, hmr: 'stubbed', websocketsOpened: [], quick, devRun: true, adapter: null, browserVersion: null, tests: [], consoleErrors: [] }
 let reloads = 0
 try {
-  browser = await chromium.launch({ executablePath: chromePath, headless: false, args: FLAGS })
+  browser = await chromium.launch({ executablePath: chromePath, headless: false, args: [...windowArgs({ timing: true }), ...FLAGS] })
   results.browserVersion = browser.version()
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   page.on('console', m => { if (m.type() === 'error') results.consoleErrors.push(m.text().slice(0, 400)) })

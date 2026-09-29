@@ -18,6 +18,7 @@
 //  G5 on the production settings (FINAL-PLAN S3.1b G5: ≤ 1 % of solves hit the cap): the FLUID TEST buoyancy scene
 //      (3-cell water pool + olive-oil block + mercury block, 127k particles, ghost surface, ε_div 1e-2, MGPCG cap 18),
 //      4 s at Δt 1/120: pressure cap hits ≤ 1 % of solves, 0 breakdowns; the iteration maximum is reported.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -32,7 +33,7 @@ const gate = makeGate(`GATE S3.5 (variable density on the GPU)${QUICK ? ' — QU
 const report = { prov: await provenance() }
 const G = 9.80665
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

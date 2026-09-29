@@ -24,6 +24,7 @@
 //     density projection's ΣΔE_P never above E(0) by more than 2 %; resting on the floor for the last 0.5 s and never
 //     below it (centre − R ≥ −1e-6 m: non-penetration).
 // Every physics scene: pressure and ψ cap hits ≤ 1 % of solves (S3.5 G5's production bound), 0 breakdowns.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -34,7 +35,7 @@ const gate = makeGate('GATE S3.1c-2 (the drop ball as a moving solid on the GPU)
 const report = { prov: await provenance() }
 const G = 9.80665, DX = 3.63 / 64, RHO = 998.2072
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

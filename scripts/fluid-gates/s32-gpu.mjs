@@ -23,6 +23,7 @@
 //      has noisy f, and min(f, 1) clips the over-full cells but not the under-full ones, so φ(0) reads 2.9 % LOW
 //      (measured: φ(0)/(N·V_p) = 0.9714); a start-relative figure would count that bias as volume "gained".
 //  and: 0 solver breakdowns, 0 uncaptured WebGPU errors, 0 console errors.
+import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
@@ -48,7 +49,7 @@ function mmMetrics(r) {
     invMax: Math.max(...r.inv.map(e => (e - r.E0) / r.E0)), invTrend: trend(r.ts, r.inv) }
 }
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: ['--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
+const browser = await chromium.launch({ executablePath: CHROME, headless: false, args: [...windowArgs(), '--enable-unsafe-webgpu', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 const errors = []
 try {
   const page = await browser.newPage({ viewport: { width: 900, height: 500 } })

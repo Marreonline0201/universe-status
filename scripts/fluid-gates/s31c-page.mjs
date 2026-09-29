@@ -12,7 +12,8 @@
 //    block released above it; after 8 s COM_y(mercury) < COM_y(water) < COM_y(oil), each gap ≥ ½·dx; ≥ 90 % of the oil
 //    above the water's median height and ≥ 90 % of the mercury below it.
 // R  the page runs the incompressible solver; SSFR drew; no NaN positions; 0 uncaptured GPU errors; 0 console errors.
-// FPS (recorded): the B1 scene on the real-time clock for 10 s — present interval p50/p95, real-time factor, substeps.
+// FPS (recorded): the B1 scene on the real-time clock for 10 s — present interval p50/p95, real-time factor, substeps — in
+//     its own window on the PRIMARY display (owner 2026-09-29: timing runs stay there; lib/window.mjs).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -68,17 +69,28 @@ try {
     `B1 order after 8 s (water ${ys.Water.length}, oil ${ys['Olive Oil'].length}, mercury ${ys.Mercury.length} particles): COM height mercury ${(100 * cH).toFixed(1)} cm < water ${(100 * cW).toFixed(1)} cm < oil ${(100 * cO).toFixed(1)} cm (each gap ≥ ½·dx = ${(50 * DX).toFixed(1)} cm)`)
   gate.check(oilAbove >= 0.9 && hgBelow >= 0.9, `B1 separation: ${(100 * oilAbove).toFixed(1)} % of the oil above the water's median height ${(100 * wMedian).toFixed(1)} cm (≥ 90 %), ${(100 * hgBelow).toFixed(1)} % of the mercury below it (≥ 90 %)`)
 
-  // R: render path, then FPS on the real-time clock
+  // R: render path, then FPS on the real-time clock (the B1 scene again, settled 8 s, in a primary-display window)
   const r = await status(page)
   gate.check(r.renderPath === 'ssfr', `R SSFR drew the frame (render path ${r.renderPath})`)
-  await page.evaluate(() => window.__fluidBench.configure({ clock: 'realtime', resetClockStats: true, resetDiagnostics: true }))
-  await page.evaluate(() => window.__fluidBench.setStepLimit(Infinity))
-  await page.waitForTimeout(10_000)
-  const f = await status(page)
-  const d = await page.evaluate(() => window.__fluidBench.diagnostics())
+  const fp = await openFluidPage(undefined, { timing: true })
+  let f, d
+  try {
+    await fp.page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
+    await loadScenario(fp.page, { name: 's31c-buoyancy', materials: [], spawns: [pool, oil, hg], gravity_mps2: G_STANDARD }, 2)
+    await sampleAtFrame(fp.page, 480)   // the settled B1 state, as measured before the window moved (8 s lockstep)
+    await fp.page.evaluate(() => window.__fluidBench.configure({ clock: 'realtime', resetClockStats: true, resetDiagnostics: true }))
+    await fp.page.evaluate(() => window.__fluidBench.setStepLimit(Infinity))
+    await fp.page.waitForTimeout(10_000)
+    f = await status(fp.page)
+    d = await fp.page.evaluate(() => window.__fluidBench.diagnostics())
+    errors.push(...fp.errors)
+  } finally {
+    await fp.browser.close()
+  }
   report.fps = { count: f.count, fps: f.fps, rtFactor: f.rtFactor, p50: f.presentIntervalP50, p95: f.presentIntervalP95, droppedTime: f.droppedTime, diagnostics: d }
   console.log(`  [recorded] FPS, ${f.count} particles on the real-time clock for 10 s: ${f.fps} fps, present interval p50 ${f.presentIntervalP50?.toFixed(1)} ms / p95 ${f.presentIntervalP95?.toFixed(1)} ms, real-time factor ${f.rtFactor.toFixed(3)}, dropped ${f.droppedTime.toFixed(2)} s; substeps ${d.substeps}, v_lag ${d.vLag?.toFixed(2)} m/s, p caps ${d.pressureCapHits}/${d.pressureSolves}, ψ caps ${d.psiCapHits}/${d.psiSolves}, breakdowns ${d.breakdowns}, CFL > 1 substeps ${d.cflExceeded}`)
-  gate.check(f.gpuErrors === 0, `R GPU: ${f.gpuErrors} uncaptured WebGPU errors`)
+  const gpuErr = (await status(page)).gpuErrors + f.gpuErrors
+  gate.check(gpuErr === 0, `R GPU: ${gpuErr} uncaptured WebGPU errors (gate page + FPS window)`)
   gate.check(errors.length === 0, `R console: ${errors.length} errors${errors.length ? ` — ${errors.slice(0, 3).join(' | ')}` : ''}`)
 } finally {
   await browser.close()

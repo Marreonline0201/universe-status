@@ -33,7 +33,7 @@ const TIMES = [0, 2, 4, 6, 8, 10, 12].map(k => k / 30)   // 0 … 0.4 s, multipl
 
 const gate = makeGate('GATE S1.1/S1.2 (clock + SI gravity)')
 const report = { g: {}, rt: {}, hitch: {} }
-const { browser, page, errors, adapter } = await openFluidPage()
+const { browser, page, errors, adapter } = await openFluidPage(undefined, { timing: true })   // frame pacing: primary display (lib/window.mjs)
 report.adapter = adapter
 const bench = (fn, arg) => page.evaluate(fn, arg)
 try {
