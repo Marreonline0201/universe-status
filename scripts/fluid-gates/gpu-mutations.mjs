@@ -101,13 +101,14 @@ SETS.s36 = [
   [`${SH}/viscosity.wgsl`, 'let xs = (vec3<f32>(n) * 0.5 + vec3<f32>(0.25)) * P.dx;', 'let xs = (vec3<f32>(n) * 0.5) * P.dx;', 'quarter lattice shifted by dx/4'],
   [`${SH}/viscosity.wgsl`, 'v += clamp(0.5 - latPhi((cc + s) * P.dx) / (0.5 * P.dx), 0.0, 1.0);', 'v += clamp(0.5 - latPhi((cc + s) * P.dx) / P.dx, 0.0, 1.0);', 'volume smooth step over dx, not dx/2'],
   [`${SH}/viscosity.wgsl`, 'if (!anyBand) { return select(0.0, 1.0, allLiquid); }', 'if (!anyBand) { return 1.0; }', 'samples off the band all full'],
-  [`${SH}/viscosity.wgsl`, 'if (tp.ok) { atomicMax(&muAcc[tp.slot], key); }', '', 'μ_min pass skipped (default μ everywhere)'],
+  [`${SH}/viscosity.wgsl`, 'if (tp.ok) { atomicMax(&muAcc[tp.slot], key); }', 'if (tp.ok) { atomicMax(&muAcc[tp.slot], 0u); }', 'μ_min pass writes nothing (default μ everywhere)'],
   [`${SH}/viscosity.wgsl`, 'return bitcast<f32>(~key) * select(w / m, 1.0, w == m);', 'return bitcast<f32>(~key);', 'harmonic quotient dropped (μ_min at mixed samples)'],
   [`${SH}/viscosity.wgsl`, 'wCell[linIdx(c)] = 2.0 * muAt(muSlot(0u, c)) * volCellR[linIdx(c)];', 'wCell[linIdx(c)] = muAt(muSlot(0u, c)) * volCellR[linIdx(c)];', 'cell strain weight μV, not 2μV'],
   [`${SH}/viscosity.wgsl`, 'sv = wEdgeR[s] * ((val(a, c) - val(a, c - eb)) / P.dx + (val(b, c) - val(b, c - ea)) / P.dx);', 'sv = wEdgeR[s] * ((val(a, c) - val(a, c - eb)) / P.dx);', 'shear strain γ without its second term'],
   [`${SH}/viscosity.wgsl`, 'if (c[b] == -1) { c[b] = 0; sign *= VP.walls[b]; }', 'if (c[b] == -1) { c[b] = 0; }', 'low-side wall ghost sign ignored'],
   [`${SH}/viscosity.wgsl`, 'let visc = P.dt * sumStress(a, c);', 'let visc = sumStress(a, c);', 'viscous operator without Δt'],
-  [`${SH}/viscosity.wgsl`, '} else if (volFaceR[s] > 0.0) { k = 1u; } else { k = 2u; }', '} else if (volFaceR[s] > 0.5) { k = 1u; } else { k = 2u; }', 'faces with V ≤ ½ not unknowns'],
+  // (a 'faces with V ≤ ½ not unknowns' mutant is EQUIVALENT: the sample rule below re-marks them — measured, it survived)
+  [`${SH}/viscosity.wgsl`, 'for (var a = 0u; a < 3u; a++) { var e = vec3<i32>(0); e[a] = 1; markUnknown(a, c + e); markUnknown(a, c); }', '', 'cell samples add no auxiliary unknowns'],
   [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
 ]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)

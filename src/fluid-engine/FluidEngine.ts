@@ -287,6 +287,7 @@ export class FluidEngine {
 
   private uploadCompositions() {
     this.sim?.setCompositionProps(this.compositionTable.getGpuData())
+    this.sim?.setViscosities?.(this.compositionTable.getViscosityData())
     this.ssfrPipeline?.updateMaterialProps(opticsRenderData(this.compositionTable.getAll()))
   }
 
@@ -834,6 +835,7 @@ export class FluidEngine {
         if (opts.resetDiagnostics) { this.sim?.resetDiagnostics(); this.particleSubsteps = 0 }
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
       },
+      viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,
       diagnostics: async () => {
         const d = await this.sim?.readDiagnostics()
         return { ...(d ?? {}), clampHits: d?.clampHits ?? null, particleSubsteps: this.particleSubsteps }

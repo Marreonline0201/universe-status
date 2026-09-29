@@ -291,31 +291,33 @@ const K = (k) => k - 273.15
   const kId = t2.add('water', 'H2O', { H: 0.111, O: 0.889 }, 293) // lab scenarios write K as °C
   const kv = t2.isSpawnable(kId)
   check('H5', 'element-detected water at "293" (°C) refused as a gas — surfaces the K-vs-°C scenario bug', !kv.ok && t2.getSolverProps(kId).phaseAtSpawn === 'gas', kv.ok ? '' : kv.reason)
-  // Incompressible (S3) menu: no explicit-viscosity limit; until the implicit viscous solve (S3.6) a liquid whose
-  // ν ≥ the scheme's measured numerical viscosity ν_num (1.04e-3 m²/s, gate D2) is refused (liquidGate
-  // .incompressibleViscosityVerdict), one with 0.01·ν_num ≤ ν < ν_num is spawnable but warned; phase / hidden /
-  // unsourced still refuse.
+  // Incompressible (S3) menu: no explicit-viscosity limit; with the implicit viscous solve (S3.6) every liquid with
+  // sourced ρ, μ is simulated (liquidGate.incompressibleViscosityVerdict): the solve runs for ν ≥ VISCOUS_RUN_NU =
+  // 0.01·ν_num, and a WARNING discloses where the scheme's own numerical viscosity ν_num (gate D2) is ≥ 10 % of the
+  // liquid's; phase / hidden / unsourced still refuse.
   const t3 = fresh()
   const sil = t3.add('thick-silicate', 'SiO2FeCa', { Si: 0.35, O: 0.42, Fe: 0.15, Ca: 0.08 }, 20) // lab scenario material
   const vis = Object.fromEntries(t3.getMenuEntries('incompressible').map(e => [e.name, e.visibility]))
   const silV = t3.isSpawnable(sil, 'incompressible')
-  check('H6', "menu('incompressible'): water, mercury, ethanol, olive oil show; glycerol, both honeys and both lavas refused (ν ≥ ν_num until S3.6); Iron/Salt refused; Copper hidden; element-model silicate refused (unsourced)",
-    ['Water', 'Mercury', 'Ethanol', 'Olive Oil'].every(n => vis[n] === 'show')
-      && ['Glycerol', 'Honey (14% water)', 'Honey (20% water)', 'Lava', 'Lava (Kīlauea 2018 bulk)'].every(n => vis[n] === 'refused')
+  check('H6', "menu('incompressible'): water, mercury, ethanol, olive oil, glycerol, both honeys and both lavas show (S3.6 simulates viscosity); Iron/Salt refused; Copper hidden; element-model silicate refused (unsourced)",
+    ['Water', 'Mercury', 'Ethanol', 'Olive Oil', 'Glycerol', 'Honey (14% water)', 'Honey (20% water)', 'Lava', 'Lava (Kīlauea 2018 bulk)'].every(n => vis[n] === 'show')
       && vis['Iron'] === 'refused' && vis['Salt'] === 'refused' && vis['Copper'] === 'hidden' && !silV.ok && t3.getSolverProps(sil).flags.includes('refused:unsourced'),
     Object.entries(vis).map(([n, v]) => `${n}:${v}`).join(' '))
-  // the S3.6-pending rule itself: its constant, the refusal reason, and the olive-oil warning through checkSpawn/checkScene
+  // the S3.6 rule itself: the run threshold, and the disclosure through checkSpawn/checkScene — glycerol and olive oil
+  // (ν_num/ν ≥ 0.1) warned, honey 14 % (ν_num/ν ≈ 0.04) and lava not, water below the run threshold not, mpm never
   const nuOf = n => { const p = t3.getSolverProps(idOf(n, t3)); return p.muPaS / p.rhoKgM3 }
-  const gly = t3.isSpawnable(idOf('Glycerol', t3), 'incompressible')
-  const oilChk = t3.checkSpawn(idOf('Olive Oil', t3), { method: 'incompressible' })
+  const inc = n => t3.checkSpawn(idOf(n, t3), { method: 'incompressible' })
+  const damp = w => /numerical damping/.test(w)
+  const gly = inc('Glycerol'), oilChk = inc('Olive Oil'), honey = inc('Honey (14% water)'), lava = inc('Lava')
   const oilMpm = t3.checkSpawn(idOf('Olive Oil', t3), { method: 'mpm' })
   const wScene = t3.checkScene([{ id: idOf('Water', t3) }, { id: idOf('Olive Oil', t3) }], 'incompressible')
-  check('H6b', 'S3.6-pending rule: ν_num = 1.04e-3 m²/s; glycerol (ν ≥ ν_num) refused naming S3.6; olive oil (0.01·ν_num ≤ ν < ν_num) spawnable with a viscosity warning on incompressible, no such warning on mpm; water (ν < 0.01·ν_num) unwarned',
-    lg.INCOMPRESSIBLE_NU_NUM === 1.04e-3 && nuOf('Glycerol') >= lg.INCOMPRESSIBLE_NU_NUM && !gly.ok && /S3\.6/.test(gly.reason)
-      && nuOf('Olive Oil') >= 0.01 * lg.INCOMPRESSIBLE_NU_NUM && nuOf('Olive Oil') < lg.INCOMPRESSIBLE_NU_NUM
-      && oilChk.ok && oilChk.warnings.some(w => /S3\.6/.test(w)) && !oilMpm.warnings.some(w => /S3\.6/.test(w))
-      && wScene.ok && wScene.warnings.filter(w => /S3\.6/.test(w)).length === 1 && nuOf('Water') < 0.01 * lg.INCOMPRESSIBLE_NU_NUM,
-    `ν glycerol ${nuOf('Glycerol').toExponential(2)}, olive oil ${nuOf('Olive Oil').toExponential(2)}, water ${nuOf('Water').toExponential(2)}; ${gly.ok ? 'glycerol accepted!' : gly.reason.slice(0, 90)}`)
+  check('H6b', 'S3.6 rule: the solve runs for ν ≥ 0.01·ν_num; glycerol and olive oil spawnable with a numerical-damping warning (ν_num/ν ≥ 0.1), honey 14 % and lava spawnable unwarned (< 0.1), water below the run threshold unwarned; no such warning on mpm',
+    lg.VISCOUS_RUN_NU === 0.01 * lg.INCOMPRESSIBLE_NU_NUM
+      && gly.ok && gly.warnings.some(damp) && oilChk.ok && oilChk.warnings.some(damp)
+      && lg.INCOMPRESSIBLE_NU_NUM / nuOf('Glycerol') >= 0.1 && lg.INCOMPRESSIBLE_NU_NUM / nuOf('Olive Oil') >= 0.1 && nuOf('Olive Oil') >= lg.VISCOUS_RUN_NU
+      && honey.ok && !honey.warnings.some(damp) && lava.ok && !lava.warnings.some(damp) && lg.INCOMPRESSIBLE_NU_NUM / nuOf('Honey (14% water)') < 0.1
+      && !oilMpm.warnings.some(damp) && wScene.ok && wScene.warnings.filter(damp).length === 1 && nuOf('Water') < lg.VISCOUS_RUN_NU,
+    `ν glycerol ${nuOf('Glycerol').toExponential(2)}, olive oil ${nuOf('Olive Oil').toExponential(2)}, honey 14 % ${nuOf('Honey (14% water)').toExponential(2)}, lava ${nuOf('Lava').toExponential(2)}, water ${nuOf('Water').toExponential(2)}; ν_num ${lg.INCOMPRESSIBLE_NU_NUM.toExponential(2)}`)
   // Pairwise FREEZE refusal (the boil branch is H3): mercury at −30 °C is liquid (T_fus −38.84 °C) but below water's freezing point.
   const t4 = fresh()
   const hgCold = t4.spawnIdAt(idOf('Mercury', t4), -30)

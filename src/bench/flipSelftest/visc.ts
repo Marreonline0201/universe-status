@@ -347,3 +347,35 @@ export async function viscHuppert(device: GPUDevice) {
   gpu.destroy()
   return { A, nu, ts, xs, at, viscIterations: st.iterations, capHits: d.capHits, solves: d.solves }
 }
+
+/** The viscous path's cost at the page's production settings (hardware budget, recorded): an 88k-particle honey block
+ *  in the 64³ tank. Wall time per submitted-and-completed unit (includes the submit round trip, same for every row):
+ *  a whole substep with the viscous path on / off, the viscous solve alone at `caps`, and its setup up to each kernel
+ *  (prefixMs). Every non-empty submit here carries a ~3 ms round-trip floor (measured: clears of 9–74 MB and an empty
+ *  compute pass all read ~3 ms): compare rows, not absolute values. */
+export async function viscCost(device: GPUDevice, o: { caps?: number[]; reps?: number } = {}) {
+  const m = HONEY, reps = o.reps ?? 20
+  const p = fill([18, 0, 18], [45, 13, 45], m.rho, m.mu, mulberry32(7))
+  f32round(p)
+  const gpu = await makeViscSim(device, [64, 64, 64], p.n, m, { production: true })
+  gpu.viscosityActive = true
+  gpu.dt = 1 / 120
+  gpu.setParticles(toInit(p))
+  const time = async (f: () => Promise<void>) => { const t0 = performance.now(); for (let r = 0; r < reps; r++) await f(); return (performance.now() - t0) / reps }
+  for (let s = 0; s < 10; s++) await submit(device, e => gpu.step(e, 1))
+  const stepOn = await time(() => submit(device, e => gpu.step(e, 1)))
+  const its = (await gpu.viscositySolver!.readStats()).iterations
+  gpu.viscosityActive = false
+  const stepOff = await time(() => submit(device, e => gpu.step(e, 1)))
+  gpu.viscosityActive = true
+  await submit(device, e => gpu.step(e, 1))
+  const vs = gpu.viscositySolver!, cap0 = vs.cap, solve: Record<number, number> = {}
+  for (const c of o.caps ?? [60, 24, 12]) { vs.cap = c; solve[c] = await time(() => submit(device, e => { vs.encode(e) })) }
+  vs.cap = cap0
+  const prefix: Record<string, number> = {}
+  for (const k of ['latScatter', 'bandCells', 'volumes', 'muMinScatter', 'muScatter', 'weights', 'kindSamples', 'diagonal', 'gatherMinus', 'reduceInit']) prefix[k] = await time(() => submit(device, e => { vs.encode(e, k) }))
+  const empty = await time(() => submit(device, () => {}))
+  gpu.destroy()
+  return { particles: p.n, stepOnMs: stepOn, stepOffMs: stepOff, viscIterations: its, solveMsByCap: solve, prefixMs: prefix, emptySubmitMs: empty }
+}
+

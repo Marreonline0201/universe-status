@@ -14,7 +14,7 @@ import { equivalence, tankCaps } from './mg'
 import { ghostKernels, flatSurface, hydrostatic, standingWave, column } from './ghost'
 import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayleighTaylor, lockExchange, overturn, mixedCaps } from './varDensity'
 import { sphereKernels, spherePhysics } from './sphere'
-import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert } from './visc'
+import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert, viscCost } from './visc'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -321,6 +321,7 @@ try {
     else if (test === 'viscTaylorGreen') out = await viscTaylorGreen(device, params as { cells: number; material: 'honey' | 'lava'; on: boolean })
     else if (test === 'viscStandingWave') out = await viscStandingWave(device, params as { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number })
     else if (test === 'viscHuppert') out = await viscHuppert(device)
+    else if (test === 'viscCost') out = await viscCost(device, params as { caps?: number[]; reps?: number })
     else if (test === 'spherePhysics') out = await spherePhysics(device, params as { test: 'AR' | 'MV' | 'WK' | 'FS' })
     else if (test === 'densityCancels') out = await densityCancels(device)
     else if (test === 'twoLayerHydrostatic') out = await twoLayerHydrostatic(device)

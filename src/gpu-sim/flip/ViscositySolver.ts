@@ -21,11 +21,14 @@ export interface ViscosityInputs {
 }
 
 export interface ViscosityStats { iterations: number; converged: boolean; relResidual: number }
+/** Since the last resetFaults: solves, cap hits (not converged at the encoded cap), breakdowns, the most iterations. */
+export interface ViscosityFaults { solves: number; capHits: number; breakdowns: number; maxIterations: number }
 
 type Entry = { name: string; uses: number[]; constants?: Record<string, number> }
 const ENTRIES: Entry[] = [
-  { name: 'latScatter', uses: [0, 2, 3] },
   { name: 'bandCells', uses: [0, 5, 6] },
+  { name: 'bandDilate', uses: [0, 7, 52] },
+  { name: 'latScatter', uses: [0, 2, 3, 53] },
   { name: 'volumes', uses: [0, 4, 5, 7, 8, 9, 10] },
   { name: 'muMinScatter', uses: [0, 2, 11, 13, 51] },
   { name: 'muScatter', uses: [0, 2, 11, 13, 51] },
@@ -45,6 +48,7 @@ const ENTRIES: Entry[] = [
   { name: 'reduceInit', uses: [1, 45, 46] },
   { name: 'reduceAlpha', uses: [1, 45, 46] },
   { name: 'reduceBeta', uses: [1, 45, 46] },
+  { name: 'tally', uses: [47, 54] },
   { name: 'writeBack', uses: [0, 19, 24, 50, 48, 49] },
 ]
 const ENTRY_POINT: Record<string, string> = { strainConst: 'strain', gatherMinus: 'gather' }
@@ -80,7 +84,8 @@ export class ViscositySolver {
       mass: mk('mass', 4 * G), diag: mk('diag', 4 * G), b: mk('b', 4 * G),
       x: mk('x', 4 * G), r: mk('r', 4 * G), z: mk('z', 4 * G), d: mk('d', 4 * G), q: mk('q', 4 * G),
       stressCell: mk('stressCell', 4 * 3 * PC), stressEdge: mk('stressEdge', 4 * G),
-      partials: mk('partials', 16 * this.nWg), st: mk('st', 4 * 8),
+      partials: mk('partials', 16 * this.nWg), st: mk('st', 4 * 8), bandNear: mk('bandNear', 4 * PC),
+      faults: mk('faults', 16),
     }
   }
 
@@ -132,6 +137,8 @@ export class ViscositySolver {
       case 48: return I.u
       case 49: return I.valid
       case 51: return B.muTable
+      case 52: case 53: return B.bandNear
+      case 54: return B.faults
     }
     throw new Error(`ViscositySolver: no buffer for binding ${b} (${entry})`)
   }
@@ -184,16 +191,21 @@ export class ViscositySolver {
   }
 
   /** The whole solve on velocity buffer A (the caller has projected and extrapolated it, and the FlipParams uniform is
-   *  current). Returns the dispatch count. */
-  encode(encoder: GPUCommandEncoder): number {
+   *  current). Returns the dispatch count. `stopAfter` (profiling): end the pass after the first dispatch of that kernel. */
+  encode(encoder: GPUCommandEncoder, stopAfter?: string): number {
     this.writeParams()
     const I = this.inp, B = this.bufs, G = 3 * I.size
     encoder.clearBuffer(B.latSums); encoder.clearBuffer(B.muAcc); encoder.clearBuffer(B.st)
     const pass = encoder.beginComputePass({ label: 'viscosity' })
-    let n = 0
-    const run = (name: string, threads: number, wg = 256, group?: string) => { this.dispatch(pass, name, threads, wg, group); n++ }
-    run('latScatter', I.maxParticles, 64)
+    let n = 0, stopped = false
+    const run = (name: string, threads: number, wg = 256, group?: string) => {
+      if (stopped) return
+      this.dispatch(pass, name, threads, wg, group); n++
+      if (name === stopAfter) stopped = true
+    }
     run('bandCells', I.cells)
+    run('bandDilate', I.cells)
+    run('latScatter', I.maxParticles, 64)
     run('volumes', 6 * I.size + I.cells)
     run('muMinScatter', I.maxParticles, 64)
     run('muScatter', I.maxParticles, 64)
@@ -217,9 +229,23 @@ export class ViscositySolver {
       run('reduceBeta', 256)
       run('pcgDupdate', G)
     }
+    run('tally', 1, 1)
     run('writeBack', G)
     pass.end()
     return n
+  }
+
+  resetFaults() { this.device.queue.writeBuffer(this.bufs.faults, 0, new Uint32Array(4)) }
+  async readFaults(): Promise<ViscosityFaults> {
+    const d = this.device
+    const staging = d.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+    const e = d.createCommandEncoder()
+    e.copyBufferToBuffer(this.bufs.faults, 0, staging, 0, 16)
+    d.queue.submit([e.finish()])
+    await staging.mapAsync(GPUMapMode.READ)
+    const u = new Uint32Array(staging.getMappedRange().slice(0))
+    staging.destroy()
+    return { solves: u[0], capHits: u[1], breakdowns: u[2], maxIterations: u[3] }
   }
 
   async readStats(): Promise<ViscosityStats> {

@@ -68,6 +68,8 @@ export interface BenchTarget {
   diagnostics?(): Promise<Record<string, unknown>>
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
   extraStatus?(): Record<string, unknown>
+  /** The incompressible viscous solve's μ over full cells at its last run (s36-page; null on a solver without it). */
+  viscosity?(): Promise<unknown>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -104,6 +106,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     diagnostics() {
       if (!target.diagnostics) throw new Error(`${meta.page} has no diagnostics`)
       return target.diagnostics()
+    },
+
+    viscosity() {
+      if (!target.viscosity) throw new Error(`${meta.page} has no viscosity probe`)
+      return target.viscosity()
     },
 
     /** Offscreen render probe; every requested target comes back base64-encoded (see SSFRPipeline ProbeResult). */

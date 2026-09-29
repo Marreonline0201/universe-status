@@ -19,6 +19,7 @@
 // - Walls (FaceType.SOLID): u·n = u_solid·n with static walls (u_solid = 0). Tangential ghost faces are filled by
 //   extrapolation (free slip for interpolation); see FaceType.GHOST.
 import { FaceType, type GridLayout, type Vec3 } from './gridLayout'
+import { VISCOUS_RUN_NU } from '../composition/liquidGate'
 
 type Axis = 0 | 1 | 2
 const AXES: readonly Axis[] = [0, 1, 2]
@@ -88,7 +89,7 @@ export interface FlipRefOptions {
   /** S3.6 implicit viscosity (Batty & Bridson 2008; spec fluid/realism-2026-09/S3.6-viscosity-spec.md): 'off' (default),
    *  'auto' (runs when a particle's ν = μ/ρ ≥ viscosityThreshold), 'force' (always — gate S3.6f). Ghost surface only. */
   viscosity?: 'off' | 'auto' | 'force'
-  /** ν of the auto rule, m²/s (FINAL-PLAN §5.6: 0.01·ν_num = 1.04e-5 with ν_num = 1.04e-3 from D2). */
+  /** ν of the auto rule, m²/s (FINAL-PLAN §5.6: 0.01·ν_num with ν_num from gate D2 — liquidGate.VISCOUS_RUN_NU, the page's rule). */
   viscosityThreshold?: number
   /** μ of particles without their own, Pa·s (default: water at 20 °C, 1.0016e-3 — NIST). */
   viscosityDefault?: number
@@ -280,7 +281,7 @@ export class FlipRef {
     this.pressureMaxIterations = opts.pressureMaxIterations ?? 20000
     this.label = new Uint8Array(layout.size)
     this.viscosity = opts.viscosity ?? 'off'
-    this.viscosityThreshold = opts.viscosityThreshold ?? 1.04e-5
+    this.viscosityThreshold = opts.viscosityThreshold ?? VISCOUS_RUN_NU
     this.viscosityDefault = opts.viscosityDefault ?? 1.001596e-3
     this.viscousWalls = opts.viscousWalls ?? 'no-slip'
     this.viscosityMean = opts.viscosityMean ?? 'harmonic'   // gate S3.6c: arithmetic errs 10–17 % in the soft layer's shear

@@ -218,17 +218,21 @@ export const MPM_MU_CODE_LIMIT = mpmViscosityStabilityLimit(MPM_DT_CODE)
 export const MPM_MU_CODE_LIMIT_PLAN_ESTIMATE = 3.3
 
 /**
- * Numerical viscosity of the incompressible APIC-MAC solver at dx = 5.672 cm, MEASURED by gate D2 (S3.4, clean tree
- * 225d736): ν_num = 1.04e-3 m²/s from the E_K envelope of a standing wave at H/dx = 28 (GPU 1.02e-3). FINAL-PLAN §5.6:
- * the implicit viscous solve (S3.6) runs for ν_phys ≥ 0.01·ν_num; below that the physical term is invisible.
- * Until S3.6 exists the incompressible path therefore
- *   - REFUSES ν_phys ≥ ν_num: the missing physical viscosity would be at least the scheme's own — the liquid would flow
- *     qualitatively wrong (glycerol 1.1e-3, honey, lava); FINAL-PLAN D2 consequence: glycerol-level viscosity is
- *     unresolvable at this dx anyway;
- *   - WARNS for 0.01·ν_num ≤ ν_phys < ν_num (olive oil 9.2e-5): its viscosity is real but not simulated yet, so it flows
- *     more freely than it should.
+ * Numerical viscosity of the incompressible APIC-MAC solver at dx = 5.672 cm on the page's GPU path, MEASURED by gate
+ * D2 (s34-gpu, NU_NUM_SOURCE): the E_K envelope of a water standing wave at H/dx = 28 — the damping the scheme adds by
+ * itself. S3.6 (implicit variational viscosity, Batty & Bridson 2008) simulates a liquid's own viscosity on top: the
+ * Taylor–Green gates measure ν_eff = ν + ν_num (S3.6a, CPU and GPU). FINAL-PLAN §5.6: the viscous solve runs while a
+ * liquid with ν ≥ VISCOUS_RUN_NU = 0.01·ν_num is in the tank; below that its term is invisible under the scheme's own.
+ * Every liquid with sourced ρ and μ is therefore simulated; the verdict WARNS where the scheme's own damping is ≥ 10 % of
+ * the liquid's (ν_num/ν ≥ 0.1: glycerol, honey with 20 % water, olive oil) — it moves more damped than the real liquid
+ * until finer cells. Liquids below VISCOUS_RUN_NU (water, mercury, ethanol) are dominated by ν_num too; that limit is
+ * stated once for the whole solver (info panel, D2), not per material.
  */
-export const INCOMPRESSIBLE_NU_NUM = 1.04e-3
+export const INCOMPRESSIBLE_NU_NUM = 1.06e-3
+/** Where the number comes from (for reports): CPU s34-ref and GPU s34-gpu agree. */
+export const NU_NUM_SOURCE = 'gate D2, CPU and GPU 1.06e-3 m²/s, clean tree b5372ff (225d736: 1.04e-3)'
+/** The viscous solve runs while a liquid with ν ≥ this (m²/s) is in the tank (FINAL-PLAN §5.6: 0.01·ν_num). */
+export const VISCOUS_RUN_NU = 0.01 * INCOMPRESSIBLE_NU_NUM
 
 export type IncompressibleViscosityVerdict = { ok: true; warning: string | null } | { ok: false; reason: string }
 
@@ -237,11 +241,9 @@ export function incompressibleViscosityVerdict(muPaS: number, rhoKgM3: number, n
     return { ok: false, reason: `${name}: no validated viscosity/density at this state` }
   }
   const nu = muPaS / rhoKgM3
-  if (nu >= INCOMPRESSIBLE_NU_NUM) {
-    return { ok: false, reason: `${name}: ν = ${nu.toExponential(2)} m²/s is at or above the solver's own numerical viscosity (${INCOMPRESSIBLE_NU_NUM.toExponential(2)} m²/s at 5.67 cm cells) — without the implicit viscous solve (plan S3.6) it would flow like a thin liquid; refused, not faked` }
-  }
-  if (nu >= 0.01 * INCOMPRESSIBLE_NU_NUM) {
-    return { ok: true, warning: `${name}: its viscosity (ν = ${nu.toExponential(2)} m²/s) is not simulated until plan S3.6 — it flows more freely than the real liquid` }
+  if (nu >= VISCOUS_RUN_NU && INCOMPRESSIBLE_NU_NUM / nu >= 0.1) {
+    const r = INCOMPRESSIBLE_NU_NUM / nu
+    return { ok: true, warning: `${name}: its viscosity (ν = ${nu.toExponential(2)} m²/s) is simulated, but at 5.67 cm cells the solver's own numerical damping (≈ ${INCOMPRESSIBLE_NU_NUM.toExponential(1)} m²/s) adds ${r >= 2 ? `${r.toFixed(0)}× its value` : `${(100 * r).toFixed(0)} %`} — it moves more damped than the real liquid` }
   }
   return { ok: true, warning: null }
 }

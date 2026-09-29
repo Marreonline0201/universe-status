@@ -239,6 +239,7 @@ export class CompositionTable {
   private compositions: NamedComposition[] = []
   private args: { a: RegisterArgs; normalized: Partial<Record<ElementName, number>> }[] = []
   private gpuData = new Float32Array(MAX_COMPOSITIONS * 4)  // vec4 per composition for GPU simulation
+  private muData = new Float32Array(MAX_COMPOSITIONS)        // μ (Pa·s) per composition for the incompressible viscous solve
   private colorData = new Float32Array(MAX_COMPOSITIONS * 4) // vec4 per composition for SSFR rendering
   private blendCache = new Map<string, number>() // hash → composition ID
 
@@ -309,6 +310,9 @@ export class CompositionTable {
     this.gpuData[id * 4 + 1] = spawnableOnMpm && ev.mpm.ok ? ev.mpm.muCode : 0
     this.gpuData[id * 4 + 2] = Number.isFinite(props.surfaceTension) ? props.surfaceTension : 0
     this.gpuData[id * 4 + 3] = 4.0  // stiffness (unused)
+    // the incompressible solver's μ table (S3.6, ViscositySolver): SI at the registration temperature; 0 where unknown
+    // (such an id is refused by every method, so no particle carries it)
+    this.muData[id] = Number.isFinite(ev.solver.muPaS) ? ev.solver.muPaS : 0
 
     // Color data for SSFR rendering: [R, G, B, packed(metalness, F0, emissive, opacity)]
     this.colorData[id * 4 + 0] = props.color[0]
@@ -350,6 +354,8 @@ export class CompositionTable {
   getAll(): NamedComposition[] { return [...this.compositions] }
   /** vec4 per composition; .y is the MPM code-unit viscosity (see register()). */
   getGpuData(): Float32Array { return this.gpuData }
+  /** μ (Pa·s) per composition id at its registration temperature (the incompressible viscous solve's table). */
+  getViscosityData(): Float32Array { return this.muData }
   get count(): number { return this.compositions.length }
 
   // ── S1.5 solver / gate API ────────────────────────────────────────────────
@@ -483,8 +489,8 @@ export class CompositionTable {
     return reasons.length === 0 ? { ok: true, warnings } : { ok: false, reason: reasons.join('; '), warnings }
   }
 
-  /** Method-specific warnings (not refusals) for spawnable entries: on the incompressible solver, materials whose
-   *  viscosity is real but not simulated until S3.6 (liquidGate.incompressibleViscosityVerdict). */
+  /** Method-specific warnings (not refusals) for spawnable entries: on the incompressible solver, liquids whose simulated
+   *  viscosity the scheme's own numerical damping inflates by ≥ 10 % (liquidGate.incompressibleViscosityVerdict). */
   private methodWarnings(entries: readonly { id: number; tempC?: number }[], method: SolverMethod): string[] {
     if (method !== 'incompressible') return []
     const out: string[] = []

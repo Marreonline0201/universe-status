@@ -1,6 +1,6 @@
 // backends.ts — the solver behind FluidEngine (FINAL-PLAN S3.1c): the legacy MLS-MPM (kept behind ?solver=mpm, owner
-// decision D8) or the incompressible APIC-MAC solver (S3.0–S3.5: MGPCG pressure, Kugelstadt density projection,
-// ghost-fluid free surface, per-face variable density). Both present particles in the same legacy 80-byte layout in
+// decision D8) or the incompressible APIC-MAC solver (S3.0–S3.6: MGPCG pressure, Kugelstadt density projection,
+// ghost-fluid free surface, per-face variable density, implicit viscosity). Both present particles in the same legacy 80-byte layout in
 // world units (tank-normalised [0,1]³ of the 64³ grid, velocities per τ), so the renderer and every consumer are
 // unchanged; each backend converts to its own solver units here and nowhere else.
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
@@ -10,6 +10,7 @@ import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
 import { FLIP_PACKING, MPM_PACKING, type Packing, type Vec3 } from './spawn'
 import { waterDensity } from '../composition/materialData'
+import { VISCOUS_RUN_NU } from '../composition/liquidGate'
 
 export type SolverKind = 'mpm' | 'flip'
 
@@ -20,6 +21,9 @@ export interface ParticleSample { positions: Float32Array; velocities: Float32Ar
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
+
+/** readViscosityProbe: μ = w/(2V) of the last viscous solve over cells with V ≥ 0.999 (inactive: no cells). */
+export interface ViscosityProbe { active: boolean; fullCells: number; muMin: number; muMax: number; distinct: number[] }
 
 export interface BackendDiagnostics {
   /** Particles pushed back inside the solver's walls (MPM: clamp hits; FLIP: advection wall clamps). */
@@ -45,6 +49,8 @@ export interface SimBackend {
   addParticles(ps: readonly SpawnParticle[]): void
   setGravity(gMs2: number): void
   setCompositionProps(gpuData: Float32Array): void
+  /** μ (Pa·s) per composition id — the incompressible solver's viscous solve (S3.6); the MPM path takes μ in its props. */
+  setViscosities?(muPaS: Float32Array): void
   /** Advance `intervalS` of sim time (the ball, when coupled, included); returns the substeps taken. */
   advance(intervalS: number, ball: BallState, gMs2: number): number
   setBall(ball: BallState): void
@@ -52,6 +58,8 @@ export interface SimBackend {
   readParticleSample(): Promise<ParticleSample | null>
   resetDiagnostics(): void
   readDiagnostics(): Promise<BackendDiagnostics | null>
+  /** Test hook: the μ the incompressible viscous solve used at its last run, over the cells it counted full. */
+  readViscosityProbe?(): Promise<ViscosityProbe>
   destroy(): void
 }
 
@@ -149,7 +157,7 @@ const FLIP_MAX_DT = 1 / 120
 
 export class FlipBackend implements SimBackend {
   readonly kind = 'flip' as const
-  readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density)'
+  readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density, implicit viscosity)'
   readonly method: SolverMethod = 'incompressible'
   readonly packing = FLIP_PACKING
   readonly supportsBall = true
@@ -159,6 +167,19 @@ export class FlipBackend implements SimBackend {
    *  coupling — so the densest liquid spawned is tracked and the ball refused above it. */
   static readonly BALL_DENSITY = SOLID_REFERENCE.iron.solidDensityKgM3!
   private maxRho = 0
+  /** S3.6: μ per composition id (Pa·s), and the viscous extremes of what is in the tank: the solve runs while the largest
+   *  ν = μ/ρ reaches VISCOUS_RUN_NU; the smallest μ fills samples no particle reaches (the harmonic mean's own bias: the
+   *  least viscous liquid dominates a mixed sample). */
+  private readonly muTable = new Float32Array(256)
+  private maxNu = 0
+  private minMu = Infinity
+  /** The viscous PCG's encoded iteration cap follows the iterations the last solve needed (read back 1–2 frames late,
+   *  like v_lag): 2·n + 8 within [16, 200], doubled after a cap hit. A converged solve stops at its tolerance whatever
+   *  the cap; the cap only bounds the dispatches the unneeded iterations cost (each returns at entry, ~15 µs apiece —
+   *  52 of 60 after an 8-iteration honey solve: ~5 ms per substep, viscCost). Cap hits are counted (diagnostics). */
+  private readonly viscSlots: { buf: GPUBuffer; busy: boolean }[]
+  static readonly VISC_CAP_MIN = 16
+  static readonly VISC_CAP_MAX = 200
   /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
   private ballLag: { center: Vec3; velocity: Vec3 } | null = null
   private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
@@ -178,6 +199,8 @@ export class FlipBackend implements SimBackend {
     this.mPerRho = this.dx ** 3 / FLIP_PACKING.ppc
     this.speedSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.speed${i}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
     this.ballSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.ball${i}`, size: 64, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
+    this.viscSlots = [0, 1, 2].map(i => ({ buf: device.createBuffer({ label: `flip.visc${i}`, size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false }))
+    sim.viscositySolver!.cap = FlipBackend.VISC_CAP_MAX
   }
 
   static async create(device: GPUDevice): Promise<FlipBackend> {
@@ -185,7 +208,7 @@ export class FlipBackend implements SimBackend {
       nx: GRID_RES, ny: GRID_RES, nz: GRID_RES, dx: DOMAIN_L_M / GRID_RES, gravity: [0, 0, 0],
       maxParticles: FLIP_MAX_PARTICLES, lRef: DOMAIN_L_M, tauS: TAU_S,
       projection: true, density: waterDensity(20), densityProjection: true, freeSurface: 'ghost', variableDensity: true,
-      ppc: FLIP_PACKING.ppc,
+      ppc: FLIP_PACKING.ppc, viscosity: true,
     })
     return new FlipBackend(device, sim)
   }
@@ -210,18 +233,55 @@ export class FlipBackend implements SimBackend {
     this.device.queue.submit([e.finish()])
   }
   setParticles(ps: readonly SpawnParticle[]) {
-    this.maxRho = 0
-    for (const p of ps) this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
+    this.maxRho = 0; this.maxNu = 0; this.minMu = Infinity
+    this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
   }
   addParticles(ps: readonly SpawnParticle[]) {
     const room = FLIP_MAX_PARTICLES - this.sim.particleCount
     if (ps.length > room) throw new RangeError(`the incompressible solver holds at most ${FLIP_MAX_PARTICLES} particles (${room} free); refusing ${ps.length}`)
-    for (const p of ps) this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
+    this.track(ps)
     this.sim.addParticles(this.toInit(ps)); this.present()
   }
+  /** The tank's densest liquid (the ball gate) and viscous extremes (the S3.6 run rule) after a spawn. */
+  private track(ps: readonly SpawnParticle[]) {
+    for (const p of ps) {
+      this.maxRho = Math.max(this.maxRho, p.rhoKgM3)
+      const mu = this.muTable[p.compositionId]
+      if (!(mu > 0)) throw new Error(`composition ${p.compositionId} has no viscosity in the solver's table (spawned before its row was uploaded)`)
+      this.maxNu = Math.max(this.maxNu, mu / p.rhoKgM3)
+      this.minMu = Math.min(this.minMu, mu)
+    }
+    this.applyViscosity()
+  }
+  private applyViscosity() {
+    const vs = this.sim.viscositySolver!
+    this.sim.viscosityActive = this.maxNu >= VISCOUS_RUN_NU
+    if (Number.isFinite(this.minMu)) vs.muDefault = this.minMu
+  }
   setGravity(gMs2: number) { this.sim.gravity = [0, -gMs2, 0] }
-  setCompositionProps() { /* masses carry each material's density; viscosity is not simulated until S3.6 */ }
+  setCompositionProps() { /* masses carry each material's density (toInit); μ comes through setViscosities */ }
+  setViscosities(muPaS: Float32Array) {
+    this.muTable.set(muPaS.subarray(0, this.muTable.length))
+    this.sim.viscositySolver!.setMuTable(this.muTable)
+  }
+  /** Whether the implicit viscous solve is running (a liquid with ν ≥ VISCOUS_RUN_NU is in the tank). */
+  get viscousSolve(): boolean { return this.sim.viscosityActive }
+  async readViscosityProbe(): Promise<ViscosityProbe> {
+    if (!this.sim.viscosityActive) return { active: false, fullCells: 0, muMin: NaN, muMax: NaN, distinct: [] }
+    const vs = this.sim.viscositySolver!, pc = this.sim.solver!.paddedCount
+    const w = new Float32Array(await this.sim.readBuffer(vs.bufs.wCell, 4 * pc))
+    const v = new Float32Array(await this.sim.readBuffer(vs.bufs.volCell, 4 * pc))
+    let n = 0, lo = Infinity, hi = -Infinity
+    const seen = new Set<number>()
+    for (let i = 0; i < pc; i++) {
+      if (v[i] < 0.999) continue
+      const mu = Math.fround(w[i] / (2 * v[i]))
+      n++; lo = Math.min(lo, mu); hi = Math.max(hi, mu)
+      if (seen.size < 16) seen.add(mu)
+    }
+    return { active: true, fullCells: n, muMin: lo, muMax: hi, distinct: [...seen].sort((a, b) => a - b) }
+  }
   ballRefusal(): string | null {
     const rb = FlipBackend.BALL_DENSITY
     if (this.maxRho <= rb) return null
@@ -265,7 +325,20 @@ export class FlipBackend implements SimBackend {
     if (slot) e.copyBufferToBuffer(this.sim.diagBuf, 28, slot.buf, 0, 4)
     const bslot = ball.active && this.sim.hasSphere ? this.ballSlots.find(s => !s.busy) : undefined
     if (bslot) e.copyBufferToBuffer(this.sim.sphereBuf, 0, bslot.buf, 0, 64)
+    const vs = this.sim.viscositySolver!
+    const vslot = this.sim.viscosityActive ? this.viscSlots.find(s => !s.busy) : undefined
+    if (vslot) e.copyBufferToBuffer(vs.bufs.st, 0, vslot.buf, 0, 32)
     q.submit([e.finish()])
+    if (vslot) {
+      vslot.busy = true
+      vslot.buf.mapAsync(GPUMapMode.READ).then(() => {
+        const st = new Float32Array(vslot.buf.getMappedRange().slice(0))
+        vslot.buf.unmap()
+        vslot.busy = false
+        const it = st[5], converged = st[4] > 0.5
+        vs.cap = converged ? Math.min(FlipBackend.VISC_CAP_MAX, Math.max(FlipBackend.VISC_CAP_MIN, 2 * it + 8)) : Math.min(FlipBackend.VISC_CAP_MAX, 2 * vs.cap)
+      }, () => { vslot.busy = false })
+    }
     if (bslot) {
       bslot.busy = true
       const epoch = this.ballEpoch
@@ -295,17 +368,20 @@ export class FlipBackend implements SimBackend {
     if (n === 0) return null
     try { return decodeLegacy(await this.sim.readBuffer(this.sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n) } catch { return null }
   }
-  resetDiagnostics() { this.sim.resetDiagnostics(); this.cflExceeded = 0; this.substepsTotal = 0 }
+  resetDiagnostics() { this.sim.resetDiagnostics(); this.sim.viscositySolver!.resetFaults(); this.cflExceeded = 0; this.substepsTotal = 0 }
   async readDiagnostics(): Promise<BackendDiagnostics | null> {
     const d = await this.sim.readDiagnostics()
+    const vf = await this.sim.viscositySolver!.readFaults()
     return {
+      viscousSolves: vf.solves, viscousCapHits: vf.capHits, viscousBreakdowns: vf.breakdowns, viscousMaxIterations: vf.maxIterations, viscousCap: this.sim.viscositySolver!.cap,
       clampHits: d.wallClamps, densityPushBacks: d.densityClamps, unsetFaceReads: d.unsetFaceReads,
       pressureSolves: d.solves, pressureCapHits: d.capHits, psiSolves: d.psiSolves, psiCapHits: d.psiCapHits,
       breakdowns: d.breakdowns + d.psiBreakdowns, densityNeighbourFaces: d.densityNeighbourFaces, densityDefaultFaces: d.densityDefaultFaces,
       vLag: this.vLag, cflExceeded: this.cflExceeded, substeps: this.substepsTotal,
+      viscousSolve: this.sim.viscosityActive ? 1 : 0, maxNu: this.maxNu,
     }
   }
-  destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots]) s.buf.destroy() }
+  destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots, ...this.viscSlots]) s.buf.destroy() }
 }
 
 /** The solver for this page: `?solver=mpm` keeps the legacy MLS-MPM (D8); default the incompressible solver. */

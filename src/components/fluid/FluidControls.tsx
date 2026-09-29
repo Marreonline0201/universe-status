@@ -224,11 +224,12 @@ export function FluidControls({ controller }: { controller: FluidController }) {
                 <div>Pressure: MGPCG; volume: Kugelstadt density projection</div>
                 <div>Surface: ghost fluid (Zhu–Bridson level set)</div>
                 <div>Density: per material (oil floats, mercury sinks)</div>
+                <div>Viscosity: implicit variational solve (Batty & Bridson 2008), harmonic μ between liquids, while a liquid with ν ≥ 1e-5 m²/s is in the tank</div>
                 <div>Tank: 3.63 m wall to wall, cells 5.67 cm, 8 particles/cell</div>
                 <div>Clock: real time, 1–4 substeps per 1/60 s (CFL 1)</div>
                 <div>Render: SSFR (5-pass)</div>
                 <div>Ball: iron 7874 kg/m³ (NIST), moving solid with fractional face weights, weak coupling</div>
-                <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Not yet real: viscosity is not simulated (plan S3.6) — damping is numerical, ν ≈ 1.0e-3 m²/s (1000× water's); liquids stirred together below one cell do not separate again; dam-break fronts run ~10 % ahead of experiments. Ball: weak coupling (the water's push back arrives one substep late; refused in liquids denser than iron until S3.7), no bounce or friction at the walls, no skin drag, drawn 1–2 frames late.</div>
+                <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Not yet real: at 5.67 cm cells the scheme damps motion by itself, ν ≈ 1.1e-3 m²/s — 1000× water's own viscosity, so thin liquids (water, oils, mercury) move more damped than real, and glycerol-level liquids about twice as viscous; the viscous solve visits the whole grid on every iteration, so a large block of honey or lava runs below real time (slow motion); liquids stirred together below one cell do not separate again; dam-break fronts run ~10 % ahead of experiments. Ball: weak coupling (the water's push back arrives one substep late; refused in liquids denser than iron until S3.7), no bounce or friction at the walls, no skin drag, drawn 1–2 frames late.</div>
               </>)}
             </div>
           </div>

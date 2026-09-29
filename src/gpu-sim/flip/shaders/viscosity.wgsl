@@ -72,6 +72,9 @@ struct ViscParams {
 @group(0) @binding(49) var<storage, read_write> validOut: array<u32>;
 @group(0) @binding(50) var<storage, read> xR: array<f32>;
 @group(0) @binding(51) var<storage, read> muTableR: array<f32>;
+@group(0) @binding(52) var<storage, read_write> bandNear: array<u32>;
+@group(0) @binding(53) var<storage, read> bandNearR: array<u32>;
+@group(0) @binding(54) var<storage, read_write> faults: array<u32>;   // solves, cap hits, breakdowns, max iterations
 
 override GATHER_MINUS: bool = false;   // gather: out = mass·in + Δt·Σ (A·x) or mass·in − Δt·Σ (the right-hand side b)
 
@@ -83,6 +86,7 @@ const ST_BB: u32 = 3u;
 const ST_CONV: u32 = 4u;
 const ST_IT: u32 = 5u;
 const ST_RR: u32 = 6u;
+const ST_BRK: u32 = 7u;
 
 // ── the quarter lattice ─────────────────────────────────────────────────────────────────────────────────────────
 // lattice point (c, s) of window cell c, s ∈ {0,1}³: position (c + ¼ + ½·s)·dx; its 8 sum words (common.wgsl two-word
@@ -109,6 +113,7 @@ fn latScatter(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (d2 >= 1.0) { continue; }
         let k = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);
         let c = vec3<i32>(n.x >> 1u, n.y >> 1u, n.z >> 1u);
+        if (bandNearR[linIdx(c)] == 0u) { continue; }
         let b = latBase(c, n - 2 * c);
         let v = vec4<f32>(k, k * r / P.dx) * LS_SCALE;
         let hi = lsHi(v);
@@ -150,6 +155,23 @@ fn bandCells(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (liquidAt(c + vec3<i32>(dx, dy, dz)) != me) { mixed = 1u; }
   } } }
   band[linIdx(c)] = mixed;
+}
+
+/// The cells whose lattice points a band sample can read: a sample is subsampled only if its dx³ cube overlaps a band
+/// cell, and its subsamples lie in the cells that cube overlaps — all within one cell of that band cell (mirrored
+/// subsamples land in the wall layer of the same cells). latScatter skips every other lattice point, so particles deep
+/// inside (or far outside) the liquid do no atomics; the values read are unchanged.
+@compute @workgroup_size(256)
+fn bandDilate(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let n = vec3<u32>(P.n);
+  let t = gid.x;
+  if (t >= n.x * n.y * n.z) { return; }
+  let c = vec3<i32>(vec3<u32>(t % n.x, (t / n.x) % n.y, t / (n.x * n.y)));
+  var near = 0u;
+  for (var dz = -1; dz <= 1; dz++) { for (var dy = -1; dy <= 1; dy++) { for (var dx = -1; dx <= 1; dx++) {
+    if (bandR[linIdx(cellClamp(c + vec3<i32>(dx, dy, dz)))] == 1u) { near = 1u; }
+  } } }
+  bandNear[linIdx(c)] = near;
 }
 
 fn volumeAt(o: vec3<f32>, c: vec3<i32>) -> f32 {
@@ -610,7 +632,9 @@ fn reduceInit(@builtin(local_invocation_index) lid: u32) {
 @compute @workgroup_size(256)
 fn reduceAlpha(@builtin(local_invocation_index) lid: u32) {
   let s = sumPartials(lid);
-  if (lid == 0u && st[ST_CONV] < 0.5) { st[ST_ALPHA] = select(0.0, st[ST_RZ] / s.x, s.x > 0.0); if (s.x <= 0.0) { st[ST_CONV] = 1.0; } }
+  if (lid == 0u && st[ST_CONV] < 0.5) {
+    st[ST_ALPHA] = select(0.0, st[ST_RZ] / s.x, s.x > 0.0); if (s.x <= 0.0) { st[ST_CONV] = 1.0; st[ST_BRK] = 1.0; }
+  }
 }
 /// after pcgUpdate: β = rz'/rz, convergence test, iteration count
 @compute @workgroup_size(256)
@@ -621,6 +645,16 @@ fn reduceBeta(@builtin(local_invocation_index) lid: u32) {
     st[ST_RZ] = s.x; st[ST_RR] = s.y; st[ST_IT] += 1.0;
     if (s.y <= VP.tol2 * st[ST_BB]) { st[ST_CONV] = 1.0; }
   }
+}
+
+/// After the loop: count the solve, a cap hit (not converged at the cap), a breakdown (d·q ≤ 0) and the most
+/// iterations, in a buffer the host clears only on resetFaults (the page's diagnostics, like PoissonSolver.faults).
+@compute @workgroup_size(1)
+fn tally() {
+  faults[0] += 1u;
+  if (stR[ST_CONV] < 0.5) { faults[1] += 1u; }
+  if (stR[ST_BRK] > 0.5) { faults[2] += 1u; }
+  faults[3] = max(faults[3], u32(stR[ST_IT]));
 }
 
 /// u = x on the unknowns that hold liquid (V_f > 0); a mass-less unknown only carries the free surface's zero traction
