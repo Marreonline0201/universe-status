@@ -53,6 +53,10 @@
 //      ≤ 1e-4 at BOTH samples (ρ_m, α_d the kernel's own, water the carrier). The drift-off control has no kernel inputs:
 //      its drops qualify with no mercury particle in their own cell or the 26 around it at 4 s (the trilinear reach).
 //      The unrestricted ratio stays in the INFO line.
+//      Its run (clean tree d3450893): FAIL — slip × 1.127 / 1.514 / 1.529 over 1276 / 1324 / 1131 two-liquid drops, spread
+//      0.40; the law with the kernel's inputs × 0.969–0.991 of U_eq (the mercury diagnosis holds), the model × 1.07–1.16
+//      of its own law and the measured slip × 1.09–1.42 of the model's: a second gap (transport or this observable in a
+//      still-convecting plume), OPEN — the band is not moved.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
