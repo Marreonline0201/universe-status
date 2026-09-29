@@ -3,7 +3,7 @@
 // Bridson 2017. Spec (criteria fixed before the first run): vault fluid/realism-2026-09/S3.6e-variational-stokes-spec.md.
 // The physics gates of S3.6 run on this scheme through `S36_SCHEME=stokes node scripts/fluid-gates/s36-ref.mjs`.
 //
-//   node scripts/fluid-gates/s36e-ref.mjs [u0|st2|st1]...   (default: all)
+//   node scripts/fluid-gates/s36e-ref.mjs [u0|st2|st1|a1s|a5s]...   (default: all)
 //
 // U0  uniform shear between no-slip walls (x periodic, bottom still, top at U, z free-slip), u* = the exact Couette field
 //     set on the grid, one solve. Exact: τ_xy = μγ̇ on every edge (τ = 2με), every other τ and p zero, u = u*. Pass at
@@ -20,17 +20,31 @@
 //     NEGATIVE CONTROL — the level set without the wall images (levelSetWalls 'air': the surface bends down at every
 //     wall) — moves ≥ 1e-4 m/s at 1e-8 (else ST1 cannot see the wall representation). Reported: the split scheme on the
 //     same pool, and both schemes on a jittered pool (density projection off: the random packing re-arranges).
+// Phase 2 — the ball in the Stokes solve (eq. 19 with a moving rigid solid; S3.7's monolithic coupling):
+// A1S the S3.7 A1 scene (s = 2 ball in water at rest, R = 3.5 cells, clearance 3R, settled 120 substeps on the split path
+//     with the ball held), released with ONE Stokes step (water's μ): first-substep acceleration vs g(s − 1)/(s + ½)
+//     = 3.923 m/s², ±5 % — the S3.7 A1 criterion: V as three unknowns of mass M must carry the added mass. Both ball
+//     checks run with the level set's sphere images (levelSetSphere 'mirror'), which the Stokes ball requires.
+// A5S the S3.7 A5 scene (iron in the 1100 °C GRD melt, tank 24 × 30 × 24 at R = 3.5 cells) on the Stokes path to terminal
+//     (U within 0.5 % over 0.05 s), at R = 2.5 / 3.5 / 5 cells with the tank scaled with R (d/W ≈ 0.29 fixed). Reference
+//     (criteria fixed 2026-09-29 before the first run with the sphere images; vault research/x9-square-duct-wall-factor):
+//     side walls — Miyamura, Iwasaki & Ishii 1981 (IJMF 7:41, doi 10.1016/0301-9322(81)90013-6) square-duct polynomial as
+//     tabulated in Energies 13:2822 (2020) Table 5 and cross-checked against the curve in Xue et al., EPJE 44:142 (2021):
+//     f = 0.475 at d/W = 0.2917; free surface 1.86 R above the equator and floor 4.1 R below — confined-duct end effects
+//     (Despeyroux & Ambari, JNNFM 167–168, 2012): ≈ +1 % drag (0 … +2.5 %), floor negligible → U/U_Stokes = 0.470
+//     (band 0.46–0.49). Pass: |U/U_S ÷ 0.470 − 1| ≤ 10 % at R = 3.5 (the band's ±3.5 % plus discretisation), and the
+//     error at R = 5 not larger than at R = 2.5 (convergence). The split scheme reads 0.048 (S3.7 A5).
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
-const { gridLayout, flipRef } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts` })
-const { GridLayout } = gridLayout, { FlipRef, makeParticles } = flipRef
+const { gridLayout, flipRef, mat, two } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, two: `${SRC}/sim-ref/twoLayer.ts` })
+const { GridLayout } = gridLayout, { FlipRef, makeParticles } = flipRef, { fillMaterials, mulberry32: twoRng } = two
 const G = 9.80665
 const DX = 3.63 / 64
 let fails = 0
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) fails++ }
 const info = msg => console.log(`INFO ${msg}`)
-const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(['u0', 'st2', 'st1'])
+const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(['u0', 'st2', 'st1', 'a1s', 'a5s'])
 const t0 = Date.now()
 const HONEY = { mu: 40, rho: 1415 }
 const e = v => v.toExponential(2)
@@ -142,6 +156,60 @@ if (want.has('st1')) {
   info(`ST1 the split scheme on the same lattice pool (pressure tolerance 1e-8, viscous 1e-10 relative): max |u| ${e(split.uMax)} m/s`)
   const js = st1('stokes', 1e-8, true), jp = st1('split', 1e-8, true)
   info(`ST1 jittered pool (${js.particles} particles), max |u| over 1 s: Stokes ${e(js.uMax)} m/s, split ${e(jp.uMax)} m/s`)
+}
+
+// ── A1S / A5S: the ball ──
+/** Particles of a filled box with the sphere (centre c, radius R) cut out, viscosity mu. */
+function cutBall(p, c, R, mu) {
+  const keep = []
+  for (let q = 0; q < p.n; q++) if (Math.hypot(p.pos[3 * q] - c[0], p.pos[3 * q + 1] - c[1], p.pos[3 * q + 2] - c[2]) >= R) keep.push(q)
+  const P = { ...p, n: keep.length, pos: new Float64Array(3 * keep.length), vel: new Float64Array(3 * keep.length), mass: new Float64Array(keep.length), c: [0, 1, 2].map(() => new Float64Array(3 * keep.length)), mu: new Float64Array(keep.length).fill(mu) }
+  keep.forEach((q, i) => { P.pos.set(p.pos.subarray(3 * q, 3 * q + 3), 3 * i); P.mass[i] = p.mass[q] })
+  return P
+}
+const RHO_W = mat.waterDensity(20), MU_W = 1.001596e-3, RHO_FE = mat.SOLID_REFERENCE.iron.solidDensityKgM3
+const mulberryFill = seed => twoRng(seed)   // s37-ref's generator: the same fills as S3.7 A1 / A5
+if (want.has('a1s')) {
+  const Rc = 3.5, n = Math.round(8 * Rc), R = Rc * DX, s = 2, dt = 1 / 120
+  const c = [n / 2 * DX + 0.3 * DX, 4 * Rc * DX, n / 2 * DX - 0.2 * DX]
+  const L = new GridLayout({ nx: n, ny: n + 2, nz: n, dx: DX })
+  const sim = new FlipRef(L, { gravity: [0, -G, 0], density: RHO_W, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5,
+    sphereCoupling: 'weak', sphereDensity: s * RHO_W, viscosity: 'force', viscosityDefault: MU_W, viscosityScheme: 'split', stokesTolerance: 1e-6, levelSetSphere: 'mirror' })
+  const P = cutBall(fillMaterials(n, n, n, DX, mulberryFill(31), () => [RHO_W, 0]).p, c, R, MU_W)
+  sim.sphere = { center: [...c], radius: R, velocity: [0, 0, 0] }
+  for (let k = 0; k < 120; k++) sim.step(P, dt)
+  sim.sphereCoupling = 'monolithic'; sim.viscosityScheme = 'stokes'
+  sim.advanceSphere(dt)
+  const v0 = [...sim.sphere.velocity]
+  sim.step(P, dt)
+  const a = -(sim.sphere.velocity[1] - v0[1]) / dt, a0 = G * (s - 1) / (s + 0.5)
+  check(Math.abs(a / a0 - 1) <= 0.05, `A1S s = 2 ball released by one Stokes step (R = 3.5 cells, ${P.n} particles, ${sim.lastStokes.iterations} it): a₀ ${a.toFixed(4)} m/s² vs g(s − 1)/(s + ½) ${a0.toFixed(4)} (${(100 * (a / a0 - 1)).toFixed(2)} %, ±5 %; without added mass ${(G * (s - 1) / s).toFixed(3)}; split path S3.7 A1: +0.46 %)`)
+}
+if (want.has('a5s')) {
+  const MU = mat.vftViscosity(mat.LAVA_GRD_PRESET, 1100), RHOM = 2600, dt = 1 / 120
+  const rows = []
+  for (const Rc of [2.5, 3.5, 5]) {
+    const R = Rc * DX, n = Math.round(24 * Rc / 3.5), ny = Math.round(30 * Rc / 3.5), f = Rc / 3.5
+    const c = [n / 2 * DX, (ny - 2 * f - 2 * Rc - 3 * f) * DX, n / 2 * DX]
+    const L = new GridLayout({ nx: n, ny, nz: n, dx: DX })
+    const sim = new FlipRef(L, { gravity: [0, -G, 0], density: RHOM, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5,
+      sphereCoupling: 'monolithic', sphereDensity: RHO_FE, viscosity: 'force', viscosityDefault: MU, viscosityScheme: 'stokes', stokesTolerance: 1e-6, levelSetSphere: 'mirror' })
+    const P = cutBall(fillMaterials(n, Math.round(ny - 2 * f), n, DX, mulberryFill(35), () => [RHOM, 0]).p, c, R, MU)
+    sim.sphere = { center: [...c], radius: R, velocity: [0, 0, 0] }
+    const Us = 2 / 9 * (RHO_FE - RHOM) * G * R * R / MU
+    // to a plateau: the approach time grows as R² (τ ≈ (ρ_s + ρ/2)d²/(18μ): 0.03 / 0.05 / 0.11 s at R = 2.5 / 3.5 / 5), so
+    // step until U changes < 0.5 % over 0.05 s (cap 1 s)
+    let k = 0, prev = 0, uS = 0
+    for (; k < 120; k++) {
+      sim.advanceSphere(dt); sim.step(P, dt)
+      if ((k + 1) % 6 === 0) { const u = -sim.sphere.velocity[1]; if (k > 12 && Math.abs(u - prev) <= 0.005 * u) { uS = u; break } prev = u }
+      uS = -sim.sphere.velocity[1]
+    }
+    rows.push({ Rc, n, ny, u: uS / Us, re: RHOM * Us * 2 * R / MU, it: sim.lastStokes.iterations, t: (k + 1) * dt })
+  }
+  const REF = 0.470, err = r => r.u / REF - 1, r35 = rows[1], r25 = rows[0], r5 = rows[2]
+  check(Math.abs(err(r35)) <= 0.10 && Math.abs(err(r5)) <= Math.abs(err(r25)),
+    `A5S Stokes fall on the Stokes path, iron in GRD melt 1100 °C (μ ${MU.toFixed(0)} Pa·s), terminal: U/U_Stokes ${rows.map(r => `${r.u.toFixed(4)} at R = ${r.Rc} (${(100 * err(r)).toFixed(1)} %; tank ${r.n}×${r.ny}×${r.n}, Re ${r.re.toFixed(3)}, ${r.t.toFixed(2)} s, ${r.it} it)`).join('; ')} vs the square-duct reference 0.470 (band 0.46–0.49; ±10 % at R = 3.5, |err| R = 5 ≤ R = 2.5) — split scheme 0.048 at R = 3.5 (S3.7 A5)`)
 }
 
 console.log(`\ns3.6e reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)

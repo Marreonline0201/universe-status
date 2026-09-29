@@ -126,9 +126,11 @@ export interface FlipRefOptions {
    *  viscous operator), and per-wall slip and wall velocity for the walls named 'x-' … 'z+' (default viscousWalls, 0). */
   viscousTestBC?: { periodicX?: boolean; walls?: Partial<Record<'x-' | 'x+' | 'y-' | 'y+' | 'z-' | 'z+', { slip: 'no-slip' | 'free-slip'; velocity?: Vec3 }>> }
   /** The viscous path (spec fluid/realism-2026-09/S3.6e-variational-stokes-spec.md): 'split' (default — S3.6: project,
-   *  viscosity, project again) or 'stokes' (S3.6e, Larionov, Batty & Bridson 2017: ONE unified pressure–stress solve).
-   *  Phase 1: a step with a sphere keeps the split path. */
-  viscosityScheme?: 'split' | 'stokes'
+   *  viscosity, project again), 'stokes' (S3.6e, Larionov, Batty & Bridson 2017: ONE unified pressure–stress solve), or
+   *  'auto' — the measured rule (spec rev 4): Stokes only while a MONOLITHIC ball is in a viscous scene (the split path
+   *  over-damps a ball 10×: A5 0.048 vs 0.47 U_Stokes), split everywhere else (the Stokes volume-fraction surface is
+   *  worse for free-surface waves: E2 σ +21.5 % vs +12.2 %, D1-S ω −5.7 %). */
+  viscosityScheme?: 'split' | 'stokes' | 'auto'
   /** Stokes: the face-mass floor W_min (a volume fraction). A non-wall face below it is not an unknown, and every
    *  constraint row touching it is dropped (spec §2; default 1e-2, like θ_min — a numerical choice). */
   stokesFaceMin?: number
@@ -139,6 +141,9 @@ export interface FlipRefOptions {
    *  tank: the surface bends down within R of every wall — kept as the gates' negative control; measured, a lattice
    *  honey pool at rest moves at 8.3e-4 m/s (split) / 2.3e-2 m/s (Stokes) whatever the tolerance). */
   levelSetWalls?: 'air' | 'mirror'
+  /** The level set at the sphere's surface: 'air' (default: only the particles outside it) or 'mirror' (their radial
+   *  images across the surface join the kernel). */
+  levelSetSphere?: 'air' | 'mirror'
   /** How the sphere and the liquid exchange momentum (vault fluid/realism-2026-09/S3.7-two-way-ball-spec.md):
    *  'weak' (S3.1c-2, default) — the caller applies integrateSphere after the step (the force one substep late);
    *  'monolithic' (S3.7, Batty et al. 2007 eq. 13) — step() applies gravity to the sphere first, every pressure solve
@@ -290,11 +295,16 @@ export class FlipRef {
   readonly muCell: Float64Array
   readonly muEdge: [Float64Array, Float64Array, Float64Array]
   lastViscosity: ViscosityStats | null = null
-  readonly viscosityScheme: 'split' | 'stokes'
+  /** Mutable like sphereCoupling: a gate may settle a scene on the split path and switch (S3.6e A1-S). */
+  viscosityScheme: 'split' | 'stokes' | 'auto'
   readonly stokesFaceMin: number
   readonly stokesTolerance: number
   readonly levelSetWalls: 'air' | 'mirror'
+  readonly levelSetSphere: 'air' | 'mirror'
   lastStokes: StokesStats | null = null
+  /** Diagnostics (the S3.6e cost study): when true, the next stokesSolve keeps its assembled system in lastStokesSystem. */
+  stokesExport = false
+  lastStokesSystem: { rowCols: number[][]; rowG: number[][]; rowV: Vec3[]; rowC: number[]; rowKind: number[]; Kinv: Float64Array; KVinv: number; rhs: Float64Array; diag: Float64Array } | null = null
   /** The last Stokes solve's stresses (Pa): τ_aa at cell centres (cell[a]) and τ_ab on the edges running along the
    *  third axis (edge[e]), layout slots; 0 where no row. Its pressure goes to `pressure`. */
   stokesStress: { cell: [Float64Array, Float64Array, Float64Array]; edge: [Float64Array, Float64Array, Float64Array] } | null = null
@@ -364,6 +374,9 @@ export class FlipRef {
     this.stokesFaceMin = opts.stokesFaceMin ?? 1e-2
     this.stokesTolerance = opts.stokesTolerance ?? 1e-9
     this.levelSetWalls = opts.levelSetWalls ?? 'mirror'
+    // the Stokes ball needs the ball-extended level set (stokesSolve asserts it), so the schemes that can take that
+    // path default to it
+    this.levelSetSphere = opts.levelSetSphere ?? (this.viscosityScheme === 'split' ? 'air' : 'mirror')
     this.immiscible = opts.immiscible ?? null
     if (this.immiscible && !(opts.projection ?? false)) throw new Error('FlipRef: immiscible needs the projection (the drift is driven by the projection\'s face accelerations)')
     this.sphereCoupling = opts.sphereCoupling ?? 'weak'
@@ -404,7 +417,8 @@ export class FlipRef {
     this.gridUpdate(dt)
     if (this.projection) {
       this.applySolidFaces()
-      const viscous = this.viscosityRuns(p), stokes = viscous && this.viscosityScheme === 'stokes' && !this.sphere
+      const viscous = this.viscosityRuns(p)
+      const stokes = viscous && (this.viscosityScheme === 'stokes' || (this.viscosityScheme === 'auto' && this.monolithic()))
       const snapshot = () => { this.uStar = [Float64Array.from(this.u[0]), Float64Array.from(this.u[1]), Float64Array.from(this.u[2])] }
       if (this.immiscible && !stokes) snapshot()
       if (this.freeSurface === 'ghost') { this.classifyLevelSet(p); this.thetaCache.clear() }
@@ -425,11 +439,15 @@ export class FlipRef {
         this.projectVelocities(dt)
         // S3.6 (Batty & Bridson 2008 §3): viscosity on the projected, extrapolated field, then a second projection
         if (viscous) {
+          // the ball's pressure force over the substep is J·(p₁ + p₂): projectVelocities reports only its own solve,
+          // and the second is a correction (measured: a held ball read F ≈ 0 instead of ρgV_J on this path)
+          const F1: Vec3 = [...this.sphereForce]
           this.extrapolate()
           this.applySolidFaces()
           this.viscositySolve(p, dt)
           this.solvePressure(dt)
           this.projectVelocities(dt)
+          for (let a = 0; a < 3; a++) this.sphereForce[a] += F1[a]
         } else this.lastViscosity = null
         this.lastStokes = null
       }
@@ -625,11 +643,7 @@ export class FlipRef {
     if (!S) return
     const [cx, cy, cz] = S.center, R = S.radius
     const sub = (x: number, y: number, z: number) => Math.min(1, Math.max(0, 0.5 - (Math.hypot(x - cx, y - cy, z - cz) - R) / (h / 2)))
-    const box = (x: number, y: number, z: number) => {
-      let v = 0
-      for (const ox of [-0.25, 0.25]) for (const oy of [-0.25, 0.25]) for (const oz of [-0.25, 0.25]) v += sub(x + ox * h, y + oy * h, z + oz * h)
-      return v / 8
-    }
+    const box = (x: number, y: number, z: number) => this.sphereSolidBox(x, y, z)
     const reach = R + 2 * h
     const near = (x: number, y: number, z: number) => Math.hypot(x - cx, y - cy, z - cz) <= reach
     for (const a of AXES) {
@@ -651,6 +665,18 @@ export class FlipRef {
       }
       this.cellSolidKernel[c] = kv / 8   // Σ N·ΔV/dx³ with ΔV = (dx/2)³: the trilinear kernel integrates to 1
     }
+  }
+
+  /** Solid fraction of the dx³ cube centred at (x, y, z) inside the sphere: 2×2×2 subsamples at ±dx/4, each a smooth
+   *  partial volume clamp(½ − d/(dx/2), 0, 1) of its signed distance d (0 without a sphere). */
+  sphereSolidBox(x: number, y: number, z: number): number {
+    const S = this.sphere
+    if (!S) return 0
+    const h = this.layout.dx, [cx, cy, cz] = S.center, R = S.radius
+    let v = 0
+    for (const ox of [-0.25, 0.25]) for (const oy of [-0.25, 0.25]) for (const oz of [-0.25, 0.25])
+      v += Math.min(1, Math.max(0, 0.5 - (Math.hypot(x + ox * h - cx, y + oy * h - cy, z + oz * h - cz) - R) / (h / 2)))
+    return v / 8
   }
 
   /** The liquid extended into the sphere (Batty & Bridson extrapolate the liquid level set into solids; FINAL-PLAN §5.5):
@@ -1006,9 +1032,14 @@ export class FlipRef {
    *  Faces: an open, non-wall face with W_f ≥ stokesFaceMin is an unknown; wall-normal faces are 0; a tangential ghost
    *  face mirrors the interior face (no-slip −u + 2U, free-slip +u, S3.6's refFace); periodic x wraps (gates). A row
    *  touching a mass-less face (non-wall, below the floor) is dropped: the free surface's natural condition (spec §2).
-   *  Phase 1: no ball. */
+   *  Phase 2, the ball (eq. 19 — liquid weights W_L and fluid weights W_F = 1 − S together — with a MOVING rigid solid):
+   *  every row sees a face's blended velocity ũ = (1 − S)·u + S·V; the fluid part is an unknown of mass ρ·W_L·(1 − S)
+   *  when that is ≥ the floor, a face mostly inside the ball (1 − S below the floor) contributes S·V alone; the stress
+   *  rows' C carries the sample's W_F (C = W_L·W_F/(2μ) or /μ: rigid inside the ball). Monolithic coupling: V is three
+   *  more unknowns with K_V = M/(Δt·dx³) (the rows are per dx³) and V* = Vⁿ + Δt·g from step(); its Schur complement is
+   *  S3.7's rank-3 term. Weak coupling: V enters as a constant. Either way F = −dx³·(B_Vᵀ y) — pressure AND viscous
+   *  stress — is the force on the ball. */
   stokesSolve(p: RefParticles, dt: number): StokesStats {
-    if (this.sphere) throw new Error('FlipRef.stokesSolve: phase 1 has no ball (step() keeps the split path with one)')
     const L = this.layout, h = L.dx
     this.viscousVolumes()
     const muFallbacks = this.viscousMu(p)
@@ -1027,6 +1058,12 @@ export class FlipRef {
       return null
     }
     const wallFace = (a: Axis, s: number) => this.faceType[a][s] === FaceType.SOLID && !(periodicX && a === 0)
+    const Sph = this.sphere, mono = this.monolithic(), Sf = this.solidFraction
+    // eq. 19's W_L is the liquid (not air) fraction: a submerged solid is NOT air. With the ball-as-air level set the
+    // rows at its surface lose weight and so does its buoyancy (measured, S3.7 A1 scene at R = 3.5 cells: a₀ +37.8 %,
+    // F 289 N vs ρgV_J 322 N; with the radial images −2.2 %) — so the Stokes ball requires them
+    if (Sph && this.levelSetSphere !== 'mirror') throw new Error("FlipRef.stokesSolve: a ball needs levelSetSphere 'mirror' (the ball is not air)")
+    const V0: Vec3 = Sph ? [Sph.velocity[0], Sph.velocity[1], Sph.velocity[2]] : [0, 0, 0]
     // the velocity unknowns
     const colOf: Int32Array[] = AXES.map(() => new Int32Array(L.size).fill(-1))
     const faces: { a: Axis; s: number }[] = []
@@ -1037,13 +1074,14 @@ export class FlipRef {
         const c = [i, j, k]
         if (ghostOf(a, c)) continue
         const s = L.idx(i, j, k)
-        if (wallFace(a, s) || this.volFace[a][s] < wMin) continue
+        if (wallFace(a, s) || Sf[a][s] >= 1 || this.volFace[a][s] * (1 - Sf[a][s]) < wMin) continue
         colOf[a][s] = faces.length
         faces.push({ a, s })
       }
     }
-    // a face reference → value = sign·u[col] + konst; `free`: a mass-less non-wall face (its rows are dropped)
-    type Ref = { col: number; sign: number; konst: number; free: boolean }
+    // a face reference → ũ = g·u[col] + gv·V[vA] + konst; `free`: a mass-less non-wall face (its rows are dropped)
+    type Ref = { col: number; g: number; vA: number; gv: number; konst: number; free: boolean }
+    const NONE: Ref = { col: -1, g: 0, vA: -1, gv: 0, konst: 0, free: false }
     const refFace = (a: Axis, c0: number[]): Ref => {
       const c = wrap(c0)
       const g = ghostOf(a, c)
@@ -1051,30 +1089,37 @@ export class FlipRef {
         const bc = TB?.walls?.[g.wall]
         const slip = bc?.slip ?? this.viscousWalls, U = bc?.velocity?.[a] ?? 0
         const r = refFace(a, g.m)
-        return slip === 'no-slip' ? { col: r.col, sign: -r.sign, konst: 2 * U - r.konst, free: r.free } : r
+        return slip === 'no-slip' ? { col: r.col, g: -r.g, vA: r.vA, gv: -r.gv, konst: 2 * U - r.konst, free: r.free } : r
       }
-      if (!inRange(a, c)) return { col: -1, sign: 0, konst: 0, free: false }
+      if (!inRange(a, c)) return NONE
       const s = L.idx(c[0], c[1], c[2])
-      if (wallFace(a, s)) return { col: -1, sign: 0, konst: 0, free: false }
-      const col = colOf[a][s]
-      return col >= 0 ? { col, sign: 1, konst: 0, free: false } : { col: -1, sign: 0, konst: 0, free: true }
+      if (wallFace(a, s)) return NONE
+      const S = Sf[a][s], col = colOf[a][s]
+      if (col >= 0) return { col, g: 1 - S, vA: S > 0 ? a : -1, gv: S, konst: 0, free: false }
+      // below the fluid-mass floor the face moves with the ball ENTIRELY (coefficient 1, not S): a cell whose faces are all
+      // carried by the ball then sees a rigid V as divergence-free (with S, a V-only row W·Σ sgn S_f·V/dx = 0 pinned V)
+      if (S > 0 && 1 - S < wMin) return { col: -1, g: 0, vA: a, gv: 1, konst: 0, free: false }
+      return { ...NONE, free: true }
     }
     // the constraint rows: B's columns and coefficients, its constant part B_const·u_const, C, and what the row is
-    const rowCols: number[][] = [], rowG: number[][] = [], rowK: number[] = [], rowC: number[] = [], rowKind: number[] = [], rowAt: number[] = []
+    const rowCols: number[][] = [], rowG: number[][] = [], rowV: Vec3[] = [], rowK: number[] = [], rowC: number[] = [], rowKind: number[] = [], rowAt: number[] = []
     let dropped = 0
     const addRow = (terms: [Axis, number[], number][], cDiag: number, kind: number, at: number) => {
-      const cols: number[] = [], g: number[] = []
+      const cols: number[] = [], g: number[] = [], vg: Vec3 = [0, 0, 0]
       let konst = 0
       for (const [a, c, coef] of terms) {
         const r = refFace(a, c)
         if (r.free) { dropped++; return }
         konst += r.konst * coef
+        if (r.vA >= 0) vg[r.vA] += r.gv * coef
         if (r.col < 0) continue
         const i = cols.indexOf(r.col)
-        if (i >= 0) g[i] += r.sign * coef; else { cols.push(r.col); g.push(r.sign * coef) }
+        if (i >= 0) g[i] += r.g * coef; else { cols.push(r.col); g.push(r.g * coef) }
       }
-      if (cols.length === 0 && cDiag === 0) { dropped++; return }   // a p row between walls only: no content
-      rowCols.push(cols); rowG.push(g); rowK.push(konst); rowC.push(cDiag); rowKind.push(kind); rowAt.push(at)
+      const hasV = mono && (vg[0] !== 0 || vg[1] !== 0 || vg[2] !== 0)
+      if (cols.length === 0 && !hasV && cDiag === 0) { dropped++; return }   // no unknown in the row: no content
+      if (!mono) { konst += vg[0] * V0[0] + vg[1] * V0[1] + vg[2] * V0[2] }   // weak coupling: V is prescribed
+      rowCols.push(cols); rowG.push(g); rowV.push(vg); rowK.push(konst); rowC.push(cDiag); rowKind.push(kind); rowAt.push(at)
     }
     // kinds: 0 p, 1 + a τ_aa, 4 + e τ on the edges along e
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
@@ -1082,7 +1127,8 @@ export class FlipRef {
       if (W <= 0) continue
       const up = (a: number) => { const c = [i, j, k]; c[a] += 1; return c }
       addRow(AXES.flatMap(a => [[a, [i, j, k], W / h], [a, up(a), -W / h]] as [Axis, number[], number][]), 0, 0, cs)
-      for (const a of AXES) addRow([[a, up(a), W / h], [a, [i, j, k], -W / h]], W / (2 * this.muCell[cs]), 1 + a, cs)
+      const WF = 1 - this.cellSolidFraction[cs]
+      for (const a of AXES) addRow([[a, up(a), W / h], [a, [i, j, k], -W / h]], W * WF / (2 * this.muCell[cs]), 1 + a, cs)
     }
     for (const e of AXES) {
       const [a, b] = AXES.filter(x => x !== e) as Axis[]
@@ -1092,29 +1138,44 @@ export class FlipRef {
         const es = L.idx(i, j, k), W = this.volEdge[e][es]
         if (W <= 0) continue
         const c = [i, j, k], cmb = [...c], cma = [...c]; cmb[b] -= 1; cma[a] -= 1
-        addRow([[a, c, W / h], [a, cmb, -W / h], [b, c, W / h], [b, cma, -W / h]], W / this.muEdge[e][es], 4 + e, es)
+        const WF = Sph ? 1 - this.sphereSolidBox((i + (e === 0 ? 0.5 : 0)) * h, (j + (e === 1 ? 0.5 : 0)) * h, (k + (e === 2 ? 0.5 : 0)) * h) : 1
+        addRow([[a, c, W / h], [a, cmb, -W / h], [b, c, W / h], [b, cma, -W / h]], W * WF / this.muEdge[e][es], 4 + e, es)
       }
     }
     const nF = faces.length, nR = rowC.length
     const Kinv = new Float64Array(nF), ustar = new Float64Array(nF)
-    for (let f = 0; f < nF; f++) { const F = faces[f]; Kinv[f] = dt / (this.rhoFace[F.a][F.s] * this.volFace[F.a][F.s]); ustar[f] = this.u[F.a][F.s] }
-    const bt = new Float64Array(nF)
-    const transpose = (y: Float64Array) => {   // bt = Bᵀ y
-      bt.fill(0)
-      for (let r = 0; r < nR; r++) { const v = y[r]; if (v === 0) continue; const cols = rowCols[r], g = rowG[r]; for (let t = 0; t < cols.length; t++) bt[cols[t]] += g[t] * v }
+    for (let f = 0; f < nF; f++) { const F = faces[f]; Kinv[f] = dt / (this.rhoFace[F.a][F.s] * this.volFace[F.a][F.s] * (1 - Sf[F.a][F.s])); ustar[f] = this.u[F.a][F.s] }
+    const KVinv = mono ? dt * h ** 3 / (this.sphereDensity * this.sphereVolumeJ()) : 0
+    const bt = new Float64Array(nF), btV: Vec3 = [0, 0, 0]
+    const transpose = (y: Float64Array) => {   // bt = B_uᵀ y, btV = B_Vᵀ y
+      bt.fill(0); btV[0] = 0; btV[1] = 0; btV[2] = 0
+      for (let r = 0; r < nR; r++) {
+        const v = y[r]; if (v === 0) continue
+        const cols = rowCols[r], g = rowG[r], vg = rowV[r]
+        for (let t = 0; t < cols.length; t++) bt[cols[t]] += g[t] * v
+        btV[0] += vg[0] * v; btV[1] += vg[1] * v; btV[2] += vg[2] * v
+      }
     }
     const apply = (y: Float64Array, out: Float64Array) => {   // out = B K⁻¹ Bᵀ y + C y
       transpose(y)
       for (let f = 0; f < nF; f++) bt[f] *= Kinv[f]
-      for (let r = 0; r < nR; r++) { const cols = rowCols[r], g = rowG[r]; let s = rowC[r] * y[r]; for (let t = 0; t < cols.length; t++) s += g[t] * bt[cols[t]]; out[r] = s }
+      const w0 = btV[0] * KVinv, w1 = btV[1] * KVinv, w2 = btV[2] * KVinv
+      for (let r = 0; r < nR; r++) {
+        const cols = rowCols[r], g = rowG[r], vg = rowV[r]
+        let s = rowC[r] * y[r] + vg[0] * w0 + vg[1] * w1 + vg[2] * w2
+        for (let t = 0; t < cols.length; t++) s += g[t] * bt[cols[t]]
+        out[r] = s
+      }
     }
     const rhs = new Float64Array(nR), diag = new Float64Array(nR)
     for (let r = 0; r < nR; r++) {
-      const cols = rowCols[r], g = rowG[r]
-      let s = rowK[r], d = rowC[r]
+      const cols = rowCols[r], g = rowG[r], vg = rowV[r]
+      let s = rowK[r], d = rowC[r] + (vg[0] * vg[0] + vg[1] * vg[1] + vg[2] * vg[2]) * KVinv
+      if (mono) s += vg[0] * V0[0] + vg[1] * V0[1] + vg[2] * V0[2]
       for (let t = 0; t < cols.length; t++) { s += g[t] * ustar[cols[t]]; d += g[t] * g[t] * Kinv[cols[t]] }
       rhs[r] = s; diag[r] = d
     }
+    if (this.stokesExport) this.lastStokesSystem = { rowCols, rowG, rowV, rowC, rowKind, Kinv: Kinv.slice(), KVinv, rhs: rhs.slice(), diag: diag.slice() }
     // Jacobi-PCG from y = 0 (the paper's solver, §6.3)
     const y = new Float64Array(nR), res = rhs.slice(), z = new Float64Array(nR), d = new Float64Array(nR), q = new Float64Array(nR)
     const infNorm = (v: Float64Array) => { let m = 0; for (let r = 0; r < v.length; r++) m = Math.max(m, Math.abs(v[r])); return m }
@@ -1146,6 +1207,19 @@ export class FlipRef {
     }
     for (const w of this.viscWritten) w.fill(0)
     for (let f = 0; f < nF; f++) { const F = faces[f]; this.u[F.a][F.s] = ustar[f] - Kinv[f] * bt[f]; this.valid[F.a][F.s] = 1; this.viscWritten[F.a][F.s] = 1 }
+    if (Sph) {
+      // the ball: F = −dx³·B_Vᵀy (pressure and viscous stress), V updated (monolithic), the faces it carries take V
+      this.sphereForce = [-(h ** 3) * btV[0], -(h ** 3) * btV[1], -(h ** 3) * btV[2]]
+      this.sphereTorque = [0, 0, 0]   // not formed on this path (translation only)
+      if (mono) for (let a = 0; a < 3; a++) Sph.velocity[a] = V0[a] - KVinv * btV[a]
+      for (const a of AXES) {
+        const [lo, hi] = L.faceRange(a)
+        for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+          const s = L.idx(i, j, k), S = Sf[a][s]
+          if (S > 0 && colOf[a][s] < 0 && !wallFace(a, s) && (S >= 1 || 1 - S < wMin)) { this.u[a][s] = Sph.velocity[a]; this.valid[a][s] = 1 }
+        }
+      }
+    }
     this.pressure.fill(0)
     const st = { cell: [new Float64Array(L.size), new Float64Array(L.size), new Float64Array(L.size)], edge: [new Float64Array(L.size), new Float64Array(L.size), new Float64Array(L.size)] } as NonNullable<FlipRef['stokesStress']>
     for (let r = 0; r < nR; r++) {
@@ -1399,6 +1473,33 @@ export class FlipRef {
           if (d2 >= 1) continue
           const w = (1 - d2) ** 3
           wsum += w; mx += w * px; my += w * py; mz += w * pz
+        }
+      }
+    }
+    // levelSetSphere 'mirror': the ball is not air either — a particle within R outside its surface adds its radial
+    // image c + (2R_s − r)·(x − c)/r. The reflection is not an isometry (it moves a particle by 2(r − R_s) < 2R), so
+    // the particles whose images can reach x lie within 3R of it; images only exist in the shell (R_s − R, R_s], so x
+    // must lie within R of that shell. (A wall's image of a ball image is not added: a ball touching a wall is rare.)
+    const S = this.levelSetSphere === 'mirror' ? this.sphere : null
+    if (S) {
+      const Rs = S.radius, dc = Math.hypot(x - S.center[0], y - S.center[1], z - S.center[2])
+      if (dc > Rs - 2 * R && dc < Rs + R) {
+        const reach3 = Math.ceil(3 * R / h)
+        for (let dk = -reach3; dk <= reach3; dk++) for (let dj = -reach3; dj <= reach3; dj++) for (let di = -reach3; di <= reach3; di++) {
+          const ni = i0 + di, nj = j0 + dj, nk = k0 + dk
+          if (ni < 0 || nj < 0 || nk < 0 || ni >= L.nx || nj >= L.ny || nk >= L.nz) continue
+          for (let q = this.zbHead[L.idx(ni, nj, nk)]; q >= 0; q = this.zbNext[q]) {
+            const qx = p.pos[3 * q] - S.center[0], qy = p.pos[3 * q + 1] - S.center[1], qz = p.pos[3 * q + 2] - S.center[2]
+            const r = Math.hypot(qx, qy, qz)
+            if (!(r >= Rs && r < Rs + R)) continue
+            const f = (2 * Rs - r) / r
+            const px = S.center[0] + f * qx, py = S.center[1] + f * qy, pz = S.center[2] + f * qz
+            const rx = px - x, ry = py - y, rz = pz - z
+            const d2 = (rx * rx + ry * ry + rz * rz) / (R * R)
+            if (d2 >= 1) continue
+            const w = (1 - d2) ** 3
+            wsum += w; mx += w * px; my += w * py; mz += w * pz
+          }
         }
       }
     }

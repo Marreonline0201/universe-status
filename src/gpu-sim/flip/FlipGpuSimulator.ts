@@ -622,6 +622,10 @@ export class FlipGpuSimulator {
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
     const visc = this.viscosityActive && this.viscositySolver
+    // KNOWN LIMIT (weak coupling only): with viscosity the weak ball integrates the SECOND projection's force alone — a
+    // correction, so a held ball reads F ≈ 0 instead of ρgV_J (flipRef fixed this by summing J·(p₁ + p₂); here the
+    // accumulator also sums V_J, so summing needs a second accumulator). The page couples monolithically (V updated
+    // after every projection), so no scene runs this path.
     this.encodeProject(encoder, !visc)
     if (visc) {
       // Batty & Bridson 2008 §3: viscosity on the projected, extrapolated field, then a second projection
