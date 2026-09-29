@@ -21,6 +21,11 @@
 //       1e-4 (the reference's own condition: its solves run to 1e-9). The viscous path projects twice (paper §3), so at the
 //       production 1e-2 the on/off difference measures the pressure solver's residual, not viscosity (measured: +0.96 %
 //       at 1e-2, −0.16 % at 1e-4; the tolerance alone moves ν_num by 3.7 %) — the production pair is reported as INFO.
+//       MEASURED ON A SEED ENSEMBLE (2026-09-29): one pair is chaotic — any perturbation (a solver residual, a level-set
+//       change) moves this 4-period decay by ±1–3 % (on − off at 1e-4 / 1e-5 / 1e-6: +1.11 / +3.37 / −0.21 %; the
+//       viscosity-OFF decay alone spans 0.85–1.80e-3 m²/s over seeds), so the earlier single-pair passes were luck. Now:
+//       six jitter seeds, paired on/off; the criterion (1 %) applies to the MEAN relative difference, and the ensemble
+//       must resolve it (2·standard error ≤ 1 %, else FAIL as unresolved).
 import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -122,16 +127,21 @@ try {
   gate.check(Math.abs(expo - 0.2) <= 0.02 && ratios.every(r => Math.abs(r - 1) <= 0.10),
     `S3.6d Huppert on the GPU, lava (A = ${hu.A.toFixed(3)} m²): late exponent ${expo.toFixed(3)} (0.20 ± 0.02); x_N/prediction at 2 / 5 / 10 s ${ratios.map(r => r.toFixed(3)).join(' / ')} (±10 %); viscous PCG ${hu.viscIterations} it; cap hits ${hu.capHits}/${hu.solves}`)
 
-  const fPair = async production => {
-    const on = await run('viscStandingWave', { cellsPerH: 28, material: 'water', on: true, walls: 'no-slip', periods: 4, production })
-    const off = await run('viscStandingWave', { cellsPerH: 28, material: 'water', on: false, walls: 'no-slip', periods: 4, production })
+  const fPair = async (production, seed) => {
+    const on = await run('viscStandingWave', { cellsPerH: 28, material: 'water', on: true, walls: 'no-slip', periods: 4, production, seed })
+    const off = await run('viscStandingWave', { cellsPerH: 28, material: 'water', on: false, walls: 'no-slip', periods: 4, production, seed })
     return { dOn: nuNum(on.ts, on.es, on.omega, on.k).nu, dOff: nuNum(off.ts, off.es, off.omega, off.k).nu, wOn: fitOmega(on.ts, on.es, on.omega), wOff: fitOmega(off.ts, off.es, off.omega) }
   }
   const pct = (a, b) => (100 * (a / b - 1)).toFixed(3)
-  const fT = await fPair(false), fP = await fPair(true)
-  report.f = { tight: fT, production: fP }
-  gate.check(Math.abs(fT.dOn / fT.dOff - 1) <= 0.01 && Math.abs(fT.wOn / fT.wOff - 1) <= 0.01,
-    `S3.6f water D1 on the GPU (H/dx = 28, pressure/ψ tolerance 1e-4) with the viscous solve on vs off: decay ν ${fT.dOn.toExponential(3)} vs ${fT.dOff.toExponential(3)} m²/s (${pct(fT.dOn, fT.dOff)} %, ±1 %), ω ${fT.wOn.toFixed(4)} vs ${fT.wOff.toFixed(4)} (${pct(fT.wOn, fT.wOff)} %, ±1 %)`)
+  const SEEDS = [78, 101, 202, 303, 404, 505]
+  const fTs = []
+  for (const seed of SEEDS) fTs.push(await fPair(false, seed))
+  const fP = await fPair(true, 78)
+  const stats = xs => { const m = xs.reduce((a, b) => a + b, 0) / xs.length, sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1)); return { m, se: sd / Math.sqrt(xs.length) } }
+  const dd = stats(fTs.map(r => r.dOn / r.dOff - 1)), dw = stats(fTs.map(r => r.wOn / r.wOff - 1))
+  report.f = { tight: fTs, seeds: SEEDS, decay: dd, omega: dw, production: fP }
+  gate.check(Math.abs(dd.m) <= 0.01 && 2 * dd.se <= 0.01 && Math.abs(dw.m) <= 0.01 && 2 * dw.se <= 0.01,
+    `S3.6f water D1 on the GPU (H/dx = 28, pressure/ψ tolerance 1e-4), viscous solve on vs off over ${SEEDS.length} seeds: mean decay difference ${(100 * dd.m).toFixed(3)} % ± ${(100 * dd.se).toFixed(3)} (SE; per seed ${fTs.map(r => pct(r.dOn, r.dOff)).join(' / ')}), mean ω difference ${(100 * dw.m).toFixed(4)} % ± ${(100 * dw.se).toFixed(4)} (each ±1 %, resolved: 2·SE ≤ 1 %)`)
   console.log(`INFO S3.6f at the production tolerance 1e-2 (not gated: the viscous path runs the 1e-2 pressure solve a second time, so on vs off differs by the solver's residual): decay ν ${fP.dOn.toExponential(3)} vs ${fP.dOff.toExponential(3)} m²/s (${pct(fP.dOn, fP.dOff)} %), ω ${pct(fP.wOn, fP.wOff)} %`)
 
   }

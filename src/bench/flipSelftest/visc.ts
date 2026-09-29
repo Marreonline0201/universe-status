@@ -25,11 +25,11 @@ function fill(lo: Vec3, hi: Vec3, rho: number, mu: number, rng: () => number, h 
   return p
 }
 
-async function makeViscSim(device: GPUDevice, n: Vec3, count: number, m: { rho: number; mu: number }, o: { gravity?: Vec3; ring?: Vec3; production?: boolean; h?: number; density?: boolean } = {}) {
+async function makeViscSim(device: GPUDevice, n: Vec3, count: number, m: { rho: number; mu: number }, o: { gravity?: Vec3; ring?: Vec3; production?: boolean; h?: number; density?: boolean; tolerance?: number } = {}) {
   const gpu = await FlipGpuSimulator.create(device, {
     nx: n[0], ny: n[1], nz: n[2], dx: o.h ?? DX, ring: o.ring, gravity: o.gravity ?? [0, -G, 0], maxParticles: count, lRef: L_REF, tauS: TAU,
     projection: true, density: m.rho, densityProjection: o.density ?? true, freeSurface: 'ghost', solverMethod: solverConfig.method, viscosity: true,
-    ...(o.production ? {} : { pressureTolerance: 1e-4, pressureCap: capFor(400), psiTolerance: 1e-4, psiCap: capFor(400) }),
+    ...(o.production ? {} : { pressureTolerance: o.tolerance ?? 1e-4, pressureCap: capFor(o.tolerance ? 2000 : 400), psiTolerance: o.tolerance ?? 1e-4, psiCap: capFor(o.tolerance ? 2000 : 400) }),
   })
   gpu.viscositySolver!.setMuTable(new Float32Array([m.mu]))
   gpu.viscositySolver!.muDefault = m.mu
@@ -283,11 +283,11 @@ export async function viscTaylorGreen(device: GPUDevice, o: { cells: number; mat
 }
 
 /** The D1 standing wave with a material: E_K series (s34-ref / s36-ref standingWave on the GPU). */
-export async function viscStandingWave(device: GPUDevice, o: { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number; production?: boolean }) {
+export async function viscStandingWave(device: GPUDevice, o: { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number; production?: boolean; tolerance?: number; seed?: number }) {
   const m = o.material === 'lava' ? LAVA : WATER
   const Lphys = 56 * DX, Hphys = 28 * DX, h = Hphys / o.cellsPerH
   const nx = Math.round(Lphys / h), nh = o.cellsPerH, ny = 2 * Math.ceil(1.5 * nh / 2)
-  const p = fill([0, 0, 0], [nx - 1, nh - 1, 7], m.rho, m.mu, mulberry32(50 + o.cellsPerH), h)
+  const p = fill([0, 0, 0], [nx - 1, nh - 1, 7], m.rho, m.mu, mulberry32(o.seed ?? 50 + o.cellsPerH), h)
   const k = 2 * Math.PI / Lphys, omega = Math.sqrt(G * k * Math.tanh(k * Hphys)), eps = 0.05
   const A = eps * Hphys * G / (2 * omega) / Math.cosh(k * Hphys)
   for (let q = 0; q < p.n; q++) {
@@ -297,7 +297,7 @@ export async function viscStandingWave(device: GPUDevice, o: { cellsPerH: number
     p.c[1].set([A * k * k * sh * sx, -A * k * k * ch * cx, 0], 3 * q)
   }
   f32round(p)
-  const gpu = await makeViscSim(device, [nx, ny, 8], p.n, m, { production: o.production ?? true, h })
+  const gpu = await makeViscSim(device, [nx, ny, 8], p.n, m, { production: o.production ?? true, h, tolerance: o.tolerance })
   const wsgn = o.walls === 'no-slip' ? -1 : 1
   gpu.viscositySolver!.walls = [wsgn, wsgn, wsgn]
   gpu.viscosityActive = o.on

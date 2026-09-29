@@ -140,13 +140,13 @@ if (want.has('c')) {
 }
 
 // ── the D1 standing wave with a material (s34-ref D1 setup: λ = 56 cells, kH = π, 8 cells deep, ε = 0.05) ──
-function standingWave(cellsPerH, m, viscosity, walls, periods = 4) {
+function standingWave(cellsPerH, m, viscosity, walls, periods = 4, seed = 50 + cellsPerH) {
   const Lphys = 56 * DX, Hphys = 28 * DX, h = Hphys / cellsPerH
   const nx = Math.round(Lphys / h), nh = cellsPerH
   const L = new GridLayout({ nx, ny: 2 * Math.ceil(1.5 * nh / 2), nz: 8, dx: h })
   const sim = new FlipRef(L, { gravity: [0, -G, 0], density: m.rho, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5,
     viscosity, viscousWalls: walls, viscosityDefault: m.mu, viscosityScheme: SCHEME, stokesTolerance: 1e-6 })
-  const pts = [], rng = mulberry32(50 + cellsPerH)
+  const pts = [], rng = mulberry32(seed)
   for (let k = 0; k < 8; k++) for (let j = 0; j < nh; j++) for (let i = 0; i < nx; i++)
     for (let s = 0; s < 8; s++) pts.push([(i + ((s & 1) + rng()) / 2) * h, (j + (((s >> 1) & 1) + rng()) / 2) * h, (k + (((s >> 2) & 1) + rng()) / 2) * h])
   const p = makeParticles(pts.length)
@@ -169,14 +169,20 @@ function standingWave(cellsPerH, m, viscosity, walls, periods = 4) {
 }
 
 // ── S3.6f the skip is invisible: water D1 with the viscous solve forced vs skipped (H/dx = 14 to keep the CPU run short;
-//    the comparison is relative). Pass: E_K decay rates (s34metrics nuNum) within 1 %, E_K periods within 1 %. ──
+//    the comparison is relative). Pass: E_K decay rates (s34metrics nuNum) within 1 %, E_K periods within 1 %.
+//    On a SEED ENSEMBLE (2026-09-29): a single pair is chaotic — any perturbation moves the 4-period decay by ±1–3 %
+//    (s36-gpu header) — so the criterion applies to the mean over six paired jitter seeds, which must resolve it
+//    (2·standard error ≤ 1 %). ──
 if (want.has('f')) {
-  const WATER = { mu: 1.001596e-3, rho: 998.2072 }
-  const off = standingWave(14, WATER, 'off', 'no-slip'), on = standingWave(14, WATER, 'force', 'no-slip')
-  const dOff = nuNum(off.ts, off.es, off.omega, off.k).nu, dOn = nuNum(on.ts, on.es, on.omega, on.k).nu
-  const wOff = fitOmega(off.ts, off.es, off.omega), wOn = fitOmega(on.ts, on.es, on.omega)
-  check(Math.abs(dOn / dOff - 1) <= 0.01 && Math.abs(wOn / wOff - 1) <= 0.01,
-    `S3.6f water D1 (H/dx = 14) with the viscous solve forced vs skipped: decay ν_num ${dOn.toExponential(3)} vs ${dOff.toExponential(3)} m²/s (${(100 * (dOn / dOff - 1)).toFixed(3)} %, ±1 %), E_K ω ${wOn.toFixed(4)} vs ${wOff.toFixed(4)} rad/s (${(100 * (wOn / wOff - 1)).toFixed(3)} %, ±1 %); forced PCG ${on.visc?.iterations} it`)
+  const WATER = { mu: 1.001596e-3, rho: 998.2072 }, SEEDS = [64, 101, 202, 303, 404, 505]
+  const rows = SEEDS.map(seed => {
+    const off = standingWave(14, WATER, 'off', 'no-slip', 4, seed), on = standingWave(14, WATER, 'force', 'no-slip', 4, seed)
+    return { d: nuNum(on.ts, on.es, on.omega, on.k).nu / nuNum(off.ts, off.es, off.omega, off.k).nu - 1, w: fitOmega(on.ts, on.es, on.omega) / fitOmega(off.ts, off.es, off.omega) - 1, it: on.visc?.iterations }
+  })
+  const stats = xs => { const mm = xs.reduce((a, b) => a + b, 0) / xs.length, sd = Math.sqrt(xs.reduce((a, b) => a + (b - mm) ** 2, 0) / (xs.length - 1)); return { m: mm, se: sd / Math.sqrt(xs.length) } }
+  const dd = stats(rows.map(r => r.d)), dw = stats(rows.map(r => r.w))
+  check(Math.abs(dd.m) <= 0.01 && 2 * dd.se <= 0.01 && Math.abs(dw.m) <= 0.01 && 2 * dw.se <= 0.01,
+    `S3.6f water D1 (H/dx = 14) with the viscous solve forced vs skipped over ${SEEDS.length} seeds: mean decay difference ${(100 * dd.m).toFixed(3)} % ± ${(100 * dd.se).toFixed(3)} (SE; per seed ${rows.map(r => (100 * r.d).toFixed(2)).join(' / ')}), mean ω difference ${(100 * dw.m).toFixed(3)} % ± ${(100 * dw.se).toFixed(3)} (each ±1 %, resolved: 2·SE ≤ 1 %); forced PCG ${rows[0].it} it`)
 }
 
 // ── S3.6b E2 lava standing wave (D1 geometry, H/dx = 28, free-slip walls in the viscous solve — FINAL-PLAN S3.6b):
