@@ -18,6 +18,11 @@
 //     ≤ 1 % √(gH) and the mean particle height = H/2 ± ¼·dx, H = N·V_p/A (s31c P1/P2).
 // (d) KEPT ON A SHRINK: with the pool settled, shrinks (+x face in; −z face in, the liquid shifted) → the kept count = the
 //     count this script finds inside the new walls (the solver's wall band, 1e-4·dx) in a sample taken just before.
+// (d0) KEPT ON A GROW (added after the first run; guards the wall-particle deletion the mouse test found): a water block
+//     dropped 0.8 m in the 32 × 40 × 56 tank, 4 s later (the impact pins particles to the floor and walls, wallEps
+//     inside), the −x face moved out 32 → 48 (the liquid shifted +16 dx) → removed 0, the page count unchanged; and at
+//     least 100 particles sat within 1 µm of a wall before the grow (else the check has no teeth: a pool that starts at
+//     rest is never pinned — the first version of this check passed with the bug put back).
 // (e) FPS recorded (not gated) at 64³ and 88³: a 17 cm pool over the whole floor on the real-time clock for 10 s, in a
 //     window on the PRIMARY display (owner 2026-09-29: timing runs stay there); 0 GPU / console errors over the gate.
 import path from 'node:path'
@@ -172,6 +177,18 @@ try {
     gate.check(r.ok && r.kept === inside && after === inside && inside < sm.n,
       `(d) shrink ${what}: ${sm.n} particles, ${inside} inside the new walls (this script) → kept ${r.kept}, removed ${r.removed}, page count ${after}`)
   }
+
+  // (d0) kept on a grow, from a state with wall-pinned particles (a dropped block, 4 s after the impact)
+  const t32 = await tankOf(page)
+  await loadScenario(page, { name: 'tank-drop', materials: [], gravity_mps2: G_STANDARD, spawns: [{ material: 'Water', box: { min: [0.4, 0.8, 0.8], max: [1.4, 1.6, 2.2] } }] }, 3)
+  const sd = await sampleAtFrame(page, 240), extD = t32.sizeM
+  let atRisk = 0
+  for (let i = 0; i < sd.n; i++) if ([0, 1, 2].some(a => { const v = sd.pos[3 * i + a] * L; return v <= 1e-6 || v >= extD[a] - 1e-6 })) atRisk++
+  const g = await page.evaluate(([c, sh]) => window.__fluidBench.resizeTank(c, sh), [[48, 40, 56], [16 * DX, 0, 0]])
+  const gAfter = (await status(page)).count
+  report.d0 = { tank: t32.cells, before: sd.n, atRisk, r: g, after: gAfter }
+  gate.check(t32.cells.join() === '32,40,56' && atRisk >= 100 && g.ok && g.kept === sd.n && g.removed === 0 && gAfter === sd.n,
+    `(d0) grow −x face out 32 → 48 (liquid shifted +16 dx), a dropped block 4 s after impact: ${sd.n} particles, ${atRisk} within 1 µm of a wall (≥ 100 for teeth) → kept ${g.kept}, removed ${g.removed}, page count ${gAfter}`)
 
   // (b) the real pointer path, each drag from the 64³ tank
   // drag directions from the handles' own screen positions (outward = from the opposite handle to this one)
