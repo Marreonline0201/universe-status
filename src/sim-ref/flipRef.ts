@@ -19,7 +19,7 @@
 // - Walls (FaceType.SOLID): u·n = u_solid·n with static walls (u_solid = 0). Tangential ghost faces are filled by
 //   extrapolation (free slip for interpolation); see FaceType.GHOST.
 import { FaceType, type GridLayout, type Vec3 } from './gridLayout'
-import { VISCOUS_RUN_NU } from '../composition/liquidGate'
+import { VISCOUS_RUN_NU, INCOMPRESSIBLE_NU_NUM } from '../composition/liquidGate'
 
 type Axis = 0 | 1 | 2
 const AXES: readonly Axis[] = [0, 1, 2]
@@ -41,7 +41,29 @@ export interface RefParticles {
   enthalpy: Float64Array
   /** Dynamic viscosity μ, Pa·s (S3.6; absent → FlipRefOptions.viscosityDefault). */
   mu?: Float64Array
+  /** Immiscibility (drift flux): the particle's slip velocity relative to its cell's continuous phase, m/s (3 per
+   *  particle), and its sub-grid drop diameter, m (0 = resolved, not a sub-grid drop). Created on first use. */
+  slip?: Float64Array
+  drop?: Float64Array
 }
+
+/** Immiscible liquids (vault fluid/realism-2026-09/IMMISCIBILITY-spec.md; owner decision 2026-09-29): Manninen,
+ *  Taivassalo & Kallio 1996 algebraic-slip drift flux for SUB-GRID drops. */
+export interface ImmiscibleOptions {
+  /** ρ (kg/m³) and μ (Pa·s) per material id (RefParticles.material). */
+  props: Record<number, { rho: number; mu: number }>
+  /** Interfacial tension σ (N/m) of a pair, or null: miscible or unsourced — never separated by slip. */
+  sigma: (a: number, b: number) => number | null
+  /** Scenario override: every dispersed drop has this diameter (m) instead of Hinze's d_max. */
+  dropDiameter?: number
+  /** The scheme's numerical viscosity (m²/s), added to the carrier's in ε = 2·ν_eff·S:S (the implicit-LES assumption,
+   *  disclosed); default liquidGate.INCOMPRESSIBLE_NU_NUM (gate D2). */
+  nuNum?: number
+}
+
+/** Drag factor f = C_D·Re/24 of a sphere (MTK (40), Schiller & Naumann 1933): 1 + 0.15·Re^0.687 below Re 1000, the
+ *  Newton regime C_D = 0.44 above (the two meet within 0.5 % at Re 1000). */
+export function dragFactor(Re: number): number { return Re < 1000 ? 1 + 0.15 * Math.pow(Re, 0.687) : 0.44 * Re / 24 }
 
 export function makeParticles(n: number): RefParticles {
   return {
@@ -111,6 +133,8 @@ export interface FlipRefOptions {
   sphereCoupling?: 'weak' | 'monolithic'
   /** Sphere density ρ_s (kg/m³) for the monolithic coupling (M = ρ_s·V_J). */
   sphereDensity?: number
+  /** Immiscible liquids: sub-grid drop slip (driftFlux). Absent: every material moves with the grid (F1's limit). */
+  immiscible?: ImmiscibleOptions
 }
 
 /** S3.6 viscous solve report. */
@@ -260,6 +284,13 @@ export class FlipRef {
   sphere: RefSphere | null = null
   sphereCoupling: 'weak' | 'monolithic'
   sphereDensity: number
+  readonly immiscible: ImmiscibleOptions | null
+  /** The drift velocity u_V of each particle from the last driftFlux (m/s, 3 per particle), added in advect. */
+  drift = new Float64Array(0)
+  /** The substep's total pressure when it projected twice (the viscous path), else null (this.pressure is it). */
+  pressureTotal: Float64Array | null = null
+  /** Last driftFlux: dispersed particles, largest |slip| (m/s), the mean drop diameter of the dispersed (m). */
+  lastDrift = { dispersed: 0, maxSlip: 0, meanDrop: 0, tooLarge: 0 }
   /** Monolithic coupling: the discrete pressure torque J_rot·p about the centre (N·m) of the last solve — logged, not
    *  applied (a sphere's continuum pressure torque is zero; FINAL-PLAN S3.7: rank 6 only if this is non-negligible). */
   sphereTorque: Vec3 = [0, 0, 0]
@@ -300,6 +331,7 @@ export class FlipRef {
     this.viscosityMean = opts.viscosityMean ?? 'harmonic'   // gate S3.6c: arithmetic errs 10–17 % in the soft layer's shear
     this.viscosityTolerance = opts.viscosityTolerance ?? 1e-10
     this.viscousTestBC = opts.viscousTestBC
+    this.immiscible = opts.immiscible ?? null
     this.sphereCoupling = opts.sphereCoupling ?? 'weak'
     this.sphereDensity = opts.sphereDensity ?? NaN
     if (this.sphereCoupling === 'monolithic' && !(this.sphereDensity > 0)) throw new Error('FlipRef: monolithic sphere coupling needs sphereDensity')
@@ -344,18 +376,178 @@ export class FlipRef {
       this.solvePressure(dt)
       this.projectVelocities(dt)
       // S3.6 (Batty & Bridson 2008 §3): viscosity on the projected, extrapolated field, then a second projection
+      this.pressureTotal = null
       if (this.viscosityRuns(p)) {
+        const p1 = this.pressure.slice()
         this.extrapolate()
         this.applySolidFaces()
         this.viscositySolve(p, dt)
         this.solvePressure(dt)
         this.projectVelocities(dt)
+        // the step's total pressure (each projection is an impulse Δt·∇p/ρ): the drift flux's a = ∇p/ρ_m needs it
+        this.pressureTotal = p1
+        for (let i = 0; i < p1.length; i++) p1[i] += this.pressure[i]
       } else this.lastViscosity = null
     }
     this.extrapolate()
     this.applySolidFaces()
     this.g2p(p)
+    if (this.immiscible) this.driftFlux(p, dt)
     this.advect(p, dt)
+  }
+
+  /** Manninen, Taivassalo & Kallio 1996 algebraic-slip drift flux for sub-grid drops (spec §3–5, §8), after G2P:
+   *  - α_k: kernel-weighted volume fraction of material k at each cell centre (V_p is the same for every particle);
+   *    the continuous phase c of a cell is its majority material.
+   *  - A particle whose material is not its cell's majority, and whose pair with c has a sourced σ, is a DISPERSED drop
+   *    of diameter d: the scenario's, or Hinze 1955 d_max = 0.725·(ρ_c/σ)^(−3/5)·ε^(−2/5) with ε = 2·ν_eff·S:S at its
+   *    cell (ν_eff = ν_c + ν_num), breakup only (d ← min(d, d_max)). A drop of a cell or more (d ≥ dx) is resolved
+   *    by the grid itself, so it has no slip — this also keeps a quiet interface sharp (ε → 0 ⇒ d_max → ∞).
+   *  - Slip (§8.3, (58) + (40) + virtual mass): the drop's equation of motion (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a −
+   *    18 μ_m f(Re)·s/d² with a = ∇p/ρ_m (the total pressure: g − Du/Dt), f = dragFactor (Schiller–Naumann / Newton),
+   *    Re = d·ρ_c·|s|/μ_m and μ_m the Ishii–Zuber mixture viscosity μ_c(1 − α_d)^(−2.5 μ*) with α_pm = 1 — integrated
+   *    exactly over the step with f taken at the step's start (the OpenFOAM-10 Lagrangian parcel scheme). Its fixed point
+   *    is (58)'s equilibrium slip u_eq; from rest the drop accelerates at (ρ_p − ρ_m)·a/(ρ_p + ½ρ_c).
+   *  - Drift (MTK (33)): u_V = u_C − Σ_k α_k ū_Ck (dispersed; ū_Ck the cell mean slip of material k), −Σ_k α_k ū_Ck for the
+   *    others — no net volume moves through a cell. Particles advect with u + u_V; their carried velocity is unchanged. */
+  driftFlux(p: RefParticles, dt: number): void {
+    const I = this.immiscible!, L = this.layout, h = L.dx, S = L.size, lab = this.label, pr = this.pressureTotal ?? this.pressure
+    if (!p.slip || p.slip.length !== 3 * p.n) p.slip = new Float64Array(3 * p.n)
+    if (!p.drop || p.drop.length !== p.n) p.drop = new Float64Array(p.n)
+    if (this.drift.length !== 3 * p.n) this.drift = new Float64Array(3 * p.n)
+    this.drift.fill(0)
+    const out = { dispersed: 0, maxSlip: 0, meanDrop: 0, tooLarge: 0 }
+    const mats = [...new Set(Array.from(p.material.subarray(0, p.n)))].sort((a, b) => a - b)
+    const K = mats.length, kOf = new Map(mats.map((m, k) => [m, k]))
+    if (K < 2) { p.slip.fill(0); p.drop.fill(0); this.lastDrift = out; return }
+    const prop = mats.map(m => { const q = I.props[m]; if (!q) throw new Error(`FlipRef.driftFlux: no ρ, μ for material ${m}`); return q })
+    const nuNum = I.nuNum ?? INCOMPRESSIBLE_NU_NUM
+    // α_k at cell centres: trilinear weights of every particle
+    const W = new Float64Array(K * S), Wt = new Float64Array(S)
+    const n3 = [L.nx, L.ny, L.nz]
+    const cellsOf = (x: number, y: number, z: number, fn: (s: number, w: number) => void) => {
+      const fx = x / h - 0.5, fy = y / h - 0.5, fz = z / h - 0.5
+      const i0 = Math.floor(fx), j0 = Math.floor(fy), k0 = Math.floor(fz), tx = fx - i0, ty = fy - j0, tz = fz - k0
+      for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
+        const i = i0 + di, j = j0 + dj, k = k0 + dk
+        if (i < 0 || j < 0 || k < 0 || i >= n3[0] || j >= n3[1] || k >= n3[2]) continue
+        const w = (di ? tx : 1 - tx) * (dj ? ty : 1 - ty) * (dk ? tz : 1 - tz)
+        if (w > 0) fn(L.idx(i, j, k), w)
+      }
+    }
+    for (let q = 0; q < p.n; q++) {
+      const k = kOf.get(p.material[q])!
+      cellsOf(p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2], (s2, w) => { W[k * S + s2] += w; Wt[s2] += w })
+    }
+    const alpha = (k: number, s2: number) => (Wt[s2] > 0 ? W[k * S + s2] / Wt[s2] : 0)
+    const cellOf = (q: number) => L.idx(cellIndex(p.pos[3 * q], h, L.nx), cellIndex(p.pos[3 * q + 1], h, L.ny), cellIndex(p.pos[3 * q + 2], h, L.nz))
+    const majority = (s2: number) => { let c = 0; for (let k = 1; k < K; k++) if (alpha(k, s2) > alpha(c, s2)) c = k; return c }
+    // ∇p on the three face grids (p = 0 in AIR, 0 across SOLID faces), sampled trilinearly like the velocity
+    const gp = AXES.map(a => {
+      const g = new Float64Array(S), [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const fs2 = L.idx(i, j, k)
+        if (this.faceType[a][fs2] === FaceType.SOLID) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        const pp = lab[fs2] === CellLabel.LIQUID ? pr[fs2] : 0, pm = lab[sm] === CellLabel.LIQUID ? pr[sm] : 0
+        g[fs2] = (pp - pm) / h
+      }
+      return g
+    })
+    const gradP = (x: number, y: number, z: number): Vec3 => AXES.map(a => {
+      const st = stencil(L, a, x, y, z)
+      let v = 0
+      for (let n = 0; n < 8; n++) v += st.w[n] * gp[a][L.idx(st.i[n], st.j[n], st.k[n])]
+      return v
+    }) as Vec3
+    // ε = 2 ν_eff S:S at a cell centre (cached). ∇u: ∂u_a/∂x_a from the cell's own two faces; ∂u_a/∂x_b (b ≠ a) by central
+    // differences of the cell-centred u_a = ½(u_a(c) + u_a(c + e_a)) over the neighbours along b, one-sided at the tank
+    // walls — only in-range faces are read (the GPU cellInfo kernel computes the same)
+    const epsCache = new Map<number, number>()
+    const Gm = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    const uc = (a: Axis, c: number[]) => {
+      const c2 = [...c]; c2[a]++
+      return 0.5 * (this.u[a][L.idx(c[0], c[1], c[2])] + this.u[a][L.idx(c2[0], c2[1], c2[2])])
+    }
+    const epsAt = (s2: number, nuEff: number) => {
+      const hit = epsCache.get(s2)
+      if (hit !== undefined) return hit
+      const c = this.coordsOf(s2)
+      for (const a of AXES) for (const b of AXES) {
+        if (a === b) { const c2 = [...c]; c2[a]++; Gm[a][b] = (this.u[a][L.idx(c2[0], c2[1], c2[2])] - this.u[a][s2]) / h; continue }
+        const lo = [...c], hi = [...c]
+        lo[b] = Math.max(0, c[b] - 1); hi[b] = Math.min(n3[b] - 1, c[b] + 1)
+        Gm[a][b] = hi[b] > lo[b] ? (uc(a, hi) - uc(a, lo)) / ((hi[b] - lo[b]) * h) : 0
+      }
+      let ss = 0
+      for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) { const sab = 0.5 * (Gm[a][b] + Gm[b][a]); ss += sab * sab }
+      const e = 2 * nuEff * ss
+      epsCache.set(s2, e)
+      return e
+    }
+    // pass 1: the slip of every dispersed particle; cell sums of slip per material
+    const slipSum = new Float64Array(3 * K * S), slipCnt = new Float64Array(K * S)
+    const dispersed = new Uint8Array(p.n)
+    let dropSum = 0
+    for (let q = 0; q < p.n; q++) {
+      const s2 = cellOf(q), k = kOf.get(p.material[q])!, c = majority(s2)
+      const sig = k === c ? null : I.sigma(mats[k], mats[c])
+      if (sig === null || !(sig > 0)) { p.slip.fill(0, 3 * q, 3 * q + 3); p.drop[q] = 0; continue }
+      const rp = prop[k].rho, rc = prop[c].rho, muC = prop[c].mu, muP = prop[k].mu
+      const nuEff = muC / rc + nuNum
+      let d: number
+      if (I.dropDiameter !== undefined) d = I.dropDiameter
+      else {
+        const eps = epsAt(s2, nuEff)
+        const dMax = eps > 0 ? 0.725 * Math.pow(rc / sig, -0.6) * Math.pow(eps, -0.4) : Infinity
+        d = p.drop[q] > 0 ? Math.min(p.drop[q], dMax) : dMax
+      }
+      if (!(d < h)) { p.slip.fill(0, 3 * q, 3 * q + 3); p.drop[q] = 0; out.tooLarge++; continue }
+      p.drop[q] = d
+      let rm = 0
+      for (let kk = 0; kk < K; kk++) rm += alpha(kk, s2) * prop[kk].rho
+      const aD = 1 - alpha(c, s2), muStar = (muP + 0.4 * muC) / (muP + muC)
+      const muM = muC * Math.pow(Math.max(1e-12, 1 - aD), -2.5 * muStar)
+      const gP = gradP(p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2])
+      // the drop's equation of motion: (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = ∇p/ρ_m, integrated over
+      // the step with the drag factor f taken at the step's start (OpenFOAM-10 MomentumParcel::calc, Re from the current
+      // slip, + integrationSchemes::analytical): s ← s + (s_tgt − s)·(1 − e^(−Δt/τ)), s_tgt = (ρ_p − ρ_m)·a·d²/(18 μ_m f),
+      // τ = (ρ_p + ½ρ_c)·d²/(18 μ_m f). Exact initial acceleration from rest; the fixed point is u_eq of (58) + (40)
+      const sOld = [p.slip[3 * q], p.slip[3 * q + 1], p.slip[3 * q + 2]]
+      const kd = d * d / (18 * muM * dragFactor(d * rc * Math.hypot(sOld[0], sOld[1], sOld[2]) / muM))
+      const m = -Math.expm1(-dt / ((rp + 0.5 * rc) * kd))
+      for (let a = 0; a < 3; a++) {
+        const u = sOld[a] + ((rp - rm) * (gP[a] / rm) * kd - sOld[a]) * m
+        p.slip[3 * q + a] = u
+        slipSum[3 * (k * S + s2) + a] += u
+      }
+      slipCnt[k * S + s2]++
+      dispersed[q] = 1
+      out.dispersed++
+      dropSum += d
+      out.maxSlip = Math.max(out.maxSlip, Math.hypot(p.slip[3 * q], p.slip[3 * q + 1], p.slip[3 * q + 2]))
+    }
+    // pass 2: the drift, u_V = u_C − Σ_k α_k ū_Ck (MTK (33)); the continuous phase and resolved drops: −Σ_k α_k ū_Ck
+    const Jc = new Map<number, Vec3>()
+    const Jof = (s2: number): Vec3 => {
+      let v = Jc.get(s2)
+      if (v) return v
+      v = [0, 0, 0]
+      for (let k = 0; k < K; k++) {
+        const cnt = slipCnt[k * S + s2]
+        if (!cnt) continue
+        const al = alpha(k, s2)
+        for (let a = 0; a < 3; a++) v[a] += al * slipSum[3 * (k * S + s2) + a] / cnt
+      }
+      Jc.set(s2, v)
+      return v
+    }
+    for (let q = 0; q < p.n; q++) {
+      const J = Jof(cellOf(q))
+      for (let a = 0; a < 3; a++) this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - J[a]
+    }
+    out.meanDrop = out.dispersed ? dropSum / out.dispersed : 0
+    this.lastDrift = out
   }
 
   /** Solid fractions of the sphere (all zero without one): each face's and cell's dx³ control volume from 2×2×2
@@ -1337,9 +1529,11 @@ export class FlipRef {
       const mx = clampIn(x + 0.5 * dt * v1x, eps, ext[0] - eps)
       const my = clampIn(y + 0.5 * dt * v1y, eps, ext[1] - eps)
       const mz = clampIn(z + 0.5 * dt * v1z, eps, ext[2] - eps)
-      const nx = x + dt * this.sample(0, mx, my, mz, null)
-      const ny = y + dt * this.sample(1, mx, my, mz, null)
-      const nz = z + dt * this.sample(2, mx, my, mz, null)
+      // immiscibility: the drift velocity u_V (driftFlux), constant over the step, moves the particle relative to the grid
+      const dr = this.immiscible && this.drift.length === 3 * p.n
+      const nx = x + dt * (this.sample(0, mx, my, mz, null) + (dr ? this.drift[3 * q] : 0))
+      const ny = y + dt * (this.sample(1, mx, my, mz, null) + (dr ? this.drift[3 * q + 1] : 0))
+      const nz = z + dt * (this.sample(2, mx, my, mz, null) + (dr ? this.drift[3 * q + 2] : 0))
       const cx = clampIn(nx, eps, ext[0] - eps), cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
       if (cx !== nx || cy !== ny || cz !== nz) this.diag.wallClamps++
       p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
