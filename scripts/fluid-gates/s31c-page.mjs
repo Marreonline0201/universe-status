@@ -57,6 +57,23 @@
 //      0.40; the law with the kernel's inputs × 0.969–0.991 of U_eq (the mercury diagnosis holds), the model × 1.07–1.16
 //      of its own law and the measured slip × 1.09–1.42 of the model's: a second gap (transport or this observable in a
 //      still-convecting plume), OPEN — the band is not moved.
+//    RE-SCOPE, REGISTERED 2026-09-29 19:15 BEFORE ANY E3/E6 DATA (the B1c synthesis memo's recommendation (a); vault
+//      active-plan step 1; the arms study scripts/studies/b1c-arms.mjs was running, its output unread). For reasons that
+//      do not depend on any E3/E6 result: (1) this observable does not measure the slip — per drop it measures A + B +
+//      C + D (the model's slip, the drop–cohort difference of the resolved velocity, of J, and of the density
+//      correction + RK2 terms); "the plume carries both, so it cancels" holds only for velocity uniform within a cell,
+//      and near the floor it is trilinear with w = 0 on the floor face, the density correction a trilinear displacement,
+//      and the height cut inside row 1; (2) the ±10 % band is a quiescent batch creaming front's (Jeelani & Hartland
+//      1998 via Mousavi et al. 2024), not a decaying plume at 4 s (real drops in residual turbulence depart from their
+//      quiescent slip by −8 % to −35 %: Fornari, Picano & Brandt 2016; Poorte & Biesheuvel 2002); (3) design change 4's
+//      filter selects on the END of the window. Decided: design change 4's FAIL stays on record and the ±0.1 band is
+//      unchanged. The successors, each with a control that must fail: B1c-T (gated) in-situ transport closure
+//      Λ = Σ(Δy − Δt·v_y)/Σ Δt·u_V,y = 1 ± 0.02 per substep at the drops over [4, 4.5] s (control: J omitted → ≈ 1 − α,
+//      outside); B1c-M (gated) in-situ replay exactness (≥ 99.9 % of dispersed drop-substeps |s_n − s_rep| ≤
+//      1e-4·max(|s_n|, 1e-4 m/s); control: μ_w in place of μ_m fails); model / own law reported with its attribution; the
+//      law-vs-reality physics check moves to E1 (a quiescent dispersion on the page, needs hooks H1 + H2 — H2 is an
+//      owner decision); this slip ratio becomes REPORTED once B1c-T and B1c-M run here — until then B1c-slip stays gated
+//      (and failing). Nothing here — band, window, height cut, subset — is to be tuned after the E3/E6 data.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
