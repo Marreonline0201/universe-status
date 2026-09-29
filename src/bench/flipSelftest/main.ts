@@ -16,6 +16,7 @@ import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayle
 import { sphereKernels, spherePhysics } from './sphere'
 import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert, viscCost } from './visc'
 import { stokesImages, stokesK40, stokesPhysics, stokesCost, stokesProfile } from './stokes'
+import { anisoKernels, anisoCost } from './aniso'
 import { solveCost, profileStep } from './perf'
 import { immKernels, immRest, immLayered, immCost, immB1 } from './immiscible'
 import { s37Kernels, s37Physics } from './s37'
@@ -328,6 +329,8 @@ try {
     else if (test === 'stokesK40') out = await stokesK40(device, params as { seed?: number; tol?: number; steps?: number })
     else if (test === 'stokesCost') out = await stokesCost(device, params as { reps?: number })
     else if (test === 'stokesProfile') out = await stokesProfile(device, params as { caps?: number[]; reps?: number })
+    else if (test === 'anisoKernels') out = await anisoKernels(device, params as { seed?: number; interiorMin?: number })
+    else if (test === 'anisoCost') out = await anisoCost(device, params as { layers?: number[]; reps?: number })
     else if (test === 'stokesPhysics') out = await stokesPhysics(device, params as { test: 'A1S' | 'A5S'; Rc?: number; tol?: number; seed?: number })
     else if (test === 'immKernels') out = await immKernels(device, params as { kind?: string; seed?: number })
     else if (test === 's37Kernels') out = await s37Kernels(device, params as { seed?: number; tol?: number })

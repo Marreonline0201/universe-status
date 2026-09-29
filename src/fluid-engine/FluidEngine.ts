@@ -839,6 +839,7 @@ export class FluidEngine {
         if (opts.resetClockStats) { this.droppedTime = 0; this.presentIntervals = []; this.frameAdvances = []; this.rtSamples = [] }
         if (opts.resetDiagnostics) { this.sim?.resetDiagnostics(); this.particleSubsteps = 0 }
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
+        if (opts.splatShape) this.ssfrPipeline?.setSplatShape(opts.splatShape)
         if (opts.disableImmiscible !== undefined) (this.sim as { setImmiscibleDisabled?: (v: boolean) => void } | null)?.setImmiscibleDisabled?.(opts.disableImmiscible)
       },
       viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,

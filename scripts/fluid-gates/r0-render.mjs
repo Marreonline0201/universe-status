@@ -169,15 +169,15 @@ try {
       const r = await probe({ width: V3W, height: V3H, camera: cam, targets: ['thickness'], sun: false, ...extra })
       let sum = 0
       for (const t of r.t.thickness) sum += t
-      return { measuredM3: sum * areaPx * MPU * MPU, radius: r.splatRadius, volume: r.particleVolume }
+      return { measuredM3: sum * areaPx * MPU * MPU, radius: r.splatRadius, volume: r.particleVolume, shape: r.splatShape }
     }
     const expectedM3 = s.n * Vp * MPU ** 3
     report.v3 = { n: s.n, expectedM3, runs: [] }
-    for (const [label, extra] of [['default splat radius', {}], ['legacy radius 0.025 wu', { splatRadiusFactor: 0.025 / Math.cbrt(Vp) }]]) {
+    for (const [label, extra] of [['default splats', {}], ['spheres, default radius', { splatShape: 'sphere' }], ['spheres, legacy radius 0.025 wu', { splatShape: 'sphere', splatRadiusFactor: 0.025 / Math.cbrt(Vp) }]]) {
       const m = await integral(extra)
       const ratio = m.measuredM3 / expectedM3
       report.v3.runs.push({ label, ...m, ratio })
-      gate.check(Math.abs(ratio - 1) <= 0.05, `V3 thickness integral, ${label} (r = ${m.radius.toFixed(5)} wu): Σ t·dA = ${m.measuredM3.toFixed(4)} m³ vs N·V_p = ${expectedM3.toFixed(4)} m³ (N = ${s.n}); ratio ${ratio.toFixed(4)} (1 ± 0.05)`)
+      gate.check(Math.abs(ratio - 1) <= 0.05, `V3 thickness integral, ${label} (${m.shape === 'aniso' ? 'ellipsoids' : `r = ${m.radius.toFixed(5)} wu`}): Σ t·dA = ${m.measuredM3.toFixed(4)} m³ vs N·V_p = ${expectedM3.toFixed(4)} m³ (N = ${s.n}); ratio ${ratio.toFixed(4)} (1 ± 0.05)`)
     }
     const c = await integral({ particleVolume: 2 * Vp })
     report.v3.control = { ...c, ratio: c.measuredM3 / expectedM3 }

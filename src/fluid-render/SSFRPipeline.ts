@@ -22,6 +22,7 @@ import slabShaderSrc from './shaders/ssfr_slab.wgsl?raw'
 import { BG_BASE, clampBrightness } from './bgBrightness'
 import { srgbDecode, type Rgb } from './optics/colorimetry'
 import { buildOpticsLut, LUT_LMAX_M, LUT_N } from './optics/materials'
+import { AnisoKernel } from './AnisoKernel'
 
 export interface SSFRConfig {
   /** Rest volume of one particle in world units³ (the tank edge is 1 world unit). Set from the solver's packing:
@@ -29,8 +30,11 @@ export interface SSFRConfig {
   particleVolume: number
   /** Metres per world unit (src/fluid-engine/units.ts DOMAIN_L_M). */
   metresPerUnit: number
-  /** Splat radius in units of the rest lattice spacing ∛V_p (default SPLAT_RADIUS_FACTOR). */
+  /** Splat radius in units of the rest lattice spacing ∛V_p (default SPLAT_RADIUS_FACTOR) — the 'sphere' shape. */
   splatRadiusFactor?: number
+  /** 'sphere': every particle a sphere of splatRadiusFactor·∛V_p; 'aniso': ellipsoids shaped by each particle's
+   *  neighbourhood (AnisoKernel, vault x10). Default SPLAT_SHAPE. */
+  splatShape?: SplatShape
   blurRadius: number        // bilateral kernel radius, pixels
   blurDepthFalloff: number  // bilateral range falloff, 1/world unit
   /** ED-2 cap on the internal render size, in pixels (area). Default MAX_RENDER_PIXELS. */
@@ -50,6 +54,12 @@ export const MAX_RENDER_PIXELS = 1280 * 800
  *  (limits: |offset| ≤ 0.25 dx = 1.42 cm, holes ≤ 1 %). The rendered volume and colour do not depend on the radius:
  *  thickness is volume-normalised. A world-space narrow-range filter (render rung 2) could allow smaller splats. */
 export const SPLAT_RADIUS_FACTOR = 1.0
+export type SplatShape = 'sphere' | 'aniso'
+/** The default splat shape: ellipsoids (owner decision 2026-09-29; vault research/x10). Measured with r0-surface on the
+ *  settled pool and FLUID TEST's thin scenes (8 ppc, 2026-09-29): 1.0 s spheres read +2.07 / +0.99 cm above the
+ *  simulated surface (top / oblique; limit ±1.42) and 2.2 % / 4.6 % holes (falling block / puddle; limit 1 %) — the
+ *  ellipsoids +1.14 / +0.11 cm and 0.37 % / 0.13 %. 'sphere' remains for the radius scans and the positive controls. */
+export const SPLAT_SHAPE: SplatShape = 'aniso'
 
 // ── The sun ───────────────────────────────────────────────────────────────────────────────────────────────
 /** IAU 2015 Resolution B3 nominal solar radius, 6.957 × 10⁸ m (Prša et al. 2016, AJ 152, 41; arXiv:1510.07674). */
@@ -86,6 +96,7 @@ export interface ProbeOverrides {
   marker?: { x: number; z: number; radius: number; color: Rgb }
   particleVolume?: number
   splatRadiusFactor?: number
+  splatShape?: SplatShape
   /** Replace one composition's optics record: kind 0 dielectric / 1 conductor, IOR, LUT row (−1 none). */
   material?: { compId: number; kind: 0 | 1; ior: number; lutRow: number }
   /** Hide the drop-ball for this probe. */
@@ -131,6 +142,7 @@ export interface ProbeResult {
   thicknessFormat: GPUTextureFormat
   particleVolume: number
   splatRadius: number
+  splatShape: SplatShape
   metresPerUnit: number
   /** color/bg: RGBA8 (logical channel order); linear: 4 × f32; thickness/depth: f32; compId: u32. */
   data: Partial<Record<ProbeTarget, ArrayBuffer>>
@@ -189,6 +201,11 @@ export class SSFRPipeline {
   private bgPipeline!: GPURenderPipeline
   private depthPipeline!: GPURenderPipeline
   private thicknessPipeline!: GPURenderPipeline
+  private depthAnisoPipeline!: GPURenderPipeline
+  private thicknessAnisoPipeline!: GPURenderPipeline
+  private depthAnisoBGL!: GPUBindGroupLayout
+  private thicknessAnisoBGL!: GPUBindGroupLayout
+  private aniso: AnisoKernel | null = null
   private blurPipeline!: GPURenderPipeline
   private compositePipeline!: GPURenderPipeline
   private compositeProbePipeline: GPURenderPipeline | null = null
@@ -221,12 +238,17 @@ export class SSFRPipeline {
   constructor(config: SSFRConfig) {
     this.config = {
       splatRadiusFactor: SPLAT_RADIUS_FACTOR,
+      splatShape: SPLAT_SHAPE,
       maxRenderPixels: MAX_RENDER_PIXELS,
       ...config,
     }
   }
 
   /** Splat radius in world units for a particle volume: factor × the rest lattice spacing ∛V_p. */
+  /** The splat shape of the frames that follow (bench A/B; the default is SPLAT_SHAPE). */
+  setSplatShape(s: SplatShape) { this.config.splatShape = s }
+  get splatShape(): SplatShape { return this.config.splatShape }
+
   splatRadius(particleVolume = this.config.particleVolume, factor = this.config.splatRadiusFactor): number {
     return factor * Math.cbrt(particleVolume)
   }
@@ -343,6 +365,27 @@ export class SSFRPipeline {
       primitive: { topology: 'triangle-list' },
     })
 
+    // 1 + 2 with ellipsoid splats (the particle's shape in binding 2 / 3)
+    this.depthAnisoBGL = d.createBindGroupLayout({ entries: [U(0, VF), S(1, GPUShaderStage.VERTEX), S(2, GPUShaderStage.VERTEX)] })
+    this.depthAnisoPipeline = await d.createRenderPipelineAsync({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.depthAnisoBGL] }),
+      vertex: { module: depthModule, entryPoint: 'vs_aniso' },
+      fragment: { module: depthModule, entryPoint: 'fs_aniso', targets: [{ format: 'r32float' }, { format: 'r32uint' }] },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
+      primitive: { topology: 'triangle-list' },
+    })
+    this.thicknessAnisoBGL = d.createBindGroupLayout({ entries: [U(0, VF), S(1, GPUShaderStage.VERTEX), T(2, 'unfilterable-float'), S(3, GPUShaderStage.VERTEX)] })
+    this.thicknessAnisoPipeline = await d.createRenderPipelineAsync({
+      layout: d.createPipelineLayout({ bindGroupLayouts: [this.thicknessAnisoBGL] }),
+      vertex: { module: thicknessModule, entryPoint: 'vs_aniso' },
+      fragment: {
+        module: thicknessModule, entryPoint: 'fs_aniso',
+        targets: [{ format: this.thicknessFormat, blend: { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } } }],
+      },
+      primitive: { topology: 'triangle-list' },
+    })
+    this.aniso = await AnisoKernel.create(d)
+
     // 3 blur
     const blurModule = this.module('ssfr blur', blurShaderSrc)
     this.blurBGL = d.createBindGroupLayout({ entries: [U(0, VF), T(1, 'unfilterable-float')] })
@@ -446,6 +489,7 @@ export class SSFRPipeline {
     cam[50] = radius
     new Uint32Array(cam.buffer, 51 * 4, 1)[0] = f.count
     cam[52] = volume / ((4 / 3) * Math.PI * radius ** 3) * this.config.metresPerUnit   // chordToMetres
+    cam[53] = this.config.metresPerUnit
     q.writeBuffer(this.cameraUBO, 0, cam)
 
     const bgCam = new Float32Array(52)
@@ -533,6 +577,8 @@ export class SSFRPipeline {
       pass.end()
     } else {
       const draw = f.count > 0 && f.particleBuffer !== null && !f.overrides?.hideParticles
+      const shape = f.overrides?.splatShape ?? this.config.splatShape ?? SPLAT_SHAPE
+      const anisoBuf = draw && shape === 'aniso' && this.aniso ? this.aniso.encode(encoder, f.particleBuffer!, f.count, f.overrides?.particleVolume ?? this.config.particleVolume) : null
       const depthPass = encoder.beginRenderPass({
         colorAttachments: [
           { view: t.depthView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } },
@@ -541,7 +587,12 @@ export class SSFRPipeline {
         ],
         depthStencilAttachment: { view: t.hwDepthView, depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1.0 },
       })
-      if (draw) {
+      if (draw && anisoBuf) {
+        depthPass.setPipeline(this.depthAnisoPipeline)
+        depthPass.setBindGroup(0, d.createBindGroup({ layout: this.depthAnisoBGL, entries: [{ binding: 0, resource: { buffer: this.cameraUBO } }, { binding: 1, resource: { buffer: f.particleBuffer! } }, { binding: 2, resource: { buffer: anisoBuf } }] }))
+        depthPass.setIndexBuffer(this.quadIndexBuf, 'uint32')
+        depthPass.drawIndexed(f.count * 6)
+      } else if (draw) {
         depthPass.setPipeline(this.depthPipeline)
         depthPass.setBindGroup(0, d.createBindGroup({ layout: this.depthBGL, entries: [{ binding: 0, resource: { buffer: this.cameraUBO } }, { binding: 1, resource: { buffer: f.particleBuffer! } }] }))
         depthPass.setIndexBuffer(this.quadIndexBuf, 'uint32')
@@ -552,7 +603,15 @@ export class SSFRPipeline {
       const thickPass = encoder.beginRenderPass({
         colorAttachments: [{ view: t.thicknessView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
       })
-      if (draw) {
+      if (draw && anisoBuf) {
+        thickPass.setPipeline(this.thicknessAnisoPipeline)
+        thickPass.setBindGroup(0, d.createBindGroup({
+          layout: this.thicknessAnisoBGL,
+          entries: [{ binding: 0, resource: { buffer: this.cameraUBO } }, { binding: 1, resource: { buffer: f.particleBuffer! } }, { binding: 2, resource: t.bgDepthView }, { binding: 3, resource: { buffer: anisoBuf } }],
+        }))
+        thickPass.setIndexBuffer(this.quadIndexBuf, 'uint32')
+        thickPass.drawIndexed(f.count * 6)
+      } else if (draw) {
         thickPass.setPipeline(this.thicknessPipeline)
         thickPass.setBindGroup(0, d.createBindGroup({
           layout: this.thicknessBGL,
@@ -650,6 +709,7 @@ export class SSFRPipeline {
     return {
       width: req.width, height: req.height, rect, canvasFormat: this.canvasFormat, thicknessFormat: this.thicknessFormat,
       particleVolume: volume, splatRadius: this.splatRadius(volume, req.splatRadiusFactor ?? this.config.splatRadiusFactor),
+      splatShape: req.splatShape ?? this.config.splatShape ?? SPLAT_SHAPE,
       metresPerUnit: this.config.metresPerUnit, data,
     }
   }
