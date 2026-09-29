@@ -103,6 +103,14 @@ export interface FlipRefOptions {
   /** GATE-ONLY boundary conditions of the viscous solve (S3.6c layered Couette): x periodic (the x walls vanish from the
    *  viscous operator), and per-wall slip and wall velocity for the walls named 'x-' … 'z+' (default viscousWalls, 0). */
   viscousTestBC?: { periodicX?: boolean; walls?: Partial<Record<'x-' | 'x+' | 'y-' | 'y+' | 'z-' | 'z+', { slip: 'no-slip' | 'free-slip'; velocity?: Vec3 }>> }
+  /** How the sphere and the liquid exchange momentum (vault fluid/realism-2026-09/S3.7-two-way-ball-spec.md):
+   *  'weak' (S3.1c-2, default) — the caller applies integrateSphere after the step (the force one substep late);
+   *  'monolithic' (S3.7, Batty et al. 2007 eq. 13) — step() applies gravity to the sphere first, every pressure solve
+   *  carries the rank-3 term Δt/(M·dx³)·Σ_a J_a J_aᵀ and updates V from F = J·p, and the viscous solve takes V as three
+   *  more unknowns with mass M (the no-slip ball feels skin friction). Needs sphereDensity. */
+  sphereCoupling?: 'weak' | 'monolithic'
+  /** Sphere density ρ_s (kg/m³) for the monolithic coupling (M = ρ_s·V_J). */
+  sphereDensity?: number
 }
 
 /** S3.6 viscous solve report. */
@@ -250,6 +258,11 @@ export class FlipRef {
   lastSolve: SolveStats | null = null
   /** The drop ball for the next substep (null: none). The caller moves it; the solver only sees its state. */
   sphere: RefSphere | null = null
+  sphereCoupling: 'weak' | 'monolithic'
+  sphereDensity: number
+  /** Monolithic coupling: the discrete pressure torque J_rot·p about the centre (N·m) of the last solve — logged, not
+   *  applied (a sphere's continuum pressure torque is zero; FINAL-PLAN S3.7: rank 6 only if this is non-negligible). */
+  sphereTorque: Vec3 = [0, 0, 0]
   /** Solid fraction of each face's dx³ control volume and of each cell's dx³ cube inside the sphere (2×2×2 subsamples,
    *  each a smooth partial volume clamp(½ − d/(dx/2), 0, 1) of its signed distance d), and the kernel-weighted solid
    *  volume of each cell (the density projection's compensation). Zero without a sphere. */
@@ -287,6 +300,9 @@ export class FlipRef {
     this.viscosityMean = opts.viscosityMean ?? 'harmonic'   // gate S3.6c: arithmetic errs 10–17 % in the soft layer's shear
     this.viscosityTolerance = opts.viscosityTolerance ?? 1e-10
     this.viscousTestBC = opts.viscousTestBC
+    this.sphereCoupling = opts.sphereCoupling ?? 'weak'
+    this.sphereDensity = opts.sphereDensity ?? NaN
+    if (this.sphereCoupling === 'monolithic' && !(this.sphereDensity > 0)) throw new Error('FlipRef: monolithic sphere coupling needs sphereDensity')
     if (this.viscosity !== 'off' && opts.freeSurface !== 'ghost') throw new Error('FlipRef: viscosity needs the ghost-fluid surface (its volumes come from φ)')
     const z3 = (): [Float64Array, Float64Array, Float64Array] => [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
     this.volFace = z3(); this.volEdge = z3(); this.muEdge = z3()
@@ -314,6 +330,8 @@ export class FlipRef {
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
   step(p: RefParticles, dt: number): void {
     this.sphereFractions()
+    // S3.7 (Batty et al. 2007 §3.2): body forces on every velocity before the pressure solve — V* = Vⁿ + Δt·g
+    if (this.monolithic()) for (let a = 0; a < 3; a++) this.sphere!.velocity[a] += dt * this.gravity[a]
     if (this.densityProjection) this.densityCorrect(p)
     this.p2g(p)
     this.gridUpdate(dt)
@@ -401,6 +419,9 @@ export class FlipRef {
       for (const c of add) lab[c] = CellLabel.LIQUID
     }
   }
+
+  /** Monolithic sphere coupling active (a sphere present and sphereCoupling = 'monolithic'). */
+  monolithic(): boolean { return this.sphereCoupling === 'monolithic' && this.sphere !== null }
 
   /** The sphere's discrete volume V_J = Σ over y faces of S_f·dx³ (Batty 2007's J: the volume the pressure force acts
    *  on — hydrostatics give F_y = ρ·g·V_J exactly), m³. From the last sphereFractions. */
@@ -556,6 +577,8 @@ export class FlipRef {
     }
     // resolve a face reference (axis, logical c) → { row, sign, konst }: value = sign·x[row] + konst
     const sphereV = (a: Axis) => (this.sphere ? this.sphere.velocity[a] : 0)
+    const mono = this.monolithic(), Mball = mono ? this.sphereDensity * this.sphereVolumeJ() : 0
+    let N0 = 0   // set after the face unknowns are collected (rows N0 … N0 + 2 are the ball's V)
     const rowOf: Int32Array[] = AXES.map(() => new Int32Array(L.size).fill(-1))
     const TB = this.viscousTestBC, periodicX = !!TB?.periodicX
     /** Periodic x (gate only): wrap the x index into the window (faces of axis x: 0 … nx−1; others: 0 … nx−1). */
@@ -593,7 +616,7 @@ export class FlipRef {
       if (!inRange(a, c[0], c[1], c[2])) return { row: -1, sign: 0, konst: 0 }
       const fs = L.idx(c[0], c[1], c[2])
       if (this.faceType[a][fs] === FaceType.SOLID && !(periodicX && a === 0)) return { row: -1, sign: 0, konst: 0 }
-      if (this.solidFraction[a][fs] >= 1) return { row: -1, sign: 0, konst: sign * sphereV(a) }
+      if (this.solidFraction[a][fs] >= 1) return mono ? { row: N0 + a, sign, konst: 0 } : { row: -1, sign: 0, konst: sign * sphereV(a) }
       const r = rowOf[a][fs]
       return r >= 0 ? { row: r, sign, konst: 0 } : { row: -1, sign: 0, konst: sign * this.u[a][fs] }
     }
@@ -637,11 +660,13 @@ export class FlipRef {
       }
     }
     for (const S of samples) for (const t of S.terms) addUnknown(t.a, t.c)
-    // resolve every term once
+    // S3.7 monolithic: the ball's V joins as rows N0 … N0 + 2 (mass M, start value V); refFace sends S ≥ 1 faces there
+    N0 = faces.length
     const resolved = samples.map(S => ({ w: S.w, refs: S.terms.map(t => { const r = refFace(t.a, t.c, 1); return { row: r.row, g: r.sign * t.coef, k: r.konst * t.coef } }) }))
-    const N = faces.length
+    const N = faces.length + (mono ? 3 : 0)
     const mass = new Float64Array(N), ustar = new Float64Array(N)
-    for (let r = 0; r < N; r++) { const F = faces[r]; mass[r] = this.rhoFace[F.a][F.s] * this.volFace[F.a][F.s]; ustar[r] = this.u[F.a][F.s] }
+    for (let r = 0; r < faces.length; r++) { const F = faces[r]; mass[r] = this.rhoFace[F.a][F.s] * this.volFace[F.a][F.s]; ustar[r] = this.u[F.a][F.s] }
+    if (mono) for (let a = 0; a < 3; a++) { mass[N0 + a] = Mball; ustar[N0 + a] = this.sphere!.velocity[a] }
     // A·x (homogeneous) and the constant part
     const apply = (x: Float64Array, out: Float64Array, withConst: boolean, withMass: boolean) => {
       out.fill(0)
@@ -693,7 +718,8 @@ export class FlipRef {
     // is weakly determined (measured on the GPU: f32 leaves such rows unconverged and they leaked into G2P — +1.8 %
     // damping on a water wave). It keeps its pre-solve value.
     for (const w of this.viscWritten) w.fill(0)
-    for (let r = 0; r < N; r++) { const F = faces[r]; if (this.volFace[F.a][F.s] > 0) { this.u[F.a][F.s] = x[r]; this.valid[F.a][F.s] = 1; this.viscWritten[F.a][F.s] = 1 } }
+    for (let r = 0; r < faces.length; r++) { const F = faces[r]; if (this.volFace[F.a][F.s] > 0) { this.u[F.a][F.s] = x[r]; this.valid[F.a][F.s] = 1; this.viscWritten[F.a][F.s] = 1 } }
+    if (mono) for (let a = 0; a < 3; a++) this.sphere!.velocity[a] = x[N0 + a]
     const out: ViscosityStats = { ran: true, unknowns: N, iterations: it, relResidual: Math.sqrt(rn) / bn, capHit: it >= cap, muFallbacks }
     this.lastViscosity = out
     return out
@@ -821,8 +847,30 @@ export class FlipRef {
     }
     this.rhs.fill(0)
     for (let r = 0; r < sys.n; r++) this.rhs[sys.cells[r]] = b[r]
-    const stats = solveSystem(sys, b, this.pressureTolerance, this.pressureMaxIterations, this.pressure)
+    // S3.7 monolithic (spec §1): with V_new = V* + (Δt/M)·J·p in the flux S·V, each row gains (Δt/(M·dx³))·Σ_a J_ac·(J_a·p),
+    // J_ac = ∂F_a/∂p_c = dx²·Σ_{faces of c, axis a} sgn·S_f (sgn +1 on c's + face) — the rows of F = J·p below
+    let rank: { J: Float64Array[]; c: number } | undefined
+    const mono = this.monolithic()
+    const M = mono ? this.sphereDensity * this.sphereVolumeJ() : 0
+    if (mono && M > 0) {
+      const J = AXES.map(() => new Float64Array(sys.n))
+      for (let r = 0; r < sys.n; r++) {
+        const [i, j, k] = sys.coords[r]
+        for (const ax of AXES) for (const side of [0, 1] as const) {
+          const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
+          if (this.faceType[ax][fs] === FaceType.SOLID) continue
+          J[ax][r] += (side === 1 ? 1 : -1) * this.solidFraction[ax][fs] * L.dx * L.dx
+        }
+      }
+      rank = { J, c: dt / (M * L.dx ** 3) }
+    }
+    const stats = solveSystem(sys, b, this.pressureTolerance, this.pressureMaxIterations, this.pressure, rank)
     this.lastSolve = stats
+    if (mono && M > 0) {
+      const F = this.pressureForceOnSphere()
+      for (let a = 0; a < 3; a++) this.sphere!.velocity[a] += dt * F[a] / M
+      this.sphereTorque = this.pressureTorqueOnSphere()
+    }
     return stats
   }
 
@@ -1139,6 +1187,28 @@ export class FlipRef {
     return F
   }
 
+  /** The discrete pressure torque about the centre, T = Σ over the faces the sphere occupies of (x_f − X)×F_f with
+   *  F_f = −S_f·dx²·(p₊ − p₋)·e_a (Batty et al. 2007 eqs. 11–12, the same face weights as J) — logged only. */
+  pressureTorqueOnSphere(): Vec3 {
+    const T: Vec3 = [0, 0, 0]
+    if (!this.sphere) return T
+    const L = this.layout, lab = this.label, pr = this.pressure, h = L.dx, X = this.sphere.center
+    for (const a of AXES) {
+      const [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k), S = this.solidFraction[a][s]
+        if (S <= 0 || this.faceType[a][s] === FaceType.SOLID) continue
+        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
+        const pp = lab[s] === CellLabel.LIQUID ? pr[s] : 0, pm = lab[sm] === CellLabel.LIQUID ? pr[sm] : 0
+        const Fa = -S * h * h * (pp - pm), x = L.facePos(a, i, j, k)
+        const r = [x[0] - X[0], x[1] - X[1], x[2] - X[2]], F = [0, 0, 0]
+        F[a] = Fa
+        T[0] += r[1] * F[2] - r[2] * F[1]; T[1] += r[2] * F[0] - r[0] * F[2]; T[2] += r[0] * F[1] - r[1] * F[0]
+      }
+    }
+    return T
+  }
+
   /** Volume flux velocity of a face: (1 − S)·u + S·V_sphere (u without a sphere). */
   private faceFlux(a: Axis, s: number): number {
     const S = this.solidFraction[a][s]
@@ -1304,8 +1374,11 @@ function clampIn(v: number, lo: number, hi: number): number { return v < lo ? lo
 /** Jacobi-preconditioned CG on a LiquidSystem: A·x = b to ‖r‖∞ ≤ tol (cold start). A closed system (no AIR neighbour
  *  anywhere) is singular but consistent after the mean of b is removed; the mean of x is then pinned to 0. The residual
  *  reported is the TRUE residual recomputed from x. The solution is written into `out` at the system's cell slots. */
-function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: number, out: Float64Array): SolveStats {
-  const { n, diag, nbr, offd } = sys
+function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: number, out: Float64Array, rank?: { J: Float64Array[]; c: number }): SolveStats {
+  const { n, nbr, offd } = sys
+  // S3.7: A + c·Σ_a J_a J_aᵀ (the monolithic sphere); the Jacobi diagonal includes c·Σ_a J_ar²
+  const diag = sys.diag.slice()
+  if (rank) for (const J of rank.J) for (let r = 0; r < n; r++) diag[r] += rank.c * J[r] * J[r]
   out.fill(0)
   const stats: SolveStats = { liquidCells: n, iterations: 0, residualInf: 0, rhsInf: 0, capHit: false, closed: sys.closed }
   if (n === 0) return stats
@@ -1314,9 +1387,14 @@ function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: num
   if (sys.closed) { let m = 0; for (let r = 0; r < n; r++) m += b[r]; m /= n; for (let r = 0; r < n; r++) b[r] -= m }
   const Ap = (x: Float64Array, o: Float64Array) => {
     for (let r = 0; r < n; r++) {
-      let v = diag[r] * x[r]
+      let v = sys.diag[r] * x[r]
       for (let k = 0; k < 6; k++) { const c = nbr[6 * r + k]; if (c >= 0) v -= offd[6 * r + k] * x[c] }
       o[r] = v
+    }
+    if (rank) for (const J of rank.J) {
+      let jx = 0
+      for (let r = 0; r < n; r++) jx += J[r] * x[r]
+      if (jx !== 0) for (let r = 0; r < n; r++) o[r] += rank.c * J[r] * jx
     }
   }
   const inf = (v: Float64Array) => { let m = 0; for (let r = 0; r < n; r++) m = Math.max(m, Math.abs(v[r])); return m }
