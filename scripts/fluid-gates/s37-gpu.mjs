@@ -8,7 +8,8 @@
 //
 // K35 the rank-3 solve: the TRUE residual of the GPU's pressure against A′ assembled in f64 from the GPU's own operator,
 //     right-hand side and Ĵ ≤ 1 × (tolerance + the f32 drift of the recursive residual, (iterations + 2)·8u·max row);
-//     and the rank term ≥ 10 × that bound (so a solver that ignored it could not pass); converged.
+//     and the rank term ≥ 10 × that bound (so a solver that ignored it could not pass); converged; Ĵ itself vs f64
+//     (K35's A′ uses the GPU's own Ĵ, so its scale needs this). K35w the same on the next substep's warm-started solve.
 // K36 gravity first, V* = Vⁿ + Δt·g (≤ 4u·|V|), then the ball's update after the projection: V = V* + Δt·F/M with F,
 //     V_J recomputed in f64 from the GPU's own pressure,
 //     labels and solid fractions ≤ 1 × a bound from the fixed-point force sums; and the update ≥ 10 × that bound.
@@ -51,9 +52,11 @@ try {
   for (const seed of [51, 52]) {
     const r = await run('s37Kernels', { seed })
     report.kernels.push(r)
-    const a = r.k35, b = r.k36
-    gate.check(a.converged && a.ratio <= 1 && a.discrimination >= 10 && a.jRows > 0,
-      `K35 rank-3 solve (seed ${seed}, ${a.unknowns} unknowns, ${a.jRows} with Ĵ ≠ 0, ${a.iterations} it): true residual ‖b − A′p‖∞ ${a.resInf.toExponential(3)} = ${f(a.ratio)} × bound ${a.bound.toExponential(3)}; rank term ${a.rankInf.toExponential(3)} = ${a.discrimination.toFixed(1)} × bound (≥ 10)`)
+    const a = r.k35, b = r.k36, w = r.k35w
+    gate.check(a.converged && a.ratio <= 1 && a.discrimination >= 10 && a.jRows > 0 && a.jRatio <= 1,
+      `K35 rank-3 solve (seed ${seed}, ${a.unknowns} unknowns, ${a.jRows} with Ĵ ≠ 0, ${a.iterations} it): true residual ‖b − A′p‖∞ ${a.resInf.toExponential(3)} = ${f(a.ratio)} × bound ${a.bound.toExponential(3)}; rank term ${a.rankInf.toExponential(3)} = ${a.discrimination.toFixed(1)} × bound (≥ 10); Ĵ vs f64 (√(Δt/(M dx³))·dx²·Σ sgn S) ${f(a.jRatio)} of its bound`)
+    gate.check(w.converged && w.ratio <= 1 && w.discrimination >= 10,
+      `K35w the next substep's solve, warm-started from the last pressure (seed ${seed}, ${w.iterations} it): true residual ${w.resInf.toExponential(3)} = ${f(w.ratio)} × bound; rank term ${w.discrimination.toFixed(1)} × bound`)
     gate.check(b.vRatio <= 1 && b.vChange > 0 && b.gRatio <= 1,
       `K36 the ball's update, gravity first V* = Vⁿ + Δt·g (|ΔV*|/(4u|V|) ${f(b.gRatio)}) then V = V* + Δt·F/M (seed ${seed}): |ΔV|/bound ${f(b.vRatio)}; the projection changed V by ${b.vChange.toExponential(3)} m/s; F GPU (${b.forceGpu.map(v => v.toFixed(3)).join(', ')}) N vs f64 (${b.force.map(v => v.toFixed(3)).join(', ')}); V_J ${b.volumeJGpu.toExponential(5)} vs ${b.volumeJ.toExponential(5)} m³`)
   }

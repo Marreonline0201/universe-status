@@ -50,46 +50,45 @@ export async function s37Kernels(device: GPUDevice, o: { seed?: number; tol?: nu
     gpu.encodeDensityCorrection(e); gpu.encodeScatter(e); gpu.encodeGridUpdate(e)
     gpu.encodePressureLabels(e); gpu.encodeFillLiquidFaces(e); gpu.encodeDivergence(e); gpu.encodePressureSolve(e)
   })
-  const sv = gpu.solver!, pc = sv.paddedCount, L = gpu.layout, nx = L.nx, ny = L.ny
-  const coef = new Float32Array(await gpu.readBuffer(sv.buffers.coef, 16 * pc))
-  const b = new Float32Array(await gpu.readBuffer(sv.buffers.rhs, 4 * pc))
-  const J = new Float32Array(await gpu.readBuffer(sv.buffers.rankJ, 16 * pc))
-  const x = new Float32Array(await gpu.readBuffer(sv.buffers.x, 4 * pc))
-  const st = await sv.readStats()
-  const sy = nx + 2, sz = (nx + 2) * (ny + 2)
-  // f64: s_a = Ĵ_aᵀx over the solver's unknowns (diag > 0), then r = b − (A x + Σ_a Ĵ_a s_a) per unknown
-  const s = [0, 0, 0]
-  let unknowns = 0, jRows = 0
-  for (let k = 0; k < L.nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const ci = lin(nx, ny, i, j, k)
-    if (!(coef[4 * ci + 3] > 0)) continue
-    unknowns++
-    if (J[4 * ci] !== 0 || J[4 * ci + 1] !== 0 || J[4 * ci + 2] !== 0) jRows++
-    for (let a = 0; a < 3; a++) s[a] += J[4 * ci + a] * x[ci]
+  const sv = gpu.solver!, L = gpu.layout, nx = L.nx, ny = L.ny
+  const k35 = await trueResidual(gpu, tol)
+
+  // K35b Ĵ itself: √(Δt/(M·dx³))·dx²·Σ_a sgn·S_f per LIQUID cell (SOLID wall faces skipped), M = ρ_s·V_J with V_J the
+  // f64 sum of the y-face fractions — K35 judges the solve against the GPU's OWN Ĵ, so a mis-scaled Ĵ (M, the √) needs
+  // its own check. Bound: f32 products and the √ (8u·|Ĵ|) plus V_J's fixed-point sum (½·2^-20 per face, relative).
+  {
+    const labJ = await sv.readLabels(0)
+    const fsJ = new Float32Array(await gpu.readBuffer(gpu.faceSolidBuf, 4 * 3 * L.size))
+    const ftJ = new Uint32Array(await gpu.readBuffer(gpu.faceTypeBuf, 4 * 3 * L.size))
+    const Jg = new Float32Array(await gpu.readBuffer(sv.buffers.rankJ, 16 * sv.paddedCount))
+    let sumS = 0, nY = 0
+    for (let k = -1; k <= L.nz; k++) for (let j = 0; j <= ny; j++) for (let i = -1; i <= nx; i++) { const S = fsJ[L.size + L.idx(i, j, k)]; if (S > 0) { sumS += S; nY++ } }
+    const VJ = sumS * DX ** 3, M = rhoS * VJ, sc = Math.sqrt(dt / (M * DX ** 3)) * DX * DX, relVJ = nY * 0.5 / SOLID_SCALE / sumS
+    let jRatio = 0, jMax = 0
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const ci = lin(nx, ny, i, j, k)
+      const want = [0, 0, 0]
+      if (labJ[ci] === 1) for (let a = 0; a < 3; a++) for (const side of [0, 1]) {
+        const cf = [i, j, k]; cf[a] += side
+        const sl = a * L.size + L.idx(cf[0], cf[1], cf[2])
+        if (ftJ[sl] === 1) continue
+        want[a] += (side === 1 ? 1 : -1) * fsJ[sl]
+      }
+      for (let a = 0; a < 3; a++) {
+        const w = sc * want[a], d = Math.abs(Jg[4 * ci + a] - w)
+        jMax = Math.max(jMax, Math.abs(w))
+        jRatio = Math.max(jRatio, d / (8 * U * Math.abs(w) + 0.5 * relVJ * Math.abs(w) + 1e-30))
+      }
+    }
+    Object.assign(k35, { jRatio, jMax })
   }
-  let resInf = 0, mag = 0, rankInf = 0
-  for (let k = 0; k < L.nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const ci = lin(nx, ny, i, j, k)
-    const d = coef[4 * ci + 3]
-    if (!(d > 0)) continue
-    const terms = [d * x[ci], -coef[4 * (ci + 1)] * x[ci + 1], -coef[4 * ci] * x[ci - 1], -coef[4 * (ci + sy) + 1] * x[ci + sy], -coef[4 * ci + 1] * x[ci - sy],
-      -coef[4 * (ci + sz) + 2] * x[ci + sz], -coef[4 * ci + 2] * x[ci - sz]]
-    const rank = J[4 * ci] * s[0] + J[4 * ci + 1] * s[1] + J[4 * ci + 2] * s[2]
-    const ax = terms.reduce((q, v) => q + v, 0) + rank
-    resInf = Math.max(resInf, Math.abs(b[ci] - ax))
-    mag = Math.max(mag, terms.reduce((q, v) => q + Math.abs(v), 0) + Math.abs(rank) + Math.abs(b[ci]))
-    rankInf = Math.max(rankInf, Math.abs(rank))
-  }
-  // the solver stops on its RECURSIVE residual ≤ tol; the true residual departs from it by the f32 rounding of each
-  // iteration's updates, ≤ ~8u·max_row(Σ|terms| + |b|) per iteration (+2 for the init and the final state)
-  const bound = tol + (st.iterations + 2) * 8 * U * mag
-  const k35 = { resInf, bound, ratio: resInf / bound, rankInf, discrimination: rankInf / bound, iterations: st.iterations, converged: st.converged, unknowns, jRows }
 
   // K36: the projection and the ball's update, against V* + Δt·F/M recomputed in f64 from the GPU's own p
   const before = await gpu.readSphere()
   await submit(device, e => gpu.encodeProject(e, true))
   const after = await gpu.readSphere()
   const lab = await sv.readLabels(0)
+  const x = new Float32Array(await gpu.readBuffer(sv.buffers.x, 4 * sv.paddedCount))
   const fsol = new Float32Array(await gpu.readBuffer(gpu.faceSolidBuf, 4 * 3 * L.size))
   const ftype = new Uint32Array(await gpu.readBuffer(gpu.faceTypeBuf, 4 * 3 * L.size))
   const F = [0, 0, 0], faces = [0, 0, 0], fAbs = [0, 0, 0]
@@ -124,8 +123,54 @@ export async function s37Kernels(device: GPUDevice, o: { seed?: number; tol?: nu
     vChange = Math.max(vChange, Math.abs(after.velocity[a] - before.velocity[a]))
   }
   const k36 = { vRatio, vChange, gRatio, force: F, forceGpu: after.force, volumeJ: VJ, volumeJGpu: after.volumeJ }
+
+  // K35w the warm start: finish the substep, then the next one up to its solve — the pressure starts from the last
+  // solution, so the warm-start residual b − A′x₀ carries the rank term (the first solve started from x = 0)
+  await submit(device, e => {
+    gpu.encodeExtrapolate(e); gpu.encodeG2P(e)
+    gpu.encodeSphereStart(e); gpu.encodeDensityCorrection(e); gpu.encodeScatter(e); gpu.encodeGridUpdate(e)
+    gpu.encodePressureLabels(e); gpu.encodeFillLiquidFaces(e); gpu.encodeDivergence(e); gpu.encodePressureSolve(e)
+  })
+  const k35w = await trueResidual(gpu, tol)
   gpu.destroy()
-  return { particles: p.n, k35, k36 }
+  return { particles: p.n, k35, k36, k35w }
+}
+
+/** The TRUE residual of the GPU's last pressure solve against A′ = A + Σ_a Ĵ_a Ĵ_aᵀ, assembled in f64 from the GPU's own
+ *  operator (coef), right-hand side and Ĵ: ‖b − A′x‖∞ over the solver's unknowns, its bound (the tolerance + the f32
+ *  drift of the recursive residual, (iterations + 2)·8u·max row) and the rank term's size. */
+async function trueResidual(gpu: FlipGpuSimulator, tol: number) {
+  const sv = gpu.solver!, pc = sv.paddedCount, L = gpu.layout, nx = L.nx, ny = L.ny
+  const coef = new Float32Array(await gpu.readBuffer(sv.buffers.coef, 16 * pc))
+  const b = new Float32Array(await gpu.readBuffer(sv.buffers.rhs, 4 * pc))
+  const J = new Float32Array(await gpu.readBuffer(sv.buffers.rankJ, 16 * pc))
+  const x = new Float32Array(await gpu.readBuffer(sv.buffers.x, 4 * pc))
+  const st = await sv.readStats()
+  const sy = nx + 2, sz = (nx + 2) * (ny + 2)
+  const s = [0, 0, 0]
+  let unknowns = 0, jRows = 0
+  for (let k = 0; k < L.nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const ci = lin(nx, ny, i, j, k)
+    if (!(coef[4 * ci + 3] > 0)) continue
+    unknowns++
+    if (J[4 * ci] !== 0 || J[4 * ci + 1] !== 0 || J[4 * ci + 2] !== 0) jRows++
+    for (let a = 0; a < 3; a++) s[a] += J[4 * ci + a] * x[ci]
+  }
+  let resInf = 0, mag = 0, rankInf = 0
+  for (let k = 0; k < L.nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const ci = lin(nx, ny, i, j, k)
+    const d = coef[4 * ci + 3]
+    if (!(d > 0)) continue
+    const terms = [d * x[ci], -coef[4 * (ci + 1)] * x[ci + 1], -coef[4 * ci] * x[ci - 1], -coef[4 * (ci + sy) + 1] * x[ci + sy], -coef[4 * ci + 1] * x[ci - sy],
+      -coef[4 * (ci + sz) + 2] * x[ci + sz], -coef[4 * ci + 2] * x[ci - sz]]
+    const rank = J[4 * ci] * s[0] + J[4 * ci + 1] * s[1] + J[4 * ci + 2] * s[2]
+    const ax = terms.reduce((q, v) => q + v, 0) + rank
+    resInf = Math.max(resInf, Math.abs(b[ci] - ax))
+    mag = Math.max(mag, terms.reduce((q, v) => q + Math.abs(v), 0) + Math.abs(rank) + Math.abs(b[ci]))
+    rankInf = Math.max(rankInf, Math.abs(rank))
+  }
+  const bound = tol + (st.iterations + 2) * 8 * U * mag
+  return { resInf, bound, ratio: resInf / bound, rankInf, discrimination: rankInf / bound, iterations: st.iterations, converged: st.converged, unknowns, jRows }
 }
 
 // ── s37-ref A1–A4 on the GPU ──

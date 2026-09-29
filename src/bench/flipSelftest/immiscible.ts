@@ -511,3 +511,57 @@ export async function immCost(device: GPUDevice, o: { settle?: number; reps?: nu
   gpu.destroy()
   return { particles: pts.length, onMsPerSubstep: onMs, offMsPerSubstep: offMs, onRuns, offRuns, passUsTotal: Math.round(totalUs), immPassUs: Math.round(immUs), top }
 }
+
+/** Diagnostics for the page's B1 (s31c-page): the buoyancy scene on the GPU for `seconds`, then every olive-oil particle
+ *  below the water's median height classified by what the drift flux did with it on the last substep: in an oil-majority
+ *  cell (resolved), dispersed (slip, with its d), or a minority with no slip — too large (Hinze d ≥ dx) or no σ (its cell's
+ *  carrier is mercury). */
+export async function immB1(device: GPUDevice, o: { seconds?: number } = {}) {
+  const rng = mulberry32(12), seconds = o.seconds ?? 8
+  const fillBox = (lo: Vec3, hi: Vec3, m: number) => {
+    const out: { x: Vec3; m: number }[] = []
+    for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) for (let s = 0; s < 8; s++)
+      out.push({ x: [(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX], m })
+    return out
+  }
+  const pts = [...fillBox([0, 0, 0], [64, 3, 64], 0), ...fillBox([18, 10, 18], [40, 16, 40], 1), ...fillBox([23, 21, 23], [35, 26, 35], 2)]
+  const props = [IMM.water, IMM.oil, IMM.mercury], names: MatName[] = ['water', 'oil', 'mercury']
+  const gpu = await FlipGpuSimulator.create(device, {
+    nx: 64, ny: 64, nz: 64, dx: DX, gravity: [0, -G, 0], maxParticles: pts.length, lRef: L_REF, tauS: TAU,
+    projection: true, density: IMM.water.rho, pressureTolerance: 1e-2, solverMethod: 'mgpcg', densityProjection: true, psiTolerance: 1e-3,
+    freeSurface: 'ghost', variableDensity: true, viscosity: true, immiscible: true,
+  })
+  gpu.dt = 1 / 120
+  gpu.setParticles(pts.map(pt => ({ pos: pt.x.map(Math.fround) as Vec3, vel: [0, 0, 0] as Vec3, mass: props[pt.m].rho * DX ** 3 / 8, composition: pt.m, phase: 1, temperatureC: 20 })))
+  gpu.viscositySolver!.setMuTable(new Float32Array(props.map(p => p.mu)))
+  gpu.viscositySolver!.muDefault = IMM.water.mu
+  gpu.viscosityActive = true
+  gpu.immiscibleSolver!.configure({ materials: props.map((pr, k) => ({ compositions: [k], ...pr })), sigma: (a, b) => sigmaOf(names[a], names[b]), nuNum: INCOMPRESSIBLE_NU_NUM })
+  gpu.immiscibleActive = true
+  const steps = Math.round(seconds * 120)
+  for (let s = 0; s < steps; s++) await submit(device, e => gpu.step(e, 1))
+  const imm = gpu.immiscibleSolver!, L = gpu.layout
+  const pos = (await gpu.readParticles()).pos
+  const slip = new Float32Array(await gpu.readBuffer(imm.bufs.slipState, 16 * pts.length))
+  const inf = new Float32Array(await gpu.readBuffer(imm.bufs.cellInf, 4 * 8 * L.size))
+  const wy = pts.map((pt, q) => (pt.m === 0 ? pos[4 * q + 1] : NaN)).filter(v => Number.isFinite(v)).sort((a, b) => a - b)
+  const wMedian = wy[Math.floor(wy.length / 2)]
+  let oil = 0, below = 0, majority = 0, dispersed = 0, tooLarge = 0, noSigma = 0
+  const dDisp: number[] = [], alphaStuck: number[] = [], yStuck: number[] = []
+  for (let q = 0; q < pts.length; q++) {
+    if (pts[q].m !== 1) continue
+    oil++
+    const y = pos[4 * q + 1]
+    if (!(y < wMedian)) continue
+    below++
+    const nn = [L.nx, L.ny, L.nz], c = [0, 1, 2].map(a => Math.min(nn[a] - 1, Math.max(0, Math.floor(pos[4 * q + a] / DX))))
+    const li = (c[0] + 1) + (L.nx + 2) * ((c[1] + 1) + (L.ny + 2) * (c[2] + 1)), cm = inf[8 * li + 1]
+    if (cm === 1) { majority++; continue }
+    if (slip[4 * q + 3] > 0) { dispersed++; dDisp.push(slip[4 * q + 3]); continue }
+    if (cm === 2) { noSigma++; continue }
+    tooLarge++; alphaStuck.push(inf[8 * li + 4 + 1]); yStuck.push(y)
+  }
+  const med = (v: number[]) => { const s2 = [...v].sort((a, b) => a - b); return s2.length ? s2[Math.floor(s2.length / 2)] : NaN }
+  gpu.destroy()
+  return { oil, below, fractionAbove: 1 - below / oil, wMedian, majority, dispersed, tooLarge, noSigma, dDispMedian: med(dDisp), alphaStuckMedian: med(alphaStuck), yStuckMedian: med(yStuck) }
+}
