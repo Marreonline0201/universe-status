@@ -84,6 +84,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, sampleAtFrame, waitStepped, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
+import { b1cDense } from './lib/b1cSuccessors.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S3.1c (incompressible solver on the FLUID TEST page)')
@@ -270,8 +271,22 @@ try {
     const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDiluteAll}, of them two-liquid ${r.nDilute}; all dilute: slip × ${r.ratioAll.toFixed(3)} of the law), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); the model's own slip ${Number.isFinite(r.modelSlip) ? `${cms(r.modelSlip)} cm/s (× ${(r.modelSlip / r.slipLaw).toFixed(3)} of U_eq; measured/model × ${(r.slip / r.modelSlip).toFixed(3)})` : 'n/a (drift off)'}${Number.isFinite(r.lawK) ? `; the law with the kernel's own inputs (ρ_m, μ_m, a; ${r.nK} drops dispersed at both samples) ${cms(r.lawK)} cm/s = × ${(r.lawK / r.slipLaw).toFixed(3)} of U_eq, the model × ${(r.modelK / r.lawK).toFixed(3)} of it; ${r.nRhoUp} drops with ρ_m > water + oil at their α + 50 kg/m³ (another liquid in the kernel's cell)` : ''}; lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
     runs.forEach((r, k) => console.log(line(`run ${k + 1}`, r)))
     console.log(line(`control (drift off, d = ${(1e3 * dCtl).toFixed(2)} mm)`, ctl))
-    gate.check(runs.every(slipOk),
-      `B1c-slip (validated): the dilute (α < 0.3) two-liquid drops' (no mercury in the kernel's mixture, design change 4) mean slip through the water that shared their cell, over 4 → 4.5 s, ÷ the drag law's mean U_eq(d, α) = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (1 ± ${BAND})`)
+    // the re-scope registered 2026-09-29 19:12 (header): the slip ratio is REPORTED now that B1c-T and B1c-M run below
+    console.log(`INFO B1c-slip (reported since the re-scope; design change 4's FAIL stays on record): the dilute two-liquid drops' mean slip through the water that shared their cell, 4 → 4.5 s, ÷ U_eq = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (the old band 1 ± ${BAND}: ${runs.every(slipOk) ? 'inside' : 'outside'})`)
+    // the successors: in-situ transport closure and replay, three dense-window runs (lib/b1cSuccessors.mjs)
+    const dense = []
+    for (let k = 0; k < 3; k++) dense.push(await b1cDense(page, scene, 2))
+    report.creaming.dense = dense
+    const fmt3 = v => v.toFixed(3), fmtPct = v => (100 * v).toFixed(2)
+    gate.check(dense.every(d => d.T.n > 0 && Math.abs(d.T.lambda - 1) <= 0.02),
+      `B1c-T in-situ transport closure: Λ = Σ(Δy − Δt·v_y)/Σ Δt·u_V,y over the set's drop-substeps, 4 → 4.5 s = ${dense.map(d => fmt3(d.T.lambda)).join(', ')} (1 ± 0.02; ${dense.map(d => `${d.T.n} drop-substeps, ${d.excluded}/${d.frames} frames with > 1 substep excluded`).join('; ')})`)
+    gate.check(dense.every(d => !(Math.abs(d.T.lambdaCtrl - 1) <= 0.02)),
+      `B1c-T control (J omitted: the drops' own slip in the denominator) = ${dense.map(d => fmt3(d.T.lambdaCtrl)).join(', ')} — must fall OUTSIDE 1 ± 0.02`)
+    gate.check(dense.every(d => d.M.n > 0 && d.M.frac >= 0.999 && d.M.reFrac >= 0.999),
+      `B1c-M in-situ replay exactness: dispersed drop-substeps replayed from the kernel's own inputs within 1e-4·max(|s|, 1e-4 m/s): ${dense.map(d => `${fmtPct(d.M.frac)} % of ${d.M.n} (Re ${fmtPct(d.M.reFrac)} %; worst × ${d.M.maxRel.toFixed(2)} of the tolerance)`).join('; ')} (≥ 99.9 % each)`)
+    gate.check(dense.every(d => d.M.ctrlFrac < 0.999),
+      `B1c-M control (μ_w in place of μ_m): ${dense.map(d => `${fmtPct(d.M.ctrlFrac)} %`).join(', ')} — must fall BELOW 99.9 %`)
+    console.log(`INFO B1c model ÷ its own instantaneous law over the dense window: ${dense.map(d => fmt3(d.modelOverLaw)).join(', ')}; sets ${dense.map(d => d.set).join(', ')}; the clock switch advanced ${dense.map(d => (1000 * d.clockStepS).toFixed(3)).join(', ')} ms per frame (8.333 expected)`)
     gate.check(ctl.nDilute > 0 && !slipOk(ctl),
       `B1c-control: with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))

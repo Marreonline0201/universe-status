@@ -45,7 +45,7 @@ struct ImmParams {
 @group(0) @binding(29) var<storage, read> acc: array<f32>;
 @group(0) @binding(30) var<storage, read> uProj: array<f32>;
 // per particle, 2 × vec4 (diagnostics: the slip's own inputs at the last substep, zero when not dispersed):
-// (a = g − Du/Dt xyz, α_d = 1 − α_c), (ρ_m, μ_m, Re, 0) — the gates split a slip's excess into its inputs vs its law
+// (a = g − Du/Dt xyz, α_d = 1 − α_c), (ρ_m, μ_m, Re, ρ_c) — the gates split a slip's excess into its inputs vs its law
 @group(0) @binding(31) var<storage, read_write> slipInputs: array<vec4<f32>>;
 
 const MAXK: u32 = 4u;
@@ -228,7 +228,7 @@ fn slipParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s = sOld + ((rp - rm) * acc * kd - sOld) * m;
   slipState[q] = vec4<f32>(s, d);
   slipInputs[2u * q] = vec4<f32>(acc, aD);
-  slipInputs[2u * q + 1u] = vec4<f32>(rm, muM, Re, 0.0);
+  slipInputs[2u * q + 1u] = vec4<f32>(rm, muM, Re, rc);   // ρ_c too: the B1c-M replay uses the kernel's own carrier
   let cb = 7u * (MAXK * li + k);
   let v = s * SLIP_SCALE;
   atomicAdd(&slipSums[cb], fixHi(v.x)); atomicAdd(&slipSums[cb + 1u], fixLo(v.x));
