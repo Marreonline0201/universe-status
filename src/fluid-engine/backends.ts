@@ -5,12 +5,14 @@
 // unchanged; each backend converts to its own solver units here and nowhere else.
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
 import { FlipGpuSimulator, PRESENT_STRIDE_BYTES } from '../gpu-sim/flip/FlipGpuSimulator'
-import { SOLID_REFERENCE } from '../composition/materialData'
+import { SOLID_REFERENCE, type LiquidKey } from '../composition/materialData'
 import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
 import { FLIP_PACKING, MPM_PACKING, type Packing, type Vec3 } from './spawn'
 import { waterDensity } from '../composition/materialData'
-import { VISCOUS_RUN_NU } from '../composition/liquidGate'
+import { VISCOUS_RUN_NU, INCOMPRESSIBLE_NU_NUM } from '../composition/liquidGate'
+import { interfacialTension } from '../composition/interfacialTension'
+import { IMMISCIBLE_MAX_SLOTS } from '../gpu-sim/flip/ImmiscibleSolver'
 
 export type SolverKind = 'mpm' | 'flip'
 
@@ -51,6 +53,8 @@ export interface SimBackend {
   setCompositionProps(gpuData: Float32Array): void
   /** μ (Pa·s) per composition id — the incompressible solver's viscous solve (S3.6); the MPM path takes μ in its props. */
   setViscosities?(muPaS: Float32Array): void
+  /** The cited liquid of each composition id (null: not a cited liquid) — the incompressible solver's immiscible drift. */
+  setLiquidKeys?(keys: readonly (LiquidKey | null)[]): void
   /** Advance `intervalS` of sim time (the ball, when coupled, included); returns the substeps taken. */
   advance(intervalS: number, ball: BallState, gMs2: number): number
   setBall(ball: BallState): void
@@ -157,7 +161,7 @@ const FLIP_MAX_DT = 1 / 120
 
 export class FlipBackend implements SimBackend {
   readonly kind = 'flip' as const
-  readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density, implicit viscosity)'
+  readonly label = 'incompressible APIC-MAC (ghost-fluid surface, variable density, implicit viscosity, immiscible drift)'
   readonly method: SolverMethod = 'incompressible'
   readonly packing = FLIP_PACKING
   readonly supportsBall = true
@@ -180,6 +184,14 @@ export class FlipBackend implements SimBackend {
   private readonly viscSlots: { buf: GPUBuffer; busy: boolean }[]
   static readonly VISC_CAP_MIN = 16
   static readonly VISC_CAP_MAX = 200
+  /** S3.5-i immiscible drift flux: the cited liquid of each composition id, the ρ each composition spawned with, and how
+   *  many of its particles are in the tank. The drift runs while ≥ 2 liquids with a sourced σ between them are in the
+   *  tank; its material slots are the tank's LIQUIDS (temperature variants of one liquid are one miscible slot). */
+  private readonly liquidOf: (LiquidKey | null)[] = new Array(256).fill(null)
+  private readonly compRho = new Float64Array(256)
+  private readonly compCount = new Float64Array(256)
+  /** Why the drift is off with immiscible liquids in the tank (null: on, or nothing to separate). */
+  private immReason: string | null = null
   /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
   private ballLag: { center: Vec3; velocity: Vec3 } | null = null
   private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
@@ -208,7 +220,7 @@ export class FlipBackend implements SimBackend {
       nx: GRID_RES, ny: GRID_RES, nz: GRID_RES, dx: DOMAIN_L_M / GRID_RES, gravity: [0, 0, 0],
       maxParticles: FLIP_MAX_PARTICLES, lRef: DOMAIN_L_M, tauS: TAU_S,
       projection: true, density: waterDensity(20), densityProjection: true, freeSurface: 'ghost', variableDensity: true,
-      ppc: FLIP_PACKING.ppc, viscosity: true,
+      ppc: FLIP_PACKING.ppc, viscosity: true, immiscible: true,
     })
     return new FlipBackend(device, sim)
   }
@@ -233,7 +245,7 @@ export class FlipBackend implements SimBackend {
     this.device.queue.submit([e.finish()])
   }
   setParticles(ps: readonly SpawnParticle[]) {
-    this.maxRho = 0; this.maxNu = 0; this.minMu = Infinity
+    this.maxRho = 0; this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
     this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
   }
@@ -251,9 +263,45 @@ export class FlipBackend implements SimBackend {
       if (!(mu > 0)) throw new Error(`composition ${p.compositionId} has no viscosity in the solver's table (spawned before its row was uploaded)`)
       this.maxNu = Math.max(this.maxNu, mu / p.rhoKgM3)
       this.minMu = Math.min(this.minMu, mu)
+      this.compCount[p.compositionId]++
+      this.compRho[p.compositionId] = p.rhoKgM3
     }
     this.applyViscosity()
+    this.applyImmiscible()
   }
+  /** Configure (or stop) the drift flux for the liquids now in the tank. Slots: the tank's liquids, ordered by their
+   *  lowest composition id (the majority's tie-break, as flipRef's sorted material ids). A liquid present at two
+   *  temperatures has two ρ and μ; the model's slot has one, so the drift is off then (disclosed through immReason) —
+   *  per-cell slot properties arrive with HEAT-1, where every particle's ρ and μ vary. */
+  private applyImmiscible() {
+    const sim = this.sim, imm = sim.immiscibleSolver!
+    const byLiquid = new Map<LiquidKey, number[]>()
+    for (let id = 0; id < 256; id++) {
+      if (!(this.compCount[id] > 0)) continue
+      const key = this.liquidOf[id]
+      if (!key) { this.immReason = `composition ${id} is not a cited liquid`; sim.immiscibleActive = false; return }
+      byLiquid.set(key, [...(byLiquid.get(key) ?? []), id])
+    }
+    const keys = [...byLiquid.keys()]
+    const pairs = keys.flatMap((a, i) => keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null))
+    this.immReason = null
+    if (pairs.length === 0) { sim.immiscibleActive = false; return }   // nothing to separate
+    const multi = keys.filter(k => byLiquid.get(k)!.length > 1)
+    if (multi.length) { this.immReason = `${multi.join(', ')} at several temperatures: one slot needs one ρ and μ (per-cell slot properties come with HEAT-1)`; sim.immiscibleActive = false; return }
+    if (keys.length > IMMISCIBLE_MAX_SLOTS) { this.immReason = `${keys.length} liquids > ${IMMISCIBLE_MAX_SLOTS} drift slots`; sim.immiscibleActive = false; return }
+    keys.sort((a, b) => byLiquid.get(a)![0] - byLiquid.get(b)![0])
+    imm.configure({
+      materials: keys.map(k => { const id = byLiquid.get(k)![0]; return { compositions: [id], rho: this.compRho[id], mu: this.muTable[id] } }),
+      sigma: (a, b) => interfacialTension(keys[a], keys[b]), nuNum: INCOMPRESSIBLE_NU_NUM,
+    })
+    sim.immiscibleActive = true
+  }
+  setLiquidKeys(keys: readonly (LiquidKey | null)[]) {
+    for (let id = 0; id < 256; id++) this.liquidOf[id] = keys[id] ?? null
+    this.applyImmiscible()
+  }
+  /** Whether the immiscible drift flux runs, and why not when liquids that could separate are in the tank. */
+  get immiscibleDrift(): { active: boolean; reason: string | null } { return { active: this.sim.immiscibleActive, reason: this.immReason } }
   private applyViscosity() {
     const vs = this.sim.viscositySolver!
     this.sim.viscosityActive = this.maxNu >= VISCOUS_RUN_NU
@@ -372,7 +420,9 @@ export class FlipBackend implements SimBackend {
   async readDiagnostics(): Promise<BackendDiagnostics | null> {
     const d = await this.sim.readDiagnostics()
     const vf = await this.sim.viscositySolver!.readFaults()
+    const im = this.sim.immiscibleActive ? await this.sim.immiscibleSolver!.readStats() : null
     return {
+      immiscibleDrift: im ? 1 : 0, immDispersed: im?.dispersed ?? 0, immTooLarge: im?.tooLarge ?? 0, immMaxSlip: im?.maxSlip ?? 0, immMeanDrop: im?.meanDrop ?? 0,
       viscousSolves: vf.solves, viscousCapHits: vf.capHits, viscousBreakdowns: vf.breakdowns, viscousMaxIterations: vf.maxIterations, viscousCap: this.sim.viscositySolver!.cap,
       clampHits: d.wallClamps, densityPushBacks: d.densityClamps, unsetFaceReads: d.unsetFaceReads,
       pressureSolves: d.solves, pressureCapHits: d.capHits, psiSolves: d.psiSolves, psiCapHits: d.psiCapHits,

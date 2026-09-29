@@ -14,6 +14,7 @@ import { BG_BASE, clampBrightness, readBgBrightness } from '../fluid-render/bgBr
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import type { MenuEntry } from '../composition/liquidGate'
 import type { ElementName } from '../composition/PropertyCalculator'
+import { isLiquidKey, type LiquidKey } from '../composition/materialData'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
 import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, msToUnitVel } from './units'
@@ -288,6 +289,7 @@ export class FluidEngine {
   private uploadCompositions() {
     this.sim?.setCompositionProps(this.compositionTable.getGpuData())
     this.sim?.setViscosities?.(this.compositionTable.getViscosityData())
+    this.sim?.setLiquidKeys?.(this.compositionTable.getAll().map((c): LiquidKey | null => (isLiquidKey(c.materialKey) ? c.materialKey : null)))
     this.ssfrPipeline?.updateMaterialProps(opticsRenderData(this.compositionTable.getAll()))
   }
 
