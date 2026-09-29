@@ -196,7 +196,9 @@ export class ViscositySolver {
     this.writeParams()
     const I = this.inp, B = this.bufs, G = 3 * I.size
     encoder.clearBuffer(B.latSums); encoder.clearBuffer(B.muAcc); encoder.clearBuffer(B.st)
-    const pass = encoder.beginComputePass({ label: 'viscosity' })
+    // one compute pass per stage (labels for GPU timestamp profiling, perf.ts profileStep; a pass boundary costs µs)
+    let pass = encoder.beginComputePass({ label: 'visc.lattice' })
+    const stage = (label: string) => { pass.end(); pass = encoder.beginComputePass({ label }) }
     let n = 0, stopped = false
     const run = (name: string, threads: number, wg = 256, group?: string) => {
       if (stopped) return
@@ -206,10 +208,13 @@ export class ViscositySolver {
     run('bandCells', I.cells)
     run('bandDilate', I.cells)
     run('latScatter', I.maxParticles, 64)
+    stage('visc.volumes')
     run('volumes', 6 * I.size + I.cells)
+    stage('visc.mu')
     run('muMinScatter', I.maxParticles, 64)
     run('muScatter', I.maxParticles, 64)
     run('weights', I.cells + G)
+    stage('visc.system')
     run('kindFaces', G)
     run('kindSamples', I.cells + G)
     run('constants', G)
@@ -220,6 +225,7 @@ export class ViscositySolver {
     run('gather', G, 256, 'gatherX')
     run('pcgInit', G)
     run('reduceInit', 256)
+    stage('visc.pcg')
     for (let k = 0; k < this.cap; k++) {
       run('strain', I.cells + G)
       run('gather', G)
@@ -229,10 +235,21 @@ export class ViscositySolver {
       run('reduceBeta', 256)
       run('pcgDupdate', G)
     }
+    stage('visc.finish')
     run('tally', 1, 1)
     run('writeBack', G)
     pass.end()
     return n
+  }
+
+  /** Profiling: `reps` direct dispatches of one iteration kernel with the solve marked NOT converged (full work). */
+  encodeProfile(encoder: GPUCommandEncoder, name: string, reps: number) {
+    this.device.queue.writeBuffer(this.bufs.st, 16, new Float32Array([0]))
+    const I = this.inp, G = 3 * I.size
+    const threads: Record<string, number> = { strain: I.cells + G, gather: G, pcgDot: G, pcgUpdate: G, pcgDupdate: G, reduceAlpha: 256 }
+    const pass = encoder.beginComputePass({ label: 'visc.profile' })
+    for (let k = 0; k < reps; k++) this.dispatch(pass, name, threads[name], 256)
+    pass.end()
   }
 
   resetFaults() { this.device.queue.writeBuffer(this.bufs.faults, 0, new Uint32Array(4)) }

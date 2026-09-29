@@ -46,3 +46,51 @@ export async function solveCost(device: GPUDevice, o: { pCaps?: number[]; psiCap
     psi: { iterations: psiStats.iterations, converged: psiStats.converged, cap: gpu.psiCap, msByCap: psiMs, perIteration: psi.dispatches.perIteration },
   }
 }
+
+/** GPU time of every compute pass of one production substep, summed by pass label (timestamp queries; the self-test
+ *  device enables 'timestamp-query' when the adapter has it). The encoder handed to the simulator is wrapped so each
+ *  beginComputePass records its begin/end times. `viscous`: an 88k honey block with the viscous path on (else water). */
+export async function profileStep(device: GPUDevice, o: { viscous?: boolean } = {}) {
+  if (!device.features.has('timestamp-query')) return { error: 'timestamp-query not available on this adapter' }
+  const { viscCostSim } = await import('./visc')
+  const gpu = await viscCostSim(device, !!o.viscous)
+  for (let s = 0; s < 20; s++) await submit(device, e => gpu.step(e, 1))
+  const MAX = 1024   // passes profiled (2 queries each; a query set holds at most 4096)
+  const qs = device.createQuerySet({ type: 'timestamp', count: 2 * MAX })
+  const resolve = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC })
+  const read = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  const labels: string[] = []
+  const e = device.createCommandEncoder()
+  const wrapped = new Proxy(e, {
+    get(t, p) {
+      if (p === 'beginComputePass') return (d: GPUComputePassDescriptor = {}) => {
+        const i = labels.length
+        if (i >= MAX) return t.beginComputePass(d)
+        labels.push(d.label ?? '?')
+        return t.beginComputePass({ ...d, timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 2 * i, endOfPassWriteIndex: 2 * i + 1 } })
+      }
+      const v = (t as unknown as Record<string | symbol, unknown>)[p]
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v
+    },
+  })
+  gpu.step(wrapped as GPUCommandEncoder, 1)
+  const n = labels.length
+  e.resolveQuerySet(qs, 0, 2 * n, resolve, 0)
+  e.copyBufferToBuffer(resolve, 0, read, 0, 16 * n)
+  device.queue.submit([e.finish()])
+  await read.mapAsync(GPUMapMode.READ)
+  const t = new BigUint64Array(read.getMappedRange().slice(0, 16 * n))
+  read.unmap()
+  const byLabel: Record<string, { us: number; passes: number }> = {}
+  let total = 0
+  for (let i = 0; i < n; i++) {
+    const us = Number(t[2 * i + 1] - t[2 * i]) / 1000
+    const k = labels[i]
+    byLabel[k] = byLabel[k] ?? { us: 0, passes: 0 }
+    byLabel[k].us += us; byLabel[k].passes++; total += us
+  }
+  const span = Number(t[2 * n - 1] - t[0]) / 1000
+  const top = Object.entries(byLabel).sort((a, b) => b[1].us - a[1].us).slice(0, 25).map(([k, v]) => ({ pass: k, us: Math.round(v.us), passes: v.passes }))
+  qs.destroy(); resolve.destroy(); read.destroy(); gpu.destroy()
+  return { viscous: !!o.viscous, passes: n, sumOfPassesUs: Math.round(total), firstToLastUs: Math.round(span), top }
+}

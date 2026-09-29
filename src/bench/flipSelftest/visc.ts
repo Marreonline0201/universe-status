@@ -353,6 +353,18 @@ export async function viscHuppert(device: GPUDevice) {
  *  a whole substep with the viscous path on / off, the viscous solve alone at `caps`, and its setup up to each kernel
  *  (prefixMs). Every non-empty submit here carries a ~3 ms round-trip floor (measured: clears of 9–74 MB and an empty
  *  compute pass all read ~3 ms): compare rows, not absolute values. */
+/** The viscCost scene as a ready simulator (profileStep): the 88k-particle block as honey (viscous path on) or water. */
+export async function viscCostSim(device: GPUDevice, viscous: boolean) {
+  const m = viscous ? HONEY : WATER
+  const p = fill([18, 0, 18], [45, 13, 45], m.rho, m.mu, mulberry32(7))
+  f32round(p)
+  const gpu = await makeViscSim(device, [64, 64, 64], p.n, m, { production: true })
+  gpu.viscosityActive = viscous
+  gpu.dt = 1 / 120
+  gpu.setParticles(toInit(p))
+  return gpu
+}
+
 export async function viscCost(device: GPUDevice, o: { caps?: number[]; reps?: number } = {}) {
   const m = HONEY, reps = o.reps ?? 20
   const p = fill([18, 0, 18], [45, 13, 45], m.rho, m.mu, mulberry32(7))
@@ -375,7 +387,18 @@ export async function viscCost(device: GPUDevice, o: { caps?: number[]; reps?: n
   const prefix: Record<string, number> = {}
   for (const k of ['latScatter', 'bandCells', 'volumes', 'muMinScatter', 'muScatter', 'weights', 'kindSamples', 'diagonal', 'gatherMinus', 'reduceInit']) prefix[k] = await time(() => submit(device, e => { vs.encode(e, k) }))
   const empty = await time(() => submit(device, () => {}))
+  const projOn = await time(() => submit(device, e => gpu.encodeProjection(e)))
+  gpu.viscosityActive = false
+  const projOff = await time(() => submit(device, e => gpu.encodeProjection(e)))
+  gpu.viscosityActive = true
+  const extrap = await time(() => submit(device, e => gpu.encodeExtrapolate(e)))
+  const kernelUs: Record<string, number> = {}
+  for (const k of ['strain', 'gather', 'pcgDot', 'pcgUpdate', 'pcgDupdate', 'reduceAlpha']) {
+    const one = await time(() => submit(device, e => vs.encodeProfile(e, k, 1)))
+    const many = await time(() => submit(device, e => vs.encodeProfile(e, k, 101)))
+    kernelUs[k] = 1000 * (many - one) / 100
+  }
   gpu.destroy()
-  return { particles: p.n, stepOnMs: stepOn, stepOffMs: stepOff, viscIterations: its, solveMsByCap: solve, prefixMs: prefix, emptySubmitMs: empty }
+  return { particles: p.n, stepOnMs: stepOn, stepOffMs: stepOff, viscIterations: its, solveMsByCap: solve, prefixMs: prefix, emptySubmitMs: empty, kernelUs, projectionOnMs: projOn, projectionOffMs: projOff, extrapolateMs: extrap }
 }
 

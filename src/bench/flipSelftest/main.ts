@@ -15,7 +15,7 @@ import { ghostKernels, flatSurface, hydrostatic, standingWave, column } from './
 import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayleighTaylor, lockExchange, overturn, mixedCaps } from './varDensity'
 import { sphereKernels, spherePhysics } from './sphere'
 import { viscKernels, viscTaylorGreen, viscStandingWave, viscHuppert, viscCost } from './visc'
-import { solveCost } from './perf'
+import { solveCost, profileStep } from './perf'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -284,7 +284,9 @@ try {
   if (!navigator.gpu) throw new Error('navigator.gpu unavailable')
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
   if (!adapter) throw new Error('requestAdapter returned null')
-  const device = await adapter.requestDevice({ label: 'flip-selftest (default limits)' })
+  // default LIMITS (the production constraints, e.g. 8 storage buffers per stage); the timestamp feature only adds the
+  // GPU profiler (perf.ts profileStep) where the adapter has it
+  const device = await adapter.requestDevice({ label: 'flip-selftest (default limits)', requiredFeatures: adapter.features.has('timestamp-query') ? ['timestamp-query'] : [] })
   const errors: string[] = []
   device.addEventListener('uncapturederror', ev => errors.push((ev as GPUUncapturedErrorEvent).error.message))
   api.info = () => ({ vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description,
@@ -322,6 +324,7 @@ try {
     else if (test === 'viscTaylorGreen') out = await viscTaylorGreen(device, params as { cells: number; material: 'honey' | 'lava'; on: boolean })
     else if (test === 'viscStandingWave') out = await viscStandingWave(device, params as { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number })
     else if (test === 'viscHuppert') out = await viscHuppert(device)
+    else if (test === 'profileStep') out = await profileStep(device, params as { viscous?: boolean })
     else if (test === 'solveCost') out = await solveCost(device, params as { pCaps?: number[]; psiCaps?: number[]; reps?: number })
     else if (test === 'viscCost') out = await viscCost(device, params as { caps?: number[]; reps?: number })
     else if (test === 'spherePhysics') out = await spherePhysics(device, params as { test: 'AR' | 'MV' | 'WK' | 'FS' })
