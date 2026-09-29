@@ -1,17 +1,17 @@
 // cellScatter.wgsl — particle volume fraction on cell centres (Kugelstadt et al. 2019 eq. 12; flipRef.densityCorrect):
 // f_c += (V_p/dx³)·N(x_p − x_c) with the cell-centred trilinear N, into the solver's padded layout (ghost cells collect
-// what is lost across the walls). V_p/dx³ = m̂·ρ_ref/ρ = m̂ / (invMassUnit·dx³·ρ). Fixed point at MASS_SCALE (single word:
+// what is lost across the walls). V_p/dx³ = 1/ppc for every particle whatever its material (FINAL-PLAN §4.1: V_p = dx³/ppc is
+// conserved; a mass-based m/ρ would make a mercury particle count 13.6 times in a mixed tank). Fixed point at MASS_SCALE (single word:
 // f ≤ ~4 even crowded, and the ψ tolerance is 1e-3).
 
 @group(0) @binding(1) var<storage, read> pos: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> vel: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> vfrac: array<atomic<i32>>;
+@group(0) @binding(2) var<storage, read_write> vfrac: array<atomic<i32>>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
-  let vp = vel[q].w / (P.invMassUnit * P.dx * P.dx * P.dx * P.rho);
+  let vp = P.invPpc;
   let f = pos[q].xyz / P.dx - vec3<f32>(0.5);
   let base = vec3<i32>(floor(f));
   let t = f - floor(f);

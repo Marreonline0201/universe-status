@@ -217,6 +217,35 @@ export const MPM_MU_CODE_LIMIT = mpmViscosityStabilityLimit(MPM_DT_CODE)
  *  Superseded by MPM_MU_CODE_LIMIT; kept only so reports can show the change. Not used by any gate. */
 export const MPM_MU_CODE_LIMIT_PLAN_ESTIMATE = 3.3
 
+/**
+ * Numerical viscosity of the incompressible APIC-MAC solver at dx = 5.672 cm, MEASURED by gate D2 (S3.4, clean tree
+ * 225d736): ν_num = 1.04e-3 m²/s from the E_K envelope of a standing wave at H/dx = 28 (GPU 1.02e-3). FINAL-PLAN §5.6:
+ * the implicit viscous solve (S3.6) runs for ν_phys ≥ 0.01·ν_num; below that the physical term is invisible.
+ * Until S3.6 exists the incompressible path therefore
+ *   - REFUSES ν_phys ≥ ν_num: the missing physical viscosity would be at least the scheme's own — the liquid would flow
+ *     qualitatively wrong (glycerol 1.1e-3, honey, lava); FINAL-PLAN D2 consequence: glycerol-level viscosity is
+ *     unresolvable at this dx anyway;
+ *   - WARNS for 0.01·ν_num ≤ ν_phys < ν_num (olive oil 9.2e-5): its viscosity is real but not simulated yet, so it flows
+ *     more freely than it should.
+ */
+export const INCOMPRESSIBLE_NU_NUM = 1.04e-3
+
+export type IncompressibleViscosityVerdict = { ok: true; warning: string | null } | { ok: false; reason: string }
+
+export function incompressibleViscosityVerdict(muPaS: number, rhoKgM3: number, name = 'material'): IncompressibleViscosityVerdict {
+  if (!Number.isFinite(muPaS) || muPaS < 0 || !Number.isFinite(rhoKgM3) || rhoKgM3 <= 0) {
+    return { ok: false, reason: `${name}: no validated viscosity/density at this state` }
+  }
+  const nu = muPaS / rhoKgM3
+  if (nu >= INCOMPRESSIBLE_NU_NUM) {
+    return { ok: false, reason: `${name}: ν = ${nu.toExponential(2)} m²/s is at or above the solver's own numerical viscosity (${INCOMPRESSIBLE_NU_NUM.toExponential(2)} m²/s at 5.67 cm cells) — without the implicit viscous solve (plan S3.6) it would flow like a thin liquid; refused, not faked` }
+  }
+  if (nu >= 0.01 * INCOMPRESSIBLE_NU_NUM) {
+    return { ok: true, warning: `${name}: its viscosity (ν = ${nu.toExponential(2)} m²/s) is not simulated until plan S3.6 — it flows more freely than the real liquid` }
+  }
+  return { ok: true, warning: null }
+}
+
 export type MpmViscosityVerdict =
   | { ok: true; muCode: number }
   | { ok: false; muCode: number; reason: string }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // FLUID TEST UI smoke test — clicks the real buttons the owner uses and checks the page stays
-// alive: +10K adds particles, DROP BALL/REMOVE BALL toggle, RESET restores the default scene,
+// alive: +10K adds particles, DROP BALL/REMOVE BALL toggle (MPM; refused with its reason on the incompressible
+// solver until S3.1c-2), RESET restores the default scene,
 // a canvas click spawns a cluster, frames keep advancing, the fluid region of the screenshot
 // changes while the sim runs, and no console errors appear (other than the expected office
 // websocket refusal — the office is deliberately never started).
@@ -48,10 +49,17 @@ try {
   const n10 = (await st()).count
   check(n10 - n0 >= 9000, `+10K pours ≈10k particles (${n0}→${n10})`)
 
-  await btn('DROP BALL').click(); await page.waitForTimeout(200)
-  check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')
-  await btn('REMOVE BALL').click(); await page.waitForTimeout(200)
-  check(await btn('DROP BALL').count() === 1, 'REMOVE BALL toggles back')
+  if ((s0.solver ?? 'mpm') === 'mpm') {
+    await btn('DROP BALL').click(); await page.waitForTimeout(200)
+    check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')
+    await btn('REMOVE BALL').click(); await page.waitForTimeout(200)
+    check(await btn('DROP BALL').count() === 1, 'REMOVE BALL toggles back')
+  } else {
+    // the incompressible solver does not couple the ball yet (S3.1c-2): the click must be refused visibly, never faked
+    await btn('DROP BALL').click(); await page.waitForTimeout(300)
+    check(await btn('DROP BALL').count() === 1 && await btn('REMOVE BALL').count() === 0 && await page.getByText(/S3.1c-2/).count() > 0,
+      'DROP BALL on the incompressible solver is refused with its reason (no ball coupling until S3.1c-2)')
+  }
 
   const box = await canvas.boundingBox()
   const before = (await st()).count

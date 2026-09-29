@@ -14,6 +14,8 @@ import { MaterialGenerator } from '../ai/MaterialGenerator'
 import { AutoExperimenter } from '../ai/AutoExperimenter'
 import { AIChatPanel } from './AIChatPanel'
 import { FluidControls, type FluidController } from './fluid/FluidControls'
+import { solverFromUrl } from '../fluid-engine/backends'
+import { packingFor } from '../fluid-engine/spawn'
 import { benchHookEnabled, installBenchHook } from '../bench/benchHook'
 import { parseScenario } from '../lab/scenario'
 
@@ -63,7 +65,7 @@ export function FluidTest() {
   const dropBall = useCallback(() => {
     if (!engineRef.current) return
     engineRef.current.dropBall()
-    setBallActive(true)
+    setBallActive(engineRef.current.ballActive)   // false when the solver refused (reason in the notice)
   }, [])
 
   const removeBall = useCallback(() => {
@@ -175,7 +177,7 @@ export function FluidTest() {
         // Scripted tests drive the same callbacks the buttons call.
         uninstallHook = installBenchHook(engine.benchTarget({
           loadScenario: (json) => {
-            const parsed = parseScenario(json)
+            const parsed = parseScenario(json, { packing: packingFor(solverFromUrl()) })
             if (!parsed.ok) throw new Error(parsed.error)
             const r = engine.loadScenario(parsed.scenario)
             if (!r.ok) throw new Error(`scenario refused: ${r.reason}`)
@@ -211,6 +213,7 @@ export function FluidTest() {
 
   // Adapter over engine state → the shared FluidControls panel (same one the LAB page uses).
   const ftController: FluidController = {
+    solver: solverFromUrl(),
     gpuReady, compositions, selectedComposition,
     setSelectedComposition,
     spawnBatch,
@@ -248,7 +251,7 @@ export function FluidTest() {
             color: '#00d4ff',
             letterSpacing: 2,
           }}>
-            GPU MLS-MPM FLUID
+            {solverFromUrl() === 'mpm' ? 'GPU MLS-MPM FLUID' : 'INCOMPRESSIBLE FLUID'}
           </span>
           <span style={{
             fontSize: 'calc(9px * var(--font-scale, 1))',

@@ -50,10 +50,8 @@ fn sampleVel(x: vec3<f32>, unset: ptr<function, u32>) -> vec3<f32> {
   return v;
 }
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let q = gid.x;
-  if (q >= P.numParticles) { return; }
+/// G2P + RK2 advection of particle q; returns its new speed |v| (m/s).
+fn advance(q: u32) -> f32 {
   let x = pos[q].xyz;
   var unset = 0u;
 
@@ -76,4 +74,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (any(cx != nx)) { atomicAdd(&diag[DIAG_WALL_CLAMPS], 1u); }
   if (unset > 0u) { atomicAdd(&diag[DIAG_UNSET_READS], unset); }
   pos[q] = vec4<f32>(cx, pos[q].w);
+  return length(v);
+}
+
+// Max particle speed, pre-reduced in the workgroup before one global atomic (FINAL-PLAN §5.2 step 12): v_lag for the
+// substep count (§5.1). Non-negative f32 bit patterns order like u32. Workgroup memory starts zeroed.
+var<workgroup> wgMaxSpeed: atomic<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+  let q = gid.x;
+  if (q < P.numParticles) { atomicMax(&wgMaxSpeed, bitcast<u32>(advance(q))); }
+  workgroupBarrier();
+  if (li == 0u) { atomicMax(&diag[DIAG_MAX_SPEED], atomicLoad(&wgMaxSpeed)); }
 }

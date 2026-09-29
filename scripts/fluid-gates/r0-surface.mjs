@@ -32,12 +32,14 @@ import * as ref from './lib/opticsRef.mjs'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE R0-surface (splat radius: OPT-1-h surface height and coverage)')
 const report = {}
-const GRID = 64, DX = 1 / GRID, VP = 1 / (GRID ** 3 * 4), S = Math.cbrt(VP), MPU = 3.63
+// the rest packing and tank origin of the solver the page runs (set once the page is open): legacy MPM 4 ppc inside a
+// 3-cell wall band; incompressible solver 8 ppc from the grid edge
+const GRID = 64, DX = 1 / GRID, MPU = 3.63
+let VP = 1 / (GRID ** 3 * 4), S = Math.cbrt(VP), ORIGIN = 3 / GRID, LEGACY = 0.025 / S
 const TOL = 0.25 * DX, HOLE_LIMIT = 0.01
 const R0 = 0.3, R1 = 0.7                          // central region in x and z (world units)
 const R_EQ = Math.cbrt(3 / (4 * Math.PI))         // volume-equivalent radius / spacing = 0.6204
-const LEGACY = 0.025 / S
-const FACTORS = [LEGACY, 1.5, 1.25, 1.0, 0.8, 0.7, R_EQ]
+let FACTORS = [LEGACY, 1.5, 1.25, 1.0, 0.8, 0.7, R_EQ]
 const BOX_MAX_M = [3.28, 0.60, 3.28]
 const pool = { name: 'r0-surface-pool', materials: [], gravity_mps2: 9.80665, spawns: [{ material: 'Water', box: { min: [0, 0, 0], max: BOX_MAX_M } }] }
 
@@ -69,6 +71,10 @@ function estimate(s) {
 
 const { browser, page, errors, adapter } = await openFluidPage()
 report.adapter = adapter
+if ((await page.evaluate(() => window.__fluidBench.status())).solver !== 'mpm') {
+  VP = 1 / (GRID ** 3 * 8); S = Math.cbrt(VP); ORIGIN = 0; LEGACY = 0.025 / S; FACTORS = [LEGACY, 1.5, 1.25, 1.0, 0.8, 0.7, R_EQ]
+}
+report.packing = { VP, S, ORIGIN }
 const probe = async opts => ref.decodeProbe(await page.evaluate(o => window.__fluidBench.probe(o), opts))
 try {
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: 9.80665 }))
@@ -77,7 +83,7 @@ try {
   await loadScenario(page, pool, 17)                       // frozen at frame 0
   await page.waitForTimeout(200)
   {
-    const lo = 3 / GRID, size = BOX_MAX_M[1] / MPU
+    const lo = ORIGIN, size = BOX_MAX_M[1] / MPU
     const ny = Math.floor(size / S + 1e-9)
     const latticeTop = lo + (size - ny * S) / 2 + ny * S   // spawn.ts latticeBox: lattice centred in the box
     const e = estimate(await sample(page))

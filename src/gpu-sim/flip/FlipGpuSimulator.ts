@@ -9,6 +9,9 @@
 //         pressure. The density correction keeps the voxel labels (FINAL-PLAN §5.2 step 3)        (gate s34-gpu.mjs)
 //   S3.2 density projection (`densityProjection: true`), before faceScatter: labels → cellScatter → densityRhs →
 //         ψ solve (second PoissonSolver, unit coefficients, cold) → faceDisplacement → positionCorrect  (gate s32-gpu.mjs)
+//   S3.5 variable density (`variableDensity: true`): faceScatter also sums Σw; ghostCoef forms each face's density
+//         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
+//         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -37,13 +40,14 @@ import lsScatterWGSL from './shaders/lsScatter.wgsl?raw'
 import lsFinalizeWGSL from './shaders/lsFinalize.wgsl?raw'
 import ghostCoefWGSL from './shaders/ghostCoef.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
+import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
 export const MASS_SCALE = 2 ** 24
 export const MOM_SCALE = 2 ** 19
 /** Legacy presentation layout: 20 words per particle. */
 export const PRESENT_STRIDE_BYTES = 80
-const PARAMS_BYTES = 112
+const PARAMS_BYTES = 128
 
 export interface FlipSimOptions {
   nx: number
@@ -72,8 +76,11 @@ export interface FlipSimOptions {
   preciseP2G?: boolean
   /** Pressure projection (S3.1b). Requires FlipGpuSimulator.create(). */
   projection?: boolean
-  /** Liquid density, kg/m³ (uniform until S3.5). Default water at 20 °C (NIST). */
+  /** Liquid density, kg/m³: every face's density without variableDensity, the last-resort fallback with it. Default water
+   *  at 20 °C (NIST). */
   density?: number
+  /** S3.5 per-face density from the particles' masses (FINAL-PLAN §5.3 "face density"). Default false. */
+  variableDensity?: boolean
   /** Pressure solve tolerance ‖∇·u‖∞, 1/s (FINAL-PLAN §5.3 ε_div = 1e-2). */
   pressureTolerance?: number
   /** Encoded iteration cap of the pressure solve (a cap hit is counted in the solver's sticky faults). Default: MGPCG
@@ -91,7 +98,7 @@ export interface FlipSimOptions {
   freeSurface?: 'voxel' | 'ghost'
   /** Particles per cell of the rest packing (level-set spacing s = dx/∛ppc; R = 2s, r̄ = s/2). Default 8. */
   ppc?: number
-  /** Lower clamp of θ (FINAL-PLAN §5.3: 1e-3). */
+  /** Lower clamp of θ (default THETA_MIN = 1e-2, the measured G0-e choice; flipRef). */
   thetaMin?: number
 }
 
@@ -114,6 +121,8 @@ export interface FlipParticleInit {
 
 export interface FlipDiagnostics {
   wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number; densityClamps: number
+  /** S3.5 face-density fallbacks: neighbour mean (Σw < wMin), and default density (no neighbour either). */
+  densityNeighbourFaces: number; densityDefaultFaces: number
   /** ψ solver sticky faults (0 without density projection). */
   psiSolves: number; psiCapHits: number; psiBreakdowns: number; psiMaxIterations: number
   /** Pressure solver sticky faults since the last reset (0 without projection). */
@@ -153,6 +162,7 @@ export class FlipGpuSimulator {
   dispBuf: GPUBuffer | null = null
   private densBg: { cellScatter: GPUBindGroup; densityRhs: GPUBindGroup; faceDisplacement: GPUBindGroup; positionCorrect: GPUBindGroup } | null = null
   readonly freeSurface: 'voxel' | 'ghost'
+  readonly variableDensity: boolean
   readonly ppc: number
   readonly thetaMin: number
   /** Level-set buffers (projection only): sums at cell centres (4 i32 per padded cell) and face centres (4 i32 per face
@@ -180,6 +190,8 @@ export class FlipGpuSimulator {
   readonly momBuf: GPUBuffer
   readonly massLoBuf: GPUBuffer
   readonly momLoBuf: GPUBuffer
+  /** Σw per face (i32 at MASS_SCALE), for the S3.5 face density. */
+  readonly weightBuf: GPUBuffer
   readonly uBuf: [GPUBuffer, GPUBuffer]
   readonly validBuf: [GPUBuffer, GPUBuffer]
   readonly diagBuf: GPUBuffer
@@ -213,8 +225,10 @@ export class FlipGpuSimulator {
     this.psiTolerance = opts.psiTolerance ?? 1e-3
     this.psiCap = opts.psiCap ?? (this.solverMethod === 'mgpcg' ? 10 : 200)
     this.freeSurface = opts.freeSurface ?? 'voxel'
+    this.variableDensity = opts.variableDensity ?? false
+    if (this.variableDensity && !this.projection) throw new Error('FlipGpuSimulator: variableDensity requires projection')
     this.ppc = opts.ppc ?? 8
-    this.thetaMin = opts.thetaMin ?? 1e-3
+    this.thetaMin = opts.thetaMin ?? THETA_MIN
     this.massUnit = (opts.rhoRef ?? 1000) * opts.dx ** 3
     this.lRef = opts.lRef
     this.tauS = opts.tauS
@@ -233,6 +247,7 @@ export class FlipGpuSimulator {
     this.momBuf = buf('mom', 4 * G)
     this.massLoBuf = buf('massLo', 4 * G)
     this.momLoBuf = buf('momLo', 4 * G)
+    this.weightBuf = buf('weight', 4 * G)
     this.uBuf = [buf('uA', 4 * G), buf('uB', 4 * G)]
     this.validBuf = [buf('validA', 4 * G), buf('validB', 4 * G)]
     this.diagBuf = buf('diag', 32)
@@ -260,7 +275,7 @@ export class FlipGpuSimulator {
     })
     const [uA, uB] = this.uBuf, [vA, vB] = this.validBuf
     this.bg = {
-      faceScatter: group('faceScatter', [this.posBuf, this.velBuf, this.affBuf, this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf]),
+      faceScatter: group('faceScatter', [this.posBuf, this.velBuf, this.affBuf, this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, this.weightBuf]),
       gridUpdate: group('gridUpdate', [this.faceTypeBuf, this.massBuf, this.momBuf, uA, vA, this.diagBuf, this.massLoBuf, this.momLoBuf]),
       extrapolate: [
         group('extrapolate', [this.faceTypeBuf, uA, vA, uB, vB]),
@@ -289,7 +304,8 @@ export class FlipGpuSimulator {
     this.solveCfg = solver.createSolveConfig({ criterion: 'inf', tol: this.pressureTolerance, cap: this.pressureCap })
     const pipe = (name: Kernel, code: string) => device.createComputePipeline({
       label: `flip.${name}`, layout: 'auto',
-      compute: { module: device.createShaderModule({ label: `flip.${name}`, code: `${commonWGSL}\n${code}` }), entryPoint: 'main' },
+      compute: { module: device.createShaderModule({ label: `flip.${name}`, code: `${commonWGSL}\n${code}` }), entryPoint: 'main',
+        constants: code.includes('PRECISE_P2G') ? { PRECISE_P2G: this.preciseP2G ? 1 : 0 } : undefined },
     })
     this.pipelines.labelClear = pipe('labelClear', labelClearWGSL)
     this.pipelines.labelParticles = pipe('labelParticles', labelParticlesWGSL)
@@ -311,12 +327,12 @@ export class FlipGpuSimulator {
       labelClear: group('labelClear', [sb.labels]),
       labelParticles: group('labelParticles', [this.posBuf, sb.labels]),
       divergence: group('divergence', [this.faceTypeBuf, uA, vA, sb.labels, sb.rhs, this.diagBuf]),
-      project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf]),
+      project: group('project', [this.faceTypeBuf, sb.labels, sb.x, uA, vA, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef]),
     }
     this.lsBg = {
       lsScatter: group('lsScatter', [this.posBuf, this.lsCellBuf, this.lsFaceBuf]),
       lsFinalize: group('lsFinalize', [this.lsCellBuf, this.phiCellBuf, sb.labels]),
-      ghostCoef: group('ghostCoef', [sb.labels, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef]),
+      ghostCoef: group('ghostCoef', [sb.labels, this.phiCellBuf, this.lsFaceBuf, sb.faceCoef, this.massBuf, this.massLoBuf, this.weightBuf, this.diagBuf]),
     }
     if (!this.densityProjection) return
     const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
@@ -332,7 +348,7 @@ export class FlipGpuSimulator {
     this.pipelines.faceDisplacement = pipe('faceDisplacement', faceDisplacementWGSL)
     this.pipelines.positionCorrect = pipe('positionCorrect', positionCorrectWGSL)
     this.densBg = {
-      cellScatter: group('cellScatter', [this.posBuf, this.velBuf, this.vfracBuf]),
+      cellScatter: group('cellScatter', [this.posBuf, this.vfracBuf]),
       densityRhs: group('densityRhs', [this.faceTypeBuf, sb.labels, this.vfracBuf, psi.buffers.rhs, this.fCompBuf]),
       faceDisplacement: group('faceDisplacement', [this.faceTypeBuf, sb.labels, psi.buffers.x, this.dispBuf]),
       positionCorrect: group('positionCorrect', [this.posBuf, this.dispBuf, this.diagBuf]),
@@ -380,8 +396,10 @@ export class FlipGpuSimulator {
     f[20] = this.lRef; f[21] = this.tauS; u[22] = L.size; f[23] = this.density
     const sp = L.dx / Math.cbrt(this.ppc)
     f[24] = 2 * sp; f[25] = sp / 2; f[26] = this.thetaMin; u[27] = this.freeSurface === 'ghost' ? 1 : 0
+    f[28] = (this.massUnit / L.dx ** 3) * this.ppc; u[29] = this.variableDensity ? 1 : 0; f[30] = FACE_WEIGHT_MIN; f[31] = 1 / this.ppc
     this.device.queue.writeBuffer(this.paramsBuf, 0, b)
-    // a_f = Δt/(ρ·dx²) on every face (uniform until S3.5); rewritten only when Δt changes
+    // a_f = Δt/(ρ·dx²) on every face for the voxel, one-density path (ghostCoef rewrites faceCoef every substep in the
+    // ghost and variable-density paths); rewritten only when Δt changes
     const coef = this.dt / (this.density * L.dx * L.dx)
     if (this.solver && coef !== this.coefFor) { this.solver.writeUnitCoefficients(coef); this.coefFor = coef }
   }
@@ -401,6 +419,7 @@ export class FlipGpuSimulator {
   encodeScatter(encoder: GPUCommandEncoder): void {
     encoder.clearBuffer(this.massBuf)
     encoder.clearBuffer(this.momBuf)
+    encoder.clearBuffer(this.weightBuf)
     if (this.preciseP2G) { encoder.clearBuffer(this.massLoBuf); encoder.clearBuffer(this.momLoBuf) }
     if (this.count > 0) this.dispatch(encoder, 'faceScatter', this.bg.faceScatter, this.count, 64)
   }
@@ -441,15 +460,23 @@ export class FlipGpuSimulator {
     this.dispatch(encoder, 'labelClear', bg.labelClear, cells, 256)
     if (this.count > 0) this.dispatch(encoder, 'labelParticles', bg.labelParticles, this.count, 64)
   }
-  /** Labels of the pressure solve: voxel (S3.1b), or the ghost-fluid level set with its operator coefficients (S3.4). */
+  /** Labels of the pressure solve and the operator's face coefficients: voxel labels (S3.1b) or the ghost-fluid level set
+   *  (S3.4); ghostCoef writes a_f (and the ghost extra diagonal) whenever the surface is ghost or the density varies
+   *  (S3.5) — the voxel one-density path keeps the uniform coefficients from writeParams. */
   encodePressureLabels(encoder: GPUCommandEncoder): void {
-    if (this.freeSurface !== 'ghost') { this.encodeLabels(encoder); return }
     const { cells } = this.proj()
+    if (this.freeSurface !== 'ghost') {
+      this.encodeLabels(encoder)
+      if (this.variableDensity) this.dispatch(encoder, 'ghostCoef', this.lsBg!.ghostCoef, cells, 256)
+      return
+    }
     if (!this.lsBg || !this.lsCellBuf || !this.lsFaceBuf) throw new Error('FlipGpuSimulator: level set not initialised')
     encoder.clearBuffer(this.lsCellBuf)
     encoder.clearBuffer(this.lsFaceBuf)
     if (this.count > 0) this.dispatch(encoder, 'lsScatter', this.lsBg.lsScatter, this.count, 64)
     this.dispatch(encoder, 'lsFinalize', this.lsBg.lsFinalize, cells, 256)
+    // union with occupancy: every cell holding a particle is LIQUID too (flipRef.classifyLevelSet)
+    if (this.count > 0) this.dispatch(encoder, 'labelParticles', this.projBg!.labelParticles, this.count, 64)
     this.dispatch(encoder, 'ghostCoef', this.lsBg.ghostCoef, cells, 256)
   }
 
@@ -577,6 +604,7 @@ export class FlipGpuSimulator {
     const f = this.solver ? await this.solver.readFaults() : null
     const g = this.psiSolver ? await this.psiSolver.readFaults() : null
     return { wallClamps: d[0], unsetFaceReads: d[1], openFaces: d[2], unsetDivergenceFaces: d[3], densityClamps: d[4],
+      densityNeighbourFaces: d[5], densityDefaultFaces: d[6],
       solves: f?.solves ?? 0, capHits: f?.capHits ?? 0, breakdowns: f?.breakdowns ?? 0, maxIterations: f?.maxIterations ?? 0,
       psiSolves: g?.solves ?? 0, psiCapHits: g?.capHits ?? 0, psiBreakdowns: g?.breakdowns ?? 0, psiMaxIterations: g?.maxIterations ?? 0 }
   }

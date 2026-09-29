@@ -159,7 +159,9 @@ try {
     await loadScenario(page, scenario, 3)          // frozen at frame 0 (setStepLimit(0)): the lattice as spawned
     await page.waitForTimeout(200)
     const s = await sample(page)
-    const Vp = 1 / (64 ** 3 * 4)
+    // the running solver's rest packing: 4 ppc on the legacy MPM, 8 on the incompressible solver (V_p = dx³/ppc)
+    const ppc = (await page.evaluate(() => window.__fluidBench.status())).solver === 'mpm' ? 4 : 8
+    const Vp = 1 / (64 ** 3 * ppc)
     const cam = { kind: 'orthographic', eye: [0.5, 2.0, 0.5], target: [0.5, 0, 0.5], up: [0, 0, -1], halfHeight: 0.6, near: 0.1, far: 5 }
     const V3W = 1000, V3H = 1000
     const areaPx = (2 * 0.6 / V3H) ** 2

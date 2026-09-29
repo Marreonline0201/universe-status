@@ -53,6 +53,7 @@ function phiOf(sums: Int32Array, at: number, h: number, R: number, rbar: number)
 const phiTol = (wFixed: number, h: number) => (2 * 64 * (2 ** -23 + 1.2e-5) / Math.max(wFixed / 2 ** 22, 1e-12) + 1e-6) * h
 /** common.wgsl thetaOf in f64. */
 const thetaOf = (fl: number, fm: number, fa: number, tMin: number) => {
+  if (fl >= 0) return tMin   // liquid by occupancy only: the face is dry
   const t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
   return Math.min(1, Math.max(tMin, t))
 }
@@ -197,8 +198,7 @@ export async function flatSurface(device: GPUDevice, o: { ppc: number }) {
     if (labels[lin(L, i, j, k)] === 1 && labels[lin(L, i, j + 1, k)] === 0) {
       const fm = phiOf(fsum, 4 * (S + L.idx(i, j + 1, k)), DX, 2 * sp, sp / 2)
       const fl = phi[lin(L, i, j, k)], fa = phi[lin(L, i, j + 1, k)]
-      let t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
-      t = Math.min(1, Math.max(gpu.thetaMin, t))
+      const t = thetaOf(fl, fm, fa, gpu.thetaMin)
       ys.push((j + 0.5 + t) * DX)
       break
     }

@@ -9,6 +9,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31b     (S3.1b projection kernels, gate s31b-gpu.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s32      (S3.2 density kernels, gate s32-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s34      (S3.4 ghost-fluid kernels, gate s34-gpu.mjs --quick)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35      (S3.5 variable-density kernels, gate s35-gpu.mjs --quick)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -33,13 +34,14 @@ const SETS = {
     [`${SH}/labelParticles.wgsl`, 'clamp(vec3<i32>(floor(pos[q].xyz / P.dx))', 'clamp(vec3<i32>(round(pos[q].xyz / P.dx))', 'particle cell rounded instead of floored'],
     [`${SH}/labelClear.wgsl`, 'labels[linIdx(c)] = LABEL_AIR;', 'labels[linIdx(c)] = LABEL_FLUID;', 'every cell labelled liquid'],
     [`${SH}/divergence.wgsl`, 'rhs[li] = -div / P.dx;', 'rhs[li] = div / P.dx;', 'right-hand side sign flipped'],
-    [`${SH}/project.wgsl`, 'u[s] -= P.dt / (P.rho * P.dx) * (ppE - pmE);', 'u[s] -= P.dt / (P.rho * P.dx) * (pmE - ppE);', 'pressure gradient sign flipped'],
-    [`${SH}/project.wgsl`, 'u[s] -= P.dt / (P.rho * P.dx) * (ppE - pmE);', 'u[s] -= P.dt / P.dx * (ppE - pmE);', 'density missing from the projection'],
+    [`${SH}/project.wgsl`, 'u[s] -= faceCoef[linIdx(c)][a] * P.dx * (ppE - pmE);', 'u[s] -= faceCoef[linIdx(c)][a] * P.dx * (pmE - ppE);', 'pressure gradient sign flipped'],
+    [`${SH}/project.wgsl`, 'u[s] -= faceCoef[linIdx(c)][a] * P.dx * (ppE - pmE);', 'u[s] -= faceCoef[linIdx(c)][a] * (ppE - pmE);', 'projection factor a_f without dx'],
     [`${SH}/project.wgsl`, 'let pm = select(0.0, pressure[linIdx(c - e)], lm == LABEL_FLUID);', 'let pm = pressure[linIdx(c - e)];', 'air pressure read from the solver vector'],
     [`${SH}/project.wgsl`, '  } else {\n    valid[s] = 0u;\n  }', '  } else {\n    valid[s] = 1u;\n  }', 'faces away from liquid left marked set'],
   ],
   s32: [
     [`${SH}/cellScatter.wgsl`, 'let f = pos[q].xyz / P.dx - vec3<f32>(0.5);', 'let f = pos[q].xyz / P.dx;', 'volume fraction on nodes, not cell centres'],
+    [`${SH}/cellScatter.wgsl`, 'let vp = P.invPpc;', 'let vp = 2.0 * P.invPpc;', 'particle volume doubled'],
     [`${SH}/densityRhs.wgsl`, 'keep *= 1.0 - 0.125 * solid;', 'keep *= 1.0;', 'wall compensation dropped'],
     [`${SH}/densityRhs.wgsl`, 'if (airNbr) { fc = max(fc, 1.0); }', '', 'air-neighbour clamp dropped'],
     [`${SH}/densityRhs.wgsl`, 'rhs[li] = fc - 1.0;', 'rhs[li] = 1.0 - fc;', 'density right-hand side sign flipped'],
@@ -53,11 +55,20 @@ const SETS = {
     [`${SH}/lsFinalize.wgsl`, 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < 0.0);', 'labels[li] = select(LABEL_AIR, LABEL_FLUID, phi < P.lsRbar);', 'label threshold at r̄ instead of 0'],
     [`${SH}/common.wgsl`, 'return length(r) - P.lsRbar;', 'return length(r) - 2.0 * P.lsRbar;', 'radius s (design C) instead of s/2'],
     [`${SH}/common.wgsl`, 'if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }', 't = fl / (fl - fa);', 'θ without the face-centre sample'],
-    [`${SH}/ghostCoef.wgsl`, 'if (labels[linIdx(c - e)] == LABEL_AIR) { let th = thetaOf(fl, facePhi(ax, c), phiCell[linIdx(c - e)]); extra += a * (1.0 - th) / th; }', 'if (labels[linIdx(c - e)] == LABEL_AIR) { let th = thetaOf(fl, facePhi(ax, c), phiCell[linIdx(c - e)]); extra += a / th; }', 'extra diagonal a/θ (face counted twice)'],
+    [`${SH}/ghostCoef.wgsl`, 'extra += am[ax] * (1.0 - th) / th; }', 'extra += am[ax] / th; }', 'extra diagonal a/θ (face counted twice)'],
     [`${SH}/ghostCoef.wgsl`, 'thetaOf(fl, facePhi(ax, c + e), phiCell[linIdx(c + e)])', 'thetaOf(fl, facePhi(ax, c), phiCell[linIdx(c + e)])', 'upper neighbour uses the lower face'],
     [`${SH}/project.wgsl`, 'pmE = -((1.0 - th) / th) * pp;', 'pmE = -((1.0 - th) / th) * pm;', 'ghost pressure from the air cell (voxel)'],
     [`${SH}/project.wgsl`, 'let th = thetaOf(phiCell[linIdx(c - e)], facePhi(a, c), phiCell[linIdx(c)]);', 'let th = thetaOf(phiCell[linIdx(c)], facePhi(a, c), phiCell[linIdx(c - e)]);', 'θ liquid/air arguments swapped'],
     ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'f[24] = 2 * sp; f[25] = sp / 2;', 'f[24] = 2 * sp; f[25] = sp;', 'host writes r̄ = s instead of s/2'],
+  ],
+  s35: [
+    [`${SH}/faceScatter.wgsl`, 'atomicAdd(&gW[s], encodeFixed(w * P.massScale));', 'atomicAdd(&gW[s], encodeFixed(P.massScale));', 'Σw counts particles, not weights'],
+    [`${SH}/ghostCoef.wgsl`, 'return P.rhoPpc * (mq / P.massScale) / w;', 'return P.rhoPpc * (mq / P.massScale);', 'face density not divided by Σw'],
+    [`${SH}/ghostCoef.wgsl`, 'if (P.variable == 0u) { return P.rho; }', 'if (P.variable == 1u) { return P.rho; }', 'variable density ignored'],
+    [`${SH}/ghostCoef.wgsl`, 'extra += k / faceRho(ax, c + e, false) * (1.0 - th) / th; }', 'extra += am[ax] * (1.0 - th) / th; }', 'upper ghost face uses the lower face density'],
+    [`${SH}/ghostCoef.wgsl`, 'if (w < P.wMin) { return 0.0; }', 'if (w < 0.0) { return 0.0; }', 'no Σw threshold (0/0 faces)'],
+    [`${SH}/project.wgsl`, 'u[s] -= faceCoef[linIdx(c)][a] * P.dx * (ppE - pmE);', 'u[s] -= faceCoef[linIdx(c - e)][a] * P.dx * (ppE - pmE);', 'projection reads the neighbour cell coefficient'],
+    ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'f[28] = (this.massUnit / L.dx ** 3) * this.ppc;', 'f[28] = this.massUnit / L.dx ** 3;', 'rho_ref·ppc without ppc'],
   ],
 }
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
@@ -76,7 +87,7 @@ for (const [f, find, , why] of M) {
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(GATE === 's32' || GATE === 's34' ? ['--quick'] : [])], {
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())

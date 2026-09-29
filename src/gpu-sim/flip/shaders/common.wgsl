@@ -19,11 +19,15 @@ struct FlipParams {
   lRef: f32,               // m, presentation length unit (1 world unit)
   tauS: f32,               // s, presentation time unit
   size: u32,               // padded slots per grid = (nx+2)(ny+2)(nz+2)
-  rho: f32,                // liquid density for the projection, kg/m³ (uniform until S3.5)
+  rho: f32,                // kg/m³: the density of every face without variable density; the last-resort fallback with it
   lsR: f32,                // Zhu & Bridson kernel radius R = 2s, m (s = dx/∛ppc)
   lsRbar: f32,             // Zhu & Bridson particle radius r̄ = s/2, m
   thetaMin: f32,           // lower clamp of the liquid fraction θ of a liquid–air face
   ghost: u32,              // 1 = ghost-fluid free surface (S3.4), 0 = voxel (S3.1b)
+  rhoPpc: f32,             // S3.5: ρ_ref·ppc, so a face density is ρ_f = rhoPpc·m̂_f/Σw (m̂ in ρ_ref·dx³ units, V_p = dx³/ppc)
+  variable: u32,           // 1 = S3.5 variable density (per-face ρ_f), 0 = rho on every face
+  wMin: f32,               // smallest Σw for which a face forms its own ρ_f (flipRef FACE_WEIGHT_MIN)
+  invPpc: f32,             // 1/ppc = V_p/dx³ of every particle (the density projection's volume fraction)
 }
 
 @group(0) @binding(0) var<uniform> P: FlipParams;
@@ -34,12 +38,16 @@ const OPEN: u32 = 2u;
 const GHOST: u32 = 3u;
 
 // Diagnostics counters (u32): [0] wall clamps, [1] unset-face reads, [2] OPEN faces met (reserved type),
-// [3] non-solid faces of liquid cells without u* when the divergence was formed, [4] density-correction push-backs.
+// [3] non-solid faces of liquid cells without u* when the divergence was formed, [4] density-correction push-backs,
+// [5] / [6] S3.5 face-density fallbacks (neighbour mean / default rho).
 const DIAG_WALL_CLAMPS: u32 = 0u;
 const DIAG_UNSET_READS: u32 = 1u;
 const DIAG_OPEN_FACES: u32 = 2u;
 const DIAG_UNSET_DIVERGENCE: u32 = 3u;
 const DIAG_DENSITY_CLAMPS: u32 = 4u;
+const DIAG_RHO_NEIGHBOUR: u32 = 5u;   // faces whose ρ_f came from the neighbour mean (Σw < wMin)
+const DIAG_RHO_DEFAULT: u32 = 6u;     // faces that fell back to rho (no neighbour had a density either)
+const DIAG_MAX_SPEED: u32 = 7u;       // max particle speed after G2P (f32 bits: non-negative floats order like u32), m/s
 
 fn physIdx(i: i32, n: i32, ring: i32) -> i32 {
   if (i < 0) { return 0; }
@@ -108,6 +116,8 @@ fn phiFromSums(w: i32, rx: i32, ry: i32, rz: i32) -> f32 {
 /// Liquid fraction θ of the face between a LIQUID centre (φl) and an AIR centre (φa) with the face-centre sample φm
 /// (flipRef.theta: the zero crossing on the two half-segments, clamped to [thetaMin, 1]).
 fn thetaOf(fl: f32, fm: f32, fa: f32) -> f32 {
+  // a LIQUID cell whose own φ ≥ 0 is liquid by occupancy only (flipRef.classifyLevelSet/theta): its face is dry, θ = θmin
+  if (fl >= 0.0) { return P.thetaMin; }
   var t: f32;
   if (fm >= 0.0) { t = 0.5 * fl / (fl - fm); } else { t = 0.5 + 0.5 * fm / (fm - fa); }
   return clamp(t, P.thetaMin, 1.0);

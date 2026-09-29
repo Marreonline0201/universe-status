@@ -1,12 +1,12 @@
 // FluidEngine — the ONE fluid engine behind both the FLUID TEST and LABORATORY pages.
-// A plain (non-React) class: WebGPU device + three.js scene, the MLS-MPM simulator, the SSFR
-// renderer, the drop-ball obstacle, spawning, and the per-frame loop. The pages keep only their
-// UI. (Before 2026-09-28 FluidTest.tsx carried its own inline copy of this loop; they were
+// A plain (non-React) class: WebGPU device + three.js scene, the solver backend (src/fluid-engine/backends.ts: the
+// incompressible APIC-MAC solver by default since S3.1c, the legacy MLS-MPM behind ?solver=mpm), the SSFR renderer, the
+// drop-ball obstacle, spawning, and the per-frame loop. The pages keep only their UI. (Before 2026-09-28 FluidTest.tsx carried its own inline copy of this loop; they were
 // unified so every physics change lands once. Parity with the old FLUID TEST loop was gated
 // bit-identically by scripts/fluid-parity.mjs.)
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
+import { FlipBackend, MpmBackend, solverFromUrl, type BallState, type SimBackend, type SolverKind, type SpawnParticle } from './backends'
 import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline, type ProbeOptions, type ProbeResultWithCamera } from '../fluid-render/SSFRPipeline'
 import { opticsRenderData } from '../fluid-render/optics/materials'
@@ -16,9 +16,9 @@ import type { MenuEntry } from '../composition/liquidGate'
 import type { ElementName } from '../composition/PropertyCalculator'
 import { elementsAs, type LabScenario } from '../lab/scenario'
 import type { BenchTarget } from '../bench/benchHook'
-import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, msToUnitVel, tankMetresToUnit } from './units'
+import { DOMAIN_L_M, GRID_RES, G_STANDARD, MACRO_DT_S, msToUnitVel } from './units'
 import { PresentationClock } from './clock'
-import { REST_PPC, buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
+import { buildOccupancy, cellKey, cubeForCount, latticeBox, type Vec3 } from './spawn'
 import { scenarioGravityMs2 } from '../lab/scenario'
 
 const DEFAULT_BALL_RADIUS = 0.1   // ~6 grid cells in MLS-MPM [0,1] space
@@ -56,6 +56,8 @@ export type ScenarioLoad = { ok: true; warnings: string[] } | { ok: false; reaso
 export interface FluidEngineOptions {
   /** 'default-water' spawns FLUID TEST's 10k-particle water block at init and on reset. */
   initialScene?: 'default-water' | 'empty'
+  /** Solver: 'flip' (incompressible, default) or 'mpm' (legacy); default from the URL (?solver=mpm). */
+  solver?: SolverKind
 }
 
 export class FluidEngine {
@@ -65,11 +67,11 @@ export class FluidEngine {
   private camera: THREE.PerspectiveCamera | null = null
   private controls: OrbitControls | null = null
   private device: GPUDevice | null = null
-  private gpuSim: MpmGpuSimulator | null = null
+  private sim: SimBackend | null = null
   private fluidScene: FluidScene | null = null
   private ssfrPipeline: SSFRPipeline | null = null
   private sphereMesh: THREE.Mesh | null = null
-  private ball = { active: false, radius: DEFAULT_BALL_RADIUS, center: [0.5, 0.9, 0.5] as [number, number, number], velocity: [0, 0, 0] as [number, number, number] }
+  private ball: BallState = { active: false, radius: DEFAULT_BALL_RADIUS, center: [0.5, 0.9, 0.5], velocity: [0, 0, 0] }
   // The composition table is persistent (starts with defaults) so the material picker and
   // manual spawns work before/independently of a scenario.
   private compositionTable = new CompositionTable()
@@ -122,7 +124,22 @@ export class FluidEngine {
   constructor(container: HTMLDivElement, onStats: (s: FluidStats) => void, options: FluidEngineOptions = {}) {
     this.container = container
     this.onStats = onStats
-    this.options = { initialScene: options.initialScene ?? 'empty' }
+    this.options = { initialScene: options.initialScene ?? 'empty', solver: options.solver ?? solverFromUrl() }
+  }
+
+  /** Which solver runs this page, and its HUD name. */
+  get solverKind(): SolverKind { return this.options.solver }
+  get solverLabel(): string { return this.sim?.label ?? '' }
+  /** Material-gate method of the running solver. */
+  private get method() { return this.sim?.method ?? (this.options.solver === 'mpm' ? 'mpm' : 'incompressible') }
+  private get packing() { return this.sim!.packing }
+  /** Scenario metres (from the tank's inner corner) → world units, for the running solver's tank. */
+  private tankToUnit(m: number) { return this.packing.tankOrigin + m / DOMAIN_L_M }
+  /** Particles of one composition for the backend: its density at the spawn state gives the incompressible solver
+   *  each particle's mass (ρ·dx³/ppc); the legacy MPM ignores it. */
+  private particlesOf(positions: readonly Vec3[], vel: Vec3, compId: number, temperatureC: number, phase: number): SpawnParticle[] {
+    const rho = this.compositionTable.getSolverProps(compId).rhoKgM3
+    return positions.map(pos => ({ pos, vel: [...vel] as Vec3, compositionId: compId, temperatureC, phase, rhoKgM3: rho }))
   }
 
   async init(): Promise<boolean> {
@@ -148,9 +165,8 @@ export class FluidEngine {
     const device: GPUDevice = renderer.backend.device
     if (!device) return false
 
-    const gpuSim = new MpmGpuSimulator()
-    const simOk = await gpuSim.init(device)
-    if (!simOk || this.destroyed) return false
+    const sim: SimBackend | null = this.options.solver === 'mpm' ? await MpmBackend.create(device) : await FlipBackend.create(device)
+    if (!sim || this.destroyed) return false
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.target.set(0.5, 0.5, 0.5)
@@ -218,9 +234,9 @@ export class FluidEngine {
 
     let ssfrPipeline: SSFRPipeline | null = null
     try {
-      // Particle rest volume from the MLS-MPM packing (world unit = tank edge); metres per world unit from units.ts.
+      // Particle rest volume from the solver's packing (world unit = grid edge); metres per world unit from units.ts.
       const ssfr = new SSFRPipeline({
-        particleVolume: 1 / (GRID_RES ** 3 * REST_PPC), metresPerUnit: DOMAIN_L_M,
+        particleVolume: 1 / (GRID_RES ** 3 * sim.packing.ppc), metresPerUnit: DOMAIN_L_M,
         blurRadius: 10, blurDepthFalloff: 40.0,
       })
       await ssfr.init(device, this.container.clientWidth, this.container.clientHeight)
@@ -236,7 +252,7 @@ export class FluidEngine {
     this.camera = camera
     this.controls = controls
     this.device = device
-    this.gpuSim = gpuSim
+    this.sim = sim
     this.fluidScene = fluidScene
     this.ssfrPipeline = ssfrPipeline
     this.sphereMesh = sphereMesh
@@ -246,7 +262,7 @@ export class FluidEngine {
       this.gpuErrors++
       console.error('[fluid GPU error]', (e as GPUUncapturedErrorEvent).error?.message)
     })
-    gpuSim.setGravity(accelToCode(this.gravityMs2))
+    sim.setGravity(this.gravityMs2)
 
     this.compositionTable.addDefaults()
     this.uploadCompositions()
@@ -270,18 +286,18 @@ export class FluidEngine {
   }
 
   private uploadCompositions() {
-    this.gpuSim?.updateCompositionProps(this.compositionTable.getGpuData())
+    this.sim?.setCompositionProps(this.compositionTable.getGpuData())
     this.ssfrPipeline?.updateMaterialProps(opticsRenderData(this.compositionTable.getAll()))
   }
 
   /** FLUID TEST's default scene: a ~0.77 m block of water (≈10k particles at rest packing)
    *  released in the middle of the tank. */
   loadDefaultScene() {
-    if (!this.gpuSim || this.destroyed) return
+    if (!this.sim || this.destroyed) return
     this.lastScenario = null
-    const { lo, size } = cubeForCount([0.5, 0.5, 0.5], 10000)
-    const block = latticeBox(lo, size)
-    this.gpuSim.spawnParticles(block.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: 0, temperature: 20, phase: 1 })))
+    const { lo, size } = cubeForCount([0.5, 0.5, 0.5], 10000, this.packing)
+    const block = latticeBox(lo, size, { packing: this.packing })
+    this.sim.setParticles(this.particlesOf(block.positions, [0, 0, 0], 0, 20, 1))
     this.sceneIds = new Set([0])
     this.resetClock()
     this.uploadCompositions()
@@ -298,13 +314,13 @@ export class FluidEngine {
   private resolveSpawn(baseId: number, tempC: number): { ok: true; id: number; tempC: number } | { ok: false; reason: string } {
     const table = this.compositionTable
     if (!table.get(baseId)) return { ok: false, reason: `unknown material id ${baseId}` }
-    const range = table.menuVisibility(baseId, 'mpm', tempC).dataRangeC
+    const range = table.menuVisibility(baseId, this.method, tempC).dataRangeC
     const t = range && range[0] === range[1] ? range[0] : tempC
     const before = table.count
-    const sid = table.spawnIdAt(baseId, t, 'mpm')
+    const sid = table.spawnIdAt(baseId, t, this.method)
     if (table.count !== before) this.uploadCompositions()      // a new temperature row was registered
     if (!sid.ok) return sid
-    const chk = table.checkSpawn(sid.id, { method: 'mpm', scene: [...this.sceneIds].map(id => ({ id })) })
+    const chk = table.checkSpawn(sid.id, { method: this.method, scene: [...this.sceneIds].map(id => ({ id })) })
     if (!chk.ok) return { ok: false, reason: chk.reason }
     for (const w of chk.warnings) this.notify('warning', w)
     return { ok: true, id: sid.id, tempC: t }
@@ -323,9 +339,9 @@ export class FluidEngine {
    *  the menu never marks refused what a click would spawn. Hidden entries removed. */
   getMenuEntries(tempC = this.spawnTemperature): MenuEntry[] {
     const table = this.compositionTable
-    return table.getMenuEntries('mpm', tempC)
+    return table.getMenuEntries(this.method, tempC)
       .map(e => (e.dataRangeC && e.dataRangeC[0] === e.dataRangeC[1] && e.dataRangeC[0] !== tempC
-        ? table.menuVisibility(e.id, 'mpm', e.dataRangeC[0]) : e))
+        ? table.menuVisibility(e.id, this.method, e.dataRangeC[0]) : e))
       .filter(e => e.visibility !== 'hidden')
   }
 
@@ -355,10 +371,15 @@ export class FluidEngine {
   /** Fill a block with one composition at rest packing, skipping cells already holding fluid.
    *  Returns the number of particles actually added. */
   private addBlock(block: { lo: Vec3; size: Vec3 }, occupied: Set<number>, rng: () => number, compId: number, temperature: number, phase: number): number {
-    if (!this.gpuSim) return 0
-    const r = latticeBox(block.lo, block.size, { occupied, rng })
+    if (!this.sim) return 0
+    const r = latticeBox(block.lo, block.size, { occupied, rng, packing: this.packing })
     if (r.positions.length > 0) {
-      this.gpuSim.addParticles(r.positions.map(pos => ({ pos, vel: [0, 0, 0], composition_id: compId, temperature, phase })))
+      try {
+        this.sim.addParticles(this.particlesOf(r.positions, [0, 0, 0], compId, temperature, phase))
+      } catch (e) {
+        this.notify('refused', e instanceof Error ? e.message : String(e))   // capacity: refused, never clamped
+        return 0
+      }
       this.sceneIds.add(compId)
     }
     return r.positions.length
@@ -377,7 +398,7 @@ export class FluidEngine {
    *  gates at its spawn temperature and the set must pass the pairwise thermal gate (e.g. 1150 °C lava
    *  with 20 °C water is refused — there is no heat transfer yet). A refused scenario leaves the tank empty. */
   loadScenario(s: LabScenario): ScenarioLoad {
-    if (!this.gpuSim || this.destroyed) return { ok: false, reason: 'engine not ready' }
+    if (!this.sim || this.destroyed) return { ok: false, reason: 'engine not ready' }
     this.lastScenario = s
     this.onNotice?.(null)
     // Fresh table seeded with defaults, then the scenario's materials — so the material picker
@@ -402,41 +423,48 @@ export class FluidEngine {
       if (base === null || base === undefined) return this.refuseScenario(`spawn material "${sp.material}" is neither a scenario material nor a built-in one`)
       const reg = table.get(base)!.temperature
       const t = sp.temperature ?? s.materials.find(m => m.name === sp.material)?.temperature ?? s.temperature ?? reg
-      const sid = table.spawnIdAt(base, t, 'mpm')
+      const sid = table.spawnIdAt(base, t, this.method)
       if (!sid.ok) return this.refuseScenario(sid.reason)
       resolved.push({ id: sid.id, tempC: t })
     }
     this.uploadCompositions()
-    const verdict = table.checkScene(resolved.map(r => ({ id: r.id })), 'mpm')
+    const verdict = table.checkScene(resolved.map(r => ({ id: r.id })), this.method)
     if (!verdict.ok) return this.refuseScenario(verdict.reason)
     for (const w of verdict.warnings) this.notify('warning', w)
 
     // Spawns fill blocks at rest packing; later spawns skip cells earlier ones already filled.
-    const particles: GpuParticle[] = []
+    const particles: SpawnParticle[] = []
     const occupied = new Set<number>()
     this.sceneIds = new Set(resolved.map(r => r.id))
     for (const [k, sp] of s.spawns.entries()) {
       const temperature = resolved[k].tempC
       const compId = resolved[k].id
       const block = sp.box
-        ? { lo: sp.box.min.map(tankMetresToUnit) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
-        : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000)
+        ? { lo: sp.box.min.map(m => this.tankToUnit(m)) as Vec3, size: sp.box.max.map((v, i) => (v - sp.box!.min[i]) / DOMAIN_L_M) as Vec3 }
+        : cubeForCount(sp.center ?? [0.5, 0.5, 0.5], sp.count ?? 1000, this.packing)
       const vel = (sp.initialVelocity ?? [0, 0, 0]).map(v => msToUnitVel(v)) as Vec3
-      const r = latticeBox(block.lo, block.size, { occupied })
+      const r = latticeBox(block.lo, block.size, { occupied, packing: this.packing })
+      const kept: Vec3[] = []
       for (const pos of r.positions) {
-        if (particles.length >= 200_000) break
+        if (particles.length + kept.length >= 200_000) break
         occupied.add(cellKey(pos[0], pos[1], pos[2]))
-        particles.push({ pos, vel: [...vel] as Vec3, composition_id: compId, temperature, phase: sp.phase ?? 1 })
+        kept.push(pos)
       }
+      for (const p of this.particlesOf(kept, vel, compId, temperature, sp.phase ?? 1)) particles.push(p)   // no spread: 1e5 arguments overflow the stack
     }
-    this.gpuSim.spawnParticles(particles)
+    this.sim.setParticles(particles)
     this.resetClock()
     this.setGravity(scenarioGravityMs2(s))
 
-    if (s.ball) {
+    if (s.ball && !this.sim.supportsBall) {
+      this.ball.active = false
+      this.sim.clearBall()
+      if (this.sphereMesh) this.sphereMesh.visible = false
+      this.notify('warning', 'this scenario\'s ball was left out: the incompressible solver does not couple the ball yet (plan S3.1c-2); ?solver=mpm runs the legacy ball')
+    } else if (s.ball) {
       this.ball.active = true
       this.ball.radius = s.ball.radius ?? DEFAULT_BALL_RADIUS
-      this.ball.center = [...(s.ball.center ?? [0.5, 0.9, 0.5])] as [number, number, number]
+      this.ball.center = [...(s.ball.center ?? [0.5, 0.9, 0.5])] as Vec3
       this.ball.velocity = [0, 0, 0]
       if (this.sphereMesh) {
         this.sphereMesh.visible = true
@@ -444,56 +472,26 @@ export class FluidEngine {
       }
     } else {
       this.ball.active = false
-      this.gpuSim.clearSphereObstacle()
+      this.sim.clearBall()
       if (this.sphereMesh) this.sphereMesh.visible = false
     }
     return { ok: true, warnings: verdict.warnings }
   }
 
   private refuseScenario(reason: string): ScenarioLoad {
-    this.gpuSim?.spawnParticles([])
+    this.sim?.setParticles([])
     this.sceneIds.clear()
     this.resetClock()
     this.notify('refused', `scenario refused: ${reason}`)
     return { ok: false, reason }
   }
 
-  /** Advance the simulation by `intervalS` of sim time: the ball and the GPU fluid, in equal
-   *  substeps no longer than the verified MPM substep. One submit per call, so per-step uniforms
-   *  (sphere state) can never be overwritten by a later step before the GPU runs this one. */
+  /** Advance the simulation by `intervalS` of sim time through the backend (the ball, where coupled, included). */
   private macroStep(intervalS: number) {
-    const sim = this.gpuSim, device = this.device
-    if (!sim || !device) return
-    const { n, dtCode } = mpmSubsteps(intervalS)
-    sim.setTimestep(dtCode)
-
-    if (this.ball.active) {
-      // Ball obstacle: explicit Euler per substep (gravity in tank-normalised units, [0,1]/τ²),
-      // and the fluid sees EACH substep's ball state — one submit per substep, because uniforms
-      // are written once per submit (a single upload let the fluid see the ball n−1 substeps ahead).
-      const g = accelToUnitPerTau2(this.gravityMs2)
-      const lo = this.ball.radius
-      const hi = 1.0 - this.ball.radius
-      for (let sub = 0; sub < n; sub++) {
-        this.ball.velocity[1] -= g * dtCode
-        for (let axis = 0; axis < 3; axis++) this.ball.center[axis] += this.ball.velocity[axis] * dtCode
-        for (let axis = 0; axis < 3; axis++) {
-          if (this.ball.center[axis] < lo) { this.ball.center[axis] = lo; this.ball.velocity[axis] = Math.abs(this.ball.velocity[axis]) * 0.3 }
-          if (this.ball.center[axis] > hi) { this.ball.center[axis] = hi; this.ball.velocity[axis] = -Math.abs(this.ball.velocity[axis]) * 0.3 }
-        }
-        sim.setSphereObstacle(this.ball.center, this.ball.radius, this.ball.velocity)
-        if (sim.particleCount > 0) {
-          const encoder = device.createCommandEncoder()
-          sim.step(encoder, 1)
-          device.queue.submit([encoder.finish()])
-        }
-      }
-      this.sphereMesh?.position.set(this.ball.center[0], this.ball.center[1], this.ball.center[2])
-    } else if (sim.particleCount > 0) {
-      const encoder = device.createCommandEncoder()
-      sim.step(encoder, n)
-      device.queue.submit([encoder.finish()])
-    }
+    const sim = this.sim
+    if (!sim) return
+    const n = sim.advance(intervalS, this.ball, this.gravityMs2)
+    if (this.ball.active) this.sphereMesh?.position.set(this.ball.center[0], this.ball.center[1], this.ball.center[2])
     this.particleSubsteps += n * sim.particleCount
     this.steppedFrames++
     this.substepsTotal += n
@@ -503,7 +501,7 @@ export class FluidEngine {
   private animate = (ts: number) => {
     if (this.destroyed) return
     this.animId = requestAnimationFrame(this.animate)
-    const sim = this.gpuSim
+    const sim = this.sim
     const device = this.device
     const renderer = this.renderer
     const camera = this.camera
@@ -613,9 +611,9 @@ export class FluidEngine {
   /** Set gravity (m/s², downward magnitude). Fluid and ball both read this one value. */
   setGravity(gMs2: number) {
     this.gravityMs2 = gMs2
-    this.gpuSim?.setGravity(accelToCode(gMs2))
+    this.sim?.setGravity(gMs2)
   }
-  get particleCount(): number { return this.gpuSim?.particleCount ?? 0 }
+  get particleCount(): number { return this.sim?.particleCount ?? 0 }
 
   /** Sim seconds advanced per wall second over the last ~2 s (1.0 = real time; <1 = dilated). */
   get rtFactor(): number {
@@ -627,6 +625,7 @@ export class FluidEngine {
   /** Clock: 'realtime' (pages: each ~60 Hz presented frame advances its own vsync-snapped
    *  interval) or 'lockstep' (bench: exactly `frameDt` sim seconds per callback, no wall clock). */
   configureClock(mode: ClockMode, frameDt = MACRO_DT_S) {
+    if (mode === 'realtime' && this.clockMode !== 'realtime') this.clock.resume()   // the lockstep period is not dropped time
     this.clockMode = mode
     this.lockstepDt = frameDt
   }
@@ -641,13 +640,13 @@ export class FluidEngine {
   /** Spawn ≈`count` particles of one composition as a block at rest packing around `center`
    *  ([0,1]³ coords), skipping cells that already hold fluid. Resolves to the number added. */
   spawnCompositionBlock(compId: number, count: number, center: Vec3, temperature: number): Promise<number> {
-    return this.gatedSpawn(compId, temperature, () => cubeForCount(center, count))
+    return this.gatedSpawn(compId, temperature, () => cubeForCount(center, count, this.packing))
   }
 
   /** Objective motion metrics from a GPU particle readback — positions in the sim's [0,1]³ space. */
   async sampleMetrics(): Promise<FluidMetricsSample | null> {
-    if (!this.gpuSim || this.gpuSim.particleCount === 0) return null
-    const sample = await this.gpuSim.readParticleSample()
+    if (!this.sim || this.sim.particleCount === 0) return null
+    const sample = await this.sim.readParticleSample()
     if (!sample) return null
     const { positions, velocities, compIds } = sample
     const n = compIds.length
@@ -714,13 +713,13 @@ export class FluidEngine {
    *  centred horizontally and placed as high as the tank allows (skipping cells already full).
    *  Resolves to the number of particles actually added. */
   spawnBatch(count: number): Promise<number> {
-    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount([0.5, 1, 0.5], count))
+    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount([0.5, 1, 0.5], count, this.packing))
   }
 
   /** Click-to-spawn: a ≈512-particle block (~0.29 m) of the selected material at a world point. */
   spawnAt(worldPos: { x: number; y: number; z: number }): Promise<number> {
     const c: Vec3 = [worldPos.x, worldPos.y, worldPos.z]
-    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount(c, 512))
+    return this.gatedSpawn(this.selectedComposition, this.spawnTemperature, () => cubeForCount(c, 512, this.packing))
   }
 
   /** Raycast a screen click against the glass box and spawn a block there. */
@@ -738,7 +737,11 @@ export class FluidEngine {
   }
 
   dropBall() {
-    if (!this.gpuSim) return
+    if (!this.sim) return
+    if (!this.sim.supportsBall) {
+      this.notify('refused', 'the incompressible solver does not couple the ball yet (plan S3.1c-2: a moving solid with fractional face weights); ?solver=mpm runs the legacy ball')
+      return
+    }
     this.ball.active = true
     this.ball.radius = DEFAULT_BALL_RADIUS
     this.ball.center = [0.5, 0.9, 0.5]
@@ -748,20 +751,20 @@ export class FluidEngine {
       this.sphereMesh.scale.setScalar(1)
       this.sphereMesh.position.set(0.5, 0.9, 0.5)
     }
-    this.gpuSim.setSphereObstacle(this.ball.center, this.ball.radius, this.ball.velocity)
+    this.sim.setBall(this.ball)
   }
 
   removeBall() {
     this.ball.active = false
     if (this.sphereMesh) this.sphereMesh.visible = false
-    this.gpuSim?.clearSphereObstacle()
+    this.sim?.clearBall()
   }
 
   /** RESET: re-run the current scenario; otherwise the page's initial scene. */
   reset() {
     if (this.lastScenario) this.loadScenario(this.lastScenario)
     else if (this.options.initialScene === 'default-water') this.loadDefaultScene()
-    else { this.gpuSim?.spawnParticles([]); this.sceneIds.clear(); this.resetClock() }
+    else { this.sim?.setParticles([]); this.sceneIds.clear(); this.resetClock() }
   }
 
   // ── Bench/test surface ──────────────────────────────────────────────────────
@@ -771,12 +774,12 @@ export class FluidEngine {
   /** Freeze the simulation after `frames` stepped frames (Infinity = run freely). */
   setStepLimit(frames: number) { this.stepLimit = frames }
   /** Raw GPU particle readback (positions/velocities/composition ids). */
-  readParticleSample() { return this.gpuSim?.readParticleSample() ?? Promise.resolve(null) }
+  readParticleSample() { return this.sim?.readParticleSample() ?? Promise.resolve(null) }
 
   /** Bench: render one SSFR frame offscreen (SSFRPipeline.probe) with a gate-specified camera, returning the
    *  targets it asks for plus the exact matrices used. The canvas keeps rendering untouched. */
   async renderProbe(o: ProbeOptions): Promise<ProbeResultWithCamera | null> {
-    const ssfr = this.ssfrPipeline, sim = this.gpuSim, page = this.camera
+    const ssfr = this.ssfrPipeline, sim = this.sim, page = this.camera
     if (!ssfr || !sim || !page) return null
     const [w, h] = [o.width ?? ssfr.size[0], o.height ?? ssfr.size[1]]
     let cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
@@ -821,12 +824,12 @@ export class FluidEngine {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
         if (opts.resetClockStats) { this.droppedTime = 0; this.presentIntervals = []; this.frameAdvances = []; this.rtSamples = [] }
-        if (opts.resetDiagnostics) { this.gpuSim?.resetDiagnostics(); this.particleSubsteps = 0 }
+        if (opts.resetDiagnostics) { this.sim?.resetDiagnostics(); this.particleSubsteps = 0 }
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
       },
       diagnostics: async () => {
-        const d = await this.gpuSim?.readDiagnostics()
-        return { clampHits: d?.clampHits ?? null, particleSubsteps: this.particleSubsteps }
+        const d = await this.sim?.readDiagnostics()
+        return { ...(d ?? {}), clampHits: d?.clampHits ?? null, particleSubsteps: this.particleSubsteps }
       },
       extraStatus: () => {
         const iv = [...this.presentIntervals].sort((a, b) => a - b)
@@ -834,6 +837,7 @@ export class FluidEngine {
         const adv = this.frameAdvances
         return {
           clock: this.clockMode,
+          solver: this.options.solver,
           simTime: this.simTime,
           substepsTotal: this.substepsTotal,
           rtFactor: this.rtFactor,
@@ -862,13 +866,13 @@ export class FluidEngine {
     this.destroyed = true
     cancelAnimationFrame(this.animId)
     this.resizeObserver?.disconnect()
-    this.gpuSim?.destroy()
+    this.sim?.destroy()
     this.fluidScene?.dispose()
     if (this.renderer) {
       this.renderer.dispose()
       try { this.container.removeChild(this.renderer.domElement) } catch { /* already removed */ }
     }
     this.renderer = null
-    this.gpuSim = null
+    this.sim = null
   }
 }

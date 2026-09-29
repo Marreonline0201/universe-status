@@ -13,6 +13,9 @@ import { chromium } from 'playwright-core'
 export const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 export const BASE = process.env.FLUID_BASE ?? 'http://localhost:5175'
 export const FLUID_TEST_URL = `${BASE}/?tab=fluid&bench=1`
+/** The same page on the legacy MLS-MPM (owner decision D8: kept behind ?solver=mpm). Gates that verify MPM-only
+ *  mechanics — the separating wall band, the 4-ppc rest packing, the MPM viscosity refusals — run here. */
+export const FLUID_TEST_URL_MPM = `${BASE}/?tab=fluid&bench=1&solver=mpm`
 export const BENCH_URL = `${BASE}/bench.html`
 /** The app shell tries the office websocket; the office is deliberately never started. */
 export const EXPECTED_NOISE = /ws:\/\/localhost:4571/

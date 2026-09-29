@@ -25,7 +25,7 @@ import { computeProperties, detectMaterialKey, type Composition, type DerivedPro
 import { LIQUIDS, SOLID_REFERENCE, isLiquidKey, isSolidRefKey, type LiquidKey, type SolidRefKey } from './materialData'
 import {
   phaseAt, validateSpawn, validateMpmViscosity, validateScene, fmtC,
-  type SolverProps, type PhaseProps, type GateResult, type MpmViscosityVerdict,
+  incompressibleViscosityVerdict, type SolverProps, type PhaseProps, type GateResult, type MpmViscosityVerdict,
   type MenuEntry, type SceneMaterial, type SceneVerdict, type SpawnCheck,
 } from './liquidGate'
 
@@ -228,6 +228,10 @@ function verdictOf(name: string, tC: number, ev: Pick<Evaluated, 'spawn' | 'solv
     return { ok: false, reason: `${name}: no validated ${!Number.isFinite(s.rhoKgM3) ? 'density' : 'viscosity'} at ${fmtC(tC)} °C (${s.flags.filter(f => /^(unmodelled|solid|unverified|hidden)/.test(f)).join(', ') || 'unsourced'})` }
   }
   if (method === 'mpm' && !ev.mpm.ok) return { ok: false, reason: ev.mpm.reason }
+  if (method === 'incompressible') {
+    const v = incompressibleViscosityVerdict(s.muPaS, s.rhoKgM3, name)
+    if (!v.ok) return { ok: false, reason: v.reason }
+  }
   return { ok: true }
 }
 
@@ -475,7 +479,22 @@ export class CompositionTable {
     const others = (opts.scene ?? []).filter(e => e.id !== id)
     const sv = this.validateSceneIds([...others, { id, tempC: opts.tempC }])
     const reasons = [...(v.ok ? [] : [v.reason]), ...sv.refusals]
-    return reasons.length === 0 ? { ok: true, warnings: sv.warnings } : { ok: false, reason: reasons.join('; '), warnings: sv.warnings }
+    const warnings = [...sv.warnings, ...this.methodWarnings([{ id, tempC: opts.tempC }], opts.method ?? 'mpm')]
+    return reasons.length === 0 ? { ok: true, warnings } : { ok: false, reason: reasons.join('; '), warnings }
+  }
+
+  /** Method-specific warnings (not refusals) for spawnable entries: on the incompressible solver, materials whose
+   *  viscosity is real but not simulated until S3.6 (liquidGate.incompressibleViscosityVerdict). */
+  private methodWarnings(entries: readonly { id: number; tempC?: number }[], method: SolverMethod): string[] {
+    if (method !== 'incompressible') return []
+    const out: string[] = []
+    for (const e of entries) {
+      const c = this.need(e.id)
+      const s = e.tempC === undefined || e.tempC === c.temperature ? c.solver : this.evaluateAt(e.id, e.tempC, method).solver
+      const v = incompressibleViscosityVerdict(s.muPaS, s.rhoKgM3, c.name)
+      if (v.ok && v.warning) out.push(v.warning)
+    }
+    return out
   }
 
   /** Gate a whole scene (e.g. a lab scenario's material set) BEFORE spawning any of it: every entry must pass
@@ -494,7 +513,8 @@ export class CompositionTable {
     }
     const sv = this.validateSceneIds(unique)
     reasons.push(...sv.refusals)
-    return reasons.length === 0 ? { ok: true, warnings: sv.warnings } : { ok: false, reason: reasons.join('; '), warnings: sv.warnings }
+    const warnings = [...sv.warnings, ...this.methodWarnings(unique, method)]
+    return reasons.length === 0 ? { ok: true, warnings } : { ok: false, reason: reasons.join('; '), warnings }
   }
 
   /** Get per-composition color data for SSFR shader binding */

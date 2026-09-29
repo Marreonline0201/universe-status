@@ -2,6 +2,7 @@
 // Per particle and axis a: the 8 trilinear neighbours f receive
 //   mass += w·m̂_p,   momentum += w·m̂_p·(v_a + c_a·(x_f − x_p))      (APIC-MAC, Jiang et al. 2015 §6)
 // as fixed-point i32 atomics (WebGPU has no float atomics). m̂ is the particle mass in grid mass units ρ_ref·dx³.
+// Also the weight sum Σw (at massScale), from which the S3.5 face density ρ_f = ρ_ref·ppc·m̂_f/Σw is formed.
 
 @group(0) @binding(1) var<storage, read> pos: array<vec4<f32>>;      // xyz m, w = material id bits
 @group(0) @binding(2) var<storage, read> vel: array<vec4<f32>>;      // xyz m/s, w = m̂ (mass / (ρ_ref·dx³))
@@ -10,6 +11,7 @@
 @group(0) @binding(5) var<storage, read_write> gMom: array<atomic<i32>>;
 @group(0) @binding(6) var<storage, read_write> gMassLo: array<atomic<i32>>;   // PRECISE_P2G remainders
 @group(0) @binding(7) var<storage, read_write> gMomLo: array<atomic<i32>>;
+@group(0) @binding(8) var<storage, read_write> gW: array<atomic<i32>>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -38,6 +40,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           let qp = w * m * val * P.momScale;
           atomicAdd(&gMass[s], encodeFixed(qm));
           atomicAdd(&gMom[s], encodeFixed(qp));
+          atomicAdd(&gW[s], encodeFixed(w * P.massScale));
           if (PRECISE_P2G) {
             atomicAdd(&gMassLo[s], encodeLo(qm));
             atomicAdd(&gMomLo[s], encodeLo(qp));

@@ -11,6 +11,8 @@ import { MockBanner } from '../common/MockBanner'
 import { LabSim } from './LabSim'
 import { RunConsole } from './RunConsole'
 import { FluidControls, type FluidController } from '../fluid/FluidControls'
+import { solverFromUrl } from '../../fluid-engine/backends'
+import { packingFor } from '../../fluid-engine/spawn'
 import { readBgBrightness, writeBgBrightness } from '../../fluid-render/bgBrightness'
 import type { LabFluidEngine } from '../../lab/LabFluidEngine'
 import type { NamedComposition } from '../../composition/CompositionTable'
@@ -94,7 +96,7 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
       fetchCompanyFile(`${dir}/scenario.json`)
         .then(text => {
           setScenarioRaw(text)
-          const parsed = parseScenario(text)
+          const parsed = parseScenario(text, { packing: packingFor(solverFromUrl()) })
           if (parsed.ok) {
             setScenario(parsed.scenario)
             setScenarioWarn(parsed.warning)
@@ -153,13 +155,14 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     setGravityVal(e.gravity)
   }, [])
   const labController: FluidController | null = engine ? {
+    solver: engine.solverKind,
     gpuReady: true,
     compositions,
     selectedComposition: selectedComp,
     setSelectedComposition: (id) => { engine.setSelectedComposition(id); setSelectedComp(id) },
     spawnBatch: (n) => { void engine.spawnBatch(n) },
     ballActive,
-    dropBall: () => { engine.dropBall(); setBallActive(true) },
+    dropBall: () => { engine.dropBall(); setBallActive(engine.ballActive) },
     removeBall: () => { engine.removeBall(); setBallActive(false) },
     gravity: gravityVal,
     setGravity: (g) => { engine.setGravity(g); setGravityVal(g) },

@@ -1,5 +1,5 @@
 // ── FluidControls ────────────────────────────────────────────────────────────
-// Shared hands-on control panel for the GPU MLS-MPM fluid sim. Used by BOTH the
+// Shared hands-on control panel for the GPU fluid sim (incompressible solver, or the legacy MLS-MPM). Used by BOTH the
 // FLUID TEST page and the LABORATORY page via the small `FluidController` seam,
 // so the two stay identical instead of drifting. Presentational only — every
 // action is delegated to `controller` (a plain object each page builds over its
@@ -37,6 +37,8 @@ export interface FluidController {
   menu?: MenuEntry[]
   /** Last refusal or warning from the gates, shown under the spawn buttons. */
   notice?: FluidNotice | null
+  /** The running solver (the info panel states its model and validity limits). */
+  solver?: 'mpm' | 'flip'
 }
 
 /** A number for the info panel, or an honest dash when no sourced value exists at this state. */
@@ -210,12 +212,23 @@ export function FluidControls({ controller }: { controller: FluidController }) {
               <InfoRow label="IOR" value={selectedComp.props.IOR.toFixed(3)} symbol={'n'} />
             </div>
             <div style={{ marginTop: 8, padding: '6px 8px', background: 'rgba(0,180,255,0.05)', border: '1px solid rgba(0,180,255,0.1)', borderRadius: 3, fontSize: 'calc(9px * var(--font-scale, 1))', color: 'rgba(100,150,200,0.5)', lineHeight: 1.8 }}>
-              <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>GPU MLS-MPM (legacy, weakly compressible)</div>
-              <div>Tank: 3.29 m wall to wall, cells 5.67 cm</div>
-              <div>Clock: real time, substeps ≤ 1/120 s</div>
-              <div>Grid: 64x64x64, separating walls</div>
-              <div>Render: SSFR (5-pass)</div>
-              <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Water is still springy: a settled shallow pool measured ~17% denser than at rest (deeper water compresses more). The incompressible solver (plan S3) replaces this.</div>
+              {controller.solver === 'mpm' ? (<>
+                <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>GPU MLS-MPM (legacy, weakly compressible)</div>
+                <div>Tank: 3.29 m wall to wall, cells 5.67 cm</div>
+                <div>Clock: real time, substeps ≤ 1/120 s</div>
+                <div>Grid: 64x64x64, separating walls</div>
+                <div>Render: SSFR (5-pass)</div>
+                <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Water is still springy: a settled shallow pool measured ~17% denser than at rest (deeper water compresses more). The incompressible solver (plan S3) replaces this.</div>
+              </>) : (<>
+                <div style={{ color: 'rgba(0,180,255,0.6)', marginBottom: 2, letterSpacing: 1 }}>INCOMPRESSIBLE APIC-MAC (plan S3)</div>
+                <div>Pressure: MGPCG; volume: Kugelstadt density projection</div>
+                <div>Surface: ghost fluid (Zhu–Bridson level set)</div>
+                <div>Density: per material (oil floats, mercury sinks)</div>
+                <div>Tank: 3.63 m wall to wall, cells 5.67 cm, 8 particles/cell</div>
+                <div>Clock: real time, 1–4 substeps per 1/60 s (CFL 1)</div>
+                <div>Render: SSFR (5-pass)</div>
+                <div style={{ marginTop: 4, color: 'rgba(255,190,110,0.6)' }}>Not yet real: viscosity is not simulated (plan S3.6) — damping is numerical, ν ≈ 1.0e-3 m²/s (1000× water's); liquids stirred together below one cell do not separate again; no ball on this solver yet (S3.1c-2); dam-break fronts run ~10 % ahead of experiments.</div>
+              </>)}
             </div>
           </div>
         )}

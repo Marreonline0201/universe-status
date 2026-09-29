@@ -9,9 +9,10 @@ import { FlipRef } from '../../sim-ref/flipRef'
 import { DX, L_REF, TAU, mulberry32, blob, f32round, toInit, submit, maxDiff, solverConfig } from './util'
 import { FlipGpuSimulator, MASS_SCALE, MOM_SCALE, LO_SCALE } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { projKernels, g1a, settle, damBreak } from './projection'
-import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak } from './density'
+import { densKernels, direction, restVolume, martinMoyce, doubleDamBreak, violentColumn } from './density'
 import { equivalence, tankCaps } from './mg'
 import { ghostKernels, flatSurface, hydrostatic, standingWave, column } from './ghost'
+import { varKernels, densityCancels, twoLayerHydrostatic, interfacialWave, rayleighTaylor, lockExchange, overturn, mixedCaps } from './varDensity'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -305,12 +306,21 @@ try {
     else if (test === 'direction') out = await direction(device)
     else if (test === 'restVolume') out = await restVolume(device)
     else if (test === 'martinMoyce') out = await martinMoyce(device, params as { aCells: number; aPhys?: number })
-    else if (test === 'doubleDamBreak') out = await doubleDamBreak(device, params as { density: boolean; seconds?: number })
+    else if (test === 'doubleDamBreak') out = await doubleDamBreak(device, params as { density: boolean; seconds?: number; ghost?: boolean })
+    else if (test === 'violentColumn') out = await violentColumn(device, params as { ghost: boolean; seconds?: number })
     else if (test === 'ghostKernels') out = await ghostKernels(device, params)
     else if (test === 'flatSurface') out = await flatSurface(device, params as { ppc: number })
     else if (test === 'hydrostatic') out = await hydrostatic(device)
     else if (test === 'standingWave') out = await standingWave(device, params as { cellsPerH: number })
     else if (test === 'column') out = await column(device, params as { aCells: number; n2: number; h: number; nx: number; tauEnd: number; wall?: boolean })
+    else if (test === 'varKernels') out = await varKernels(device, params)
+    else if (test === 'densityCancels') out = await densityCancels(device)
+    else if (test === 'twoLayerHydrostatic') out = await twoLayerHydrostatic(device)
+    else if (test === 'interfacialWave') out = await interfacialWave(device, params as { scale: number })
+    else if (test === 'rayleighTaylor') out = await rayleighTaylor(device)
+    else if (test === 'lockExchange') out = await lockExchange(device)
+    else if (test === 'overturn') out = await overturn(device, params as { pair: 'hg-water' | 'water-oil'; seconds: number })
+    else if (test === 'mixedCaps') out = await mixedCaps(device, params as { cap: number; variable: boolean; seconds?: number; surface?: 'ghost' | 'voxel'; thetaMin?: number })
     else throw new Error(`unknown test ${test}`)
     return { ...(out as object), gpuErrors: errors.slice(errBefore) }
   }

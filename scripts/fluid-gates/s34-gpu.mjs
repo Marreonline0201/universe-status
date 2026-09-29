@@ -15,7 +15,8 @@
 //                              liquid–air faces vs u* − Δt/(ρdx)·(p₊ − p₋) with the GPU's θ ≤ 1e-5·max(|u|, Δt/(ρdx)·|p_g|);
 //                              set/unset identical
 //  cases: 16³, 64³ ring (5,11,3), 24×16×12 ring (7,2,9)
-//  S34a, G1c, D1, D2, A1, A1c, A2 front, A2 impulse — exactly as s34-ref.mjs (see its header)
+//  S34a, G1c, D1, D2, A1, A1c, A2 front, A2 impulse, V1 — exactly as s34-ref.mjs (see its header)
+//  G2 again with the ghost-fluid surface: 30 s double dam break, |φ-volume/(N·V_p) − 1| ≤ 2 % (S3.2 G2's tolerance)
 //  and: 0 solver breakdowns, 0 uncaptured WebGPU errors, 0 console errors.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -97,6 +98,13 @@ try {
     const imp = impulse(ri.ts, ri.wallP)
     report.a2impulse = { ...imp, dt: ri.dt }
     gate.check(imp.I >= 0.5 * LOBOVSKY_I600 && imp.I <= 2 * LOBOVSKY_I600 && ri.breakdowns === 0, `A2 impulse on the GPU, Lobovský tank (32 cells): I ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × 12.74); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians 185.69 mbar, 7 ms, 104 ms)`)
+    const v1 = await run('violentColumn', { ghost: true, seconds: 6 })
+    report.v1 = v1
+    const v1w = Math.max(...v1.series.map(v => Math.abs(v - 1)))
+    gate.check(v1w <= 0.02 && v1.breakdowns === 0, `V1 on the GPU, violent confined column (8×36 cells in 16×40×8, ghost surface): φ-volume/N·V_p every second ${v1.series.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * v1w).toFixed(2)} % (≤ 2 %); p caps ${v1.capHits}, ψ caps ${v1.psiCapHits}`)
+    const g2 = await run('doubleDamBreak', { density: true, ghost: true })
+    report.g2ghost = { ...g2, series: undefined }
+    gate.check(Math.abs(g2.endOverNVp - 1) <= 0.02 && g2.breakdowns === 0, `G2 again with the ghost-fluid surface, double dam break 30 s (${g2.particles} particles): φ-volume / N·V_p = ${g2.endOverNVp.toFixed(4)} (${(100 * (g2.endOverNVp - 1)).toFixed(3)} %, ≤ 2 %); p caps ${g2.capHits}/${g2.solves}, ψ caps ${g2.psiCapHits}/${g2.psiSolves}`)
   }
 
   const info = await page.evaluate(() => window.__flipTest.info())

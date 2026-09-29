@@ -74,6 +74,11 @@ export class PresentationClock {
     return s[Math.floor(s.length / 2)] > 1.5 * NOMINAL_PRESENT_MS
   }
 
+  /** Restart after a period in which tick() was not called (e.g. the lockstep bench clock): the next callback presents
+   *  with no interval, as the very first one does, instead of reporting the whole pause as dropped time. The vsync
+   *  estimate is kept. */
+  resume(): void { this.lastTs = -1; this.lastPresentTs = -1 }
+
   /** Feed one rAF timestamp (ms); returns what this callback should do. */
   tick(ts: number): ClockDecision {
     if (this.lastTs >= 0) {

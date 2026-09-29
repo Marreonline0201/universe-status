@@ -30,6 +30,10 @@
 //       I = ∫ p dt over the impact time (§5.1.2–5.1.3, Fig. 21: rise time = 2 × (t_peak − t_half-rise), decay time =
 //       2 × (t_half-fall − t_peak)), within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s (§5.2.3)
 //       [FINAL-PLAN A2; the sensor is 4.2 mm across and 3 mm above the bed, the cell 5 cm].
+// V1  violent confined column (added after φ-only labels lost 42 % of a violent flow's volume in 6 s — the gentle scenes
+//     above never exercised it): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
+//     ~8 m/s and running up to the lid; |φ-volume/(N·V_p) − 1| ≤ 2 % every second for 6 s (S3.2 G2's tolerance).
+// G2  (--g2, slow on the CPU) the 30 s double dam break again with the ghost-fluid surface: ≤ 2 % at 30 s.
 import { loadTsModules } from './lib/loadTs.mjs'
 import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, fitOmega, nuNum, columnScore, impulse, selfConvergence } from './lib/s34metrics.mjs'
 
@@ -190,6 +194,26 @@ function column({ aCells, n2, h, nx, tauEnd }) {
   const ri = column({ aCells: 12, n2: 1, h: 0.05, nx: 32, tauEnd: 6 })
   const imp = impulse(ri.ts, ri.wallP), Imed = LOBOVSKY_I600
   check(imp.I >= 0.5 * Imed && imp.I <= 2 * Imed, `A2 impulse, Lobovský tank (32 cells, wall at 1.60 m): downstream-wall bottom-cell I = ∫p dt over the impact time ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians: 185.69 mbar, 7 ms, 104 ms; dt = ${(1000 * ri.dt).toFixed(2)} ms)`)
+}
+
+// V1 + G2 again (ghost-fluid surface under violent, confined flow)
+{
+  const volumeSeries = (L, p, seconds) => {
+    const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4 }))
+    const nvp = p.n * L.dx ** 3 / 8, out = []
+    for (let s = 1; s * (1 / 120) <= seconds + 1e-9; s++) { sim.step(p, 1 / 120); if (s % 120 === 0) out.push(sim.phiVolume() / nvp) }
+    return { out, clamps: sim.diag.wallClamps }
+  }
+  const v1 = volumeSeries(new GridLayout({ nx: 16, ny: 40, nz: 8, dx: DX }), block([0, 0, 0], [7, 35, 7], mulberry32(5)), 6)
+  const w = Math.max(...v1.out.map(v => Math.abs(v - 1)))
+  check(w <= 0.02, `V1 violent confined column (8×36 cells in 16×40×8): φ-volume/N·V_p every second ${v1.out.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * w).toFixed(2)} % (≤ 2 %); wall push-backs ${v1.clamps}`)
+  if (process.argv.includes('--g2')) {
+    const L = new GridLayout({ nx: 64, ny: 64, nz: 8, dx: DX }), a = block([0, 0, 0], [15, 31, 7], mulberry32(21)), b = block([48, 0, 0], [63, 31, 7], mulberry32(22))
+    const p = makeParticles(a.n + b.n)
+    p.pos.set(a.pos, 0); p.pos.set(b.pos, 3 * a.n); p.mass.set(a.mass, 0); p.mass.set(b.mass, a.n)
+    const g2 = volumeSeries(L, p, 30)
+    check(Math.abs(g2.out.at(-1) - 1) <= 0.02, `G2 again with the ghost-fluid surface, double dam break 30 s: φ-volume/N·V_p ${g2.out.at(-1).toFixed(4)} (≤ 2 %)`)
+  }
 }
 
 console.log(`\ns3.4 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)

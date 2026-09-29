@@ -61,8 +61,13 @@ export interface FlipRefOptions {
   extrapolationLayers?: number
   /** Pressure projection (S3.1b). Default false: transfer-only (S3.1a). */
   projection?: boolean
-  /** Liquid density for the projection, kg/m³ (uniform until S3.5 variable density). */
+  /** Liquid density for the projection, kg/m³: the density of every face without `variableDensity`, and the last-resort
+   *  fallback with it. */
   density?: number
+  /** S3.5 variable density (FINAL-PLAN §5.3 "face density"): each face's ρ_f = Σw·m_p / (Σw·V_p), V_p = dx³/ppc — the
+   *  kernel-weighted mean density of the particles around it; the pressure matrix uses a_f = Δt/(ρ_f·dx²) and the
+   *  projection Δt/(ρ_f·dx). Particles must carry m_p = ρ_material·dx³/ppc. Default false (one density). */
+  variableDensity?: boolean
   /** Pressure solve stops at ‖r‖∞ ≤ this, in divergence units 1/s (default 1e-9: the reference solves tight). */
   pressureTolerance?: number
   /** Pressure solve iteration cap (default 20000; a cap hit is recorded, never hidden). */
@@ -74,7 +79,7 @@ export interface FlipRefOptions {
   freeSurface?: 'voxel' | 'ghost'
   /** Particles per cell of the rest packing (sets the level-set particle spacing s = dx/∛ppc). Default 8. */
   ppc?: number
-  /** Lower clamp of the liquid fraction θ of a liquid–air face (FINAL-PLAN §5.3: 1e-3). */
+  /** Lower clamp of the liquid fraction θ of a liquid–air face (default THETA_MIN = 1e-2, the measured G0-e choice). */
   thetaMin?: number
   /** ψ solve tolerance, ‖r‖∞ in volume-fraction units (FINAL-PLAN §5.3: 1e-3; the reference default solves tight). */
   psiTolerance?: number
@@ -99,10 +104,21 @@ interface LiquidSystem {
   coords: [number, number, number][]
   diag: Float64Array
   nbr: Int32Array
-  a: number
+  /** Off-diagonal magnitude a_f of each row's six faces (index 6·row + 2·axis + side), 0 where there is no neighbour. */
+  offd: Float64Array
   closed: boolean
   airNeighbour: Uint8Array
 }
+
+/** Smallest face weight Σw (a fraction of one particle's trilinear weight) for which ρ_f = Σw·m/(Σw·V_p) is formed;
+ *  below it the face takes the mean of its valid same-grid neighbours (the GPU's fixed point resolves 2^-24, so 1e-3
+ *  keeps the ratio's relative quantisation below 1e-4). */
+export const FACE_WEIGHT_MIN = 1e-3
+
+/** Lower clamp of the liquid fraction θ (FINAL-PLAN §5.3, G0-e: chosen from {1e-6, 1e-3, 1e-2} by measurement in f32).
+ *  1e-2: the page's buoyancy scene needed at most 14 MGPCG iterations (29 at 1e-3, 9 with the voxel surface) — the
+ *  a/θ diagonal of a nearly dry face dominates the conditioning — while moving an interface by at most 0.01·dx. */
+export const THETA_MIN = 1e-2
 
 export interface SolveStats {
   liquidCells: number
@@ -125,6 +141,10 @@ export interface RefDiagnostics {
   unsetDivergenceFaces: number
   /** Particles pushed back inside the window after the density correction. */
   densityClamps: number
+  /** Faces of the pressure system (a LIQUID cell on either side) whose ρ_f came from the neighbour mean (Σw <
+   *  FACE_WEIGHT_MIN), and those that fell back to `density` — counted per solve. */
+  densityNeighbourFaces: number
+  densityDefaultFaces: number
 }
 
 /** Positions are kept this fraction of a cell inside the window (a particle exactly on the far wall would put its
@@ -143,7 +163,13 @@ export class FlipRef {
   readonly u: [Float64Array, Float64Array, Float64Array]
   /** 1 where u holds a velocity (fluid face with mass, extrapolated face, or solid face). */
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
-  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0 }
+  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0, densityNeighbourFaces: 0, densityDefaultFaces: 0 }
+  /** Σw per face (the trilinear weights of the particles scattered to it) and the face density ρ_f (kg/m³). */
+  readonly weight: [Float64Array, Float64Array, Float64Array]
+  readonly rhoFace: [Float64Array, Float64Array, Float64Array]
+  /** Where each ρ_f came from: 0 the face's own sums, 1 the neighbour mean, 2 the default density. */
+  readonly rhoSource: [Uint8Array, Uint8Array, Uint8Array]
+  readonly variableDensity: boolean
   readonly densityProjection: boolean
   readonly freeSurface: 'voxel' | 'ghost'
   readonly ppc: number
@@ -179,6 +205,10 @@ export class FlipRef {
     this.faceType = [layout.defaultFaceTypes(0), layout.defaultFaceTypes(1), layout.defaultFaceTypes(2)]
     this.mass = f64()
     this.mom = f64()
+    this.weight = f64()
+    this.rhoFace = f64()
+    this.rhoSource = [new Uint8Array(layout.size), new Uint8Array(layout.size), new Uint8Array(layout.size)]
+    this.variableDensity = opts.variableDensity ?? false
     this.u = f64()
     this.valid = [new Uint8Array(layout.size), new Uint8Array(layout.size), new Uint8Array(layout.size)]
     this.projection = opts.projection ?? false
@@ -191,7 +221,7 @@ export class FlipRef {
     this.densityProjection = opts.densityProjection ?? false
     this.freeSurface = opts.freeSurface ?? 'voxel'
     this.ppc = opts.ppc ?? 8
-    this.thetaMin = opts.thetaMin ?? 1e-3
+    this.thetaMin = opts.thetaMin ?? THETA_MIN
     this.levelSet = new Float64Array(layout.size)
     this.psiTolerance = opts.psiTolerance ?? 1e-9
     this.volumeFraction = new Float64Array(layout.size)
@@ -231,11 +261,52 @@ export class FlipRef {
     }
   }
 
-  /** Pressure Poisson solve on the LIQUID cells: Σ_f a·(p_c − p_nbr) = −(∇·u*)_c over non-solid faces, a = Δt/(ρ·dx²),
-   *  p_nbr = 0 in AIR. Jacobi-preconditioned CG to ‖r‖∞ ≤ pressureTolerance. */
+  /** Face densities ρ_f (kg/m³) for the pressure matrix and the projection. Without `variableDensity`: `density` on
+   *  every face. With it: ρ_f = Σw·m / (Σw·V_p), V_p = dx³/ppc, where Σw ≥ FACE_WEIGHT_MIN; below that, the mean ρ of
+   *  the same-grid 6-neighbours that have one (counted), else `density` (counted). */
+  faceDensities(): void {
+    const L = this.layout, vp = L.dx ** 3 / this.ppc
+    for (const a of AXES) {
+      const rho = this.rhoFace[a], src = this.rhoSource[a]
+      src.fill(0)
+      if (!this.variableDensity) { rho.fill(this.density); continue }
+      const [lo, hi] = L.faceRange(a)
+      const own = (i: number, j: number, k: number) => { const s = L.idx(i, j, k); return this.weight[a][s] >= FACE_WEIGHT_MIN ? this.mass[a][s] / (this.weight[a][s] * vp) : 0 }
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        let r = own(i, j, k)
+        if (r === 0) {
+          let sum = 0, cnt = 0
+          for (const [di, dj, dk] of NEIGHBOURS) {
+            const ni = i + di, nj = j + dj, nk = k + dk
+            if (ni < lo[0] || nj < lo[1] || nk < lo[2] || ni > hi[0] || nj > hi[1] || nk > hi[2]) continue
+            const v = own(ni, nj, nk)
+            if (v > 0) { sum += v; cnt++ }
+          }
+          if (cnt > 0) { r = sum / cnt; src[L.idx(i, j, k)] = 1 } else { r = this.density; src[L.idx(i, j, k)] = 2 }
+        }
+        rho[L.idx(i, j, k)] = r
+      }
+    }
+  }
+
+  /** Pressure Poisson solve on the LIQUID cells: Σ_f a_f·(p_c − p_nbr) = −(∇·u*)_c over non-solid faces,
+   *  a_f = Δt/(ρ_f·dx²), p_nbr = 0 in AIR (ghost: a liquid–air face adds a_f/θ). Jacobi-preconditioned CG to
+   *  ‖r‖∞ ≤ pressureTolerance. */
   solvePressure(dt: number): SolveStats {
-    const L = this.layout
-    const sys = this.liquidSystem(dt / (this.density * L.dx * L.dx), this.freeSurface === 'ghost')
+    const L = this.layout, k = dt / (L.dx * L.dx)
+    const sys = this.liquidSystem((ax, fs) => k / this.rhoFace[ax][fs], this.freeSurface === 'ghost')
+    // density fallbacks on the faces this solve uses (each face once: the −side face of every row, the +side face only
+    // when its other cell is not LIQUID)
+    for (let r = 0; r < sys.n; r++) {
+      const [i, j, kk] = sys.coords[r]
+      for (const ax of AXES) for (const side of [0, 1] as const) {
+        if (side === 1 && sys.nbr[6 * r + 2 * ax + 1] >= 0) continue
+        const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), kk + (ax === 2 ? side : 0))
+        if (this.faceType[ax][fs] === FaceType.SOLID) continue
+        const src = this.rhoSource[ax][fs]
+        if (src === 1) this.diag.densityNeighbourFaces++; else if (src === 2) this.diag.densityDefaultFaces++
+      }
+    }
     const b = new Float64Array(sys.n)
     for (let r = 0; r < sys.n; r++) {
       const [i, j, k] = sys.coords[r]
@@ -259,7 +330,8 @@ export class FlipRef {
   /** Zhu & Bridson 2005 level set (their eqs. 7–10; FINAL-PLAN §5.5 stage 2) at every window cell centre x:
    *  φ(x) = |x − x̄| − r̄, x̄ = Σ k_i x_i / Σ k_i, k_i = max(0, 1 − (|x − x_i|/R)²)³, with particle spacing s = dx/∛ppc,
    *  R = 2s and r̄ = s/2 (r̄ = s/2, not s: for a flat lattice block the surface lies s/2 above the top particle centres).
-   *  Cells with no particle within R get φ = R (air). Labels: LIQUID where φ < 0, AIR elsewhere, ghost layer SOLID. */
+   *  Cells with no particle within R get φ = R (air). Labels: LIQUID where φ < 0 or the cell holds a particle, AIR
+   *  elsewhere, ghost layer SOLID. */
   classifyLevelSet(p: RefParticles): void {
     const L = this.layout, h = L.dx, lab = this.label, phi = this.levelSet
     const s = h / Math.cbrt(this.ppc)
@@ -276,6 +348,15 @@ export class FlipRef {
       const c = L.idx(i, j, k)
       phi[c] = this.zhuBridson((i + 0.5) * h, (j + 0.5) * h, (k + 0.5) * h)
       lab[c] = phi[c] < 0 ? CellLabel.LIQUID : CellLabel.AIR
+    }
+    // every cell holding a particle is LIQUID as well (the union with the voxel rule): the Zhu–Bridson φ can be ≥ 0 in a
+    // cell that holds liquid — a sheet thinner than r̄ from the centre, or particles pressed against a wall, where the
+    // one-sided kernel pulls x̄ away from the wall — and such a cell must still carry the incompressibility constraint,
+    // or particles pile up there without limit (measured: a violent 36-cell column in a 64×40×8 tank kept 0.987 of its
+    // volume with voxel labels and 0.58 with φ-only labels after 6 s). θ falls back to 1 on those cells' faces.
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const c = L.idx(i, j, k)
+      if (this.zbHead[c] >= 0) lab[c] = CellLabel.LIQUID
     }
   }
 
@@ -310,7 +391,8 @@ export class FlipRef {
    *  crosses zero on the segment between the two centres, located with the face-centre sample as well (the 2× grid of
    *  FINAL-PLAN S3.4a remedy 1 — inside the liquid ZB φ saturates near −r̄ instead of growing like a distance, so
    *  linear interpolation between the two centres alone sits 0.18 dx low on a flat surface; with the midpoint sample
-   *  −0.016 dx, measured). Clamped to [thetaMin, 1]; 1 in voxel mode (p = 0 at the AIR cell centre). */
+   *  −0.016 dx, measured). Clamped to [thetaMin, 1]; 1 in voxel mode (p = 0 at the AIR cell centre); thetaMin on a
+   *  LIQUID-by-occupancy cell whose own φ ≥ 0. */
   theta(sl: number, sa: number): number {
     if (this.freeSurface !== 'ghost') return 1
     const key = sl * 0x100000 + sa
@@ -320,6 +402,11 @@ export class FlipRef {
     const a = this.coordsOf(sl), b = this.coordsOf(sa)
     const fm = this.zhuBridson((a[0] + b[0] + 1) * h / 2, (a[1] + b[1] + 1) * h / 2, (a[2] + b[2] + 1) * h / 2)
     const fl = this.levelSet[sl], fa = this.levelSet[sa]
+    // a LIQUID cell whose own φ ≥ 0 (liquid by occupancy, see classifyLevelSet): φ says the surface lies below its
+    // centre, so the face is dry — θ = θmin, p ≈ 0 at the cell (Mantaflow's thetaHelper clamps this case the same way).
+    // θ = 1 here put p = 0 a whole cell ABOVE the true surface in such columns: 5e-2 m/s spurious currents in a pool
+    // whose surface lies mid-cell (measured), against 1e-8 with voxel labels.
+    if (fl >= 0) { this.thetaCache.set(key, this.thetaMin); return this.thetaMin }
     let t = fm >= 0 ? 0.5 * fl / (fl - fm) : 0.5 + 0.5 * fm / (fm - fa)
     t = t < this.thetaMin ? this.thetaMin : t > 1 ? 1 : t
     this.thetaCache.set(key, t)
@@ -335,9 +422,10 @@ export class FlipRef {
     return [inv(pi, L.nx, L.ring[0]), inv(pj, L.ny, L.ring[1]), inv(pk, L.nz, L.ring[2])]
   }
 
-  /** Rows of the 7-point operator on the LIQUID cells with face coefficient `a` (SOLID faces dropped, AIR = Dirichlet 0;
-   *  with `ghost`, a liquid–air face contributes a/θ — Bridson eq. 4.37, one form only, FINAL-PLAN §5.3). */
-  private liquidSystem(a: number, ghost = false): LiquidSystem {
+  /** Rows of the 7-point operator on the LIQUID cells with face coefficients `coef(axis, face slot)` (SOLID faces
+   *  dropped, AIR = Dirichlet 0; with `ghost`, a liquid–air face contributes a_f/θ — Bridson eq. 4.37, one form only,
+   *  FINAL-PLAN §5.3). */
+  private liquidSystem(coef: (ax: Axis, fs: number) => number, ghost = false): LiquidSystem {
     const L = this.layout, lab = this.label
     const cells: number[] = [], coords: [number, number, number][] = []
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
@@ -347,7 +435,7 @@ export class FlipRef {
     const n = cells.length
     const row = new Map<number, number>()
     cells.forEach((s, r) => row.set(s, r))
-    const diag = new Float64Array(n), nbr = new Int32Array(6 * n).fill(-1), airNeighbour = new Uint8Array(n)
+    const diag = new Float64Array(n), nbr = new Int32Array(6 * n).fill(-1), offd = new Float64Array(6 * n), airNeighbour = new Uint8Array(n)
     let closed = n > 0
     for (let r = 0; r < n; r++) {
       const [i, j, k] = coords[r]
@@ -356,19 +444,20 @@ export class FlipRef {
         for (const side of [0, 1] as const) {
           const fs = L.idx(i + (ax === 0 ? side : 0), j + (ax === 1 ? side : 0), k + (ax === 2 ? side : 0))
           if (this.faceType[ax][fs] === FaceType.SOLID) continue
+          const a = coef(ax, fs)
           const ns = L.idx(i + (ax === 0 ? 2 * side - 1 : 0), j + (ax === 1 ? 2 * side - 1 : 0), k + (ax === 2 ? 2 * side - 1 : 0))
-          if (lab[ns] === CellLabel.LIQUID) { nbr[6 * r + 2 * ax + side] = row.get(ns)!; d += a }
+          if (lab[ns] === CellLabel.LIQUID) { nbr[6 * r + 2 * ax + side] = row.get(ns)!; offd[6 * r + 2 * ax + side] = a; d += a }
           else if (lab[ns] === CellLabel.AIR) { closed = false; airNeighbour[r] = 1; d += ghost ? a / this.theta(cells[r], ns) : a }
           else d += a
         }
       }
       diag[r] = d
     }
-    return { n, cells, coords, diag, nbr, a, closed, airNeighbour }
+    return { n, cells, coords, diag, nbr, offd, closed, airNeighbour }
   }
 
   /** Kugelstadt et al. 2019 density projection (FINAL-PLAN §4.1, §5.2 steps 2–5), before P2G:
-   *  f = Σ V_p·N(x_p − x_c)/dx³ with the cell-centred trilinear N (their eq. 12), plus the solid-side kernel volume of a
+   *  f = Σ V_p·N(x_p − x_c)/dx³ (V_p = dx³/ppc) with the cell-centred trilinear N (their eq. 12), plus the solid-side kernel volume of a
    *  rest-density fill f_solid = 1 − Π_axes (1 − 0.125·[solid neighbours on that axis]) (design C §2.4 [DERIVED]);
    *  f̃ = clamp(f, 0.5, 1.5) and ≥ 1 in cells with an AIR neighbour; solve ∇²ψ = 1 − f̃ with ψ = 0 in AIR and Neumann at
    *  solids — in the solver's positive form Σ(ψ̂_c − ψ̂_nbr) = f̃ − 1 with ψ̂ = ψ/dx² — then move every particle by
@@ -380,7 +469,7 @@ export class FlipRef {
     const f = this.volumeFraction
     f.fill(0)
     for (let q = 0; q < p.n; q++) {
-      const vp = p.mass[q] / this.density / (h * h * h)
+      const vp = 1 / this.ppc   // V_p/dx³ = 1/ppc whatever the material (FINAL-PLAN §4.1; m/ρ would over-count a heavy particle)
       const fx = p.pos[3 * q] / h - 0.5, fy = p.pos[3 * q + 1] / h - 0.5, fz = p.pos[3 * q + 2] / h - 0.5
       const i0 = Math.floor(fx), j0 = Math.floor(fy), k0 = Math.floor(fz), tx = fx - i0, ty = fy - j0, tz = fz - k0
       for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
@@ -388,7 +477,7 @@ export class FlipRef {
         if (w !== 0) f[L.idx(i0 + di, j0 + dj, k0 + dk)] += vp * w
       }
     }
-    const sys = this.liquidSystem(1)
+    const sys = this.liquidSystem(() => 1)
     const b = new Float64Array(sys.n)
     let fMin = Infinity, fMax = -Infinity
     for (let r = 0; r < sys.n; r++) {
@@ -464,14 +553,14 @@ export class FlipRef {
     return v * L.dx ** 3
   }
 
-  /** u = u* − (Δt/ρ)·(p₊ − p₋)/dx on every non-SOLID face with a LIQUID cell on either side (p = 0 in AIR); those
+  /** u = u* − (Δt/ρ_f)·(p₊ − p₋)/dx on every non-SOLID face with a LIQUID cell on either side (p = 0 in AIR); those
    *  faces become the only extrapolation sources. */
   projectVelocities(dt: number): void {
     const L = this.layout, lab = this.label, pr = this.pressure
-    const g = dt / (this.density * L.dx)
+    const k0 = dt / L.dx
     for (const a of AXES) {
       const [lo, hi] = L.faceRange(a)
-      const t = this.faceType[a], u = this.u[a], ok = this.valid[a]
+      const t = this.faceType[a], u = this.u[a], ok = this.valid[a], rho = this.rhoFace[a]
       for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
         const s = L.idx(i, j, k)
         if (t[s] === FaceType.SOLID) continue
@@ -481,7 +570,7 @@ export class FlipRef {
           // AIR side: 0 (voxel) or the ghost pressure −((1 − θ)/θ)·p_liquid that puts p = 0 on the interface (ghost)
           const pp = lp === CellLabel.LIQUID ? pr[s] : lp === CellLabel.AIR ? -((1 - this.theta(sm, s)) / this.theta(sm, s)) * pr[sm] : 0
           const pm = lm === CellLabel.LIQUID ? pr[sm] : lm === CellLabel.AIR ? -((1 - this.theta(s, sm)) / this.theta(s, sm)) * pr[s] : 0
-          u[s] -= g * (pp - pm)
+          u[s] -= k0 / rho[s] * (pp - pm)
           ok[s] = 1
         } else {
           ok[s] = 0
@@ -506,9 +595,9 @@ export class FlipRef {
     return m
   }
 
-  /** faceScatter: particle mass and (APIC) momentum onto the three face grids. */
+  /** faceScatter: particle mass, (APIC) momentum and the weight Σw onto the three face grids. */
   p2g(p: RefParticles): void {
-    for (const a of AXES) { this.mass[a].fill(0); this.mom[a].fill(0) }
+    for (const a of AXES) { this.mass[a].fill(0); this.mom[a].fill(0); this.weight[a].fill(0) }
     const L = this.layout
     for (let q = 0; q < p.n; q++) {
       const x = p.pos[3 * q], y = p.pos[3 * q + 1], z = p.pos[3 * q + 2]
@@ -528,13 +617,14 @@ export class FlipRef {
           }
           const slot = L.idx(s.i[n], s.j[n], s.k[n])
           this.mass[a][slot] += w * m
+          this.weight[a][slot] += w
           this.mom[a][slot] += w * m * val
         }
       }
     }
   }
 
-  /** u* = mom/mass on fluid faces with mass, then body force: u* += g_a·Δt. */
+  /** u* = mom/mass on fluid faces with mass, then body force: u* += g_a·Δt; then the face densities (same scatter). */
   gridUpdate(dt: number): void {
     const L = this.layout
     for (const a of AXES) {
@@ -548,6 +638,7 @@ export class FlipRef {
         else { u[s] = 0; ok[s] = 0 }
       }
     }
+    this.faceDensities()
   }
 
   /** Velocity extrapolation into fluid faces without mass and into ghost faces: `extrapolationLayers` passes, each
@@ -646,7 +737,7 @@ function clampIn(v: number, lo: number, hi: number): number { return v < lo ? lo
  *  anywhere) is singular but consistent after the mean of b is removed; the mean of x is then pinned to 0. The residual
  *  reported is the TRUE residual recomputed from x. The solution is written into `out` at the system's cell slots. */
 function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: number, out: Float64Array): SolveStats {
-  const { n, diag, nbr, a } = sys
+  const { n, diag, nbr, offd } = sys
   out.fill(0)
   const stats: SolveStats = { liquidCells: n, iterations: 0, residualInf: 0, rhsInf: 0, capHit: false, closed: sys.closed }
   if (n === 0) return stats
@@ -656,7 +747,7 @@ function solveSystem(sys: LiquidSystem, bIn: Float64Array, tol: number, cap: num
   const Ap = (x: Float64Array, o: Float64Array) => {
     for (let r = 0; r < n; r++) {
       let v = diag[r] * x[r]
-      for (let k = 0; k < 6; k++) { const c = nbr[6 * r + k]; if (c >= 0) v -= a * x[c] }
+      for (let k = 0; k < 6; k++) { const c = nbr[6 * r + k]; if (c >= 0) v -= offd[6 * r + k] * x[c] }
       o[r] = v
     }
   }

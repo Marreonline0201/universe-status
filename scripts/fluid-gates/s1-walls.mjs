@@ -23,7 +23,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openFluidPage, loadScenario, sampleAtFrame, makeGate, writeReport, fitQuadratic, centreOfMass, unitToTankM, DOMAIN_L_M, TAU_S, G_STANDARD, TANK_INNER_M } from '../lib/fluid-page.mjs'
+import { openFluidPage, loadScenario, sampleAtFrame, makeGate, writeReport, fitQuadratic, centreOfMass, unitToTankM, DOMAIN_L_M, TAU_S, G_STANDARD, TANK_INNER_M, FLUID_TEST_URL_MPM } from '../lib/fluid-page.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 let SECONDS = 60
@@ -85,7 +85,8 @@ const maxRise = ys => { let lo = Infinity, rise = 0; for (const y of ys) { lo = 
 
 const gate = makeGate('GATE S1.4 (separating walls)')
 const report = { seconds: SECONDS, samples: [] }
-const { browser, page, errors, adapter } = await openFluidPage()
+// MPM-only mechanics (band walls / 4-ppc packing / MPM viscosity refusals): the legacy solver, kept behind ?solver=mpm (D8)
+const { browser, page, errors, adapter } = await openFluidPage(FLUID_TEST_URL_MPM)
 report.adapter = adapter
 const bench = (fn, arg) => page.evaluate(fn, arg)
 try {

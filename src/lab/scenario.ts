@@ -7,8 +7,8 @@
 // 2026-07-17 units contract) and is converted on load — see scenarioGravityMs2().
 import { ELEMENTS, type ElementName } from '../composition/PropertyCalculator'
 import { CompositionTable, type RenderOverride } from '../composition/CompositionTable'
-import { DOMAIN_L_M, DX_M, G_STANDARD, TANK_INNER_M, TAU_S } from '../fluid-engine/units'
-import { LATTICE_SPACING } from '../fluid-engine/spawn'
+import { DOMAIN_L_M, DX_M, G_STANDARD, TAU_S } from '../fluid-engine/units'
+import { MPM_PACKING, type Packing } from '../fluid-engine/spawn'
 
 /** Built-in material names (lower-case) a spawn may reference without a "materials" entry. */
 const BUILT_IN_NAMES: ReadonlySet<string> = (() => {
@@ -32,7 +32,8 @@ export interface LabMaterial {
 export interface LabSpawn {
   material: string
   /** Region to fill, in metres from the tank's inner (0,0,0) corner (the walls), within
-   *  [0, TANK_INNER_M] = [0, 3.290 m] on each axis. */
+   *  within the running solver's tank on each axis: [0, 3.290 m] on the legacy MPM (3-cell band), [0, 3.63 m] on the
+   *  incompressible solver (walls at the grid edge). */
   box?: { min: [number, number, number]; max: [number, number, number] }
   /** Initial velocity of the spawned particles, m/s. */
   initialVelocity?: [number, number, number]
@@ -73,7 +74,10 @@ const MAX_PER_SPAWN = 100_000
 const MAX_TOTAL = 200_000
 const ELEMENT_SET = new Set<string>(ELEMENTS)
 
-export function parseScenario(text: string):
+/** Parse and validate a scenario for the solver whose packing is given (default: the legacy MPM — its tank is the
+ *  smaller one, so a scenario valid there is valid on every solver): box bounds follow that solver's tank, and the
+ *  particle count its rest spacing. */
+export function parseScenario(text: string, opts: { packing?: Packing } = {}):
   | { ok: true; scenario: LabScenario; warning: string | null }
   | { ok: false; error: string } {
   let raw: unknown
@@ -127,12 +131,13 @@ export function parseScenario(text: string):
       return { ok: false, error: 'spawn initialVelocity must be [vx,vy,vz] in m/s' }
     }
     if (sp.box !== undefined) {
-      const inner = +TANK_INNER_M.toFixed(4)
-      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > TANK_INNER_M + 1e-9)) {
+      const pk = opts.packing ?? MPM_PACKING, tankInner = (pk.tankMax - pk.tankMin) * DOMAIN_L_M
+      const inner = +tankInner.toFixed(4)
+      if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > tankInner + 1e-9)) {
         return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres from the tank's inner corner, 0 ≤ min < max ≤ ${inner}` }
       }
       // Same count the lattice spawner will place: floor(size / spacing) per axis.
-      total += sp.box.max.reduce((acc, v, i) => acc * Math.max(1, Math.floor((v - sp.box!.min[i]) / DOMAIN_L_M / LATTICE_SPACING + 1e-9)), 1)
+      total += sp.box.max.reduce((acc, v, i) => acc * Math.max(1, Math.floor((v - sp.box!.min[i]) / DOMAIN_L_M / pk.spacing + 1e-9)), 1)
       continue
     }
     if (typeof sp.count !== 'number' || sp.count < 1 || sp.count > MAX_PER_SPAWN) {

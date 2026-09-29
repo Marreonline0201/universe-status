@@ -20,7 +20,7 @@
 // Not covered: the AI material path needs an API key (it calls the same spawnCompositionBlock gate).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openFluidPage, loadScenario, status, sample, makeGate, writeReport, TANK_INNER_M, G_STANDARD } from '../lib/fluid-page.mjs'
+import { openFluidPage, loadScenario, status, sample, makeGate, writeReport, TANK_INNER_M, G_STANDARD, FLUID_TEST_URL_MPM } from '../lib/fluid-page.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S1.5-W (material gates on every spawn path)')
@@ -29,7 +29,8 @@ const L = TANK_INNER_M
 const water = { name: 'water', formula: 'H2O', elements: { H: 0.111, O: 0.889 }, temperature: 20 }
 const smallPool = m => ({ material: m, box: { min: [0.2 * L, 0, 0.2 * L], max: [0.8 * L, 0.15 * L, 0.8 * L] } })
 
-const { browser, page, errors, adapter } = await openFluidPage()
+// MPM-only mechanics (band walls / 4-ppc packing / MPM viscosity refusals): the legacy solver, kept behind ?solver=mpm (D8)
+const { browser, page, errors, adapter } = await openFluidPage(FLUID_TEST_URL_MPM)
 report.adapter = adapter
 try {
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)

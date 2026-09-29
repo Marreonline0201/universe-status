@@ -30,11 +30,11 @@ function merge(a: RefParticles, b: RefParticles): RefParticles {
   return p
 }
 
-async function makeSim(device: GPUDevice, n: Vec3, o: { count: number; h?: number; density?: boolean; gravity?: Vec3; ring?: Vec3; psiTol?: number; psiCap?: number; tol?: number; cap?: number }) {
+async function makeSim(device: GPUDevice, n: Vec3, o: { count: number; h?: number; density?: boolean; gravity?: Vec3; ring?: Vec3; psiTol?: number; psiCap?: number; tol?: number; cap?: number; ghost?: boolean }) {
   return FlipGpuSimulator.create(device, {
     nx: n[0], ny: n[1], nz: n[2], dx: o.h ?? DX, ring: o.ring, gravity: o.gravity ?? GRAV, maxParticles: o.count, lRef: L_REF, tauS: TAU,
     projection: true, density: RHO, pressureTolerance: o.tol ?? 1e-2, pressureCap: capFor(o.cap ?? 400), solverMethod: solverConfig.method,
-    densityProjection: o.density ?? true, psiTolerance: o.psiTol ?? 1e-3, psiCap: capFor(o.psiCap ?? 400),
+    densityProjection: o.density ?? true, psiTolerance: o.psiTol ?? 1e-3, psiCap: capFor(o.psiCap ?? 400), freeSurface: o.ghost ? 'ghost' : 'voxel',
   })
 }
 
@@ -236,11 +236,11 @@ export async function martinMoyce(device: GPUDevice, o: { aCells: number; aPhys?
 }
 
 /** G2 on the GPU: double dam break in a 64×64×8 slab, 30 s, with or without the density projection. */
-export async function doubleDamBreak(device: GPUDevice, o: { density: boolean; seconds?: number }) {
+export async function doubleDamBreak(device: GPUDevice, o: { density: boolean; seconds?: number; ghost?: boolean }) {
   const seconds = o.seconds ?? 30
   const p = merge(block([0, 0, 0], [15, 31, 7], mulberry32(21)), block([48, 0, 0], [63, 31, 7], mulberry32(22)))
   // φ-volume needs the density buffers, so the baseline keeps them allocated but never encodes the correction
-  const gpu = await makeSim(device, [64, 64, 8], { count: p.n, tol: 1e-2, psiTol: 1e-3 })
+  const gpu = await makeSim(device, [64, 64, 8], { count: p.n, tol: 1e-2, psiTol: 1e-3, ghost: o.ghost })
   gpu.dt = 1 / 120
   gpu.setParticles(toInit(p))
   const measure = async () => { await submit(device, e => { gpu.writeParams(); gpu.encodeLabels(e); gpu.encodeCellScatter(e); gpu.encodeDensityRhs(e) }); return phiVolume(gpu) }
@@ -258,4 +258,24 @@ export async function doubleDamBreak(device: GPUDevice, o: { density: boolean; s
   gpu.destroy()
   const vNp = p.n * DX ** 3 / 8
   return { density: o.density, particles: p.n, series, end: series.at(-1)!, v0OverNVp: v0 / vNp, endOverNVp: (1 + series.at(-1)!) * v0 / vNp, capHits: d.capHits, solves: d.solves, psiCapHits: d.psiCapHits, psiSolves: d.psiSolves, breakdowns: d.breakdowns + d.psiBreakdowns }
+}
+
+/** V1 violent confined column (S3.4 stress scene): an 8×36-cell column (2.0 m) collapsing in a 16×40×8 tank — it hits
+ *  the far wall at ~8 m/s and runs up to the lid. φ-volume / N·V_p every second. */
+export async function violentColumn(device: GPUDevice, o: { ghost: boolean; seconds?: number }) {
+  const seconds = o.seconds ?? 6
+  const p = block([0, 0, 0], [7, 35, 7], mulberry32(5))
+  const gpu = await makeSim(device, [16, 40, 8], { count: p.n, tol: 1e-2, psiTol: 1e-3, ghost: o.ghost })
+  gpu.dt = 1 / 120
+  gpu.setParticles(toInit(p))
+  const nvp = p.n * DX ** 3 / 8
+  const measure = async () => { await submit(device, e => { gpu.writeParams(); gpu.encodeLabels(e); gpu.encodeCellScatter(e); gpu.encodeDensityRhs(e) }); return phiVolume(gpu) / nvp }
+  const series: number[] = []
+  for (let s = 1; s <= seconds * 120; s++) {
+    await submit(device, e => gpu.step(e, 1))
+    if (s % 120 === 0) series.push(await measure())
+  }
+  const d = await gpu.readDiagnostics()
+  gpu.destroy()
+  return { series, particles: p.n, wallClamps: d.wallClamps, capHits: d.capHits, psiCapHits: d.psiCapHits, breakdowns: d.breakdowns + d.psiBreakdowns }
 }
