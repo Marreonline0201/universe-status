@@ -15,6 +15,20 @@ import * as THREE from 'three'
 
 const MAX_PARTICLES = 1_000_000
 const FLOATS_PER_PARTICLE = 20
+/** Staging buffers in flight: while one maps, the next frame's copy goes to another (s1-render R2: with ONE buffer,
+ *  every frame that found it still mapping skipped its readback — 37–42 of ~100 frames completed). */
+const STAGING_RING = 2
+/** Packs each particle's position (the first 3 of its 20 floats) into a vec4 — 16 B per particle instead of 80. */
+const PACK_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> count: vec4<u32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+  if (g.x >= count.x) { return; }
+  let b = g.x * ${FLOATS_PER_PARTICLE}u;
+  dst[g.x] = vec4<f32>(src[b], src[b + 1u], src[b + 2u], 1.0);
+}`
 
 export class FluidScene {
   private points: THREE.Points | null = null
@@ -22,8 +36,17 @@ export class FluidScene {
   private colorAttr: THREE.BufferAttribute | null = null
   private scene: THREE.Scene
   private device: GPUDevice | null = null
-  private readbackBuffer: GPUBuffer | null = null
-  private readbackPending = false
+  private packPipeline: GPUComputePipeline | null = null
+  private packedBuffer: GPUBuffer | null = null
+  private countBuffer: GPUBuffer | null = null
+  private packGroups = new WeakMap<GPUBuffer, GPUBindGroup>()
+  private staging: { buf: GPUBuffer; pending: boolean }[] = []
+  /** The staging slot scheduleReadback filled for the next startReadback (−1: none), and its particle count. */
+  private scheduled = -1
+  private scheduledN = 0
+  /** Readbacks are applied in order: a map that resolves after a newer one has been applied is dropped. */
+  private seqIssued = 0
+  private seqApplied = 0
   /** Readbacks whose positions actually reached the Points geometry (for the bench). */
   completedReadbacks = 0
 
@@ -37,10 +60,13 @@ export class FluidScene {
   init(device: GPUDevice) {
     this.device = device
 
-    this.readbackBuffer = device.createBuffer({
-      size: MAX_PARTICLES * 80,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    })
+    this.packPipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: PACK_WGSL }), entryPoint: 'main' } })
+    this.packedBuffer = device.createBuffer({ size: MAX_PARTICLES * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC })
+    this.countBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    this.staging = Array.from({ length: STAGING_RING }, () => ({
+      buf: device.createBuffer({ size: MAX_PARTICLES * 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+      pending: false,
+    }))
 
     const geo = new THREE.BufferGeometry()
     const positions = new Float32Array(MAX_PARTICLES * 3)
@@ -74,53 +100,66 @@ export class FluidScene {
   // No-op — SSFR pipeline deferred
   async initPostProcessing(_renderer: any, _camera: THREE.PerspectiveCamera) {}
 
+  /** Pack the positions and copy them to a free staging buffer (none free: this frame is skipped). The caller submits
+   *  `encoder`, then calls startReadback. */
   scheduleReadback(encoder: GPUCommandEncoder, particleBuffer: GPUBuffer, count: number) {
-    if (!this.readbackBuffer || !this.device) return
-    if (this.readbackPending) return
-
+    this.scheduled = -1
+    if (!this.device || !this.packPipeline || !this.packedBuffer || !this.countBuffer) return
+    const slot = this.staging.findIndex(s => !s.pending)
+    if (slot < 0) return
     const n = Math.min(count, MAX_PARTICLES)
-    encoder.copyBufferToBuffer(particleBuffer, 0, this.readbackBuffer, 0, n * 80)
+    if (n === 0) return
+    let group = this.packGroups.get(particleBuffer)
+    if (!group) {
+      group = this.device.createBindGroup({ layout: this.packPipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: particleBuffer } }, { binding: 1, resource: { buffer: this.packedBuffer } },
+        { binding: 2, resource: { buffer: this.countBuffer } }] })
+      this.packGroups.set(particleBuffer, group)
+    }
+    this.device.queue.writeBuffer(this.countBuffer, 0, new Uint32Array([n, 0, 0, 0]))
+    const pass = encoder.beginComputePass()
+    pass.setPipeline(this.packPipeline)
+    pass.setBindGroup(0, group)
+    pass.dispatchWorkgroups(Math.ceil(n / 256))
+    pass.end()
+    encoder.copyBufferToBuffer(this.packedBuffer, 0, this.staging[slot].buf, 0, n * 16)
+    this.scheduled = slot
+    this.scheduledN = n
   }
 
-  startReadback(count: number) {
-    if (!this.readbackBuffer || !this.points || !this.positionAttr || !this.colorAttr) return
-    if (this.readbackPending) return
+  startReadback(_count: number) {
+    if (!this.points || !this.positionAttr || !this.colorAttr) return
+    const slot = this.scheduled
+    if (slot < 0) return
+    this.scheduled = -1
+    const st = this.staging[slot], n = this.scheduledN, seq = ++this.seqIssued
+    st.pending = true
+    const posAttr = this.positionAttr, colAttr = this.colorAttr, geo = this.points.geometry
 
-    this.readbackPending = true
-    const buf = this.readbackBuffer
-    const posAttr = this.positionAttr
-    const colAttr = this.colorAttr
-    const geo = this.points.geometry
-    const n = Math.min(count, MAX_PARTICLES)
-
-    buf.mapAsync(GPUMapMode.READ).then(() => {
-      const data = new Float32Array(buf.getMappedRange())
-      const positions = posAttr.array as Float32Array
-      const colors = colAttr.array as Float32Array
-
-      for (let i = 0; i < n; i++) {
-        const src = i * FLOATS_PER_PARTICLE
-        const dst = i * 3
-
-        positions[dst] = data[src]
-        positions[dst + 1] = data[src + 1]
-        positions[dst + 2] = data[src + 2]
-
-        // Light blue-white (transparent water)
-        colors[dst] = 0.7
-        colors[dst + 1] = 0.8
-        colors[dst + 2] = 0.95
+    st.buf.mapAsync(GPUMapMode.READ, 0, n * 16).then(() => {
+      if (seq > this.seqApplied) {
+        this.seqApplied = seq
+        const data = new Float32Array(st.buf.getMappedRange(0, n * 16))
+        const positions = posAttr.array as Float32Array
+        const colors = colAttr.array as Float32Array
+        for (let i = 0; i < n; i++) {
+          positions[3 * i] = data[4 * i]
+          positions[3 * i + 1] = data[4 * i + 1]
+          positions[3 * i + 2] = data[4 * i + 2]
+          // Light blue-white (transparent water)
+          colors[3 * i] = 0.7
+          colors[3 * i + 1] = 0.8
+          colors[3 * i + 2] = 0.95
+        }
+        posAttr.needsUpdate = true
+        colAttr.needsUpdate = true
+        geo.setDrawRange(0, n)
+        this.completedReadbacks++
       }
-
-      posAttr.needsUpdate = true
-      colAttr.needsUpdate = true
-      geo.setDrawRange(0, n)
-      this.completedReadbacks++
-
-      buf.unmap()
-      this.readbackPending = false
+      st.buf.unmap()
+      st.pending = false
     }).catch(() => {
-      this.readbackPending = false
+      st.pending = false
     })
   }
 
@@ -136,8 +175,12 @@ export class FluidScene {
       ;(this.points.material as THREE.Material).dispose()
       this.points = null
     }
-    this.readbackBuffer?.destroy()
-    this.readbackBuffer = null
+    for (const st of this.staging) st.buf.destroy()
+    this.staging = []
+    this.packedBuffer?.destroy()
+    this.packedBuffer = null
+    this.countBuffer?.destroy()
+    this.countBuffer = null
     this.positionAttr = null
     this.colorAttr = null
   }
