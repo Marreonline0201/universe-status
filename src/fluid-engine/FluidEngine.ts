@@ -1041,6 +1041,12 @@ export class FluidEngine {
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
         if (opts.splatShape) this.ssfrPipeline?.setSplatShape(opts.splatShape)
         if (opts.disableImmiscible !== undefined) (this.sim as { setImmiscibleDisabled?: (v: boolean) => void } | null)?.setImmiscibleDisabled?.(opts.disableImmiscible)
+        // bench hook X (the B1c experiments): these liquids leave the drift slots (untracked); [] restores the default
+        if (opts.immExcludeLiquids !== undefined) {
+          const s = this.sim as { setImmiscibleExcluded?: (k: readonly string[]) => void } | null
+          if (!s?.setImmiscibleExcluded) throw new Error('immExcludeLiquids: this solver has no drift slots')
+          s.setImmiscibleExcluded(opts.immExcludeLiquids)
+        }
       },
       viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,
       diagnostics: async () => {

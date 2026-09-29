@@ -23,10 +23,11 @@ const M = [
   ['flipRef.ts', [['const g = this.gravity[a] * dt', 'const g = this.gravity[1] * dt']], 'gravity read as a y scalar, not a vector'],
   ['flipRef.ts', [['opts.extrapolationLayers ?? 2', 'opts.extrapolationLayers ?? 0']], 'velocity extrapolation disabled'],
   ['flipRef.ts', [['if (t[s] === FaceType.SOLID) { u[s] = 0; ok[s] = 1 }', 'if (t[s] === FaceType.SOLID) { ok[s] = 0 }']], 'solid faces left unset'],
+  // the advection line gained the drift term in f7e8a4b2; these find strings follow it (they had matched nothing since)
   ['flipRef.ts', [
-    ['const nx = x + dt * this.sample(0, mx, my, mz, null)', 'const nx = x + dt * v1x'],
-    ['const ny = y + dt * this.sample(1, mx, my, mz, null)', 'const ny = y + dt * v1y'],
-    ['const nz = z + dt * this.sample(2, mx, my, mz, null)', 'const nz = z + dt * v1z']], 'RK2 midpoint replaced by forward Euler'],
+    ['const nx = x + dt * (this.sample(0, mx, my, mz, null)', 'const nx = x + dt * (v1x'],
+    ['const ny = y + dt * (this.sample(1, mx, my, mz, null)', 'const ny = y + dt * (v1y'],
+    ['const nz = z + dt * (this.sample(2, mx, my, mz, null)', 'const nz = z + dt * (v1z']], 'RK2 midpoint replaced by forward Euler'],
   ['flipRef.ts', [['this.mom[a][slot] += w * m * val', 'this.mom[a][slot] += w * val']], 'momentum not mass-weighted'],
 ]
 
@@ -36,11 +37,15 @@ for (const [f, edits, why] of M) for (const [find] of edits) {
   const n = pristine[f].split(find).length - 1
   if (n !== 1) { console.error(`ABORT (${why}): find string occurs ${n}× in ${f}: ${find.slice(0, 80)}`); process.exit(2) }
 }
+// --check: only verify every find string against the working tree (a dead mutant aborts the suite before it runs)
+if (process.argv.includes('--check')) { console.log(`s30 mutants: all ${M.length} find strings match the working tree`); process.exit(0) }
 
 const tmpRoot = await mkdtemp(join(tmpdir(), 's30-mut-'))
 async function runWith(label, file, edits) {
-  const dir = join(tmpRoot, label.replace(/[^a-z0-9]+/gi, '_'))
-  await cp(join(REPO, 'src/sim-ref'), dir, { recursive: true })
+  // the whole src/ tree, layout preserved: flipRef imports ../composition/liquidGate (since cd1ac64c) — a copy of
+  // src/sim-ref alone no longer builds, so the control would crash and every result would be void
+  const root = join(tmpRoot, label.replace(/[^a-z0-9]+/gi, '_')), dir = join(root, 'src', 'sim-ref')
+  await cp(join(REPO, 'src'), join(root, 'src'), { recursive: true })
   if (file) {
     let src = pristine[file]
     for (const [find, repl] of edits) src = src.replace(find, repl)

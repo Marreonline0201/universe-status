@@ -57,10 +57,12 @@
 //     s < −0.06 → the solver leads a like-for-like experiment beyond resolution (part of the MM lead is the solver);
 //     s > +0.06 → the modelled gate delays the front more than the real one (Lobovský §4.2 found its effect minor) —
 //     the gate model is investigated before any conclusion.
-// A2g-mech the gate's mechanics (gated): lifted at 1 cm/s it holds the column — 0 particles past its plane after 0.2 s;
+// A2g-mech the gate's mechanics (gated): lifted at 1 cm/s it holds the column — 0 particles past its plane after 0.2 s,
+//     held by the grid itself (0 particle clamps at the gate: the SOLID faces are the wall, the clamp only a safety net);
 //     at 4.53 m/s, over the first 0.12 s, no particle is past the plane above the edge at any step and the flow under
 //     the edge grows (more particles past the plane at 0.06 s than at 0.03 s, and some at 0.03 s); gate clamps reported.
-//   --only=<names> runs only those sections (S34a, G1c, D1, A1, A2g, V1; comma-separated) — for the gate mutants.
+//   --only=<names> runs only those sections (S34a, G1c, D1, A1, A2gmech, A2g, V1; comma-separated) — s34g-mutations
+//   runs A2gmech alone.
 // V1  violent confined column (added after φ-only labels lost 42 % of a violent flow's volume in 6 s — the gentle scenes
 //     above never exercised it; the first fix, every occupied cell LIQUID, then broke D1 — flipRef.classifyLevelSet): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
 //     ~8 m/s and running up to the lid; |φ-volume/(N·V_p) − 1| ≤ 2 % every second for 6 s (S3.2 G2's tolerance).
@@ -232,8 +234,9 @@ if (run('A1')) {
   check(imp.I >= 0.5 * Imed && imp.I <= 2 * Imed, `A2 impulse, Lobovský tank (32 cells, wall at 1.60 m): downstream-wall bottom-cell I = ∫p dt over the impact time ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians: 185.69 mbar, 7 ms, 104 ms; dt = ${(1000 * ri.dt).toFixed(2)} ms)`)
 }
 
-// A2g-mech + A2g (Lobovský's gate; pre-registered in the header before the first gated run)
-if (run('A2g')) {
+// A2g-mech (the gate's mechanics — the gate mutants key on it) and A2g (Lobovský's gate; pre-registered in the header
+// before the first gated run)
+if (run('A2gmech')) {
   const gateRun = (speed, seconds) => {
     const aC = 12, h = 0.05, nz = 8
     const L = new GridLayout({ nx: 72, ny: aC + 8, nz, dx: h })
@@ -251,8 +254,10 @@ if (run('A2g')) {
   const hold = gateRun(0.01, 0.2), held = hold.out.at(-1)
   const open = gateRun(4.53, 0.12), above = Math.max(...open.out.map(o => o.pastAbove))
   const pastAt = t => open.out.reduce((b, o) => (Math.abs(o.t - t) < Math.abs(b.t - t) ? o : b)).past
-  check(held.past === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03),
-    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0; gate clamps ${hold.clamps}); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}`)
+  check(held.past === 0 && hold.clamps === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03),
+    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0), held by the grid: gate clamps ${hold.clamps} (0); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}`)
+}
+if (run('A2g')) {
   const WIN = [1, ETSIN600_FRONT.T.at(-1)], ETSIN_SLOPE = 1.339
   // run past the window by the largest shift the scorer tries (+0.5), so no shifted sample is clamped to the run's end
   const rg = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: WIN[1] + 0.55, gate: 4.53 })

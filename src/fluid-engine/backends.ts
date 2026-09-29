@@ -224,6 +224,8 @@ export class FlipBackend implements SimBackend {
   private immReason: string | null = null
   /** Bench negative control (s31c-page B1c): the drift is kept off whatever the tank holds. */
   private immDisabled = false
+  /** Bench hook X (the B1c experiments): liquids left out of the drift slots — untracked, see setImmiscibleExcluded. */
+  private immExclude = new Set<LiquidKey>()
   /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
   private ballLag: { center: Vec3; velocity: Vec3 } | null = null
   private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
@@ -405,6 +407,7 @@ export class FlipBackend implements SimBackend {
       if (!key) { this.immReason = `composition ${id} is not a cited liquid`; sim.immiscibleActive = false; return }
       byLiquid.set(key, [...(byLiquid.get(key) ?? []), id])
     }
+    for (const k of this.immExclude) byLiquid.delete(k)   // bench hook X: untracked from here on
     const keys = [...byLiquid.keys()]
     const pairs = keys.flatMap((a, i) => keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null))
     this.immReason = null
@@ -420,12 +423,24 @@ export class FlipBackend implements SimBackend {
     sim.immiscibleActive = true
   }
   setImmiscibleDisabled(v: boolean) { this.immDisabled = v; this.applyImmiscible() }
+  /** Bench hook X (the B1c experiments — E5′ oil excluded, E6 mercury excluded): leave these liquids out of the drift
+   *  slots. An untracked liquid gets no slip and no part in α, ρ_m, μ_m or J (immiscible.wgsl alphaScatter and
+   *  slipParticles skip it and zero its slipState), yet still moves with −J of its cell (driftParticles). configure()
+   *  rewrites only the slot table, never slipState, so the tracked liquids' drift memory is untouched by a switch.
+   *  [] restores the default; an unknown liquid key throws (a typo must not silently exclude nothing). */
+  setImmiscibleExcluded(keys: readonly string[]) {
+    const known = new Set(this.liquidOf.filter((k): k is LiquidKey => k !== null))
+    const bad = keys.filter(k => !known.has(k as LiquidKey))
+    if (bad.length) throw new Error(`immExcludeLiquids: not a liquid of this tank's material table: ${bad.join(', ')} (known: ${[...known].join(', ')})`)
+    this.immExclude = new Set(keys as LiquidKey[])
+    this.applyImmiscible()
+  }
   setLiquidKeys(keys: readonly (LiquidKey | null)[]) {
     for (let id = 0; id < 256; id++) this.liquidOf[id] = keys[id] ?? null
     this.applyImmiscible()
   }
   /** Whether the immiscible drift flux runs, and why not when liquids that could separate are in the tank. */
-  get immiscibleDrift(): { active: boolean; reason: string | null } { return { active: this.sim.immiscibleActive, reason: this.immReason } }
+  get immiscibleDrift(): { active: boolean; reason: string | null; excluded: string[] } { return { active: this.sim.immiscibleActive, reason: this.immReason, excluded: [...this.immExclude] } }
   private applyViscosity() {
     const vs = this.sim.viscositySolver!
     this.sim.viscosityActive = this.maxNu >= VISCOUS_RUN_NU
