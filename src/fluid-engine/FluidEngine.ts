@@ -827,7 +827,7 @@ export class FluidEngine {
       setStepLimit: (n) => this.setStepLimit(n),
       readParticleSample: () => this.readParticleSample(),
       probe: (o) => this.renderProbe(o),
-      compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name })),
+      compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name, rho: c.solver.rhoKgM3, mu: c.solver.muPaS })),
       fps: () => this.lastFps,
       count: () => this.particleCount,
       configure: (opts) => {
@@ -836,6 +836,7 @@ export class FluidEngine {
         if (opts.resetClockStats) { this.droppedTime = 0; this.presentIntervals = []; this.frameAdvances = []; this.rtSamples = [] }
         if (opts.resetDiagnostics) { this.sim?.resetDiagnostics(); this.particleSubsteps = 0 }
         if (opts.forceSsfrFailure !== undefined) this.forceSsfrFailure = opts.forceSsfrFailure
+        if (opts.disableImmiscible !== undefined) (this.sim as { setImmiscibleDisabled?: (v: boolean) => void } | null)?.setImmiscibleDisabled?.(opts.disableImmiscible)
       },
       viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,
       diagnostics: async () => {

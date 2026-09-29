@@ -9,8 +9,40 @@
 //    after 6 s the RMS particle speed ≤ 1 % √(gH), H = N·V_p / (3.63 m)² (V_p = dx³/8).
 // P2 level: the pool's mean particle height after 6 s = H/2 within ±¼·dx (a flat pool of uniform density).
 // B1 buoyancy order (the owner's check "oil floats, mercury sinks"): the same pool with an olive-oil block and a mercury
-//    block released above it; after 8 s COM_y(mercury) < COM_y(water) < COM_y(oil), each gap ≥ ½·dx; ≥ 90 % of the oil
-//    above the water's median height and ≥ 90 % of the mercury below it.
+//    block released above it; after 8 s COM_y(mercury) < COM_y(water) < COM_y(oil), each gap ≥ ½·dx.
+// B1c creaming, PHYSICS-DERIVED (owner decision 2026-09-29; replaces "≥ 90 % of the oil above the water's median at 8 s",
+//    an unsourced threshold that 89–92 % runs straddled — vault research/x8-coalescence-b1: that is what physics gives for
+//    the sim's ~1.6 mm drops). The set: at 4 s (the impact over) every DISPERSED oil particle (drift d > 0) below the
+//    water's 8-s median height; its dilute part: cell oil fraction α < 0.3 (particle counts). The law: a drop SLIPS
+//    through the water around it at U_eq(d, α), the equilibrium of the drift model's drag law (Schiller–Naumann,
+//    Re·f(Re) = d³ρ_c|ρ_d − ρ_m|g/(18μ_m²), bisection — s35i-ref's independent oracle), ρ_m and Ishii–Zuber μ_m at α,
+//    ρ and μ the page's own; it is the model's s = u_d − u_c (immiscible.wgsl slipParticles, MTK 1996's slip) — the
+//    law's validated uncertainty ±10 % (1.04 vs the 0.9–1.0 cm/s front measured by Jeelani & Hartland 1998, via
+//    Mousavi et al. 2024).
+//    B1c-slip (validated): per dilute drop, its rise over 4 → 4.5 s minus the mean rise of the WATER particles that
+//      shared its 4-s cell (the plume carries both, so it cancels), ÷ 0.5 s; the mean over the drops ÷ the mean of
+//      U_eq(d, α) over the same drops = 1 ± 0.1, in each of B1C_RUNS runs (default 3; same seed, lockstep). Two-sided.
+//    B1c-control (the checks' teeth): the same scene with the drift switched off (bench configure disableImmiscible):
+//      its would-be-dispersed dilute oil (cell α < 0.3 at 4 s, below its own water median), each drop given the
+//      drift-on runs' median d, goes through B1c-slip too and must land OUTSIDE its band (its slip ≈ 0).
+//    B1c-spread: the slip ratio's run-to-run spread (max − min) ≤ the band's width 0.2 (a band narrower than the page's
+//      own run-to-run noise would pass or fail by chance — the band is not widened, the check fails instead).
+//    Reported, not gated (the end state is NOT predictable from the page's physics — it depends on the dense layer's
+//      packing, r_V* unmeasured, and on the blob's plume, which moves dilute oil at ~2.4 cm/s with no drift at all): the
+//      fraction of the set above the median at 8 s against the Kynch hindered march at ×0.9 (the no-convection
+//      minimum; the march: the 4-s state, each drop rising in its own (x, z) column at (1 − α(t))·U_eq, α recounted
+//      every 1/120 s, a drop stopping at its column's 4-s top), the control's fraction, and the lab-frame rise over
+//      4 → 5 s against (1 − α)·U_eq. The oil in oil-majority cells (resolved, d = 0) and the mercury are reported.
+//    History — three failed designs (each fixed its band before its one run; no band was widened): (1) each drop's α
+//      frozen at 4 s, arrival by 8 s: 84.2 % vs 79.6–82.9 %, replaced for its slow bias; (2) the Kynch march as a
+//      two-sided end prediction: 85.7 % vs 56.3–59.9 %; (3) the lab-frame rise over 4 → 5 s ≥ 0.9 × (1 − α)·U_eq plus
+//      the end fraction inside [hindered march ×0.9, unhindered march ×1.1]: rise 2.7–2.9 × the law, end 87.3 / 85.0
+//      above the bound in 2 of 3 runs — and the drift-off control rose at 0.99 × the law, i.e. it would have PASSED the
+//      rate check: the lab-frame rise measures the plume, not the drift. A quiescent-batch law needs a convection-free
+//      observable (the slip), and the negative control must go through every check.
+//    First run of this design (2026-09-29, live checkout): slip × 1.442 / 1.377 / 1.237 of U_eq, spread 0.205; control
+//      × −0.057 — the observable is clean, so the in-situ drift slips 24–44 % faster than its own equilibrium law: an
+//      OPEN finding about the drift model (vault active-plan, B1c), not a reason to move this band.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
@@ -54,6 +86,9 @@ try {
 
   // B1: pool + oil + mercury
   await loadScenario(page, { name: 's31c-buoyancy', materials: [], spawns: [pool, oil, hg], gravity_mps2: G_STANDARD }, 2)
+  const b4 = await sampleAtFrame(page, 240)
+  const b45 = await sampleAtFrame(page, 270)
+  const b5 = await sampleAtFrame(page, 300)
   const b = await sampleAtFrame(page, 480)
   const nameOf = new Map(b.materials.map(m => [m.id, m.name]))
   const ys = { Water: [], 'Olive Oil': [], Mercury: [] }
@@ -71,7 +106,109 @@ try {
   report.buoyancy = { counts: Object.fromEntries(Object.entries(ys).map(([k, v]) => [k, v.length])), cW, cO, cH, wMedian, oilAbove, hgBelow, nan }
   gate.check(cH + 0.5 * DX <= cW && cW + 0.5 * DX <= cO && nan === 0,
     `B1 order after 8 s (water ${ys.Water.length}, oil ${ys['Olive Oil'].length}, mercury ${ys.Mercury.length} particles): COM height mercury ${(100 * cH).toFixed(1)} cm < water ${(100 * cW).toFixed(1)} cm < oil ${(100 * cO).toFixed(1)} cm (each gap ≥ ½·dx = ${(50 * DX).toFixed(1)} cm)`)
-  gate.check(oilAbove >= 0.9 && hgBelow >= 0.9, `B1 separation: ${(100 * oilAbove).toFixed(1)} % of the oil above the water's median height ${(100 * wMedian).toFixed(1)} cm (≥ 90 %), ${(100 * hgBelow).toFixed(1)} % of the mercury below it (≥ 90 %)`)
+  console.log(`INFO B1 separation at 8 s: ${(100 * oilAbove).toFixed(1)} % of the oil above the water's median height ${(100 * wMedian).toFixed(1)} cm, ${(100 * hgBelow).toFixed(1)} % of the mercury below it (the old unsourced ≥ 90 % criteria, reported)`)
+
+  // B1c: creaming of the page's own drops — the slip validated (convection-free), the end state reported, a drift-off control
+  {
+    const mat = Object.fromEntries(b4.materials.map(m => [m.name, m]))
+    const oilId = mat['Olive Oil'].id, wId = mat.Water.id
+    const RO = mat['Olive Oil'].rho, MUO = mat['Olive Oil'].mu, RW = mat.Water.rho, MUW = mat.Water.mu
+    const fRe = Re => (Re < 1000 ? 1 + 0.15 * Re ** 0.687 : 0.44 * Re / 24)
+    const Ueq = (d, F, rc, muM) => {   // s35i-ref's oracle: Re·f(Re) = d³ρ_c F/(18 μ_m²) by bisection
+      const G2 = d ** 3 * rc * F / (18 * muM * muM)
+      if (!(G2 > 0)) return 0
+      let lo = 0, hi = G2
+      for (let it = 0; it < 400 && hi - lo > 1e-15 * hi; it++) { const mid = 0.5 * (lo + hi); if (mid * fRe(mid) < G2) lo = mid; else hi = mid }
+      return 0.5 * (lo + hi) * muM / (d * rc)
+    }
+    const muStar = (MUO + 0.4 * MUW) / (MUO + MUW)
+    /** the drop's equilibrium slip through the water at α (u_d − u_c) */
+    const uSlip = (d, a0) => { const a = Math.min(0.99, a0), rm = (1 - a) * RW + a * RO, muM = MUW * (1 - a) ** (-2.5 * muStar); return Ueq(d, Math.abs(RO - rm) * G_STANDARD, RW, muM) }
+    const med = v => { const q = [...v].sort((x, y) => x - y); return q[Math.floor(q.length / 2)] }
+    const waterMedian = s8 => med(Array.from({ length: s8.n }, (_, i) => i).filter(i => s8.comp[i] === wId).map(i => s8.pos[3 * i + 1] * L))
+    const SLIP_DT = 0.5   // s: frames 240 → 270
+    /** One B1 run's creaming analysis. dFixed: the drift-off control's drop size (its sample has no drift state). */
+    const analyse = (s4, s45, s5, s8, dFixed) => {
+      const wMed = waterMedian(s8)
+      const cellOf = i => { const c = [0, 1, 2].map(a => Math.min(63, Math.max(0, Math.floor(s4.pos[3 * i + a] * L / DX)))); return c[0] + 64 * (c[1] + 64 * c[2]) }
+      const colOf = c => c % 64 + 64 * Math.floor(c / 4096)
+      const nAll = new Uint16Array(64 ** 3), nOil = new Uint16Array(64 ** 3), top = new Float64Array(64 * 64)
+      const wRise = new Float64Array(64 ** 3), nW = new Uint16Array(64 ** 3)
+      for (let i = 0; i < s4.n; i++) {
+        const c = cellOf(i); nAll[c]++; top[colOf(c)] = Math.max(top[colOf(c)], s4.pos[3 * i + 1] * L)
+        if (s4.comp[i] === oilId) nOil[c]++
+        else if (s4.comp[i] === wId) { wRise[c] += (s45.pos[3 * i + 1] - s4.pos[3 * i + 1]) * L; nW[c]++ }
+      }
+      const set = [], resolved = []
+      for (let i = 0; i < s4.n; i++) {
+        if (s4.comp[i] !== oilId) continue
+        const y = s4.pos[3 * i + 1] * L
+        if (!(y < wMed)) continue
+        const c = cellOf(i), a = nOil[c] / Math.max(1, nAll[c])
+        const d = dFixed ?? s4.drift[4 * i + 3]
+        if (dFixed !== undefined ? !(a < 0.5) : !(d > 0)) { resolved.push(i); continue }
+        set.push({ i, y, d, a, c, col: colOf(c) })
+      }
+      /** Kynch march over 4 s at the rate multiplier k: fraction of the set above the median at 8 s (reported). */
+      const march = k => {
+        const oilCell = Uint16Array.from(nOil), ys = set.map(r => r.y), cells = set.map(r => r.c)
+        for (let step = 0; step < 480; step++) {
+          const us = set.map((r, n) => { const a = oilCell[cells[n]] / Math.max(1, nAll[cells[n]]); return k * (1 - Math.min(0.99, a)) * uSlip(r.d, a) })
+          for (let n = 0; n < set.length; n++) {
+            const yNew = Math.min(top[set[n].col], ys[n] + us[n] / 120)
+            const cNew = cells[n] % 64 + 64 * Math.min(63, Math.floor(yNew / DX)) + 4096 * Math.floor(cells[n] / 4096)
+            if (cNew !== cells[n]) { oilCell[cells[n]]--; oilCell[cNew]++; cells[n] = cNew }
+            ys[n] = yNew
+          }
+        }
+        return ys.filter(y => y > wMed).length / set.length
+      }
+      const dilute = set.filter(r => r.a < 0.3 && nW[r.c] > 0)
+      const meanOf = f => dilute.length ? dilute.reduce((q, r) => q + f(r), 0) / dilute.length : NaN
+      const slip = meanOf(r => ((s45.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L - wRise[r.c] / nW[r.c]) / SLIP_DT)
+      const slipLaw = meanOf(r => uSlip(r.d, r.a))
+      return {
+        wMed, n: set.length, nDilute: dilute.length, slip, slipLaw, ratio: slip / slipLaw,
+        rise: meanOf(r => (s5.pos[3 * r.i + 1] - s4.pos[3 * r.i + 1]) * L), riseLaw: meanOf(r => (1 - r.a) * uSlip(r.d, r.a)),
+        floor: march(0.9), measured: set.filter(r => s8.pos[3 * r.i + 1] * L > wMed).length / set.length,
+        resolved: resolved.length, resolvedUp: resolved.filter(i => s8.pos[3 * i + 1] * L > wMed).length,
+        dMedian: set.length ? med(set.map(r => r.d)) : NaN, aMedian: set.length ? med(set.map(r => r.a)) : NaN,
+      }
+    }
+    const BAND = 0.1
+    const slipOk = r => r.nDilute > 0 && Math.abs(r.ratio - 1) <= BAND
+    const pct = v => (100 * v).toFixed(1), cms = v => (100 * v).toFixed(2)
+    if (!b4.drift) throw new Error('B1c: the page sample carries no drift state (is the immiscible drift active?)')
+    const scene = { name: 's31c-buoyancy', materials: [], spawns: [pool, oil, hg], gravity_mps2: G_STANDARD }
+    const runs = [analyse(b4, b45, b5, b, undefined)]
+    const nRuns = Number(process.env.B1C_RUNS ?? 3)
+    for (let k = 1; k < nRuns; k++) {
+      await loadScenario(page, scene, 2)
+      const r4 = await sampleAtFrame(page, 240), r45 = await sampleAtFrame(page, 270), r5 = await sampleAtFrame(page, 300), r8 = await sampleAtFrame(page, 480)
+      runs.push(analyse(r4, r45, r5, r8, undefined))
+    }
+    // the drift-off control
+    const dCtl = med(runs.map(r => r.dMedian))
+    await page.evaluate(() => window.__fluidBench.configure({ disableImmiscible: true }))
+    await loadScenario(page, scene, 2)
+    const c4 = await sampleAtFrame(page, 240), c45 = await sampleAtFrame(page, 270), c5 = await sampleAtFrame(page, 300), c8 = await sampleAtFrame(page, 480)
+    await page.evaluate(() => window.__fluidBench.configure({ disableImmiscible: false }))
+    if (c4.drift) throw new Error('B1c control: the drift is still on (the sample carries drift state)')
+    const ctl = analyse(c4, c45, c5, c8, dCtl)
+    report.creaming = { runs, control: ctl, dControl: dCtl, band: BAND }
+
+    const line = (tag, r) => `INFO B1c ${tag}: set ${r.n} (dilute ${r.nDilute}), median d ${(1e3 * r.dMedian).toFixed(2)} mm, median α ${r.aMedian.toFixed(2)}; slip through the water ${cms(r.slip)} cm/s vs U_eq ${cms(r.slipLaw)} cm/s (× ${r.ratio.toFixed(3)}); lab-frame rise 4→5 s ${cms(r.rise)} cm/s vs (1 − α)·U_eq ${cms(r.riseLaw)} cm/s; at 8 s ${pct(r.measured)} % above the water median (no-convection floor, hindered march ×0.9: ${pct(r.floor)} %); resolved oil below at 4 s ${r.resolved}, ${r.resolvedUp} above by 8 s`
+    runs.forEach((r, k) => console.log(line(`run ${k + 1}`, r)))
+    console.log(line(`control (drift off, d = ${(1e3 * dCtl).toFixed(2)} mm)`, ctl))
+    gate.check(runs.every(slipOk),
+      `B1c-slip (validated): the dilute drops' (α < 0.3) mean slip through the water that shared their cell, over 4 → 4.5 s, ÷ the drag law's mean U_eq(d, α) = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (1 ± ${BAND})`)
+    gate.check(ctl.nDilute > 0 && !slipOk(ctl),
+      `B1c-control: with the drift switched off the would-be-dispersed dilute oil (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
+    const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))
+    gate.check(runs.length >= 2 && spread <= 2 * BAND,
+      `B1c-spread: the slip ratio's run-to-run spread ${spread.toFixed(3)} over ${runs.length} identical runs ≤ the band's width ${(2 * BAND).toFixed(1)}`)
+    console.log(`OWNER NOTE B1c: this checks the one thing the drift model claims — how fast an oil drop slips up through the water right around it — against the drag law, with the stirring cancelled out; the drift-off run shows the check would catch a page whose drops stopped slipping. Where the oil ends up after 8 s is set by the blob's stirring (which moves oil even with the drift off), so it is reported, not judged.`)
+  }
 
   // B2: iron floats on mercury
   {

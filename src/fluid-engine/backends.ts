@@ -19,7 +19,9 @@ export type SolverKind = 'mpm' | 'flip'
 /** One particle to spawn, in world units; ρ is the material's density at its spawn temperature (kg/m³). */
 export interface SpawnParticle { pos: Vec3; vel: Vec3; compositionId: number; temperatureC: number; phase: number; rhoKgM3: number }
 
-export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array }
+/** `drift` (FLIP with the immiscible drift active): per particle the slip (m/s, xyz) and the drop diameter d (m, 0: not
+ *  dispersed) of the last substep — the gates' check of the page's creaming (s31c-page B1). */
+export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array }
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
@@ -192,6 +194,8 @@ export class FlipBackend implements SimBackend {
   private readonly compCount = new Float64Array(256)
   /** Why the drift is off with immiscible liquids in the tank (null: on, or nothing to separate). */
   private immReason: string | null = null
+  /** Bench negative control (s31c-page B1c): the drift is kept off whatever the tank holds. */
+  private immDisabled = false
   /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
   private ballLag: { center: Vec3; velocity: Vec3 } | null = null
   private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
@@ -274,6 +278,7 @@ export class FlipBackend implements SimBackend {
    *  per-cell slot properties arrive with HEAT-1, where every particle's ρ and μ vary. */
   private applyImmiscible() {
     const sim = this.sim, imm = sim.immiscibleSolver!
+    if (this.immDisabled) { this.immReason = 'disabled (bench negative control)'; sim.immiscibleActive = false; return }
     const byLiquid = new Map<LiquidKey, number[]>()
     for (let id = 0; id < 256; id++) {
       if (!(this.compCount[id] > 0)) continue
@@ -295,6 +300,7 @@ export class FlipBackend implements SimBackend {
     })
     sim.immiscibleActive = true
   }
+  setImmiscibleDisabled(v: boolean) { this.immDisabled = v; this.applyImmiscible() }
   setLiquidKeys(keys: readonly (LiquidKey | null)[]) {
     for (let id = 0; id < 256; id++) this.liquidOf[id] = keys[id] ?? null
     this.applyImmiscible()
@@ -409,7 +415,11 @@ export class FlipBackend implements SimBackend {
   async readParticleSample(): Promise<ParticleSample | null> {
     const n = this.sim.particleCount
     if (n === 0) return null
-    try { return decodeLegacy(await this.sim.readBuffer(this.sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n) } catch { return null }
+    try {
+      const s = decodeLegacy(await this.sim.readBuffer(this.sim.presentationBuffer, PRESENT_STRIDE_BYTES * n), n)
+      if (this.sim.immiscibleActive) s.drift = new Float32Array(await this.sim.readBuffer(this.sim.immiscibleSolver!.bufs.slipState, 16 * n))
+      return s
+    } catch { return null }
   }
   resetDiagnostics() { this.sim.resetDiagnostics(); this.sim.viscositySolver!.resetFaults(); this.cflExceeded = 0; this.substepsTotal = 0 }
   async readDiagnostics(): Promise<BackendDiagnostics | null> {

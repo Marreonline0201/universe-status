@@ -98,7 +98,7 @@ const u32 = b64 => { const b = Buffer.from(b64, 'base64'); return new Uint32Arra
 export async function sample(page, opts = {}) {
   const s = await page.evaluate(o => window.__fluidBench.sample(o), opts)
   if (!s) throw new Error('sample returned null')
-  return { frame: s.frame, n: s.n, pos: f32(s.pos), vel: f32(s.vel), comp: u32(s.comp), aff: s.aff ? f32(s.aff) : null, materials: s.materials }
+  return { frame: s.frame, n: s.n, pos: f32(s.pos), vel: f32(s.vel), comp: u32(s.comp), aff: s.aff ? f32(s.aff) : null, drift: s.drift ? f32(s.drift) : null, materials: s.materials }
 }
 
 /** Freeze, then load a scenario (seeded). */
