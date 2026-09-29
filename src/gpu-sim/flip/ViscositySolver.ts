@@ -178,6 +178,27 @@ export class ViscositySolver {
   /** μ (Pa·s) per composition id (the particles' aux.x). */
   setMuTable(mu: Float32Array) { this.device.queue.writeBuffer(this.bufs.muTable, 0, mu.buffer, mu.byteOffset, Math.min(mu.byteLength, 4 * 256)) }
 
+  /** The ViscParams uniform (walls, μ default) — StokesSolver binds it too. */
+  get paramsBuffer(): GPUBuffer { return this.vp }
+
+  /** The inputs the Stokes solve shares (S3.6e): band, the level-set lattice, volumes and μ — the encode()'s first stages.
+   *  The caller has formed the pressure labels (with the ball's images when the Stokes path runs). */
+  encodePrepare(encoder: GPUCommandEncoder) {
+    this.writeParams()
+    const I = this.inp, B = this.bufs
+    encoder.clearBuffer(B.latSums); encoder.clearBuffer(B.muAcc)
+    let pass = encoder.beginComputePass({ label: 'visc.lattice' })
+    this.dispatch(pass, 'bandCells', I.cells, 256)
+    this.dispatch(pass, 'bandDilate', I.cells, 256)
+    this.dispatch(pass, 'latScatter', I.maxParticles, 64)
+    pass.end()
+    pass = encoder.beginComputePass({ label: 'visc.volumes+mu' })
+    this.dispatch(pass, 'volumes', 6 * I.size + I.cells, 256)
+    this.dispatch(pass, 'muMinScatter', I.maxParticles, 64)
+    this.dispatch(pass, 'muScatter', I.maxParticles, 64)
+    pass.end()
+  }
+
   private writeParams() {
     const b = new ArrayBuffer(32), f = new Float32Array(b), u = new Uint32Array(b)
     f.set(this.walls, 0); f[3] = this.muDefault; f[4] = this.tol * this.tol; u[5] = this.nWg

@@ -75,6 +75,7 @@ import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { ViscositySolver } from './ViscositySolver'
+import { StokesSolver } from './StokesSolver'
 import { ImmiscibleSolver } from './ImmiscibleSolver'
 import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
 
@@ -243,6 +244,12 @@ export class FlipGpuSimulator {
   /** S3.6 implicit viscosity (created with `viscosity: true`); runs while viscosityActive. */
   viscositySolver: ViscositySolver | null = null
   viscosityActive = false
+  /** S3.6e the unified pressure–stress solve (created with the viscosity solver). Runs instead of project → viscosity →
+   *  project when the scheme is 'auto' and a monolithic ball is in a tank whose viscous path is on (stokesRuns) — the
+   *  measured rule (spec §5: it fixes the ball in a thick liquid; the split path is better for waves). */
+  stokesSolver: StokesSolver | null = null
+  viscosityScheme: 'split' | 'auto' = 'split'
+  get stokesRuns(): boolean { return !!this.stokesSolver && this.viscosityScheme === 'auto' && this.viscosityActive && this.sphereActive && this.sphereMono }
   readonly viscosityEnabled: boolean
   /** S3.5-i immiscible drift flux (created with `immiscible: true`, configured by the caller); runs while
    *  immiscibleActive. Setting it false clears the drift, so g2pMac advects with the grid velocity alone. */
@@ -464,6 +471,10 @@ export class FlipGpuSimulator {
         sphere: this.sphereBuf, coefRaw: this.faceCoefRawBuf!, u: uA, valid: vA, size: L.size, paddedCount: solver.paddedCount,
         cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles,
       })
+      this.stokesSolver = await StokesSolver.create({
+        device, params: this.paramsBuf, visc: this.viscositySolver, faceType: this.faceTypeBuf, faceSolid: this.faceSolidBuf,
+        sphere: this.sphereBuf, cellSolid: this.cellSolidBuf!, coefRaw: this.faceCoefRawBuf!, u: uA, valid: vA, size: L.size,
+      })
     }
     if (this.immiscibleEnabled) {
       const imm = await ImmiscibleSolver.create({
@@ -592,7 +603,7 @@ export class FlipGpuSimulator {
   encodeSubstepBody(encoder: GPUCommandEncoder): void {
     this.encodeScatter(encoder)
     this.encodeGridUpdate(encoder)
-    if (this.immActive) this.immiscibleSolver!.encodeSnapshot(encoder)
+    if (this.immActive && !this.stokesRuns) this.immiscibleSolver!.encodeSnapshot(encoder)
     if (this.projection) this.encodeProjection(encoder)
     this.encodeExtrapolate(encoder)
     if (this.immActive) this.immiscibleSolver!.encode(encoder, this.count)
@@ -617,6 +628,7 @@ export class FlipGpuSimulator {
 
   /** Voxel labels, divergence, pressure solve (warm-started), projection (S3.1b). */
   encodeProjection(encoder: GPUCommandEncoder): void {
+    if (this.stokesRuns) { this.encodeStokes(encoder); return }
     this.encodePressureLabels(encoder)
     this.encodeFillLiquidFaces(encoder)
     this.encodeDivergence(encoder)
@@ -636,6 +648,20 @@ export class FlipGpuSimulator {
       this.encodePressureSolve(encoder)
       this.encodeProject(encoder, true)
     }
+    if (this.immActive) this.encodeFaceAccel(encoder)
+  }
+
+  /** S3.6e (flipRef.step's Stokes branch): the level set with the ball's images, labels extended into the ball and the
+   *  unweighted a_f copy (encodePressureLabels), unset liquid faces filled, u* extrapolated onto every face the solve may
+   *  use, the viscous volumes and μ, then ONE pressure–stress solve that also moves the ball (V, F in the sphere buffer).
+   *  The drift's u* is that extrapolated field, as in the reference. */
+  encodeStokes(encoder: GPUCommandEncoder): void {
+    this.encodePressureLabels(encoder)
+    this.encodeFillLiquidFaces(encoder)
+    this.encodeExtrapolate(encoder)
+    if (this.immActive) this.immiscibleSolver!.encodeSnapshot(encoder)
+    this.viscositySolver!.encodePrepare(encoder)
+    this.stokesSolver!.encode(encoder)
     if (this.immActive) this.encodeFaceAccel(encoder)
   }
 
@@ -770,6 +796,13 @@ export class FlipGpuSimulator {
     this.lsImages = on
     this.device.queue.writeBuffer(this.sphereBuf, 4 * 13, new Float32Array([on ? 1 : 0]))
   }
+  /** The Stokes path's host state for this frame's substeps: the level set's ball images exactly while it runs (sphere
+   *  word 13 is read by every substep of the command buffer), and the ball as an unknown of the solve. */
+  syncStokes(): void {
+    const on = this.stokesRuns
+    if (on !== this.lsImages) this.sphereLevelSetImages = on
+    if (this.stokesSolver) this.stokesSolver.ball = on
+  }
   /** Switch a placed ball's coupling (tests settle a pool around a held ball, then release it monolithically). */
   setSphereCoupling(c: 'weak' | 'monolithic'): void { this.sphereMono = c === 'monolithic' }
   get sphereCoupling(): 'weak' | 'monolithic' { return this.sphereMono ? 'monolithic' : 'weak' }
@@ -840,6 +873,7 @@ export class FlipGpuSimulator {
   /** `substeps` full transfer substeps of `dt` s each, then the presentation copy. */
   step(encoder: GPUCommandEncoder, substeps = 1): void {
     this.writeParams()
+    this.syncStokes()
     for (let s = 0; s < substeps; s++) {
       this.encodeSphereStart(encoder)
       if (this.densityProjection) this.encodeDensityCorrection(encoder)
@@ -920,6 +954,7 @@ export class FlipGpuSimulator {
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
     this.solver?.destroy()
     this.viscositySolver?.destroy()
+    this.stokesSolver?.destroy()
     this.immiscibleSolver?.destroy()
     this.psiSolver?.destroy()
     for (const b of [this.vfracBuf, this.fCompBuf, this.dispBuf, this.lsCellBuf, this.lsFaceBuf, this.phiCellBuf, this.occBuf,
