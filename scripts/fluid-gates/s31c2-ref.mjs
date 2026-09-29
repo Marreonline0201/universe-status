@@ -23,6 +23,13 @@
 //    g(ρ_s − ρ_l)/(ρ_s + ½ρ_l) (sphere added mass ½ρV [S: Wikipedia "Added mass", citing Stokes 1851]); the first
 //    substep's acceleration (buoyancy only, g(ρ_s − ρ_l)/ρ_s) is reported — the explicit coupling feeds the added-mass
 //    reaction back one substep late, which converges for s ≥ 1 (the plan's restriction).
+// FS the page's case: an iron ball (ρ_s 7874 kg/m³, NIST SRD 126) released from rest 3·dx above the pool, falling
+//    through the free surface onto the floor, 2 s, advanceSphere (non-penetration walls) → step → integrateSphere.
+//    Criteria fixed before the first run: no particle inside the sphere after any substep; φ-volume within ±2 % of
+//    N·V_p at every 0.1 s (the violent-flow tolerance of V1 / G2 — an impact at ~1.8 m/s); every pressure solve
+//    converged (no cap hit); mechanical energy E_K + E_P of liquid and ball, minus the density projection's ΣΔE_P
+//    (S3.2 INV′), never above E(0) by more than 2 % of E(0) (S3.1b E1's bound); the ball ends resting on the floor
+//    (centre within 0.01·dx of y = R for the last 0.5 s).
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
@@ -33,6 +40,7 @@ let fails = 0
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) fails++ }
 const info = msg => console.log(`INFO ${msg}`)
 const opts = () => ({ gravity: [0, -G, 0], density: RHO, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5 })
+const RHO_IRON = mat.SOLID_REFERENCE.iron.solidDensityKgM3
 const t0 = Date.now()
 const NX = 16, NY = 28, NZ = 16, DEPTH = 18
 const C0 = [8.3 * DX, 9.4 * DX, 7.7 * DX]
@@ -90,18 +98,16 @@ const rms = p => { let v = 0; for (let i = 0; i < p.vel.length; i++) v += p.vel[
 {
   const { sim, p } = pool(C0, 13)
   for (let s = 0; s < 120; s++) sim.step(p, 1 / 120)                  // settle with the sphere held
-  const rhoS = 7850, vJ = jVolume(sim), M = rhoS * vJ, dt = 1 / 120
-  const V = [0, 0, 0], ts = [], vy = []
+  const rhoS = 7850, dt = 1 / 120
+  const ts = [], vy = []
   let a1 = NaN
   for (let s = 1; s * dt <= 0.2 + 1e-9; s++) {
-    for (let a = 0; a < 3; a++) sim.sphere.center[a] += dt * V[a]
-    sim.sphere.velocity = [...V]
+    sim.advanceSphere(dt)                          // Batty §3.2: the solid moves first (non-penetration at walls)
     sim.step(p, dt)
-    const F = sim.sphereForce
-    const acc = [F[0] / M, F[1] / M - G, F[2] / M]
-    if (s === 1) a1 = -acc[1]
-    for (let a = 0; a < 3; a++) V[a] += dt * acc[a]
-    ts.push(s * dt); vy.push(V[1])
+    const v0 = sim.sphere.velocity[1]
+    sim.integrateSphere(dt, rhoS)                  // V += Δt·(g + F/M), M = ρ_s·V_J
+    if (s === 1) a1 = -(sim.sphere.velocity[1] - v0) / dt
+    ts.push(s * dt); vy.push(sim.sphere.velocity[1])
   }
   const idx = ts.map((t, i) => i).filter(i => ts[i] >= 0.05)
   const tm = idx.reduce((q, i) => q + ts[i], 0) / idx.length, vm = idx.reduce((q, i) => q + vy[i], 0) / idx.length
@@ -109,6 +115,40 @@ const rms = p => { let v = 0; for (let i = 0; i < p.vel.length; i++) v += p.vel[
   for (const i of idx) { sxy += (ts[i] - tm) * (vy[i] - vm); sxx += (ts[i] - tm) ** 2 }
   const aMeas = -sxy / sxx, aTrue = G * (rhoS - RHO) / (rhoS + 0.5 * RHO), aBuoy = G * (rhoS - RHO) / rhoS
   check(Math.abs(aMeas / aTrue - 1) <= 0.05, `WK weak two-way, ρ_s 7850 kg/m³ from rest: mean acceleration on [0.05, 0.20] s ${aMeas.toFixed(3)} m/s² vs potential-flow g(ρ_s−ρ)/(ρ_s+½ρ) ${aTrue.toFixed(3)} (±5 %); first substep ${a1.toFixed(3)} (buoyancy only ${aBuoy.toFixed(3)})`)
+}
+
+// FS
+{
+  const c = [8.3 * DX, (DEPTH + 3) * DX + R, 7.7 * DX]
+  const L = new GridLayout({ nx: NX, ny: NY, nz: NZ, dx: DX })
+  const sim = new FlipRef(L, opts())
+  const { p } = fillMaterials(NX, DEPTH, NZ, DX, mulberry32(14), () => [RHO, 0])
+  sim.sphere = { center: [...c], radius: R, velocity: [0, 0, 0] }
+  sim.sphereFractions()
+  const mBall = RHO_IRON * jVolume(sim), dt = 1 / 120, nvp = p.n * VP
+  const energy = () => {
+    let e = mBall * (0.5 * (sim.sphere.velocity[0] ** 2 + sim.sphere.velocity[1] ** 2 + sim.sphere.velocity[2] ** 2) + G * sim.sphere.center[1])
+    for (let q = 0; q < p.n; q++) e += p.mass[q] * (0.5 * (p.vel[3 * q] ** 2 + p.vel[3 * q + 1] ** 2 + p.vel[3 * q + 2] ** 2) + G * p.pos[3 * q + 1])
+    return e
+  }
+  const E0 = energy()
+  let inside = 0, worstVol = 0, unconverged = 0, dEpDensity = 0, maxRise = -Infinity, tFloor = NaN, vMax = 0, restOk = true
+  for (let s = 1; s * dt <= 2 + 1e-9; s++) {
+    sim.advanceSphere(dt)
+    sim.step(p, dt)
+    sim.integrateSphere(dt, RHO_IRON)
+    if (sim.lastSolve && sim.lastSolve.capHit) unconverged++
+    if (sim.lastDensity) dEpDensity += sim.lastDensity.deltaPotential
+    for (let q = 0; q < p.n; q++) if (Math.hypot(p.pos[3 * q] - sim.sphere.center[0], p.pos[3 * q + 1] - sim.sphere.center[1], p.pos[3 * q + 2] - sim.sphere.center[2]) < R - 1e-12) inside++
+    if (s % 12 === 0) worstVol = Math.max(worstVol, Math.abs(sim.phiVolume() / nvp - 1))
+    maxRise = Math.max(maxRise, (energy() - dEpDensity - E0) / E0)
+    vMax = Math.max(vMax, Math.hypot(...sim.sphere.velocity))
+    const onFloor = sim.sphere.center[1] - R <= 0.01 * DX
+    if (onFloor && Number.isNaN(tFloor)) tFloor = s * dt
+    if (s * dt > 1.5 && !onFloor) restOk = false
+  }
+  check(inside === 0 && worstVol <= 0.02 && unconverged === 0 && maxRise <= 0.02 && restOk && !Number.isNaN(tFloor),
+    `FS iron ball (ρ_s ${RHO_IRON}) dropped 3·dx onto the pool, 2 s (${p.n} particles): particles inside after a substep ${inside} (0); max |φ-volume/N·V_p − 1| ${(100 * worstVol).toFixed(2)} % (≤ 2 %); unconverged solves ${unconverged} (0); energy (minus density ΣΔE_P) max rise ${(100 * maxRise).toFixed(3)} % of E(0) (≤ 2 %); on the floor from t = ${tFloor.toFixed(3)} s, resting for the last 0.5 s: ${restOk}; peak ball speed ${vMax.toFixed(2)} m/s; push-outs ${sim.spherePushOuts}`)
 }
 
 console.log(`\ns3.1c-2 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)

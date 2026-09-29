@@ -563,6 +563,9 @@ export interface SolidReference {
   liquidUnsourced: string | null
   source: string
   note: string
+  /** Solid density at room temperature, kg/m³, where sourced (the drop ball's material), and its source. */
+  solidDensityKgM3?: number
+  solidDensitySource?: string
 }
 export const SOLID_REFERENCE: Readonly<Record<SolidRefKey, SolidReference>> = {
   // NIST WebBook condensed-phase Shomate fits (Chase 1998, JANAF): solid 298–1073 K, liquid from 1074 K [P].
@@ -576,6 +579,10 @@ export const SOLID_REFERENCE: Readonly<Record<SolidRefKey, SolidReference>> = {
     key: 'iron', freezeC: 1809 - 273.15, liquidUnsourced: 'liquid Fe viscosity (Assael 2006) and density not retrieved [U]',
     source: 'https://webbook.nist.gov/cgi/cbook.cgi?ID=C7439896&Mask=2',
     note: 'Iron is a solid at 20 °C (melts at ≈ 1809 K per JANAF phase ranges).',
+    // NIST Standard Reference Database 126 (Hubbell & Seltzer), Table 1: Fe 7.874 g/cm³ (a nominal room-temperature value);
+    // PubChem element 26 (Jefferson Lab) gives the same 7.874 g/cm³. Fe expands ~1.2e-5 /K: < 0.02 % over 15–25 °C.
+    solidDensityKgM3: 7874,
+    solidDensitySource: 'NIST SRD 126 (Hubbell & Seltzer) Table 1, https://physics.nist.gov/PhysRefData/XrayMassCoef/tab1.html',
   },
   // Freezing point of copper = ITS-90 defining fixed point, T90 = 1357.77 K (1084.62 °C) (Preston-Thomas 1990, Metrologia 27:3,
   // Table 1; transcription [S] at its-90.com). (NIST WebBook's TRC "catalog nominal" 1357.95 K is not the fixed point.)

@@ -339,6 +339,40 @@ export class FlipRef {
     }
   }
 
+  /** The sphere's discrete volume V_J = Σ over y faces of S_f·dx³ (Batty 2007's J: the volume the pressure force acts
+   *  on — hydrostatics give F_y = ρ·g·V_J exactly), m³. From the last sphereFractions. */
+  sphereVolumeJ(): number {
+    let v = 0
+    for (const S of this.solidFraction[1]) v += S
+    return v * this.layout.dx ** 3
+  }
+
+  /** Move the sphere by Δt·V (Batty 2007 §3.2: the solid is advanced first, the fluid then sees it at its new place),
+   *  then non-penetration at the tank walls: the centre stays ≥ R from every wall and the velocity component into that
+   *  wall is removed — no restitution and no friction (FINAL-PLAN limitation 10: no contact model beyond the solve). */
+  advanceSphere(dt: number): void {
+    const S = this.sphere
+    if (!S) return
+    const ext = this.layout.extent
+    for (let a = 0; a < 3; a++) {
+      S.center[a] += dt * S.velocity[a]
+      if (S.center[a] < S.radius) { S.center[a] = S.radius; S.velocity[a] = Math.max(S.velocity[a], 0) }
+      if (S.center[a] > ext[a] - S.radius) { S.center[a] = ext[a] - S.radius; S.velocity[a] = Math.min(S.velocity[a], 0) }
+    }
+  }
+
+  /** Weak two-way coupling (FINAL-PLAN S3.1c, density ratio s ≥ 1): V += Δt·(g + F/M) with F the last projection's
+   *  pressure force (sphereForce) and M = ρ_s·V_J — the discrete volume the force acts on, so a neutral sphere
+   *  (s = 1) feels exactly zero net force at rest. The fluid's reaction to the sphere's acceleration (added mass)
+   *  arrives one substep late; the plan enables this only for s ≥ 1 because lighter solids make explicit coupling
+   *  unstable (Causin et al. 2005 [S]; this scheme's threshold is [UNVERIFIED]) — s31c2-ref WK measures it. */
+  integrateSphere(dt: number, densityKgM3: number): void {
+    const S = this.sphere
+    if (!S) return
+    const M = densityKgM3 * this.sphereVolumeJ()
+    for (let a = 0; a < 3; a++) S.velocity[a] += dt * (this.gravity[a] + this.sphereForce[a] / M)
+  }
+
   /** Push a particle that ended inside the sphere radially out to its surface (+ wallEps); returns true if it did. */
   private sphereCollide(p: RefParticles, q: number): boolean {
     const S = this.sphere

@@ -23,7 +23,8 @@ const { browser, page, errors, adapter } = await openFluidPage()
 report.adapter = adapter
 try {
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: 9.80665, forceSsfrFailure: false }))
-  const scenario = JSON.parse(fs.readFileSync(path.join(repoRoot, 'company/lab/survey-05-scaling-100k/scenario.json'), 'utf8'))
+  // a verbatim copy of the office lab scenario (company/ is untracked, so the clean gate tree does not have it)
+  const scenario = JSON.parse(fs.readFileSync(path.join(repoRoot, 'scripts/fluid-gates/data/scenarios/survey-05-scaling-100k.json'), 'utf8'))
   await loadScenario(page, scenario, 51)
   await page.evaluate(() => window.__fluidBench.setStepLimit(Infinity))
   await waitStepped(page, 30)

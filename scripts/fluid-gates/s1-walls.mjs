@@ -102,7 +102,8 @@ try {
   gate.check(Number.isInteger(d0.clampHits) && d0.clampHits > 0, `W0 positive control (20 m/s into a wall): ${d0.clampHits} clamp hits (> 0 proves the counter is alive)`)
 
   // W1–W3: 60 s dam break
-  const scenario = JSON.parse(fs.readFileSync(path.join(repoRoot, 'company/lab/survey-01-dam-break/scenario.json'), 'utf8'))
+  // a verbatim copy of the office lab scenario (company/ is untracked, so the clean gate tree does not have it)
+  const scenario = JSON.parse(fs.readFileSync(path.join(repoRoot, 'scripts/fluid-gates/data/scenarios/survey-01-dam-break.json'), 'utf8'))
   await loadScenario(page, scenario, 41)
   await bench(() => window.__fluidBench.configure({ resetDiagnostics: true }))
   const frames = []

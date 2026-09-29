@@ -70,7 +70,8 @@ try {
   gate.check(v0.maxMs === 0, `P1 kinetic energy at spawn: max speed ${v0.maxMs} m/s (must be exactly 0)`)
 
   // P2
-  const legacy = JSON.parse(fs.readFileSync(path.join(repoRoot, 'company/lab/survey-01-dam-break/scenario.json'), 'utf8'))
+  // a verbatim copy of the office lab scenario (company/ is untracked, so the clean gate tree does not have it)
+  const legacy = JSON.parse(fs.readFileSync(path.join(repoRoot, 'scripts/fluid-gates/data/scenarios/survey-01-dam-break.json'), 'utf8'))
   await loadScenario(page, legacy, 22)
   const s2 = await sampleAtFrame(page, 0)
   const p2 = packing(s2)

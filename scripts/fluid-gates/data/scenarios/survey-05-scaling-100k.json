@@ -1,0 +1,10 @@
+{
+  "name": "survey-05-scaling-100k",
+  "materials": [
+    { "name": "water", "formula": "H2O", "elements": { "H": 0.111, "O": 0.889 }, "temperature": 20 }
+  ],
+  "spawns": [
+    { "material": "water", "count": 100000, "center": [0.22, 0.4, 0.5], "spread": 0.18 }
+  ],
+  "gravity": 0.3
+}
