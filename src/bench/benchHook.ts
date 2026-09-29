@@ -76,6 +76,8 @@ export interface BenchTarget {
   resizeTank?(cells: [number, number, number], shiftM?: [number, number, number]): Promise<unknown>
   /** Screen position (client px) of a tank drag handle: kind and its sides [[axis, ±1], …] (tests drive the real pointer). */
   tankHandle?(kind: 'face' | 'edge' | 'corner', sides: [number, number][]): { x: number; y: number } | null
+  /** The camera as raw matrices (column-major) and the view's client rect: a test builds pointer rays with its own code. */
+  view?(): { matrixWorld: number[]; projectionMatrixInverse: number[]; rect: { left: number; top: number; width: number; height: number } } | null
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -112,6 +114,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     tankHandle(kind: 'face' | 'edge' | 'corner', sides: [number, number][]) {
       if (!target.tankHandle) throw new Error(`${meta.page} has no tank handles`)
       return target.tankHandle(kind, sides)
+    },
+
+    view() {
+      if (!target.view) throw new Error(`${meta.page} has no 3D view`)
+      return target.view()
     },
 
     resizeTank(cells: [number, number, number], shiftM?: [number, number, number]) {

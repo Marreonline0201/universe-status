@@ -909,6 +909,12 @@ export class FluidEngine {
       count: () => this.particleCount,
       resizeTank: (cells, shiftM) => this.resizeTank(cells, shiftM),
       tankHandle: (kind, sides) => this.tankHandles?.screenOf(kind, sides) ?? null,
+      view: () => {
+        if (!this.camera) return null
+        this.camera.updateMatrixWorld()
+        const r = this.container.getBoundingClientRect()
+        return { matrixWorld: [...this.camera.matrixWorld.elements], projectionMatrixInverse: [...this.camera.projectionMatrixInverse.elements], rect: { left: r.left, top: r.top, width: r.width, height: r.height } }
+      },
       configure: (opts) => {
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
