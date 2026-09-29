@@ -9,7 +9,8 @@
 // ghost face (index −1 or n on an axis b ≠ a) is VP.walls[b]·(the face across that wall): −1 no-slip, +1 free-slip.
 // Volumes: liquid fraction of each sample's dx³ cube from 2×2×2 subsamples of the Zhu–Bridson φ on the quarter lattice
 // ((2a + 1)/4·dx per axis — every family's subsamples lie on it), clamp(½ − φ/(dx/2), 0, 1), φ mirrored into the walls;
-// only samples overlapping a surface-band cell are subsampled (1 inside the liquid, 0 outside otherwise).
+// only samples overlapping a surface-band cell are subsampled (1 inside the liquid, 0 outside otherwise); an edge on a
+// wall plane keeps the in-tank half of its volume.
 // One module, many entry points (ViscositySolver.ts); common.wgsl is prepended. Every entry binds ≤ 8 storage buffers.
 
 struct ViscParams {
@@ -213,7 +214,13 @@ fn volumes(@builtin(global_invocation_id) gid: vec3<u32>) {
     var o = vec3<f32>(0.0);
     o[e] = 0.5;
     var v = 0.0;
-    if (all(c >= vec3<i32>(0)) && all(c < ext)) { v = volumeAt(o, c); }
+    if (all(c >= vec3<i32>(0)) && all(c < ext)) {
+      v = volumeAt(o, c);
+      // an edge on a wall plane keeps its in-tank half (a quarter on a corner): the strain reads the wall's ghost face,
+      // so the full mirrored volume would count the ghost's share twice and put the no-slip wall dx/4 inside the
+      // liquid (flipRef.viscousVolumes)
+      for (var b = 0u; b < 3u; b++) { if (b != e && (c[b] == 0 || c[b] == P.n[b])) { v *= 0.5; } }
+    }
     volEdge[gridBase(e) + slotOf(c)] = v;
   } else if (t < 6u * P.size + cells) {
     let u = t - 6u * P.size;

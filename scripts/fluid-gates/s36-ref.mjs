@@ -3,6 +3,9 @@
 // Spec (criteria fixed before the first run): vault fluid/realism-2026-09/S3.6-viscosity-spec.md.
 //
 //   node scripts/fluid-gates/s36-ref.mjs [a|c|f|b|d]...   (default: all)
+//   S36_SCHEME=stokes …   the same setups and criteria on S3.6e's unified pressure–stress solve (Larionov et al. 2017;
+//                         its tolerance = the case's pressure tolerance, ‖r‖∞ in 1/s). Under it, f is D1-S (water wave:
+//                         the Stokes path vs the ghost-fluid projection) and b is E2 on the Stokes path.
 //
 // S3.6a viscous decay of the 2D Taylor–Green mode u = A sin(kx)cos(ky), v = −A cos(kx)sin(ky), k = π/L, filling a closed
 //       box with free-slip walls in the viscous solve (the exact mirror of the periodic mode FINAL-PLAN names; an exact
@@ -22,6 +25,10 @@ const DX = 3.63 / 64
 let fails = 0
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) fails++ }
 const info = msg => console.log(`INFO ${msg}`)
+const SCHEME = process.env.S36_SCHEME ?? 'split'
+if (SCHEME !== 'split' && SCHEME !== 'stokes') throw new Error(`S36_SCHEME must be split or stokes, not ${SCHEME}`)
+/** The viscous solve's report on either scheme: iterations and the residual (split: ‖r‖₂/‖b‖₂; stokes: ‖b − Ay‖∞, 1/s). */
+const vstats = sim => (sim.lastStokes ? { iterations: sim.lastStokes.iterations, relResidual: sim.lastStokes.trueResidualInf, muFallbacks: sim.lastStokes.muFallbacks } : sim.lastViscosity)
 const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(['a', 'c', 'f', 'b', 'd'])
 const t0 = Date.now()
 function mulberry32(seed) {
@@ -52,7 +59,7 @@ const LAVA = { name: 'lava 1200 °C (GRD)', mu: 10 ** (-4.55 + 5963 / (1200 + 27
 function taylorGreen(cells, m, viscosity) {
   const L = new GridLayout({ nx: cells, ny: cells, nz: 4, dx: DX })
   const sim = new FlipRef(L, { gravity: [0, 0, 0], density: m.rho, projection: true, densityProjection: true, freeSurface: 'ghost',
-    pressureTolerance: 1e-9, psiTolerance: 1e-9, viscosity: viscosity ? 'force' : 'off', viscousWalls: 'free-slip', viscosityDefault: m.mu })
+    pressureTolerance: 1e-9, psiTolerance: 1e-9, viscosity: viscosity ? 'force' : 'off', viscousWalls: 'free-slip', viscosityDefault: m.mu, viscosityScheme: SCHEME, stokesTolerance: 1e-9 })
   const p = fillBox(L, m.rho, m.mu, mulberry32(60 + cells))
   const k = Math.PI / (cells * DX), A0 = 0.05
   const shape = (x, y) => [Math.sin(k * x) * Math.cos(k * y), -Math.cos(k * x) * Math.sin(k * y)]
@@ -74,7 +81,7 @@ function taylorGreen(cells, m, viscosity) {
   const dt = 1 / 120, ts = [], ys = []
   const nu = m.mu / m.rho, T = Math.min(0.5, 1.5 / (2 * nu * k * k))   // ≤ 1.5 e-folds of the physical decay
   let last = null
-  for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); ys.push(Math.log(Math.abs(amp()) / A0)); last = sim.lastViscosity }
+  for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); ys.push(Math.log(Math.abs(amp()) / A0)); last = vstats(sim) }
   return { nuEff: -slope(ts, ys) / (2 * k * k), k, T, steps: ts.length, visc: last }
 }
 if (want.has('a')) {
@@ -95,12 +102,13 @@ if (want.has('a')) {
 // (arithmetic or harmonic) that passes all four cases ships as the default; both are reported.
 function couette(mean, contrast, yi) {
   const L = new GridLayout({ nx: 4, ny: 16, nz: 4, dx: DX }), U = 0.1, mu1 = 1, mu2 = contrast
-  const sim = new FlipRef(L, { gravity: [0, 0, 0], density: 1000, projection: true, freeSurface: 'ghost', viscosity: 'force', viscosityMean: mean,
+  const sim = new FlipRef(L, { gravity: [0, 0, 0], density: 1000, projection: true, freeSurface: 'ghost', viscosity: 'force', viscosityMean: mean, viscosityScheme: SCHEME, stokesTolerance: 1e-9,
     viscousTestBC: { periodicX: true, walls: { 'y-': { slip: 'no-slip' }, 'y+': { slip: 'no-slip', velocity: [U, 0, 0] }, 'z-': { slip: 'free-slip' }, 'z+': { slip: 'free-slip' } } } })
   const p = fillBox(L, 1000, mu1, mulberry32(70))
   for (let q = 0; q < p.n; q++) if (p.pos[3 * q + 1] >= yi) p.mu[q] = mu2
   sim.p2g(p); sim.gridUpdate(1 / 120); sim.applySolidFaces(); sim.classifyLevelSet(p)
-  const st = sim.viscositySolve(p, 1e6)
+  if (SCHEME === 'stokes') sim.stokesSolve(p, 1e6); else sim.viscositySolve(p, 1e6)
+  const st = vstats(sim)
   const prof = []
   for (let j = 0; j < L.ny; j++) {
     let s = 0
@@ -137,7 +145,7 @@ function standingWave(cellsPerH, m, viscosity, walls, periods = 4) {
   const nx = Math.round(Lphys / h), nh = cellsPerH
   const L = new GridLayout({ nx, ny: 2 * Math.ceil(1.5 * nh / 2), nz: 8, dx: h })
   const sim = new FlipRef(L, { gravity: [0, -G, 0], density: m.rho, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5,
-    viscosity, viscousWalls: walls, viscosityDefault: m.mu })
+    viscosity, viscousWalls: walls, viscosityDefault: m.mu, viscosityScheme: SCHEME, stokesTolerance: 1e-6 })
   const pts = [], rng = mulberry32(50 + cellsPerH)
   for (let k = 0; k < 8; k++) for (let j = 0; j < nh; j++) for (let i = 0; i < nx; i++)
     for (let s = 0; s < 8; s++) pts.push([(i + ((s & 1) + rng()) / 2) * h, (j + (((s >> 1) & 1) + rng()) / 2) * h, (k + (((s >> 2) & 1) + rng()) / 2) * h])
@@ -156,7 +164,7 @@ function standingWave(cellsPerH, m, viscosity, walls, periods = 4) {
   const dt = (1 / 120) * (h / DX), T = periods * Math.PI / omega
   const ts = [0], es = [kineticEnergy(p)]
   let visc = null
-  for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); es.push(kineticEnergy(p)); if (sim.lastViscosity) visc = sim.lastViscosity }
+  for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); es.push(kineticEnergy(p)); if (vstats(sim)) visc = vstats(sim) }
   return { ts, es, omega, k, H: Hphys, particles: p.n, visc }
 }
 
@@ -238,7 +246,7 @@ if (want.has('b')) {
 if (want.has('d')) {
   const L = new GridLayout({ nx: 64, ny: 24, nz: 8, dx: DX })
   const sim = new FlipRef(L, { gravity: [0, -G, 0], density: LAVA.rho, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5,
-    viscosity: 'force', viscosityDefault: LAVA.mu, viscousTestBC: { walls: { 'z-': { slip: 'free-slip' }, 'z+': { slip: 'free-slip' } } } })
+    viscosity: 'force', viscosityDefault: LAVA.mu, viscosityScheme: SCHEME, stokesTolerance: 1e-6, viscousTestBC: { walls: { 'z-': { slip: 'free-slip' }, 'z+': { slip: 'free-slip' } } } })
   const pts = [], rng = mulberry32(80)
   for (let k = 0; k < 8; k++) for (let j = 0; j < 17; j++) for (let i = 0; i < 9; i++)
     for (let s = 0; s < 8; s++) pts.push([(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX])
@@ -264,7 +272,7 @@ if (want.has('d')) {
   const expo = slope(late.map(i => Math.log(ts[i])), late.map(i => Math.log(xs[i])))
   const ratios = [2, 5, 10].map(T => at[T] / pred(T))
   check(Math.abs(expo - 0.2) <= 0.02 && ratios.every(r => Math.abs(r - 1) <= 0.10),
-    `S3.6d Huppert viscous gravity current, lava 1200 °C (A = ${A.toFixed(3)} m², ν ${nu.toExponential(3)} m²/s, no-slip floor): late exponent ${expo.toFixed(3)} (0.20 ± 0.02); x_N at 2 / 5 / 10 s = ${[2, 5, 10].map(T => at[T].toFixed(2)).join(' / ')} m vs ${[2, 5, 10].map(T => pred(T).toFixed(2)).join(' / ')} (ratios ${ratios.map(r => r.toFixed(3)).join(' / ')}, ±10 %); PCG ${sim.lastViscosity?.iterations} it`)
+    `S3.6d Huppert viscous gravity current, lava 1200 °C (A = ${A.toFixed(3)} m², ν ${nu.toExponential(3)} m²/s, no-slip floor): late exponent ${expo.toFixed(3)} (0.20 ± 0.02); x_N at 2 / 5 / 10 s = ${[2, 5, 10].map(T => at[T].toFixed(2)).join(' / ')} m vs ${[2, 5, 10].map(T => pred(T).toFixed(2)).join(' / ')} (ratios ${ratios.map(r => r.toFixed(3)).join(' / ')}, ±10 %); PCG ${vstats(sim)?.iterations} it`)
 }
 
 console.log(`\ns3.6 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
