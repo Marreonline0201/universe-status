@@ -971,6 +971,8 @@ export class FluidEngine {
         width: w, height: h, frames, count: sim.particleCount, coverage, splatShape: o.splatShape ?? null,
         gpuMedianMs: median(ns) / 1e6, gpuP95Ms: quantile(ns, 0.95) / 1e6, gpuMeanMs: mean(ns) / 1e6, wallMedianMs: median(wall),
         invalidTimestamps: timingInvalid(ns),
+        // the per-frame series, in submission order (a drift within one call shows here, not in the median)
+        gpuFrameMs: Array.from(ns, v => v / 1e6),
       }
     } finally {
       if (scoped) await device.popErrorScope()

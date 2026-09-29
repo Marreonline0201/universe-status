@@ -80,6 +80,14 @@ export function makeParticles(n: number): RefParticles {
 export interface FlipRefOptions {
   /** Gravitational acceleration in window axes, m/s² (default: none). */
   gravity?: Vec3
+  /** A dam-break GATE (S3.4 A2, vault research/x11-dam-break-release.md): a thin plate on the x-face plane i·dx, lifted
+   *  from the floor at `speed` m/s from t = 0 — Lobovský et al. 2014 measure their gate and set time zero at its first
+   *  motion. The x-faces of that plane whose centre lies above the plate's lower edge are walls (FaceType.SOLID: zero
+   *  normal velocity, no pressure coupling — the static walls' treatment everywhere), so the opening advances one cell
+   *  height at a time (≤ ½·dx/speed of lag, ≈ 5.5 ms at 5 cm and 4.53 m/s); particles above the edge cannot cross it
+   *  (advection, its RK2 midpoint and the density correction all clamp, as the window walls do). A thin plate moving
+   *  in its own plane: its motion is tangential, so u·n = 0 is exact for it in this inviscid solve. */
+  gate?: { i: number; speed: number }
   /** false = PIC transfers (c ignored in P2G, c := 0 in G2P). Exists ONLY as the gates' positive control. */
   apic?: boolean
   /** Extrapolation layers (FINAL-PLAN §5.2 step 11: 2). */
@@ -235,6 +243,9 @@ export interface RefDiagnostics {
   /** Ghost mode: particle-holding cells with φ ≥ 0 relabelled LIQUID because φ does not resolve their interface (no
    *  φ < 0 face-neighbour, or no empty one), summed over classifyLevelSet calls. */
   enclosedRelabels: number
+  /** Particle moves held on their side of the dam-break gate's plane (options.gate): advection, its RK2 midpoint and
+   *  the density correction. */
+  gateClamps: number
 }
 
 /** Positions are kept this fraction of a cell inside the window (a particle exactly on the far wall would put its
@@ -253,7 +264,7 @@ export class FlipRef {
   readonly u: [Float64Array, Float64Array, Float64Array]
   /** 1 where u holds a velocity (fluid face with mass, extrapolated face, or solid face). */
   readonly valid: [Uint8Array, Uint8Array, Uint8Array]
-  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0, densityNeighbourFaces: 0, densityDefaultFaces: 0, enclosedRelabels: 0 }
+  readonly diag: RefDiagnostics = { wallClamps: 0, unsetFaceReads: 0, unsetDivergenceFaces: 0, densityClamps: 0, densityNeighbourFaces: 0, densityDefaultFaces: 0, enclosedRelabels: 0, gateClamps: 0 }
   /** Σw per face (the trilinear weights of the particles scattered to it) and the face density ρ_f (kg/m³). */
   readonly weight: [Float64Array, Float64Array, Float64Array]
   readonly rhoFace: [Float64Array, Float64Array, Float64Array]
@@ -322,6 +333,12 @@ export class FlipRef {
   lastSolve: SolveStats | null = null
   /** The drop ball for the next substep (null: none). The caller moves it; the solver only sees its state. */
   sphere: RefSphere | null = null
+  /** The dam-break gate (options.gate) and the simulated time its lift follows, s. */
+  readonly gate: { i: number; speed: number } | null
+  time = 0
+  private gateBaseType: Uint32Array | null = null
+  /** This step's gate edge (m): the faces above it are SOLID, and particles above it keep their side of the plane. */
+  private gateY = Infinity
   sphereCoupling: 'weak' | 'monolithic'
   sphereDensity: number
   readonly immiscible: ImmiscibleOptions | null
@@ -354,6 +371,12 @@ export class FlipRef {
     this.extrapolationLayers = opts.extrapolationLayers ?? 2
     const f64 = () => [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)] as [Float64Array, Float64Array, Float64Array]
     this.faceType = [layout.defaultFaceTypes(0), layout.defaultFaceTypes(1), layout.defaultFaceTypes(2)]
+    this.gate = opts.gate ?? null
+    if (this.gate) {
+      if (!(this.gate.i > 0 && this.gate.i < layout.nx && Number.isInteger(this.gate.i))) throw new Error(`FlipRef: gate face ${this.gate.i} is not an interior x-face plane`)
+      if (!(this.gate.speed > 0)) throw new Error('FlipRef: gate speed must be > 0')
+      this.gateBaseType = Uint32Array.from(this.faceType[0])
+    }
     this.mass = f64()
     this.mom = f64()
     this.weight = f64()
@@ -413,7 +436,33 @@ export class FlipRef {
   }
 
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
+  /** The gate's lower edge at time t (m above the floor). */
+  gateEdge(t: number): number { return this.gate ? this.gate.speed * t : Infinity }
+  /** The gate's faces for this step: SOLID where the face centre is above the edge at mid-step, the plane's own type
+   *  (open) below it. */
+  private applyGate(dt: number): void {
+    if (!this.gate) return
+    if (this.sphere) throw new Error('FlipRef: a gate with a ball is not supported (the ball owns the solid fractions)')
+    const L = this.layout, h = L.dx, yEdge = this.gateEdge(this.time + 0.5 * dt), t = this.faceType[0], base = this.gateBaseType!
+    this.gateY = yEdge
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) {
+      const s = L.idx(this.gate.i, j, k)
+      t[s] = (j + 0.5) * h > yEdge ? FaceType.SOLID : base[s]
+    }
+  }
+  /** The gate's particle-level wall — the SOLID gate faces' counterpart, as the window clamps are the walls': a particle
+   *  moved from x0 to (x1, y1) with y1 above this step's edge stays on its own side of the plane. Returns x1 or the
+   *  clamped x (counted in diag.gateClamps). */
+  private gateClampX(x0: number, x1: number, y1: number): number {
+    if (!this.gate || !(y1 > this.gateY)) return x1
+    const xg = this.gate.i * this.layout.dx, eps = WALL_EPS_CELLS * this.layout.dx
+    if (x0 < xg && x1 > xg - eps) { this.diag.gateClamps++; return xg - eps }
+    if (x0 > xg && x1 < xg + eps) { this.diag.gateClamps++; return xg + eps }
+    return x1
+  }
+
   step(p: RefParticles, dt: number): void {
+    this.applyGate(dt)
     this.sphereFractions()
     // S3.7 (Batty et al. 2007 §3.2): body forces on every velocity before the pressure solve — V* = Vⁿ + Δt·g
     if (this.monolithic()) for (let a = 0; a < 3; a++) this.sphere!.velocity[a] += dt * this.gravity[a]
@@ -463,6 +512,7 @@ export class FlipRef {
     this.g2p(p)
     if (this.immiscible) this.driftFlux(p, dt)
     this.advect(p, dt)
+    this.time += dt
   }
 
   /** a = g − Du/Dt on the faces, the drift flux's forcing (MTK (58)), taken after the final projection and before the
@@ -1671,8 +1721,10 @@ export class FlipRef {
         dxs[a] = v
       }
       const nx = x + dxs[0], ny = y + dxs[1], nz = z + dxs[2]
-      const cx = clampIn(nx, eps, ext[0] - eps), cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
+      const cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
+      let cx = clampIn(nx, eps, ext[0] - eps)
       if (cx !== nx || cy !== ny || cz !== nz) this.diag.densityClamps++
+      cx = this.gateClampX(x, cx, cy)
       dEp -= p.mass[q] * (this.gravity[0] * (cx - x) + this.gravity[1] * (cy - y) + this.gravity[2] * (cz - z))
       maxMove = Math.max(maxMove, Math.hypot(cx - x, cy - y, cz - z))
       p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
@@ -1896,16 +1948,18 @@ export class FlipRef {
     for (let q = 0; q < p.n; q++) {
       const x = p.pos[3 * q], y = p.pos[3 * q + 1], z = p.pos[3 * q + 2]
       const v1x = this.sample(0, x, y, z, null), v1y = this.sample(1, x, y, z, null), v1z = this.sample(2, x, y, z, null)
-      const mx = clampIn(x + 0.5 * dt * v1x, eps, ext[0] - eps)
       const my = clampIn(y + 0.5 * dt * v1y, eps, ext[1] - eps)
       const mz = clampIn(z + 0.5 * dt * v1z, eps, ext[2] - eps)
+      const mx = this.gateClampX(x, clampIn(x + 0.5 * dt * v1x, eps, ext[0] - eps), my)
       // immiscibility: the drift velocity u_V (driftFlux), constant over the step, moves the particle relative to the grid
       const dr = this.immiscible && this.drift.length === 3 * p.n
       const nx = x + dt * (this.sample(0, mx, my, mz, null) + (dr ? this.drift[3 * q] : 0))
       const ny = y + dt * (this.sample(1, mx, my, mz, null) + (dr ? this.drift[3 * q + 1] : 0))
       const nz = z + dt * (this.sample(2, mx, my, mz, null) + (dr ? this.drift[3 * q + 2] : 0))
-      const cx = clampIn(nx, eps, ext[0] - eps), cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
+      const cy = clampIn(ny, eps, ext[1] - eps), cz = clampIn(nz, eps, ext[2] - eps)
+      let cx = clampIn(nx, eps, ext[0] - eps)
       if (cx !== nx || cy !== ny || cz !== nz) this.diag.wallClamps++
+      cx = this.gateClampX(x, cx, cy)
       p.pos[3 * q] = cx; p.pos[3 * q + 1] = cy; p.pos[3 * q + 2] = cz
       if (this.sphereCollide(p, q)) this.spherePushOuts++
     }

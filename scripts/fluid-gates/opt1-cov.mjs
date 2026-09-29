@@ -32,9 +32,24 @@
 // order, so a drift or a burst does not hit the same configuration twice) and a third time if they differ by more than
 // 15 %; a configuration counts only when two of its measurements agree within 15 %, and the lower of that pair is
 // reported (contention can only add time). Check: no configuration left without an agreeing pair.
+// Protocol revision 3 (2026-09-29 evening, after the clean-tree run on e968fa46, before its re-run): that run failed
+// the start/end check (the end re-measure 2.488 ms vs the reported 1.890 ms, × 1.316) with nothing changed between
+// start and end: the laptop was on BATTERY (unplugged at 16:47; power scheme "Silent"), where the GPU sits in P4 and its
+// clock hops between states within seconds (nvidia-smi: 720–1987 MHz over 3 s). The first 120-frame call after a fresh
+// pool read 2.48–2.52 ms in 7 of 8 such calls at the default warm-up — a plateau of ~90 frames that fell to 1.9 ms when
+// the clock returned from 847 to 1860 MHz; the 8th (1.92 ms) fell in a high-clock window. On AC (scheme "Turbo", P2,
+// ~2175 MHz) the same per-frame test read a flat 1.74–1.75 ms in every call, fresh or warm (scratch opt1_frames*.txt,
+// smi_clocks*.csv). Two fixes, neither widening ±20 %:
+// (a) power: a timing run is valid only on AC, checked at the start and at the end (scripts/lib/power.mjs; the power
+//     scheme recorded) — Gate 0's own protocol already requires AC;
+// (b) the end re-measure uses the SAME estimator as every configuration (two measurements, a third if they differ by
+//     more than 15 %, the lower of the agreeing pair): revision 2 made the reference value that estimator but left the
+//     re-measure a single call, so one clock dip on that call failed the check (the pass-A first call read 2.49 too —
+//     the same dip). A persistent change still fails it: both end measurements would carry it and agree.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
+import { powerState, describePower } from '../lib/power.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('OPT-1-cov (SSFR render cost against screen coverage)')
@@ -57,8 +72,27 @@ function interp(points, c, key) {
   return null
 }
 
+// symmetric: |ln(a/b)| ≤ ln 1.15 (a ratio test |a/b − 1| ≤ 0.15 allows 15 % one way and 17.6 % the other)
+const agree = (a, b) => Math.abs(Math.log(a.gpuMedianMs / b.gpuMedianMs)) <= Math.log(1.15)
+/** Revision 2's estimator: the lower measurement of the lowest agreeing pair, or null when no pair agrees. */
+function agreedLow(m) {
+  let best = null
+  for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
+    if (!agree(m[i], m[j])) continue
+    const lo = m[i].gpuMedianMs <= m[j].gpuMedianMs ? m[i] : m[j]
+    if (!best || lo.gpuMedianMs < best.gpuMedianMs) best = lo
+  }
+  return best
+}
+
+report.power = { start: powerState() }
+console.log(`power at the start: ${describePower(report.power.start)}`)
 const { browser, page, errors, adapter } = await openFluidPage(undefined, { timing: true, gpuTimestamps: true })
 report.adapter = adapter
+const timeOpts = async opts => {
+  const r = await page.evaluate(o => window.__fluidBench.renderTiming(o), opts)
+  return { coverage: r.coverage, gpuMedianMs: r.gpuMedianMs, gpuP95Ms: r.gpuP95Ms, gpuMeanMs: r.gpuMeanMs, wallMedianMs: r.wallMedianMs, invalid: r.invalidTimestamps, count: r.count }
+}
 try {
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
   let first = null
@@ -82,24 +116,14 @@ try {
     ]
     const scene = { cells: sc.cells, particles: n, depthM: Hm, rows: [] }
     const configs = ['aniso', 'sphere'].flatMap(shape => cams.map(c => ({ shape, view: c.name, opts: { width: W, height: H, splatShape: shape, frames: FRAMES, ...(c.camera ? { camera: c.camera } : {}) } })))
-    const time = async cfg => {
-      const r = await page.evaluate(o => window.__fluidBench.renderTiming(o), cfg.opts)
-      return { coverage: r.coverage, gpuMedianMs: r.gpuMedianMs, gpuP95Ms: r.gpuP95Ms, gpuMeanMs: r.gpuMeanMs, wallMedianMs: r.wallMedianMs, invalid: r.invalidTimestamps, count: r.count }
-    }
+    const time = cfg => timeOpts(cfg.opts)
     const runs = new Map(configs.map(c => [c, []]))
     for (const c of configs) runs.get(c).push(await time(c))                  // pass A
     for (const c of [...configs].reverse()) runs.get(c).push(await time(c))   // pass B, reversed
-    // symmetric: |ln(a/b)| ≤ ln 1.15 (a ratio test |a/b − 1| ≤ 0.15 allows 15 % one way and 17.6 % the other)
-    const agree = (a, b) => Math.abs(Math.log(a.gpuMedianMs / b.gpuMedianMs)) <= Math.log(1.15)
     for (const c of configs) {
       const m = runs.get(c)
       if (!agree(m[0], m[1])) m.push(await time(c))                          // a third measurement when A and B differ
-      let best = null
-      for (let i = 0; i < m.length; i++) for (let j = i + 1; j < m.length; j++) {
-        if (!agree(m[i], m[j])) continue
-        const lo = m[i].gpuMedianMs <= m[j].gpuMedianMs ? m[i] : m[j]
-        if (!best || lo.gpuMedianMs < best.gpuMedianMs) best = lo
-      }
+      const best = agreedLow(m)
       const row = { shape: c.shape, view: c.view, ...(best ?? m[0]), agreed: !!best, medians: m.map(x => x.gpuMedianMs), invalid: m.map(x => x.invalid).find(Boolean) ?? null }
       scene.rows.push(row)
       if (!first) first = { opts: c.opts, row }
@@ -118,8 +142,12 @@ try {
   await page.evaluate(() => window.__fluidBench.resizeTank([64, 64, 64]))
   await loadScenario(page, { name: 'opt1cov-pool-64', materials: [], gravity_mps2: G_STANDARD, spawns: [{ material: 'Water', box: { min: [0, 0, 0], max: [3.63, 0.20, 3.63] } }] }, 1)
   await sampleAtFrame(page, 30)
-  const again = await page.evaluate(o => window.__fluidBench.renderTiming(o), first.opts)
-  report.contention = { first: first.row.gpuMedianMs, again: again.gpuMedianMs, ratio: again.gpuMedianMs / first.row.gpuMedianMs }
+  // revision 3 (b): the same estimator as every configuration
+  const againM = [await timeOpts(first.opts), await timeOpts(first.opts)]
+  if (!agree(againM[0], againM[1])) againM.push(await timeOpts(first.opts))
+  const again = agreedLow(againM)
+  report.contention = { first: first.row.gpuMedianMs, again: again?.gpuMedianMs ?? null, medians: againM.map(x => x.gpuMedianMs), ratio: again ? again.gpuMedianMs / first.row.gpuMedianMs : null }
+  report.power.end = powerState()
 
   // ---- checks (validity of the measurement)
   const all = report.scenes.flatMap(sc => sc.rows)
@@ -133,7 +161,10 @@ try {
     for (let i = 1; i < sw.length; i++) if (sw[i] + 1e-3 < sw[i - 1]) mono = false
   }
   gate.check(mono, 'coverage grows as the camera approaches, in every sweep (the sweep does what it claims)')
-  gate.check(Math.abs(report.contention.ratio - 1) <= 0.2, `contention: the first configuration re-measured at the end ${report.contention.again.toFixed(3)} ms vs ${report.contention.first.toFixed(3)} ms (× ${report.contention.ratio.toFixed(3)}, ±20 %)`)
+  const ct = report.contention
+  gate.check(ct.ratio != null && Math.abs(ct.ratio - 1) <= 0.2, `contention: the first configuration re-measured at the end ${ct.again == null ? 'with NO agreeing pair' : `${ct.again.toFixed(3)} ms`} vs ${ct.first.toFixed(3)} ms (${ct.ratio == null ? '—' : `× ${ct.ratio.toFixed(3)}`}, ±20 %; revision 3: the agreeing-pair estimator, measurements ${ct.medians.map(v => v.toFixed(2)).join(' / ')})`)
+  const pw = report.power
+  gate.check(pw.start.ac === true && pw.end.ac === true, `power: on AC at the start and the end (revision 3 — on battery the GPU clock hops between states): start ${describePower(pw.start)}; end ${describePower(pw.end)}`)
   const lone = all.filter(r => !r.agreed), thirds = all.filter(r => r.medians.length > 2).length
   gate.check(lone.length === 0, `every configuration has two measurements within 15 % (revision 2): ${lone.length ? `${lone.length} without — ${lone.map(b => `${b.shape}/${b.view} ${b.medians.map(v => v.toFixed(2)).join('/')}`).join(', ')}` : `all ${all.length}`}; ${thirds} needed a third measurement`)
   const gpuErr = (await status(page)).gpuErrors

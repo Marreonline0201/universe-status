@@ -30,12 +30,43 @@
 //       I = ∫ p dt over the impact time (§5.1.2–5.1.3, Fig. 21: rise time = 2 × (t_peak − t_half-rise), decay time =
 //       2 × (t_half-fall − t_peak)), within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s (§5.2.3)
 //       [FINAL-PLAN A2; the sensor is 4.2 mm across and 3 mm above the bed, the cell 5 cm].
+// A1/A2 time origin — revision 2026-09-29 evening (written before the runs it governs; decisions.md; vault
+//     fluid/realism-2026-09/research/x11-dam-break-release.md): the NO-SHIFT RMS against Martin & Moyce is reported from
+//     here on; gated against MM stay the shape after the best shift (RMS ≤ 10 % there, |ΔT| ≤ 0.3), dZ/dT and |ΔH|, and
+//     A1c. Why: MM's release (a waxed-paper diaphragm freed by a current pulse — PLAUSIBLE, the paper is paywalled) and
+//     the origin of their time axis are unverified, and a gated experiment timed from its gate's first motion (Lobovský
+//     et al. 2014, ETSIN H = 0.6 m) is itself 0.12 T ahead of MM n² = 1 over T ∈ [1, 1.58] (A2g's scorer: MM vs ETSIN
+//     no-shift RMS 7.14 %, best shift +0.12 → 0.61 %) — a no-shift test against MM measures MM's origin as much as the
+//     solver. The no-shift test moves to A2g: a reference whose time origin is measured, its release modelled.
+// A2g the A2 column (a = H = 0.6 m, 12 cells of 5 cm, the 72-cell run-out) released by Lobovský's GATE — a thin plate on
+//     the x-face plane at the column's edge, lifted from the floor at their measured median 4.53 m/s (H = 600 mm; §4.2
+//     "median value is recommended for setting up simulations"), t = 0 at its first motion (their time zero, §2.5.3;
+//     FlipRef options.gate) — against their ETSIN H = 0.6 m wave front (Fig. 12 left, s34metrics ETSIN600_FRONT: the
+//     35 points with T ≥ 1 before their wall). PRE-REGISTERED before the first gated run; the INSTANT-release solver had
+//     already been scored on these data (x11, and under this scorer: no-shift RMS 2.97 %, best shift −0.04, dZ/dT 1.565;
+//     the Z ≥ 1.67 window 3.03 %). Window T ≥ 1: Lobovský §4.3.1 — the studies differ most at t* < 1 (the release and a
+//     mm-thin jet the bulk operator cannot see at 5 cm cells), and their Table 1 front speeds are for t* > 1; A2's own
+//     window starts at T = 1. Gated: (i) no-shift RMS Z error ≤ 10 % — validity only (within the experiments' spread):
+//     it cannot see a 0.12 T origin offset, MM itself scores 7.14 %; (ii) the best shift |s| ≤ 0.06 — the discriminating
+//     quantity: 0.06 T is one front slab (h/a = 1/12 in Z) at ETSIN's slope 1.339, the check's resolution (ETSIN's two
+//     fillings differ by 0.02); (iii) dZ/dT on T ∈ [1, 1.5767] within [0.9 × 1.339 (ETSIN's own fit there; their
+//     Table 1: 1.34), 1.74]. Operator: the r3 §1 bulk slab, gated; it lags ETSIN's tip, so s is biased LATE (the
+//     instant run's raw max(x) is 0.01 T ahead of its bulk front); raw max(x), the T < 1 residuals and the Z ≥ 1.67
+//     window are reported only. Pre-stated reading of s (s > 0: the solver late): |s| ≤ 0.06 → the solver reproduces a
+//     gated experiment on that experiment's own time origin, so A1/A2's lead over MM is MM's release and origin;
+//     s < −0.06 → the solver leads a like-for-like experiment beyond resolution (part of the MM lead is the solver);
+//     s > +0.06 → the modelled gate delays the front more than the real one (Lobovský §4.2 found its effect minor) —
+//     the gate model is investigated before any conclusion.
+// A2g-mech the gate's mechanics (gated): lifted at 1 cm/s it holds the column — 0 particles past its plane after 0.2 s;
+//     at 4.53 m/s, over the first 0.12 s, no particle is past the plane above the edge at any step and the flow under
+//     the edge grows (more particles past the plane at 0.06 s than at 0.03 s, and some at 0.03 s); gate clamps reported.
+//   --only=<names> runs only those sections (S34a, G1c, D1, A1, A2g, V1; comma-separated) — for the gate mutants.
 // V1  violent confined column (added after φ-only labels lost 42 % of a violent flow's volume in 6 s — the gentle scenes
 //     above never exercised it; the first fix, every occupied cell LIQUID, then broke D1 — flipRef.classifyLevelSet): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
 //     ~8 m/s and running up to the lid; |φ-volume/(N·V_p) − 1| ≤ 2 % every second for 6 s (S3.2 G2's tolerance).
 // G2  (--g2, slow on the CPU) the 30 s double dam break again with the ghost-fluid surface: ≤ 2 % at 30 s.
 import { loadTsModules } from './lib/loadTs.mjs'
-import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, fitOmega, nuNum, columnScore, impulse, selfConvergence } from './lib/s34metrics.mjs'
+import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, ETSIN600, ETSIN600_FRONT, fitOmega, nuNum, columnScore, impulse, selfConvergence } from './lib/s34metrics.mjs'
 
 const SRC = process.env.FLUID_REF_SRC ?? 'src/sim-ref'
 const { gridLayout, flipRef } = await loadTsModules({ gridLayout: `${SRC}/gridLayout.ts`, flipRef: `${SRC}/flipRef.ts` })
@@ -74,9 +105,11 @@ function block(lo, hi, rng, ppc = 8, h = DX, mode = 'lattice') {
 }
 const opts = (extra = {}) => ({ gravity: gvec, density: RHO, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5, ...extra })
 const t0 = Date.now()
+const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
+const run = name => !ONLY || ONLY.includes(name)
 
 // S34a
-for (const [ppc, mode] of [[8, 'lattice'], [4, 'lattice'], [4, 'random']]) {
+if (run('S34a')) for (const [ppc, mode] of [[8, 'lattice'], [4, 'lattice'], [4, 'random']]) {
   const H = 10
   const L = new GridLayout({ nx: 16, ny: 20, nz: 16, dx: DX })
   const sim = new FlipRef(L, opts({ ppc }))
@@ -98,7 +131,7 @@ for (const [ppc, mode] of [[8, 'lattice'], [4, 'lattice'], [4, 'random']]) {
 }
 
 // G1c
-{
+if (run('G1c')) {
   const L = new GridLayout({ nx: 16, ny: 36, nz: 16, dx: DX })
   const sim = new FlipRef(L, opts())
   const p = block([0, 0, 0], [15, 23, 15], mulberry32(3))
@@ -138,7 +171,7 @@ function standingWave(cellsPerH) {
   const wFit = fitOmega(ts, es, omega), d2 = nuNum(ts, es, omega, k)
   return { cellsPerH, particles: p.n, omega, wFit, err: Math.abs(wFit / omega - 1), nuNum: d2.nu, peaks: d2.peaks, E0: es[0], clamps: sim.diag.wallClamps + sim.diag.densityClamps, relabels: sim.diag.enclosedRelabels }
 }
-{
+if (run('D1')) {
   const s28 = standingWave(28), s14 = standingWave(14)
   check(s28.err <= 0.03 && s28.err < s14.err, `D1 standing wave: E_K period π/ω' vs π/ω (ω = ${s28.omega.toFixed(4)} rad/s, period ${(Math.PI / s28.omega).toFixed(4)} s): error ${(100 * s28.err).toFixed(2)} % at H/dx = 28 (≤ 3 %, ${s28.particles} particles), ${(100 * s14.err).toFixed(2)} % at H/dx = 14 (must be larger)`)
   check(s28.nuNum <= 1.1e-4, `D2 numerical viscosity at H/dx = 28: ν_num ${s28.nuNum.toExponential(2)} m²/s from ${s28.peaks} E_K peaks (≤ 1.1e-4 = ν_glycerol/10; water ν = 1.0e-6); H/dx = 14: ${s14.nuNum.toExponential(2)}${s28.nuNum <= 1.1e-4 ? '' : ` — FINAL-PLAN consequence: glycerol-level viscosity is unresolvable at dx = ${(100 * DX).toFixed(2)} cm (validity HUD); the remedy is resolution, never tuning; S3.6 runs the viscous solve for ν_phys ≥ 0.01·ν_num = ${(0.01 * s28.nuNum).toExponential(2)} m²/s`}`)
@@ -155,10 +188,12 @@ function frontSlab(pos, n, h, nz, ppc = 8) {
   for (const [i, c] of counts) if (c >= 0.5 * ppc * nz && i > best) best = i
   return (best + 1) * h
 }
-function column({ aCells, n2, h, nx, tauEnd }) {
+// gate: the release — 0 = instant (the column's side simply absent at t = 0), else a gate on the column's edge plane
+// lifted at that speed (m/s) from t = 0 (FlipRef options.gate)
+function column({ aCells, n2, h, nx, tauEnd, gate = 0 }) {
   const a = aCells * h, tUnit = Math.sqrt(a / G), rows = Math.round(n2 * aCells), nz = 8
   const L = new GridLayout({ nx, ny: rows + 8, nz, dx: h })
-  const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4 }))
+  const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...(gate > 0 ? { gate: { i: aCells, speed: gate } } : {}) }))
   const p = block([0, 0, 0], [aCells - 1, rows - 1, nz - 1], mulberry32(60 + aCells), 8, h)
   const dt = (1 / 240) * (h / DX)
   const ts = [], Z = [], Zraw = [], Zpct = [], Hh = [], wallP = []
@@ -175,19 +210,20 @@ function column({ aCells, n2, h, nx, tauEnd }) {
     for (let k = 1; k < nz - 1; k++) pw += sim.pressure[L.idx(nx - 1, 0, k)]
     wallP.push(pw / (nz - 2))
   }
-  return { a, n: Math.sqrt(n2), tUnit, dt, ts, Z, Zraw, Zpct, H: Hh, wallP, particles: p.n }
+  return { a, n: Math.sqrt(n2), tUnit, dt, ts, Z, Zraw, Zpct, H: Hh, wallP, particles: p.n, gateClamps: sim.diag.gateClamps }
 }
-{
+if (run('A1')) {
   const r1 = column({ aCells: 12, n2: 2, h: DX, nx: 128, tauEnd: 3.33 / Math.SQRT2 + 0.1 }), s1 = columnScore(r1, MM2, MM2H, [1.43, 3.33])
-  check(s1.rmsZ <= 0.10 && Math.abs(s1.bestShift) <= 0.3 && s1.slope >= 1.19 && s1.slope <= 1.74 && s1.dH <= 0.05,
-    `A1 again (ghost fluid), n² = 2, a = 12 cells: RMS Z error ${(100 * s1.rmsZ).toFixed(2)} % over ${s1.points} points (≤ 10 %; best shift ΔT ${s1.bestShift.toFixed(2)} → ${(100 * s1.bestRms).toFixed(2)} %, |ΔT| ≤ 0.3), dZ/dT ${s1.slope.toFixed(3)} (1.19–1.74; MM 1.319), max |ΔH| ${s1.dH.toFixed(3)} (≤ 0.05)`)
+  // time-origin revision (header): the no-shift RMS is reported; the shape after the best shift is gated
+  check(s1.bestRms <= 0.10 && Math.abs(s1.bestShift) <= 0.3 && s1.slope >= 1.19 && s1.slope <= 1.74 && s1.dH <= 0.05,
+    `A1 again (ghost fluid), n² = 2, a = 12 cells: after the best shift ΔT ${s1.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s1.bestRms).toFixed(2)} % over ${s1.points} points (≤ 10 %); no-shift RMS ${(100 * s1.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header]; dZ/dT ${s1.slope.toFixed(3)} (1.19–1.74; MM 1.319), max |ΔH| ${s1.dH.toFixed(3)} (≤ 0.05)`)
   const aP = 8 * DX, conv = selfConvergence([8, 12, 16].map(c => column({ aCells: c, n2: 2, h: aP / c, nx: 2 * Math.ceil(2.75 * c), tauEnd: 3.33 / Math.SQRT2 + 0.1 })))
   check(conv.e2 <= conv.e1, `A1c grid self-convergence, one column a = ${aP.toFixed(3)} m at 8/12/16 cells: RMS|Z12 − Z8| ${conv.e1.toFixed(4)}, RMS|Z16 − Z12| ${conv.e2.toFixed(4)} (must shrink)`)
   const p1 = columnScore({ ...r1, Z: r1.Zpct }, MM2, MM2H, [1.43, 3.33])
   info(`A1 residuals (T:%) ${s1.resid}; raw max(x) ahead of the bulk front by up to ${s1.rawAhead.toFixed(2)} a; operator sensitivity: the pre-S3.4 99.5th-percentile front gives RMS ${(100 * p1.rmsZ).toFixed(2)} % (best shift ${p1.bestShift.toFixed(2)})`)
   const r2 = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: 3.5 }), s2 = columnScore(r2, MM1, MM1H, [1, 3.3])
-  check(s2.rmsZ <= 0.10 && Math.abs(s2.bestShift) <= 0.3 && s2.slope >= 0.9 * 1.40 && s2.slope <= 1.74 && s2.dH <= 0.05,
-    `A2 front, square column n² = 1, a = H = 0.6 m (${r2.particles} particles): RMS Z error vs MM n² = 1 ${(100 * s2.rmsZ).toFixed(2)} % over ${s2.points} points (≤ 10 %; best shift ΔT ${s2.bestShift.toFixed(2)} → ${(100 * s2.bestRms).toFixed(2)} %), dZ/dT on T ∈ [1, 3.3] ${s2.slope.toFixed(3)} (1.26–1.74; MM 1.400; Lobovský 600 mm 1.34), max |ΔH| ${s2.dH.toFixed(3)} (≤ 0.05)`)
+  check(s2.bestRms <= 0.10 && Math.abs(s2.bestShift) <= 0.3 && s2.slope >= 0.9 * 1.40 && s2.slope <= 1.74 && s2.dH <= 0.05,
+    `A2 front, square column n² = 1, a = H = 0.6 m (${r2.particles} particles): vs MM n² = 1 after the best shift ΔT ${s2.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s2.bestRms).toFixed(2)} % over ${s2.points} points (≤ 10 %); no-shift RMS ${(100 * s2.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header; the no-shift test is A2g]; dZ/dT on T ∈ [1, 3.3] ${s2.slope.toFixed(3)} (1.26–1.74; MM 1.400; Lobovský 600 mm 1.34), max |ΔH| ${s2.dH.toFixed(3)} (≤ 0.05)`)
   const p2 = columnScore({ ...r2, Z: r2.Zpct }, MM1, MM1H, [1, 3.3])
   info(`A2 residuals (T:%) ${s2.resid}; raw max(x) ahead of the bulk front by up to ${s2.rawAhead.toFixed(2)} a; operator sensitivity: 99.5th-percentile front RMS ${(100 * p2.rmsZ).toFixed(2)} % (best shift ${p2.bestShift.toFixed(2)})`)
   // impulse: Lobovský's tank (1610 mm → 32 cells of 5 cm)
@@ -196,8 +232,44 @@ function column({ aCells, n2, h, nx, tauEnd }) {
   check(imp.I >= 0.5 * Imed && imp.I <= 2 * Imed, `A2 impulse, Lobovský tank (32 cells, wall at 1.60 m): downstream-wall bottom-cell I = ∫p dt over the impact time ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians: 185.69 mbar, 7 ms, 104 ms; dt = ${(1000 * ri.dt).toFixed(2)} ms)`)
 }
 
+// A2g-mech + A2g (Lobovský's gate; pre-registered in the header before the first gated run)
+if (run('A2g')) {
+  const gateRun = (speed, seconds) => {
+    const aC = 12, h = 0.05, nz = 8
+    const L = new GridLayout({ nx: 72, ny: aC + 8, nz, dx: h })
+    const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, gate: { i: aC, speed } }))
+    const p = block([0, 0, 0], [aC - 1, aC - 1, nz - 1], mulberry32(60 + aC), 8, h)
+    const dt = (1 / 240) * (h / DX), xg = aC * h, out = []
+    for (let s = 1; s * dt <= seconds + 1e-9; s++) {
+      sim.step(p, dt)
+      let past = 0, pastAbove = 0
+      for (let q = 0; q < p.n; q++) if (p.pos[3 * q] > xg) { past++; if (p.pos[3 * q + 1] > sim.gateEdge(sim.time)) pastAbove++ }
+      out.push({ t: sim.time, past, pastAbove })
+    }
+    return { out, clamps: sim.diag.gateClamps }
+  }
+  const hold = gateRun(0.01, 0.2), held = hold.out.at(-1)
+  const open = gateRun(4.53, 0.12), above = Math.max(...open.out.map(o => o.pastAbove))
+  const pastAt = t => open.out.reduce((b, o) => (Math.abs(o.t - t) < Math.abs(b.t - t) ? o : b)).past
+  check(held.past === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03),
+    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0; gate clamps ${hold.clamps}); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}`)
+  const WIN = [1, ETSIN600_FRONT.T.at(-1)], ETSIN_SLOPE = 1.339
+  // run past the window by the largest shift the scorer tries (+0.5), so no shifted sample is clamped to the run's end
+  const rg = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: WIN[1] + 0.55, gate: 4.53 })
+  const sg = columnScore(rg, ETSIN600_FRONT, [], WIN, WIN)
+  check(sg.rmsZ <= 0.10 && Math.abs(sg.bestShift) <= 0.06 && sg.slope >= 0.9 * ETSIN_SLOPE && sg.slope <= 1.74,
+    `A2g gated release (4.53 m/s, t = 0 at the gate's first motion) vs Lobovský ETSIN H = 0.6 m, ${sg.points} points T ∈ [1, ${WIN[1]}] before their wall (${rg.particles} particles): no-shift RMS Z error ${(100 * sg.rmsZ).toFixed(2)} % (≤ 10 %, validity); best shift s = ${sg.bestShift >= 0 ? '+' : ''}${sg.bestShift.toFixed(2)} → ${(100 * sg.bestRms).toFixed(2)} % (|s| ≤ 0.06, the discriminating quantity; s > 0 = the solver late); dZ/dT ${sg.slope.toFixed(3)} (${(0.9 * ETSIN_SLOPE).toFixed(3)}–1.74; ETSIN ${ETSIN_SLOPE}); gate clamps ${rg.gateClamps}`)
+  const raw = columnScore({ ...rg, Z: rg.Zraw }, ETSIN600_FRONT, [], WIN, WIN)
+  const zWin = { T: ETSIN600_FRONT.T.filter((t, i) => ETSIN600_FRONT.Z[i] >= 1.67), Z: ETSIN600_FRONT.Z.filter(z => z >= 1.67) }
+  const z167 = columnScore(rg, zWin, [], WIN, [0, 9]), early = columnScore(rg, ETSIN600, [], WIN, [0, 0.999])
+  const reading = Math.abs(sg.bestShift) <= 0.06 ? 'within resolution: the solver reproduces a gated experiment on that experiment\'s own time origin, so A1/A2\'s lead over MM is MM\'s release and origin'
+    : sg.bestShift < -0.06 ? 'the solver LEADS a like-for-like experiment beyond resolution: part of the MM lead is the solver'
+      : 'the modelled gate delays the front more than the real one: the gate model is investigated before any conclusion'
+  info(`A2g reading (pre-stated in the header): s = ${sg.bestShift.toFixed(2)} → ${reading}. Residuals (T:%) ${sg.resid}; raw max(x) front RMS ${(100 * raw.rmsZ).toFixed(2)} %, best shift ${raw.bestShift.toFixed(2)}; the Z ≥ 1.67 window RMS ${(100 * z167.rmsZ).toFixed(2)} %, best shift ${z167.bestShift.toFixed(2)}; T < 1 (the thin jet, below the bulk operator's resolution) RMS ${(100 * early.rmsZ).toFixed(2)} %, best shift ${early.bestShift.toFixed(2)}`)
+}
+
 // V1 + G2 again (ghost-fluid surface under violent, confined flow)
-{
+if (run('V1')) {
   const volumeSeries = (L, p, seconds) => {
     const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4 }))
     const nvp = p.n * L.dx ** 3 / 8, out = []
