@@ -112,7 +112,8 @@ SETS.s36 = [
   [`${SH}/viscosity.wgsl`, 'for (var a = 0u; a < 3u; a++) { var e = vec3<i32>(0); e[a] = 1; markUnknown(a, c + e); markUnknown(a, c); }', '', 'cell samples add no auxiliary unknowns'],
   [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
 ]
-// S3.5-i: each targets a kernel that K30–K33 cover
+// S3.5-i: each targets a kernel that K30–K34 cover; every mutant keeps its kernel's bindings statically used (a removed
+// binding changes the auto layout and the run crashes — a crash is not a caught defect)
 SETS.s35i = [
   [`${SH}/immiscible.wgsl`, '  if (h < 0.1) { return h * (1.0 - h * (0.5 - h * (1.0 / 6.0 - h * (1.0 / 24.0 - h / 120.0)))); }\n', '', 'series of 1 − e^(−h) dropped (f32 cancellation)'],
   [`${SH}/immiscible.wgsl`, 'if (Re >= 1000.0) { return 0.44 * Re / 24.0; }', 'if (Re >= 1000.0) { return 0.44 * Re / 12.0; }', "Newton's drag factor doubled"],
@@ -127,8 +128,8 @@ SETS.s35i = [
   [`${SH}/immiscible.wgsl`, 'd = select(dMax, min(dOld, dMax), dOld > 0.0);', 'd = dMax;', 'breakup-only drop memory dropped'],
   [`${SH}/immiscible.wgsl`, '  for (var k = 1u; k < IP.K; k++) { if (al[k] > al[cm]) { cm = k; } }\n', '', 'continuous phase always the first material'],
   [`${SH}/immiscible.wgsl`, '    let v = w * LS_SCALE;\n', '    let v = LS_SCALE;\n', 'α counts particles, not kernel weights'],
-  [`${SH}/immiscible.wgsl`, 'J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));', 'J += sum / f32(cnt);', 'counter-drift not α-weighted'],
-  [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, 0.0);', 'no volume-conserving counter-drift'],
+  [`${SH}/immiscible.wgsl`, 'J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));', 'J += max(1.0, cellInfR[8u * li + 4u + k]) * (sum / f32(cnt));', 'counter-drift not α-weighted'],
+  [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, driftCellR[li].w);', 'no volume-conserving counter-drift'],
   [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }\n', '', 'advection ignores the drift'],
 ]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
