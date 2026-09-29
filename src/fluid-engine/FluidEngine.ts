@@ -1022,6 +1022,11 @@ export class FluidEngine {
       readParticleSample: () => this.readParticleSample(),
       probe: (o) => this.renderProbe(o),
       renderTiming: (o) => this.renderTiming(o),
+      profileStep: () => {
+        const s = this.sim as { profileNextStep?: () => Promise<unknown> } | null
+        if (!s?.profileNextStep) throw new Error('profileStep: this solver has no step profiler')
+        return s.profileNextStep()
+      },
       compositions: () => this.getCompositions().map(c => ({ id: c.id, name: c.name, rho: c.solver.rhoKgM3, mu: c.solver.muPaS })),
       fps: () => this.lastFps,
       count: () => this.particleCount,

@@ -85,6 +85,8 @@ export interface BenchTarget {
   /** GPU time of whole offscreen SSFR frames with a test camera (timestamp-bracketed) and the liquid's pixel fraction
    *  (OPT-1-cov coverage sweep). */
   renderTiming?(opts: ProbeOptions & { frames?: number; warmup?: number }): Promise<unknown>
+  /** PERF-1 baseline: profile the next frame's simulation step (per-pass GPU µs, dispatch counts, encode ms). */
+  profileStep?(): Promise<unknown>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -147,6 +149,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     renderTiming(opts: ProbeOptions & { frames?: number; warmup?: number }) {
       if (!target.renderTiming) throw new Error(`${meta.page} has no render timing`)
       return target.renderTiming(opts)
+    },
+
+    profileStep() {
+      if (!target.profileStep) throw new Error(`${meta.page} has no step profiler`)
+      return target.profileStep()
     },
 
     /** Offscreen render probe; every requested target comes back base64-encoded (see SSFRPipeline ProbeResult). */
