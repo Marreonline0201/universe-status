@@ -42,7 +42,7 @@ const ENTRIES: Entry[] = [
   { name: 'gatherMinus', uses: [0, 1, 24, 25, 29, 30, 31, 32, 47], constants: { GATHER_MINUS: 1 } },
   { name: 'diagonal', uses: [0, 1, 24, 31, 22, 23, 35] },
   { name: 'pcgInit', uses: [0, 39, 44, 38, 41, 42, 43, 45] },
-  { name: 'pcgDot', uses: [0, 43, 44, 45] },
+  { name: 'pcgDot', uses: [0, 47, 43, 44, 45] },
   { name: 'pcgUpdate', uses: [0, 47, 40, 43, 44, 41, 38, 42, 45] },
   { name: 'pcgDupdate', uses: [0, 47, 43, 42] },
   { name: 'reduceInit', uses: [1, 45, 46] },

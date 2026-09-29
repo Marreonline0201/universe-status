@@ -554,6 +554,21 @@ fn diagonal(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ── Jacobi-PCG (the same algebra as poisson/cg.wgsl; partials .x = dot, .y = Σr², .z = Σb²) ─────────────────────
 
 var<workgroup> red: array<vec4<f32>, 256>;
+/// Once the solve has converged, every remaining iteration kernel returns at entry, whole workgroups at once: one
+/// invocation copies the flag, all read it with workgroupUniformLoad BEFORE any barrier (PoissonSolver's solveDone), so
+/// a converged iteration costs only its dispatches. (Kernels without barriers return per thread.) Measured before: the
+/// dot, update and reduce passes kept reading, writing and reducing — ~0.1 ms per idle iteration at 64³ (viscCost).
+var<workgroup> wgDone: u32;
+fn solveDone(lid: u32) -> bool {
+  if (lid == 0u) { wgDone = select(0u, 1u, stR[ST_CONV] > 0.5); }
+  return workgroupUniformLoad(&wgDone) != 0u;
+}
+/// solveDone for the reduce kernels, which bind the state read-write.
+fn solveDoneRW(lid: u32) -> bool {
+  if (lid == 0u) { wgDone = select(0u, 1u, st[ST_CONV] > 0.5); }
+  return workgroupUniformLoad(&wgDone) != 0u;
+}
+
 fn wgSum(lid: u32, v: vec4<f32>) -> vec4<f32> {
   red[lid] = v;
   workgroupBarrier();
@@ -582,6 +597,7 @@ fn pcgInit(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocat
 /// partials .x = d·q
 @compute @workgroup_size(256)
 fn pcgDot(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  if (solveDone(lid)) { return; }
   let s = gid.x;
   var v = vec4<f32>(0.0);
   if (s < 3u * P.size) { v = vec4<f32>(dV[s] * qR[s], 0.0, 0.0, 0.0); }
@@ -592,10 +608,11 @@ fn pcgDot(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocati
 /// x += αd, r −= αq, z = r/diag; partials: r·z (new), r·r
 @compute @workgroup_size(256)
 fn pcgUpdate(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+  if (solveDone(lid)) { return; }
   let s = gid.x;
   var v = vec4<f32>(0.0);
   if (s < 3u * P.size) {
-    let al = select(stR[ST_ALPHA], 0.0, stR[ST_CONV] > 0.5);   // converged: no update (a barrier follows — no early return)
+    let al = select(stR[ST_ALPHA], 0.0, stR[ST_CONV] > 0.5);   // (solveDone returned already; kept as a guard)
     xV[s] += al * dV[s];
     let r = rV[s] - al * qR[s];
     rV[s] = r;
@@ -631,6 +648,7 @@ fn reduceInit(@builtin(local_invocation_index) lid: u32) {
 /// after pcgDot: α = rz/(d·q)
 @compute @workgroup_size(256)
 fn reduceAlpha(@builtin(local_invocation_index) lid: u32) {
+  if (solveDoneRW(lid)) { return; }
   let s = sumPartials(lid);
   if (lid == 0u && st[ST_CONV] < 0.5) {
     st[ST_ALPHA] = select(0.0, st[ST_RZ] / s.x, s.x > 0.0); if (s.x <= 0.0) { st[ST_CONV] = 1.0; st[ST_BRK] = 1.0; }
@@ -639,6 +657,7 @@ fn reduceAlpha(@builtin(local_invocation_index) lid: u32) {
 /// after pcgUpdate: β = rz'/rz, convergence test, iteration count
 @compute @workgroup_size(256)
 fn reduceBeta(@builtin(local_invocation_index) lid: u32) {
+  if (solveDoneRW(lid)) { return; }
   let s = sumPartials(lid);
   if (lid == 0u && st[ST_CONV] < 0.5) {
     st[ST_BETA] = select(0.0, s.x / st[ST_RZ], st[ST_RZ] != 0.0);
