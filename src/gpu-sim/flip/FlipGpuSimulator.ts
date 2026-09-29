@@ -18,9 +18,10 @@
 //         8–10) → sphereIntegrate (weak coupling V += Δt(g + F/M), s ≥ 1). All state on the GPU (FINAL-PLAN S3.1c).
 //   S3.6 viscosity (`viscosity: true`, then viscosityActive): project → extrapolate → ViscositySolver (Batty & Bridson 2008
 //         variational implicit solve, Jacobi-PCG) → project again; the ball is coupled after the last projection.
-//   S3.5-i immiscible liquids (`immiscible: true`, configure immiscibleSolver, then immiscibleActive): after the final
-//         extrapolation ImmiscibleSolver (Manninen et al. 1996 drift flux, flipRef.driftFlux) writes each particle's drift,
-//         which g2pMac adds to its advection; the step's total pressure (both projections on the viscous path) feeds it.
+//   S3.5-i immiscible liquids (`immiscible: true`, configure immiscibleSolver, then immiscibleActive): u* snapshot after
+//         the grid update; after the final projection a = g − Du/Dt = (u* − u)/Δt on the faces (flipRef.captureFaceAccel),
+//         extrapolated with the velocity's kernel; after the final extrapolation ImmiscibleSolver (Manninen et al. 1996
+//         drift flux, flipRef.driftFlux) writes each particle's drift, which g2pMac adds to its advection.
 //   S3.5 variable density (`variableDensity: true`): faceScatter also sums Σw; ghostCoef forms each face's density
 //         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
@@ -238,6 +239,8 @@ export class FlipGpuSimulator {
   readonly immiscibleEnabled: boolean
   /** Per-particle drift (vec4, m/s), read by g2pMac; a 16-byte placeholder without immiscibility. */
   readonly driftBuf: GPUBuffer
+  /** The velocity's extrapolation kernel over the immiscible face accelerations: [A→B, B→A]. */
+  private accExtrapolate: [GPUBindGroup, GPUBindGroup] | null = null
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
     | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw', GPUBindGroup>> = {}
   private coefFor = NaN
@@ -442,11 +445,17 @@ export class FlipGpuSimulator {
       })
     }
     if (this.immiscibleEnabled) {
-      this.immiscibleSolver = await ImmiscibleSolver.create({
-        device, params: this.paramsBuf, pos: this.posBuf, aux: this.auxBuf, u: this.uBuf[this.finalVelocityBuffer], labels: sb.labels,
-        faceType: this.faceTypeBuf, pressure: sb.x, drift: this.driftBuf, size: L.size, paddedCount: solver.paddedCount,
-        cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles,
+      const imm = await ImmiscibleSolver.create({
+        device, params: this.paramsBuf, pos: this.posBuf, aux: this.auxBuf, uProj: uA, validProj: this.validBuf[0], uFinal: this.uBuf[this.finalVelocityBuffer],
+        faceType: this.faceTypeBuf, faceSolid: this.faceSolidBuf, drift: this.driftBuf, size: L.size,
+        cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles, layers: this.extrapolationLayers,
       })
+      this.immiscibleSolver = imm
+      const ib = imm.bufs, xg = (bufs: GPUBuffer[]) => device.createBindGroup({
+        label: 'flip.extrapolate(accel)', layout: this.pipelines.extrapolate!.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: this.paramsBuf } }, ...bufs.map((b, i) => ({ binding: i + 1, resource: { buffer: b } }))],
+      })
+      this.accExtrapolate = [xg([this.faceTypeBuf, ib.accA, ib.accValidA, ib.accB, ib.accValidB]), xg([this.faceTypeBuf, ib.accB, ib.accValidB, ib.accA, ib.accValidA])]
     }
     if (!this.densityProjection) return
     const psi = await PoissonSolver.create(device, { nx: L.nx, ny: L.ny, nz: L.nz, method: this.solverMethod, label: 'flip.psi' })
@@ -529,10 +538,10 @@ export class FlipGpuSimulator {
 
   // ── kernels (each encodable alone, for the kernel-by-kernel self-test) ─────────────────────────────────────
 
-  private dispatch(encoder: GPUCommandEncoder, k: Kernel, bg: GPUBindGroup, threads: number, wg: number): void {
+  private dispatch(encoder: GPUCommandEncoder, k: Kernel, bg: GPUBindGroup, threads: number, wg: number, label = `flip.${k}`): void {
     const pipeline = this.pipelines[k]
     if (!pipeline) throw new Error(`FlipGpuSimulator: kernel ${k} not created`)
-    const pass = encoder.beginComputePass({ label: `flip.${k}` })
+    const pass = encoder.beginComputePass({ label })
     pass.setPipeline(pipeline)
     pass.setBindGroup(0, bg)
     pass.dispatchWorkgroups(Math.max(1, Math.ceil(threads / wg)))
@@ -562,6 +571,7 @@ export class FlipGpuSimulator {
   encodeSubstepBody(encoder: GPUCommandEncoder): void {
     this.encodeScatter(encoder)
     this.encodeGridUpdate(encoder)
+    if (this.immActive) this.immiscibleSolver!.encodeSnapshot(encoder)
     if (this.projection) this.encodeProjection(encoder)
     this.encodeExtrapolate(encoder)
     if (this.immActive) this.immiscibleSolver!.encode(encoder, this.count)
@@ -590,7 +600,6 @@ export class FlipGpuSimulator {
     this.encodeFillLiquidFaces(encoder)
     this.encodeDivergence(encoder)
     this.encodePressureSolve(encoder)
-    if (this.immActive) this.immiscibleSolver!.encodeFirstPressure(encoder)
     const visc = this.viscosityActive && this.viscositySolver
     this.encodeProject(encoder, !visc)
     if (visc) {
@@ -600,9 +609,16 @@ export class FlipGpuSimulator {
       this.viscositySolver!.encode(encoder)
       this.encodeDivergence(encoder)
       this.encodePressureSolve(encoder)
-      // the step's total pressure (each projection is an impulse Δt·∇p/ρ): the drift's a = ∇p/ρ_m needs both
-      if (this.immActive) this.immiscibleSolver!.encodeSecondPressure(encoder)
       this.encodeProject(encoder, true)
+    }
+    if (this.immActive) this.encodeFaceAccel(encoder)
+  }
+
+  /** a = g − Du/Dt on the faces from the final projection's u (flipRef.captureFaceAccel), extrapolated like the velocity. */
+  encodeFaceAccel(encoder: GPUCommandEncoder): void {
+    this.immiscibleSolver!.encodeFaceAccel(encoder)
+    for (let layer = 0; layer < this.extrapolationLayers; layer++) {
+      this.dispatch(encoder, 'extrapolate', this.accExtrapolate![layer % 2], 3 * this.layout.size, 256, 'imm.extrapolateAccel')
     }
   }
 

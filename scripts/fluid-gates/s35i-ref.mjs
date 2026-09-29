@@ -3,15 +3,33 @@
 // Taivassalo & Kallio 1996 algebraic-slip drift flux; drop size from Hinze 1955 with the measured ε, a scenario may
 // override it). Spec: vault fluid/realism-2026-09/IMMISCIBILITY-spec.md (§3–5 model, §8 sourced inputs).
 //
-//   node scripts/fluid-gates/s35i-ref.mjs [--quick]     (--quick: the drop-equation checks S, T and D-a only)
+//   node scripts/fluid-gates/s35i-ref.mjs [--quick]     (--quick: the drop-equation checks B, S, T and D-a only)
 //
 // Inputs (spec §8): σ olive oil–water 0.0245 N/m (Fisher, Mitchell & Parker 1985), mercury–water 0.375 N/m (Henry &
 // Jackson 1938); ethanol–water miscible (σ = null → never separated); ρ, μ from materialData at 20 °C.
 // The oracle of every slip check is written HERE, independently of flipRef: the equilibrium slip of (58) + (40) by f64
 // bisection on Re·f(Re) = G, G = d³ρ_c·|ρ_p − ρ_m||a|/(18 μ_m²) (monotone in Re), and the drop's equation of motion
 // (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d² integrated by RK4 at 1000 substeps per Δt, each at the
-// drop's own α, ρ_m, μ_m and a = ∇p/ρ_m recomputed from the simulation's fields.
+// drop's own α, ρ_m, μ_m recomputed from the particles and a = g − Du/Dt: the simulation's face accelerations
+// (FlipRef.faceAccel) sampled with the velocity stencil — or, in B, the exact g of a column at rest.
 // Criteria (fixed before the first run):
+// B   balance (added 2026-09-29 after D-c showed mercury slips of 3.4 m/s): stably stratified columns at rest — water
+//     over mercury, olive oil over water — on a REGULAR particle lattice (sub-cell centres, no jitter), with drops of the
+//     heavy liquid (1 mm) as extra particles ON the carrier's own sub-cell sites: the four (x, z) sites of the upper
+//     sub-layer of every cell in the light layer's first row above the interface, where the face densities jump (drop
+//     α ≈ ⅓, carrier-majority). At a side wall P2G sees no particles beyond it; with drops and carrier on the same sites
+//     the truncation removes both in the same ratio, so every row's face densities are uniform up to the walls and the
+//     column is an exact discrete equilibrium. The density projection is off here (the drop row is over-full by design;
+//     moving it apart is that correction's job, not this check's). Drafts that were NOT at rest, recorded: the jittered
+//     fill with every 8th particle (particle-sampled face densities vary across each row: real baroclinic motion,
+//     median 4 %); one drop at a sub-cell or at the cell centre (the wall faces weight carrier and drop differently: a
+//     density step at the walls, 1.4–3.3 % at the drop row in an 8-cell tank). Without drops the lattice column holds
+//     a = g to 1e-6 at the interface.
+//     Frozen fields (one step from rest, then only driftFlux): every drop's slip equals the equilibrium at a = g
+//     exactly, ≤ 1e-3 relative. At rest the only
+//     departure of g − Du/Dt from g is the pressure solve's residual (‖∇·u‖∞ ≤ 1e-6/s here: |Δa| ~ 1e-6·dx/Δt ≈ 7e-6
+//     m/s², 1e-6 of g); a drift acceleration that pairs an interpolated ∇p with a differently discretised density
+//     (∇p/ρ_m) errs there by ρ_f/ρ_m − 1, ≥ 10 % (Popinet 2018 §2.2 on well-balanced forcing).
 // S   steady slip, frozen fields (after one step only driftFlux runs, so every drop's state is fixed): mercury 3 mm
 //     (Newton regime, Re ≈ 3000), olive oil 1 mm (Re ≈ 20) and 0.2 mm (Δt/τ ≈ 3) in water, from rest — every drop's
 //     slip equals its equilibrium vector to ≤ 1e-6 relative (the step's fixed point is exactly (58), so this is
@@ -66,9 +84,9 @@ function equilibrium(d, F, rc, muM) {
   return { U: Re * muM / (d * rc), Re }
 }
 /** Each dispersed drop's state from the simulation's fields: α of both materials at its cell (trilinear particle
- *  weights to cell centres), ρ_m, μ_m (Ishii–Zuber, α_pm = 1), a = ∇p/ρ_m (∇p on the face grids, p = 0 outside LIQUID,
- *  0 across SOLID faces, sampled trilinearly). Materials: 0 the carrier C, 1 the drop D. */
-function dropStates(sim, L, p, C, D, d) {
+ *  weights to cell centres), ρ_m, μ_m (Ishii–Zuber, α_pm = 1), a = the face accelerations sampled trilinearly (or
+ *  `aFixed`). Materials: 0 the carrier C, 1 the drop D. */
+function dropStates(sim, L, p, C, D, d, aFixed) {
   const [nx, ny, nz] = [L.nx, L.ny, L.nz], S = L.size, Wm = [new Float64Array(S), new Float64Array(S)]
   for (let q = 0; q < p.n; q++) {
     const fx = p.pos[3 * q] / DX - 0.5, fy = p.pos[3 * q + 1] / DX - 0.5, fz = p.pos[3 * q + 2] / DX - 0.5
@@ -80,12 +98,6 @@ function dropStates(sim, L, p, C, D, d) {
       if (w > 0) Wm[p.material[q]][L.idx(i, j, k)] += w
     }
   }
-  const lab = sim.label, pr = sim.pressureTotal ?? sim.pressure
-  const faceGrad = (a, i, j, k) => {
-    const s2 = L.idx(i, j, k), sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
-    if (sim.faceType[a][s2] === 1) return 0   // FaceType.SOLID
-    return ((lab[s2] === 1 ? pr[s2] : 0) - (lab[sm] === 1 ? pr[sm] : 0)) / DX
-  }
   const out = []
   for (let q = 0; q < p.n; q++) {
     if (p.material[q] !== 1 || !(p.drop[q] > 0)) continue
@@ -93,12 +105,12 @@ function dropStates(sim, L, p, C, D, d) {
     const s2 = L.idx(Math.floor(x[0] / DX), Math.floor(x[1] / DX), Math.floor(x[2] / DX))
     const aD = Wm[1][s2] / (Wm[0][s2] + Wm[1][s2])
     const rm = (1 - aD) * C.rho + aD * D.rho, muStar = (D.mu + 0.4 * C.mu) / (D.mu + C.mu), muM = C.mu * (1 - aD) ** (-2.5 * muStar)
-    const acc = [0, 1, 2].map(a => {
+    const acc = aFixed ?? [0, 1, 2].map(a => {
       const f = x.map((v, b) => v / DX - (a === b ? 0 : 0.5)), b0 = f.map(Math.floor)
       let v = 0
       for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++)
-        v += (di ? f[0] - b0[0] : 1 - f[0] + b0[0]) * (dj ? f[1] - b0[1] : 1 - f[1] + b0[1]) * (dk ? f[2] - b0[2] : 1 - f[2] + b0[2]) * faceGrad(a, b0[0] + di, b0[1] + dj, b0[2] + dk)
-      return v / rm
+        v += (di ? f[0] - b0[0] : 1 - f[0] + b0[0]) * (dj ? f[1] - b0[1] : 1 - f[1] + b0[1]) * (dk ? f[2] - b0[2] : 1 - f[2] + b0[2]) * sim.faceAccel[a][L.idx(b0[0] + di, b0[1] + dj, b0[2] + dk)]
+      return v
     })
     const aMag = Math.hypot(...acc), eq = equilibrium(d, Math.abs(D.rho - rm) * aMag, C.rho, muM)
     const dir = aMag > 0 ? Math.sign(D.rho - rm) / aMag : 0
@@ -120,6 +132,35 @@ function rk4(st, s0, dt0, sub, checkpoints) {
     out.push(s)
   }
   return out
+}
+
+const dist = (u, v) => Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2])
+
+// ── B: balance at rest ────────────────────────────────────────────────────────────────────────────────────────────
+for (const [label, heavy, light, key] of [['mercury drops in water over mercury', HG, W, 'mercury|water'], ['water drops in olive oil over water', W, OIL, 'oil|water']]) {
+  const nx = 8, ny = 20, nz = 8, h1 = 10, h2 = 8, d = 1e-3, L = new GridLayout({ nx, ny, nz, dx: DX })
+  // material 0 the light carrier, 1 the heavy liquid (the drops and the layer below)
+  const sim = new FlipRef(L, { ...opts({ 0: light, 1: heavy }, () => SIGMA[key], { dropDiameter: d }), densityProjection: false })
+  // the lattice: fill's jitter fixed at ½ puts every particle at its sub-cell centre; q % 8 is the sub-cell (fill loops
+  // cells, then their 8 sub-cells)
+  const lat = fill(nx, h1 + h2, nz, DX, () => 0.5, (x, y) => (y < h1 * DX ? [heavy.rho, 1] : [light.rho, 0]))
+  const p = flipRef.makeParticles(lat.p.n + 4 * nx * nz)
+  p.pos.set(lat.p.pos); p.mass.set(lat.p.mass)
+  for (let q = 0; q < lat.p.n; q++) p.material[q] = lat.tag[q]
+  let q = lat.p.n
+  for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) for (const [sx, sz] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+    p.pos.set([(i + sx) * DX, (h1 + 0.75) * DX, (k + sz) * DX], 3 * q); p.material[q] = 1; p.mass[q] = heavy.rho * VP; q++
+  }
+  sim.step(p, DT)
+  const drops = dropStates(sim, L, p, light, heavy, d, [0, -G, 0])
+  const n = drops.length
+  if (!n) { check(false, `B ${label}: no dispersed drop after the first step`); continue }
+  const cMax = Math.max(...drops.map(st => { const h = DT / ((st.rp + 0.5 * st.rc) * d ** 2 / (18 * st.muM * fRe(st.eq.Re))), r = rEq(st.eq.Re); return Math.abs(Math.exp(-h) * (1 + r) - r) }))
+  const steps = Math.ceil(Math.log(1e-12) / Math.log(cMax))
+  const [last] = frozenRun({ sim, p, drops }, drops.map(() => [0, 0, 0]), DT, DT, [steps])
+  const errs = drops.map((st, i) => dist(last[i], st.ueq) / st.eq.U), worst = Math.max(...errs)
+  const Um = drops.reduce((a, st) => a + st.eq.U, 0) / n
+  check(worst <= 1e-3, `B balance at rest, ${label}, frozen fields, ${(steps * DT).toFixed(1)} s (${n} drops within a cell of the interface): max |s − u_eq(a = g)|/|u_eq| ${worst.toExponential(2)} (≤ 1e-3); mean u_eq ${Um.toFixed(5)} m/s; median error ${errs.sort((a, b) => a - b)[Math.floor(n / 2)].toExponential(2)}`)
 }
 
 // ── S + T: frozen fields ──────────────────────────────────────────────────────────────────────────────────────────
@@ -144,7 +185,6 @@ function frozenRun(sc, s0, dt, dt0, checkpoints) {
   }
   return out
 }
-const dist = (u, v) => Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2])
 const CASES = [
   { label: 'mercury 3 mm in water', D: HG, key: 'mercury|water', d: 3e-3, seed: 91, T: [6, 12, 24, 36, 60], order: true },
   { label: 'olive oil 1 mm in water', D: OIL, key: 'oil|water', d: 1e-3, seed: 92, T: [1, 2, 6, 12, 18], order: true },
@@ -192,7 +232,7 @@ for (const c of CASES) {
   let errSum = 0, ueqMean = 0
   for (const st of drops) { errSum += Math.abs(Math.hypot(p.slip[3 * st.q], p.slip[3 * st.q + 1], p.slip[3 * st.q + 2]) - st.eq.U) / st.eq.U; ueqMean += st.eq.U }
   const n = drops.length, e = errSum / n, dil = equilibrium(d, (W.rho - OIL.rho) * G, W.rho, W.mu)
-  check(n > 0 && e <= 0.01, `D-a model slip, 1 mm olive-oil drops in still water (${n} dispersed after 1.5 s): mean |slip − u_eq|/u_eq ${(100 * e).toFixed(3)} % (≤ 1 %; u_eq of (58)+(40)+(43) at each drop's own α, ρ_m, ∇p, mean ${n ? (ueqMean / n).toFixed(5) : '—'} m/s); dilute Schiller–Naumann u_t ${dil.U.toFixed(5)} m/s (Re ${dil.Re.toFixed(1)}) for reference`)
+  check(n > 0 && e <= 0.01, `D-a model slip, 1 mm olive-oil drops in still water (${n} dispersed after 1.5 s): mean |slip − u_eq|/u_eq ${(100 * e).toFixed(3)} % (≤ 1 %; u_eq of (58)+(40)+(43) at each drop's own α, ρ_m, a = g − Du/Dt, mean ${n ? (ueqMean / n).toFixed(5) : '—'} m/s); dilute Schiller–Naumann u_t ${dil.U.toFixed(5)} m/s (Re ${dil.Re.toFixed(1)}) for reference`)
 }
 
 // overturn / layered scenes (F1's 16×40×8 tank, 12 + 12 cells)
@@ -204,11 +244,12 @@ function layered(lower, upper, key, seconds, seed, immiscible, sample) {
   const { p, tag } = fill(nx, h1 + h2, nz, DX, mulberry32(seed), (x, y) => (y < h1 * DX ? [lower.rho, 0] : [upper.rho, 1]))
   for (let q = 0; q < p.n; q++) p.material[q] = tag[q]
   const dt = DT, steps = Math.round(seconds / dt), hist = []
-  let everDispersed = 0, maxSlip = 0
+  let everDispersed = 0, maxSlip = 0, maxAccel = 0
   for (let s = 1; s <= steps; s++) {
     sim.step(p, dt)
     everDispersed = Math.max(everDispersed, sim.lastDrift?.dispersed ?? 0)
     maxSlip = Math.max(maxSlip, sim.lastDrift?.maxSlip ?? 0)
+    if (immiscible) for (let s2 = 0; s2 < L.size; s2++) maxAccel = Math.max(maxAccel, Math.hypot(sim.faceAccel[0][s2], sim.faceAccel[1][s2], sim.faceAccel[2][s2]))
     if (s % 120 === 0) {
       // "wrong side" relative to the STABLE order: the denser material belongs below h1
       const heavyTag = lower.rho > upper.rho ? 0 : 1
@@ -217,7 +258,7 @@ function layered(lower, upper, key, seconds, seed, immiscible, sample) {
       hist.push({ t: s * dt, wrong: wrong / p.n, vol: sample ? sim.phiVolume() / (p.n * VP) : NaN })
     }
   }
-  return { hist, everDispersed, maxSlip, n: p.n }
+  return { hist, everDispersed, maxSlip, maxAccel, n: p.n }
 }
 
 if (!QUICK) {
@@ -232,9 +273,12 @@ if (!QUICK) {
   for (const [label, lower, upper, key, seconds, seed] of [['water over olive oil', OIL, W, 'oil|water', 15, 72], ['mercury over water', W, HG, 'mercury|water', 8, 71]]) {
     const on = layered(lower, upper, key, seconds, seed, true, key === 'oil|water')
     const off = layered(lower, upper, key, seconds, seed, false, false)
-    // context for the largest slip: the terminal speed of the largest sub-grid drop (d → dx) in the pure pair under g
-    const [c, dd] = lower.rho > upper.rho ? [lower, upper] : [upper, lower], ref = equilibrium(DX, Math.abs(dd.rho - c.rho) * G, c.rho, c.mu)
-    info(`D-c ${label} released inverted, ${seconds} s: wrong side with the drift flux ${on.hist.filter((h, i) => i % 2 === 1 || i === on.hist.length - 1).map(h => `${h.t.toFixed(0)} s ${(100 * h.wrong).toFixed(1)} %`).join(', ')}; without ${(100 * off.hist[off.hist.length - 1].wrong).toFixed(1)} % at ${seconds} s; largest slip ${on.maxSlip.toFixed(4)} m/s (a dx-sized drop's terminal speed under g: ${ref.U.toFixed(4)} m/s) (reported; the hindered-settling reference is not frozen)`)
+    // context for the largest slip: the terminal speed of the largest sub-grid drop (d → dx) of the heavy liquid in the
+    // light one, under g and under the run's largest face acceleration (an upper reference: drops are smaller and the
+    // largest |a| is brief)
+    const [c, dd] = lower.rho > upper.rho ? [upper, lower] : [lower, upper]
+    const ref = equilibrium(DX, Math.abs(dd.rho - c.rho) * G, c.rho, c.mu), refA = equilibrium(DX, Math.abs(dd.rho - c.rho) * on.maxAccel, c.rho, c.mu)
+    info(`D-c ${label} released inverted, ${seconds} s: wrong side with the drift flux ${on.hist.filter((h, i) => i % 2 === 1 || i === on.hist.length - 1).map(h => `${h.t.toFixed(0)} s ${(100 * h.wrong).toFixed(1)} %`).join(', ')}; without ${(100 * off.hist[off.hist.length - 1].wrong).toFixed(1)} % at ${seconds} s; largest slip ${on.maxSlip.toFixed(4)} m/s; largest face |a| ${(on.maxAccel / G).toFixed(2)} g (a dx-sized drop's terminal speed: ${ref.U.toFixed(4)} m/s under g, ${refA.U.toFixed(4)} m/s at that |a|) (reported; the hindered-settling reference is not frozen)`)
     if (key === 'oil|water') {
       const worst = Math.max(...on.hist.map(h => Math.abs(h.vol - 1)))
       check(worst <= 0.02, `V volume with the drift flux (${label}): max |φ-volume/N·V_p − 1| ${(100 * worst).toFixed(2)} % over ${seconds} s (≤ 2 %)`)

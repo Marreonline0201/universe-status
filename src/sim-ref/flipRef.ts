@@ -287,8 +287,11 @@ export class FlipRef {
   readonly immiscible: ImmiscibleOptions | null
   /** The drift velocity u_V of each particle from the last driftFlux (m/s, 3 per particle), added in advect. */
   drift = new Float64Array(0)
-  /** The substep's total pressure when it projected twice (the viscous path), else null (this.pressure is it). */
-  pressureTotal: Float64Array | null = null
+  /** Immiscibility: the grid velocity after the grid update (u* = uⁿ + Δt·g, walls applied), and the acceleration each
+   *  face received from the projection (and, on the viscous path, the viscous solve): a_f = (u*_f − u_f)/Δt = g − Du/Dt
+   *  on the faces the final projection set (m/s²); 0 on SOLID faces, faces no liquid touches and faces inside the ball. */
+  uStar: [Float64Array, Float64Array, Float64Array] | null = null
+  readonly faceAccel: [Float64Array, Float64Array, Float64Array]
   /** Last driftFlux: dispersed particles, largest |slip| (m/s), the mean drop diameter of the dispersed (m). */
   lastDrift = { dispersed: 0, maxSlip: 0, meanDrop: 0, tooLarge: 0 }
   /** Monolithic coupling: the discrete pressure torque J_rot·p about the centre (N·m) of the last solve — logged, not
@@ -332,6 +335,7 @@ export class FlipRef {
     this.viscosityTolerance = opts.viscosityTolerance ?? 1e-10
     this.viscousTestBC = opts.viscousTestBC
     this.immiscible = opts.immiscible ?? null
+    if (this.immiscible && !(opts.projection ?? false)) throw new Error('FlipRef: immiscible needs the projection (the drift is driven by the projection\'s face accelerations)')
     this.sphereCoupling = opts.sphereCoupling ?? 'weak'
     this.sphereDensity = opts.sphereDensity ?? NaN
     if (this.sphereCoupling === 'monolithic' && !(this.sphereDensity > 0)) throw new Error('FlipRef: monolithic sphere coupling needs sphereDensity')
@@ -357,6 +361,7 @@ export class FlipRef {
     this.solidFraction = f64()
     this.cellSolidFraction = new Float64Array(layout.size)
     this.cellSolidKernel = new Float64Array(layout.size)
+    this.faceAccel = [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)]
   }
 
   /** One substep: transfers (S3.1a), with the pressure projection between grid update and G2P when enabled (S3.1b). */
@@ -369,6 +374,7 @@ export class FlipRef {
     this.gridUpdate(dt)
     if (this.projection) {
       this.applySolidFaces()
+      if (this.immiscible) this.uStar = [Float64Array.from(this.u[0]), Float64Array.from(this.u[1]), Float64Array.from(this.u[2])]
       if (this.freeSurface === 'ghost') { this.classifyLevelSet(p); this.thetaCache.clear() }
       else this.classify(p)
       this.extendLiquidIntoSphere()
@@ -376,24 +382,48 @@ export class FlipRef {
       this.solvePressure(dt)
       this.projectVelocities(dt)
       // S3.6 (Batty & Bridson 2008 §3): viscosity on the projected, extrapolated field, then a second projection
-      this.pressureTotal = null
       if (this.viscosityRuns(p)) {
-        const p1 = this.pressure.slice()
         this.extrapolate()
         this.applySolidFaces()
         this.viscositySolve(p, dt)
         this.solvePressure(dt)
         this.projectVelocities(dt)
-        // the step's total pressure (each projection is an impulse Δt·∇p/ρ): the drift flux's a = ∇p/ρ_m needs it
-        this.pressureTotal = p1
-        for (let i = 0; i < p1.length; i++) p1[i] += this.pressure[i]
       } else this.lastViscosity = null
+      if (this.immiscible) this.captureFaceAccel(dt)
     }
     this.extrapolate()
     this.applySolidFaces()
     this.g2p(p)
     if (this.immiscible) this.driftFlux(p, dt)
     this.advect(p, dt)
+  }
+
+  /** a = g − Du/Dt on the faces, the drift flux's forcing (MTK (58)), taken after the final projection and before the
+   *  velocity extrapolation:
+   *  - faces the final projection set (liquid on a side, outside the ball): a_f = (u*_f − u_f)/Δt — in FLIP the grid step
+   *    IS the material derivative, so this is the solver's own discrete balance: at rest it is g on every liquid face
+   *    whatever the density there. (The first draft used ∇p/ρ_m, an interpolated ∇p over a differently discretised
+   *    density: phantom accelerations at density jumps — Popinet 2018 §2.2: a well-balanced scheme evaluates the
+   *    pressure gradient and the force it balances with the same operator, at the same places.)
+   *  - SOLID (static wall) faces: g_a — the liquid at a wall has Du_n/Dt = 0.
+   *  - every other face (air, the tangential ghost faces outside the window, inside the ball): the velocity's
+   *    extrapolation, so a drop's stencil reads the neighbouring liquid's a, as its velocity stencil reads u. */
+  captureFaceAccel(dt: number): void {
+    const L = this.layout, us = this.uStar!
+    const known: [Uint8Array, Uint8Array, Uint8Array] = [new Uint8Array(L.size), new Uint8Array(L.size), new Uint8Array(L.size)]
+    for (const a of AXES) {
+      const acc = this.faceAccel[a], u = this.u[a], ok = this.valid[a], t = this.faceType[a], sf = this.solidFraction[a], kn = known[a]
+      acc.fill(0)
+      const [lo, hi] = L.faceRange(a)
+      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+        const s = L.idx(i, j, k)
+        if (t[s] === FaceType.SOLID) { acc[s] = this.gravity[a]; continue }
+        if (sf[s] >= 1 || !ok[s]) continue
+        acc[s] = (us[a][s] - u[s]) / dt
+        kn[s] = 1
+      }
+    }
+    this.extrapolateField(this.faceAccel, known)
   }
 
   /** Manninen, Taivassalo & Kallio 1996 algebraic-slip drift flux for sub-grid drops (spec §3–5, §8), after G2P:
@@ -404,14 +434,15 @@ export class FlipRef {
    *    cell (ν_eff = ν_c + ν_num), breakup only (d ← min(d, d_max)). A drop of a cell or more (d ≥ dx) is resolved
    *    by the grid itself, so it has no slip — this also keeps a quiet interface sharp (ε → 0 ⇒ d_max → ∞).
    *  - Slip (§8.3, (58) + (40) + virtual mass): the drop's equation of motion (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a −
-   *    18 μ_m f(Re)·s/d² with a = ∇p/ρ_m (the total pressure: g − Du/Dt), f = dragFactor (Schiller–Naumann / Newton),
+   *    18 μ_m f(Re)·s/d² with a = g − Du_m/Dt (MTK (58)) sampled from the face accelerations (captureFaceAccel) with the
+   *    velocity stencil, f = dragFactor (Schiller–Naumann / Newton),
    *    Re = d·ρ_c·|s|/μ_m and μ_m the Ishii–Zuber mixture viscosity μ_c(1 − α_d)^(−2.5 μ*) with α_pm = 1 — integrated
    *    exactly over the step with f taken at the step's start (the OpenFOAM-10 Lagrangian parcel scheme). Its fixed point
    *    is (58)'s equilibrium slip u_eq; from rest the drop accelerates at (ρ_p − ρ_m)·a/(ρ_p + ½ρ_c).
    *  - Drift (MTK (33)): u_V = u_C − Σ_k α_k ū_Ck (dispersed; ū_Ck the cell mean slip of material k), −Σ_k α_k ū_Ck for the
    *    others — no net volume moves through a cell. Particles advect with u + u_V; their carried velocity is unchanged. */
   driftFlux(p: RefParticles, dt: number): void {
-    const I = this.immiscible!, L = this.layout, h = L.dx, S = L.size, lab = this.label, pr = this.pressureTotal ?? this.pressure
+    const I = this.immiscible!, L = this.layout, h = L.dx, S = L.size
     if (!p.slip || p.slip.length !== 3 * p.n) p.slip = new Float64Array(3 * p.n)
     if (!p.drop || p.drop.length !== p.n) p.drop = new Float64Array(p.n)
     if (this.drift.length !== 3 * p.n) this.drift = new Float64Array(3 * p.n)
@@ -442,22 +473,11 @@ export class FlipRef {
     const alpha = (k: number, s2: number) => (Wt[s2] > 0 ? W[k * S + s2] / Wt[s2] : 0)
     const cellOf = (q: number) => L.idx(cellIndex(p.pos[3 * q], h, L.nx), cellIndex(p.pos[3 * q + 1], h, L.ny), cellIndex(p.pos[3 * q + 2], h, L.nz))
     const majority = (s2: number) => { let c = 0; for (let k = 1; k < K; k++) if (alpha(k, s2) > alpha(c, s2)) c = k; return c }
-    // ∇p on the three face grids (p = 0 in AIR, 0 across SOLID faces), sampled trilinearly like the velocity
-    const gp = AXES.map(a => {
-      const g = new Float64Array(S), [lo, hi] = L.faceRange(a)
-      for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
-        const fs2 = L.idx(i, j, k)
-        if (this.faceType[a][fs2] === FaceType.SOLID) continue
-        const sm = L.idx(i - (a === 0 ? 1 : 0), j - (a === 1 ? 1 : 0), k - (a === 2 ? 1 : 0))
-        const pp = lab[fs2] === CellLabel.LIQUID ? pr[fs2] : 0, pm = lab[sm] === CellLabel.LIQUID ? pr[sm] : 0
-        g[fs2] = (pp - pm) / h
-      }
-      return g
-    })
-    const gradP = (x: number, y: number, z: number): Vec3 => AXES.map(a => {
-      const st = stencil(L, a, x, y, z)
+    // a = g − Du/Dt at a point: the face accelerations sampled trilinearly like the velocity
+    const accel = (x: number, y: number, z: number): Vec3 => AXES.map(a => {
+      const st = stencil(L, a, x, y, z), fa = this.faceAccel[a]
       let v = 0
-      for (let n = 0; n < 8; n++) v += st.w[n] * gp[a][L.idx(st.i[n], st.j[n], st.k[n])]
+      for (let n = 0; n < 8; n++) v += st.w[n] * fa[L.idx(st.i[n], st.j[n], st.k[n])]
       return v
     }) as Vec3
     // ε = 2 ν_eff S:S at a cell centre (cached). ∇u: ∂u_a/∂x_a from the cell's own two faces; ∂u_a/∂x_b (b ≠ a) by central
@@ -508,8 +528,8 @@ export class FlipRef {
       for (let kk = 0; kk < K; kk++) rm += alpha(kk, s2) * prop[kk].rho
       const aD = 1 - alpha(c, s2), muStar = (muP + 0.4 * muC) / (muP + muC)
       const muM = muC * Math.pow(Math.max(1e-12, 1 - aD), -2.5 * muStar)
-      const gP = gradP(p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2])
-      // the drop's equation of motion: (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = ∇p/ρ_m, integrated over
+      const acc = accel(p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2])
+      // the drop's equation of motion: (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = g − Du/Dt, integrated over
       // the step with the drag factor f taken at the step's start (OpenFOAM-10 MomentumParcel::calc, Re from the current
       // slip, + integrationSchemes::analytical): s ← s + (s_tgt − s)·(1 − e^(−Δt/τ)), s_tgt = (ρ_p − ρ_m)·a·d²/(18 μ_m f),
       // τ = (ρ_p + ½ρ_c)·d²/(18 μ_m f). Exact initial acceleration from rest; the fixed point is u_eq of (58) + (40)
@@ -517,7 +537,7 @@ export class FlipRef {
       const kd = d * d / (18 * muM * dragFactor(d * rc * Math.hypot(sOld[0], sOld[1], sOld[2]) / muM))
       const m = -Math.expm1(-dt / ((rp + 0.5 * rc) * kd))
       for (let a = 0; a < 3; a++) {
-        const u = sOld[a] + ((rp - rm) * (gP[a] / rm) * kd - sOld[a]) * m
+        const u = sOld[a] + ((rp - rm) * acc[a] * kd - sOld[a]) * m
         p.slip[3 * q + a] = u
         slipSum[3 * (k * S + s2) + a] += u
       }
@@ -1473,11 +1493,14 @@ export class FlipRef {
   /** Velocity extrapolation into fluid faces without mass and into ghost faces: `extrapolationLayers` passes, each
    *  setting an unset face to the mean of its already-set 6-neighbours on the same face grid (validity ping-pongs,
    *  so the result is independent of traversal order). SOLID faces are neither sources nor targets. */
-  extrapolate(): void {
+  extrapolate(): void { this.extrapolateField(this.u, this.valid) }
+
+  /** The velocity extrapolation applied to any face field `f` with its known-face flags `ok` (updated in place). */
+  extrapolateField(f: [Float64Array, Float64Array, Float64Array], known: [Uint8Array, Uint8Array, Uint8Array]): void {
     const L = this.layout
     for (const a of AXES) {
       const [lo, hi] = L.faceRange(a)
-      const t = this.faceType[a], u = this.u[a], ok = this.valid[a]
+      const t = this.faceType[a], u = f[a], ok = known[a]
       for (let layer = 0; layer < this.extrapolationLayers; layer++) {
         const prev = ok.slice()
         for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {

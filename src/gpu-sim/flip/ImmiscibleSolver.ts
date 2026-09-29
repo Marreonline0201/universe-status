@@ -1,9 +1,11 @@
 /// <reference types="@webgpu/types" />
 // ImmiscibleSolver — S3.5-i sub-grid drop slip for immiscible liquids on the GPU (Manninen, Taivassalo & Kallio 1996
 // algebraic-slip drift flux; drop size from Hinze 1955 or the scenario): shaders/immiscible.wgsl, the f64 reference is
-// flipRef.driftFlux. Owned by FlipGpuSimulator (created with `immiscible: true`); encode() runs after the final
-// extrapolation and before g2pMac, which adds the per-particle drift to the advection. Every entry point binds ≤ 8
-// storage buffers (the default WebGPU limit this code base keeps).
+// flipRef.driftFlux + flipRef.captureFaceAccel. Owned by FlipGpuSimulator (created with `immiscible: true`), which calls:
+// encodeSnapshot after the grid update (u*), encodeFaceAccel after the final projection (a = g − Du/Dt on the faces,
+// then the caller runs the velocity's extrapolation kernel on accA/accB), and encode after the final extrapolation,
+// before g2pMac, which adds the per-particle drift to the advection. Every entry point binds ≤ 8 storage buffers (the
+// default WebGPU limit this code base keeps).
 import commonWGSL from './shaders/common.wgsl?raw'
 import immiscibleWGSL from './shaders/immiscible.wgsl?raw'
 
@@ -17,15 +19,15 @@ export interface ImmiscibleInputs {
   device: GPUDevice
   params: GPUBuffer          // FlipParams uniform (binding 0)
   pos: GPUBuffer; aux: GPUBuffer
-  u: GPUBuffer               // the final (extrapolated) face velocity
-  labels: GPUBuffer          // the pressure solve's labels (solver layout)
-  faceType: GPUBuffer
-  pressure: GPUBuffer        // the pressure solver's x (Pa, solver layout)
+  uProj: GPUBuffer; validProj: GPUBuffer   // velocity buffer A and its valid flags, as the final projection leaves them
+  uFinal: GPUBuffer          // the final (extrapolated) face velocity
+  faceType: GPUBuffer; faceSolid: GPUBuffer
   drift: GPUBuffer           // per-particle drift, vec4 (read by g2pMac)
   size: number               // padded slots per grid
-  paddedCount: number        // solver cells
   cells: number              // window cells
   maxParticles: number
+  /** Extrapolation layers (the acceleration ends in accA for an even count, accB for odd — as the velocity). */
+  layers: number
 }
 
 /** One tracked liquid: its composition ids (particles' aux.x), ρ (kg/m³) and μ (Pa·s). */
@@ -45,11 +47,11 @@ export interface ImmiscibleStats { dispersed: number; tooLarge: number; maxSlip:
 
 type Entry = { name: string; uses: number[] }
 const ENTRIES: Entry[] = [
-  { name: 'pressureSum', uses: [22, 23] },
+  { name: 'faceAccel', uses: [0, 11, 24, 25, 26, 27, 28, 30] },
   { name: 'alphaScatter', uses: [0, 1, 2, 3, 4] },
-  { name: 'cellInfo', uses: [0, 1, 5, 6, 8] },
-  { name: 'slipParticles', uses: [0, 1, 2, 3, 7, 9, 10, 11, 12, 13] },
-  { name: 'driftCells', uses: [0, 1, 7, 14, 15] },
+  { name: 'cellInfo', uses: [0, 1, 4, 6, 8] },
+  { name: 'slipParticles', uses: [0, 1, 2, 3, 7, 12, 13, 29] },
+  { name: 'driftCells', uses: [0, 1, 7, 13, 15] },
   { name: 'driftParticles', uses: [0, 2, 16, 17, 20] },
 ]
 
@@ -57,7 +59,7 @@ export class ImmiscibleSolver {
   readonly device: GPUDevice
   private readonly inp: ImmiscibleInputs
   private readonly ip: GPUBuffer
-  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipSums' | 'driftCell' | 'pTotal', GPUBuffer>
+  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipSums' | 'driftCell' | 'uStar' | 'accA' | 'accB' | 'accValidA' | 'accValidB', GPUBuffer>
   private readonly pipelines = new Map<string, GPUComputePipeline>()
   private readonly groups = new Map<string, GPUBindGroup>()
   /** Slots in use (0 until configure). */
@@ -69,6 +71,7 @@ export class ImmiscibleSolver {
     this.device = d
     const S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST, R = GPUBufferUsage.COPY_SRC
     const mk = (label: string, bytes: number) => d.createBuffer({ label: `imm.${label}`, size: Math.max(16, bytes), usage: S | D | R })
+    const G = 3 * inp.size
     this.ip = d.createBuffer({ label: 'imm.params', size: IP_BYTES, usage: GPUBufferUsage.UNIFORM | D })
     this.bufs = {
       alphaSums: mk('alphaSums', 4 * 10 * inp.size),
@@ -76,7 +79,8 @@ export class ImmiscibleSolver {
       slipState: mk('slipState', 16 * inp.maxParticles),
       slipSums: mk('slipSums', 4 * (7 * IMMISCIBLE_MAX_SLOTS * inp.size + ST_WORDS)),
       driftCell: mk('driftCell', 16 * inp.size),
-      pTotal: mk('pTotal', 4 * inp.paddedCount),
+      uStar: mk('uStar', 4 * G),
+      accA: mk('accA', 4 * G), accB: mk('accB', 4 * G), accValidA: mk('accValidA', 4 * G), accValidB: mk('accValidB', 4 * G),
     }
   }
 
@@ -86,6 +90,9 @@ export class ImmiscibleSolver {
     return s
   }
 
+  /** The face accelerations after the extrapolation (the buffer slipParticles samples). */
+  get accFinal(): GPUBuffer { return this.inp.layers % 2 === 0 ? this.bufs.accA : this.bufs.accB }
+
   private bindingBuffer(b: number): GPUBuffer {
     const B = this.bufs, I = this.inp
     switch (b) {
@@ -93,17 +100,21 @@ export class ImmiscibleSolver {
       case 1: return this.ip
       case 2: return I.pos
       case 3: return I.aux
-      case 4: case 5: return B.alphaSums
+      case 4: return B.alphaSums
       case 6: case 7: return B.cellInf
-      case 8: return I.u
-      case 9: case 23: return B.pTotal
-      case 10: return I.labels
+      case 8: return I.uFinal
       case 11: return I.faceType
       case 12: case 20: return B.slipState
-      case 13: case 14: return B.slipSums
+      case 13: return B.slipSums
       case 15: case 16: return B.driftCell
       case 17: return I.drift
-      case 22: return I.pressure
+      case 24: return I.faceSolid
+      case 25: return B.uStar
+      case 26: return I.validProj
+      case 27: return B.accA
+      case 28: return B.accValidA
+      case 29: return this.accFinal
+      case 30: return I.uProj
     }
     throw new Error(`ImmiscibleSolver: no buffer for binding ${b}`)
   }
@@ -156,21 +167,24 @@ export class ImmiscibleSolver {
     pass.dispatchWorkgroups(Math.max(1, Math.ceil(threads / wg)))
   }
 
-  /** The first projection's pressure into pTotal (every path; the drift reads pTotal). */
-  encodeFirstPressure(encoder: GPUCommandEncoder) {
-    encoder.copyBufferToBuffer(this.inp.pressure, 0, this.bufs.pTotal, 0, 4 * this.inp.paddedCount)
+  /** u* = the grid velocity right after the grid update (walls applied there), for a = (u* − u)/Δt. */
+  encodeSnapshot(encoder: GPUCommandEncoder) {
+    encoder.copyBufferToBuffer(this.inp.uProj, 0, this.bufs.uStar, 0, 4 * 3 * this.inp.size)
   }
-  /** Viscous path: pTotal += the second projection's pressure (flipRef.step, pressureTotal). */
-  encodeSecondPressure(encoder: GPUCommandEncoder) {
-    const pass = encoder.beginComputePass({ label: 'imm.pressureSum' })
-    this.dispatch(pass, 'pressureSum', this.inp.paddedCount, 256)
+  /** a on the faces into accA/accValidA (after the final projection, before any extrapolation); the caller then runs
+   *  the velocity's extrapolation kernel over accA ⇄ accB `layers` times. */
+  encodeFaceAccel(encoder: GPUCommandEncoder) {
+    const pass = encoder.beginComputePass({ label: 'imm.faceAccel' })
+    this.dispatch(pass, 'faceAccel', 3 * this.inp.size, 256)
     pass.end()
   }
 
-  /** α, ε, slip and drift for `count` particles (the FlipParams uniform is current; u is the final velocity). */
+  /** α, ε, slip and drift for `count` particles (the FlipParams uniform is current; u is the final velocity, the face
+   *  accelerations extrapolated). */
   encode(encoder: GPUCommandEncoder, count: number) {
     const B = this.bufs, I = this.inp
-    encoder.clearBuffer(B.alphaSums); encoder.clearBuffer(B.slipSums)
+    // the per-cell sums are all-zero here (their consumers clear what they read); only the statistics restart
+    encoder.clearBuffer(B.slipSums, 4 * 7 * IMMISCIBLE_MAX_SLOTS * I.size, 4 * ST_WORDS)
     const pass = encoder.beginComputePass({ label: 'imm.drift' })
     if (count > 0) this.dispatch(pass, 'alphaScatter', count, 64)
     this.dispatch(pass, 'cellInfo', I.cells, 256)

@@ -114,27 +114,22 @@ SETS.s36 = [
 ]
 // S3.5-i: each targets a kernel that K30–K33 cover
 SETS.s35i = [
-  [`${SH}/immiscible.wgsl`, '  if (h < 0.1) { return h * (1.0 - h * (0.5 - h * (1.0 / 6.0 - h * (1.0 / 24.0 - h / 120.0)))); }
-', '', 'series of 1 − e^(−h) dropped (f32 cancellation)'],
+  [`${SH}/immiscible.wgsl`, '  if (h < 0.1) { return h * (1.0 - h * (0.5 - h * (1.0 / 6.0 - h * (1.0 / 24.0 - h / 120.0)))); }\n', '', 'series of 1 − e^(−h) dropped (f32 cancellation)'],
   [`${SH}/immiscible.wgsl`, 'if (Re >= 1000.0) { return 0.44 * Re / 24.0; }', 'if (Re >= 1000.0) { return 0.44 * Re / 12.0; }', "Newton's drag factor doubled"],
   [`${SH}/immiscible.wgsl`, 'return 1.0 + 0.15 * pow(Re, 0.687);', 'return 1.0 + 0.15 * pow(Re, 0.5);', 'Schiller–Naumann exponent wrong'],
   [`${SH}/immiscible.wgsl`, 'let muM = muc * pow(max(1e-12, 1.0 - aD), -2.5 * muStar);', 'let muM = muc;', 'hindered mixture viscosity dropped'],
   [`${SH}/immiscible.wgsl`, 'let m = oneMinusExpNeg(P.dt / ((rp + 0.5 * rc) * kd));', 'let m = oneMinusExpNeg(P.dt / (rp * kd));', 'virtual mass dropped from τ'],
-  [`${SH}/immiscible.wgsl`, 'let s = sOld + ((rp - rm) * (gradP(x) / rm) * kd - sOld) * m;', 'let s = sOld + ((rp - rc) * (gradP(x) / rm) * kd - sOld) * m;', 'buoyancy against ρ_c, not the mixture'],
-  [`${SH}/immiscible.wgsl`, '  if (faceType[gridBase(a) + slotOf(c)] == SOLID) { return 0.0; }
-', '', 'wall faces carry a pressure gradient'],
+  [`${SH}/immiscible.wgsl`, 'let s = sOld + ((rp - rm) * accelAt(x) * kd - sOld) * m;', 'let s = sOld + ((rp - rc) * accelAt(x) * kd - sOld) * m;', 'buoyancy against ρ_c, not the mixture'],
+  [`${SH}/immiscible.wgsl`, 'if (faceType[s] == SOLID) { accOut[s] = P.gravity[a]; accValidOut[s] = 0u; return; }', 'if (faceType[s] == SOLID) { accOut[s] = 0.0; accValidOut[s] = 0u; return; }', 'wall faces carry a = 0, not g'],
+  [`${SH}/immiscible.wgsl`, 'accOut[s] = (uStar[s] - uProj[s]) / P.dt;', 'accOut[s] = (uStar[s] - uProj[s]);', 'face acceleration without 1/Δt'],
   [`${SH}/immiscible.wgsl`, 'lo[bb] = max(0, c[bb] - 1); hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'lo[bb] = c[bb]; hi[bb] = min(P.n[bb] - 1, c[bb] + 1);', 'strain off-diagonal one-sided'],
   [`${SH}/immiscible.wgsl`, 'dMax = 0.725 * pow(rc / sig, -0.6) * pow(eps, -0.4);', 'dMax = 0.725 * pow(rc / sig, -0.6) * pow(eps, -0.6);', 'Hinze ε exponent wrong'],
   [`${SH}/immiscible.wgsl`, 'd = select(dMax, min(dOld, dMax), dOld > 0.0);', 'd = dMax;', 'breakup-only drop memory dropped'],
-  [`${SH}/immiscible.wgsl`, '  for (var k = 1u; k < IP.K; k++) { if (al[k] > al[cm]) { cm = k; } }
-', '', 'continuous phase always the first material'],
-  [`${SH}/immiscible.wgsl`, '    let v = w * LS_SCALE;
-', '    let v = LS_SCALE;
-', 'α counts particles, not kernel weights'],
+  [`${SH}/immiscible.wgsl`, '  for (var k = 1u; k < IP.K; k++) { if (al[k] > al[cm]) { cm = k; } }\n', '', 'continuous phase always the first material'],
+  [`${SH}/immiscible.wgsl`, '    let v = w * LS_SCALE;\n', '    let v = LS_SCALE;\n', 'α counts particles, not kernel weights'],
   [`${SH}/immiscible.wgsl`, 'J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));', 'J += sum / f32(cnt);', 'counter-drift not α-weighted'],
   [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, 0.0);', 'no volume-conserving counter-drift'],
-  [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }
-', '', 'advection ignores the drift'],
+  [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }\n', '', 'advection ignores the drift'],
 ]
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
 const M = SETS[GATE]

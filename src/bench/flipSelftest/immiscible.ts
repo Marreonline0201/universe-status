@@ -1,14 +1,15 @@
 /// <reference types="@webgpu/types" />
 // S3.5-i on the GPU (flip-selftest.html): the immiscible drift flux (ImmiscibleSolver, immiscible.wgsl) against the f64
-// reference flipRef.driftFlux on IDENTICAL inputs — the same f32 particle positions, slip history, face velocities,
-// pressure and labels on both sides — K30–K32; then s35i-ref scenes on the GPU path. Metrics only —
+// reference flipRef.driftFlux on IDENTICAL inputs — the same f32 particle positions, slip history, face velocities and
+// face accelerations on both sides — K30–K33, and the face acceleration itself (K34, flipRef.captureFaceAccel) on the
+// same f32 u* and projected u. Metrics only —
 // scripts/fluid-gates/s35i-gpu.mjs applies the tolerances. Every bound below is derived from f32 rounding (u = 2^-24;
 // WGSL: × − + and conversions correctly rounded, ÷ 2.5 ulp, pow via exp2(y·log2 x) ≤ 64 ulp here, exp (3 + 2|x|) ulp).
 import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
 import { FlipRef, makeParticles, dragFactor, type RefParticles } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { INCOMPRESSIBLE_NU_NUM } from '../../composition/liquidGate'
-import { DX, L_REF, TAU, submit, mulberry32 } from './util'
+import { DX, L_REF, TAU, submit, mulberry32, solverConfig, capFor } from './util'
 
 import { LIQUIDS, waterDensity, HG_RHO_20C } from '../../composition/materialData'
 
@@ -88,12 +89,17 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   const nameOf = new Map(sc.ids.map((id, k) => [id, sc.names[k]]))
   const cpu = new FlipRef(L, { gravity: [0, -G, 0], density: IMM.water.rho, projection: true, freeSurface: 'ghost', variableDensity: true, pressureTolerance: 1e-9,
     immiscible: { props, sigma: (a, b) => sigmaOf(nameOf.get(a)!, nameOf.get(b)!), dropDiameter: sc.drop, nuNum: INCOMPRESSIBLE_NU_NUM } })
-  // the reference's drift-flux inputs
-  cpu.p2g(p); cpu.gridUpdate(dt); cpu.applySolidFaces(); cpu.classifyLevelSet(p); cpu.fillUnsetLiquidFaces()
-  cpu.solvePressure(dt); cpu.projectVelocities(dt); cpu.extrapolate(); cpu.applySolidFaces()
-  for (const ax of [0, 1, 2]) for (let s = 0; s < S; s++) cpu.u[ax][s] = Math.fround(cpu.u[ax][s])
-  for (let s = 0; s < S; s++) cpu.pressure[s] = Math.fround(cpu.pressure[s])
-  cpu.pressureTotal = null
+  // the reference's drift-flux inputs: u* after the grid update, the projected u and its valid flags (both f32-rounded:
+  // K34's identical inputs), a = g − Du/Dt on the faces, then the final extrapolated u
+  const r32 = (f: Float64Array[]) => { for (const ax of [0, 1, 2]) for (let s = 0; s < S; s++) f[ax][s] = Math.fround(f[ax][s]) }
+  cpu.p2g(p); cpu.gridUpdate(dt); cpu.applySolidFaces(); r32(cpu.u)
+  cpu.uStar = [Float64Array.from(cpu.u[0]), Float64Array.from(cpu.u[1]), Float64Array.from(cpu.u[2])]
+  cpu.classifyLevelSet(p); cpu.fillUnsetLiquidFaces(); cpu.solvePressure(dt); cpu.projectVelocities(dt); r32(cpu.u)
+  const uProj = new Float32Array(3 * S), vProj = new Uint32Array(3 * S), uStar3 = new Float32Array(3 * S)
+  for (const ax of [0, 1, 2]) { uProj.set(cpu.u[ax], ax * S); uStar3.set(cpu.uStar[ax], ax * S); for (let s = 0; s < S; s++) vProj[ax * S + s] = cpu.valid[ax][s] }
+  cpu.captureFaceAccel(dt)
+  const accRef = cpu.faceAccel.map(f => Float64Array.from(f))
+  cpu.extrapolate(); cpu.applySolidFaces(); r32(cpu.u); r32(cpu.faceAccel)
   const slip0 = Float64Array.from(p.slip!), drop0 = Float64Array.from(p.drop!)
 
   const gpu = await FlipGpuSimulator.create(device, {
@@ -106,16 +112,36 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   const imm = gpu.immiscibleSolver!
   imm.configure({ materials: sc.ids.map((id, k) => ({ compositions: [id], ...IMM[sc.names[k]] })), sigma: (a, b) => sigmaOf(sc.names[a], sc.names[b]),
     dropDiameter: sc.drop, nuNum: INCOMPRESSIBLE_NU_NUM })
-  const u3 = new Float32Array(3 * S)
-  for (const ax of [0, 1, 2]) u3.set(cpu.u[ax], ax * S)
+  // K34 the face acceleration: faceAccel + the velocity's extrapolation kernel (two layers) on the reference's f32 u*,
+  // projected u and valid flags. Bound: a projection-set face (u* − u)/Δt — the subtraction ½u·|u* − u|, the division
+  // 2.5 ulp, f32(Δt) u — ≤ 4u·|a|; SOLID faces f32(g) ≤ u·|g|; each extrapolation layer averages ≤ 6 such faces
+  // (≤ 6 roundings + the division) — +6u·A per layer, A = max|a|: 16u·A after two layers
+  gpu.writeGrid(0, { u: uProj, valid: vProj })
+  device.queue.writeBuffer(imm.bufs.uStar, 0, uStar3)
+  await submit(device, e => gpu.encodeFaceAccel(e))
+  const gAcc = new Float32Array(await gpu.readBuffer(imm.accFinal, 4 * 3 * S))
+  let accMax = 0, accDiff = 0, accFaces = 0, accSolidFaces = 0
+  for (const ax of [0, 1, 2] as const) for (let s = 0; s < S; s++) accMax = Math.max(accMax, Math.abs(accRef[ax][s]))
+  for (const ax of [0, 1, 2] as const) {
+    const [lo, hi] = L.faceRange(ax)
+    for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+      const s = L.idx(i, j, k)
+      if (accRef[ax][s] !== 0) accFaces++
+      if (cpu.faceType[ax][s] === 1) accSolidFaces++
+      accDiff = Math.max(accDiff, Math.abs(gAcc[ax * S + s] - accRef[ax][s]))
+    }
+  }
+  const k34 = { accRatio: accDiff / (16 * U * accMax), accMax, accFaces, accSolidFaces }
+
+  // K30–K33 inputs: the final u and the reference's face accelerations, f32 on both sides
+  const u3 = new Float32Array(3 * S), a3 = new Float32Array(3 * S)
+  for (const ax of [0, 1, 2]) { u3.set(cpu.u[ax], ax * S); a3.set(cpu.faceAccel[ax], ax * S) }
   gpu.writeGrid(gpu.finalVelocityBuffer, { u: u3 })
-  const sb = gpu.solver!.buffers
-  device.queue.writeBuffer(sb.x, 0, Float32Array.from(cpu.pressure))
-  device.queue.writeBuffer(sb.labels, 0, Uint32Array.from(cpu.label))
+  device.queue.writeBuffer(imm.accFinal, 0, a3)
   const st4 = new Float32Array(4 * p.n)
   for (let q = 0; q < p.n; q++) st4.set([slip0[3 * q], slip0[3 * q + 1], slip0[3 * q + 2], drop0[q]], 4 * q)
   device.queue.writeBuffer(imm.bufs.slipState, 0, st4)
-  await submit(device, e => { imm.encodeFirstPressure(e); imm.encode(e, p.n) })
+  await submit(device, e => imm.encode(e, p.n))
   cpu.driftFlux(p, dt)
   const gSlip = new Float32Array(await gpu.readBuffer(imm.bufs.slipState, 16 * p.n))
   const gDrift = new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n))
@@ -190,27 +216,21 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   }
   const k30 = { cellsSeen, alphaRatio, rhoRatio, epsRatio, epsCells, majorityMismatch, majorityExcused }
 
-  // K31 slip and drop per particle: bound B_s from the chain T = (ρ_p − ρ_m)(∇p/ρ_m)·k_d, k_d = d²/(18 μ_m f),
-  // m = 1 − e^(−Δt/((ρ_p + ½ρ_c)k_d)), s = s₀ + (T − s₀)·m
-  const lab = cpu.label, pr = cpu.pressure
-  const faceP = (a: number, c: number[]) => {
-    const [lo, hi] = L.faceRange(a as 0 | 1 | 2)
-    if (c.some((v, b) => v < lo[b] || v > hi[b])) return { g: 0, pp: 0, pm: 0 }
-    const s2 = L.idx(c[0], c[1], c[2])
-    if (cpu.faceType[a][s2] === 1) return { g: 0, pp: 0, pm: 0 }   // FaceType.SOLID
-    const cm = [...c]; cm[a]--
-    const sm = L.idx(cm[0], cm[1], cm[2]), pp = lab[s2] === 1 ? pr[s2] : 0, pm = lab[sm] === 1 ? pr[sm] : 0
-    return { g: (pp - pm) / DX, pp, pm }
-  }
-  const gradBound = (x: number[]) => {
+  // K31 slip and drop per particle: bound B_s from the chain T = (ρ_p − ρ_m)·a·k_d, k_d = d²/(18 μ_m f),
+  // m = 1 − e^(−Δt/((ρ_p + ½ρ_c)k_d)), s = s₀ + (T − s₀)·m; a sampled from identical f32 face values, so its error is the
+  // trilinear weights' (3·dT per weight) and the 8-term sum's (14u per tap, generous)
+  const accBound = (x: number[]) => {
     const g = [0, 0, 0], dg = [0, 0, 0]
     for (let a = 0; a < 3; a++) {
+      const [lo, hi] = L.faceRange(a as 0 | 1 | 2)
       const f = x.map((v, b) => v / DX - (a === b ? 0 : 0.5)), b0 = f.map(Math.floor), t = f.map((v, b) => v - b0[b])
       for (let m = 0; m < 8; m++) {
         const d = [m & 1, (m >> 1) & 1, (m >> 2) & 1], wv = d.map((dd, b) => (dd ? t[b] : 1 - t[b])), w = wv[0] * wv[1] * wv[2]
-        const fp = faceP(a, b0.map((v, b) => v + d[b]))
-        g[a] += w * fp.g
-        dg[a] += (3 * dT + 14 * U) * Math.abs(fp.g) + U * (Math.abs(fp.pp) + Math.abs(fp.pm)) / DX
+        const c = b0.map((v, b) => v + d[b])
+        if (c.some((v, b) => v < lo[b] || v > hi[b])) continue
+        const fa = cpu.faceAccel[a][L.idx(c[0], c[1], c[2])]
+        g[a] += w * fa
+        dg[a] += (3 * dT + 14 * U) * Math.abs(fa)
       }
     }
     return { g, dg: dg[0] + dg[1] + dg[2] }
@@ -254,9 +274,9 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
     const h = dt / ((Pm.rho + 0.5 * Cm.rho) * kd), m = -Math.expm1(-h), eH = eKd + 4 * U
     const eM = eH * (h * Math.exp(-h) / m) + (h < 0.1 ? 8 * U : ((3 + 2 * h) * U * Math.exp(-h) + U) / m)
     if (h < 0.1) seriesBranch++; else expBranch++
-    const gb = gradBound([p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]])
-    const T = gb.g.map(v => (Pm.rho - rm) * (v / rm) * kd), Tm = Math.hypot(...T)
-    const dT_ = Tm * (dRm / Math.max(1e-30, Math.abs(Pm.rho - rm)) + dRm / rm + eKd + 5 * U) + Math.abs(Pm.rho - rm) / rm * kd * gb.dg
+    const gb = accBound([p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]])
+    const T = gb.g.map(v => (Pm.rho - rm) * v * kd), Tm = Math.hypot(...T)
+    const dT_ = Tm * (dRm / Math.max(1e-30, Math.abs(Pm.rho - rm)) + eKd + 4 * U) + Math.abs(Pm.rho - rm) * kd * gb.dg
     const sNew = s0.map((v, a) => v + (T[a] - v) * m), dm = Math.hypot(...T.map((v, a) => v - s0[a]))
     // the recomputation must be the reference's own value (else these bounds describe a different computation)
     const rc = Math.hypot(sNew[0] - p.slip![3 * q], sNew[1] - p.slip![3 * q + 1], sNew[2] - p.slip![3 * q + 2])
@@ -319,5 +339,175 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   }
   const k33 = { advRatio, advChecked, advClamped, advMoved }
   gpu.destroy()
-  return { kind, particles: p.n, k30, k31, k32, k33 }
+  return { kind, particles: p.n, k30, k31, k32, k33, k34 }
+}
+
+// ── physics on the GPU path (s35i-ref scenes) ──
+
+async function makeImmSim(device: GPUDevice, n: Vec3, count: number, o: { tol?: number; density?: boolean; viscous?: boolean } = {}) {
+  return FlipGpuSimulator.create(device, {
+    nx: n[0], ny: n[1], nz: n[2], dx: DX, gravity: [0, -G, 0], maxParticles: count, lRef: L_REF, tauS: TAU,
+    projection: true, density: IMM.water.rho, pressureTolerance: o.tol ?? 1e-2, pressureCap: capFor(400), solverMethod: solverConfig.method,
+    densityProjection: o.density ?? true, psiTolerance: 1e-3, psiCap: capFor(400), freeSurface: 'ghost', variableDensity: true,
+    viscosity: o.viscous ?? false, immiscible: true,
+  })
+}
+
+/** G-rest: s35i-ref B's column at rest on the GPU's full step — a regular lattice, mercury below (10 cells), `light` above
+ *  (8 cells), four mercury drops per cell on the lattice sites of the light layer's first row; honey above takes the
+ *  viscous path (two projections, a includes the viscous acceleration). After one step the face accelerations within
+ *  two rows of the interface must be g: returns max |a − g|/g there (y faces) and max |a_x|, |a_z|/g. */
+export async function immRest(device: GPUDevice, o: { light: 'water' | 'honey'; tol?: number }) {
+  const nx = 8, ny = 20, nz = 8, h1 = 10, h2 = 8, dt = 1 / 120
+  const HONEY = { rho: LIQUIDS['honey-20pct-25C'].density(25), mu: LIQUIDS['honey-20pct-25C'].viscosity(25) }
+  const light = o.light === 'water' ? IMM.water : HONEY
+  const pts: { x: Vec3; m: number }[] = []
+  for (let k = 0; k < nz; k++) for (let j = 0; j < h1 + h2; j++) for (let i = 0; i < nx; i++) for (let s = 0; s < 8; s++)
+    pts.push({ x: [(i + ((s & 1) + 0.5) / 2) * DX, (j + (((s >> 1) & 1) + 0.5) / 2) * DX, (k + (((s >> 2) & 1) + 0.5) / 2) * DX], m: j < h1 ? 1 : 0 })
+  for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) for (const [sx, sz] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]])
+    pts.push({ x: [(i + sx) * DX, (h1 + 0.75) * DX, (k + sz) * DX], m: 1 })
+  const props = [light, IMM.mercury]
+  const gpu = await makeImmSim(device, [nx, ny, nz], pts.length, { tol: o.tol ?? 1e-4, density: false, viscous: o.light === 'honey' })
+  gpu.dt = dt
+  gpu.setParticles(pts.map(pt => ({ pos: pt.x.map(Math.fround) as Vec3, vel: [0, 0, 0] as Vec3, mass: props[pt.m].rho * DX ** 3 / 8, composition: pt.m, phase: 1, temperatureC: 20 })))
+  if (o.light === 'honey') {
+    gpu.viscositySolver!.setMuTable(new Float32Array([HONEY.mu, IMM.mercury.mu]))
+    gpu.viscositySolver!.muDefault = IMM.mercury.mu
+    gpu.viscosityActive = true
+  }
+  gpu.immiscibleSolver!.configure({ materials: props.map((pr, k) => ({ compositions: [k], ...pr })), sigma: (a, b) => (o.light === 'water' && a !== b ? SIGMA['mercury|water'] : null),
+    dropDiameter: 1e-3, nuNum: INCOMPRESSIBLE_NU_NUM })
+  gpu.immiscibleActive = true
+  await submit(device, e => gpu.step(e, 1))
+  const S = gpu.layout.size, acc = new Float32Array(await gpu.readBuffer(gpu.immiscibleSolver!.accFinal, 4 * 3 * S)), L = gpu.layout
+  let yErr = 0, hErr = 0, faces = 0
+  for (let k = 0; k < nz; k++) for (let j = h1 - 1; j <= h1 + 2; j++) for (let i = 0; i < nx; i++) {
+    yErr = Math.max(yErr, Math.abs(acc[S + L.idx(i, j, k)] + G) / G); faces++
+    hErr = Math.max(hErr, Math.abs(acc[L.idx(i, j, k)]) / G, Math.abs(acc[2 * S + L.idx(i, j, k)]) / G)
+  }
+  const d = await gpu.readDiagnostics(), stats = await gpu.immiscibleSolver!.readStats()
+  const out = { light: o.light, viscous: gpu.viscosityActive, particles: pts.length, faces, yErr, hErr, dispersed: stats.dispersed, capHits: d.capHits, breakdowns: d.breakdowns }
+  gpu.destroy()
+  return out
+}
+
+/** s35i-ref's layered scenes on the GPU at the page's settings (pressure 1e-2, ψ 1e-3): F1's 16×40×8 tank, `lower`
+ *  (12 cells) under `upper` (12 cells), Hinze sizing; wrong-side fraction every second (the denser liquid belongs
+ *  below), the most particles ever dispersed and the largest slip (sampled every 12 steps). */
+export async function immLayered(device: GPUDevice, o: { lower: MatName; upper: MatName; seconds: number; seed: number; immiscible: boolean }) {
+  const nx = 16, ny = 40, nz = 8, h1 = 12, h2 = 12, rng = mulberry32(o.seed)
+  const pts: { x: Vec3; m: number }[] = []
+  for (let k = 0; k < nz; k++) for (let j = 0; j < h1 + h2; j++) for (let i = 0; i < nx; i++) for (let s = 0; s < 8; s++) {
+    const x: Vec3 = [(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX]
+    pts.push({ x, m: x[1] < h1 * DX ? 0 : 1 })
+  }
+  const props = [IMM[o.lower], IMM[o.upper]], sig = sigmaOf(o.lower, o.upper)
+  const gpu = await makeImmSim(device, [nx, ny, nz], pts.length)
+  gpu.dt = 1 / 120
+  gpu.setParticles(pts.map(pt => ({ pos: pt.x.map(Math.fround) as Vec3, vel: [0, 0, 0] as Vec3, mass: props[pt.m].rho * DX ** 3 / 8, composition: pt.m, phase: 1, temperatureC: 20 })))
+  gpu.immiscibleSolver!.configure({ materials: props.map((pr, k) => ({ compositions: [k], ...pr })), sigma: (a, b) => (a !== b ? sig : null), nuNum: INCOMPRESSIBLE_NU_NUM })
+  if (o.immiscible) gpu.immiscibleActive = true
+  const heavy = props[0].rho > props[1].rho ? 0 : 1, steps = Math.round(o.seconds * 120), hist: { t: number; wrong: number }[] = []
+  let everDispersed = 0, maxSlip = 0, nan = 0
+  for (let s = 1; s <= steps; s++) {
+    await submit(device, e => gpu.step(e, 1))
+    if (o.immiscible && s % 12 === 0) { const st = await gpu.immiscibleSolver!.readStats(); everDispersed = Math.max(everDispersed, st.dispersed); maxSlip = Math.max(maxSlip, st.maxSlip) }
+    if (s % 120 === 0) {
+      const pos = (await gpu.readParticles()).pos
+      let wrong = 0
+      for (let q = 0; q < pts.length; q++) {
+        const y = pos[4 * q + 1] / DX
+        if (!Number.isFinite(y)) { nan++; continue }
+        if (pts[q].m === heavy ? y > h1 + 0.5 : y < h1 - 0.5) wrong++
+      }
+      hist.push({ t: s / 120, wrong: wrong / pts.length })
+    }
+  }
+  const d = await gpu.readDiagnostics()
+  gpu.destroy()
+  return { particles: pts.length, hist, everDispersed, maxSlip, nan, capHits: d.capHits, psiCapHits: d.psiCapHits, breakdowns: d.breakdowns + d.psiBreakdowns }
+}
+
+/** Cost of the drift flux on the FLUID TEST page's buoyancy scene (s31c-page B1: a 3-cell water pool over the 64² floor,
+ *  an olive-oil block and a mercury block above it; production settings, viscous path on as the page runs it): GPU
+ *  timestamps of every compute pass of one substep with the drift on, and the wall time per substep (clears and copies
+ *  included) over `reps` substeps with the drift on and off, after `settle` substeps. */
+export async function immCost(device: GPUDevice, o: { settle?: number; reps?: number } = {}) {
+  const settle = o.settle ?? 240, reps = o.reps ?? 60, rng = mulberry32(12)
+  const fillBox = (lo: Vec3, hi: Vec3, m: number) => {
+    const out: { x: Vec3; m: number }[] = []
+    for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) for (let s = 0; s < 8; s++)
+      out.push({ x: [(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX], m })
+    return out
+  }
+  const pts = [...fillBox([0, 0, 0], [64, 3, 64], 0), ...fillBox([18, 10, 18], [40, 16, 40], 1), ...fillBox([23, 21, 23], [35, 26, 35], 2)]
+  const props = [IMM.water, IMM.oil, IMM.mercury]
+  const gpu = await FlipGpuSimulator.create(device, {
+    nx: 64, ny: 64, nz: 64, dx: DX, gravity: [0, -G, 0], maxParticles: pts.length, lRef: L_REF, tauS: TAU,
+    projection: true, density: IMM.water.rho, pressureTolerance: 1e-2, solverMethod: 'mgpcg', densityProjection: true, psiTolerance: 1e-3,
+    freeSurface: 'ghost', variableDensity: true, viscosity: true, immiscible: true,
+  })
+  gpu.dt = 1 / 120
+  gpu.setParticles(pts.map(pt => ({ pos: pt.x.map(Math.fround) as Vec3, vel: [0, 0, 0] as Vec3, mass: props[pt.m].rho * DX ** 3 / 8, composition: pt.m, phase: 1, temperatureC: 20 })))
+  gpu.viscositySolver!.setMuTable(new Float32Array(props.map(p => p.mu)))
+  gpu.viscositySolver!.muDefault = IMM.water.mu
+  gpu.viscosityActive = true   // olive oil's ν ≥ VISCOUS_RUN_NU: the page runs the viscous path in this scene
+  gpu.immiscibleSolver!.configure({ materials: props.map((pr, k) => ({ compositions: [k], ...pr })), sigma: (a, b) => sigmaOf(['water', 'oil', 'mercury'][a] as MatName, ['water', 'oil', 'mercury'][b] as MatName), nuNum: INCOMPRESSIBLE_NU_NUM })
+  gpu.immiscibleActive = true
+  for (let s = 0; s < settle; s++) await submit(device, e => gpu.step(e, 1))
+  // wall time per substep: the command buffer encoded first, then submit → done (encoding excluded); drift on and off
+  // alternated 4× each (GPU clocks drift over a run), the minimum of each kept
+  const wall = async (on: boolean) => {
+    gpu.immiscibleActive = on
+    await submit(device, e => gpu.step(e, 1))
+    const e = device.createCommandEncoder()
+    for (let r = 0; r < reps; r++) gpu.step(e, 1)
+    const cb = e.finish(), t0 = performance.now()
+    device.queue.submit([cb])
+    await device.queue.onSubmittedWorkDone()
+    return (performance.now() - t0) / reps
+  }
+  const onRuns: number[] = [], offRuns: number[] = []
+  for (let i = 0; i < 4; i++) { onRuns.push(await wall(true)); offRuns.push(await wall(false)) }
+  gpu.immiscibleActive = true
+  const onMs = Math.min(...onRuns)
+  let top: { pass: string; us: number; passes: number }[] = [], immUs = 0, totalUs = 0
+  if (device.features.has('timestamp-query')) {
+    const MAX = 1024, qs = device.createQuerySet({ type: 'timestamp', count: 2 * MAX })
+    const resolve = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC })
+    const read = device.createBuffer({ size: 16 * MAX, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+    const labels: string[] = [], e = device.createCommandEncoder()
+    const wrapped = new Proxy(e, {
+      get(t, p) {
+        if (p === 'beginComputePass') return (d: GPUComputePassDescriptor = {}) => {
+          const i = labels.length
+          if (i >= MAX) return t.beginComputePass(d)
+          labels.push(d.label ?? '?')
+          return t.beginComputePass({ ...d, timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 2 * i, endOfPassWriteIndex: 2 * i + 1 } })
+        }
+        const v = (t as unknown as Record<string | symbol, unknown>)[p]
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v
+      },
+    })
+    gpu.step(wrapped as GPUCommandEncoder, 1)
+    const n = labels.length
+    e.resolveQuerySet(qs, 0, 2 * n, resolve, 0)
+    e.copyBufferToBuffer(resolve, 0, read, 0, 16 * n)
+    device.queue.submit([e.finish()])
+    await read.mapAsync(GPUMapMode.READ)
+    const t = new BigUint64Array(read.getMappedRange().slice(0, 16 * n))
+    read.unmap()
+    const byLabel: Record<string, { us: number; passes: number }> = {}
+    for (let i = 0; i < n; i++) {
+      const us = Number(t[2 * i + 1] - t[2 * i]) / 1000, k = labels[i]
+      byLabel[k] = byLabel[k] ?? { us: 0, passes: 0 }
+      byLabel[k].us += us; byLabel[k].passes++; totalUs += us
+      if (k.startsWith('imm.')) immUs += us
+    }
+    top = Object.entries(byLabel).sort((a, b) => b[1].us - a[1].us).slice(0, 20).map(([k, v]) => ({ pass: k, us: Math.round(v.us), passes: v.passes }))
+    qs.destroy(); resolve.destroy(); read.destroy()
+  }
+  const offMs = Math.min(...offRuns)
+  gpu.destroy()
+  return { particles: pts.length, onMsPerSubstep: onMs, offMsPerSubstep: offMs, onRuns, offRuns, passUsTotal: Math.round(totalUs), immPassUs: Math.round(immUs), top }
 }

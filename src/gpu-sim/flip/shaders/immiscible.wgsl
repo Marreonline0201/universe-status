@@ -2,7 +2,11 @@
 // flux; drop size from Hinze 1955 or a scenario's). The f64 reference is flipRef.driftFlux; spec: vault
 // fluid/realism-2026-09/IMMISCIBILITY-spec.md. One module, several entry points (ImmiscibleSolver.ts); common.wgsl is
 // prepended; every entry binds ≤ 8 storage buffers. Every sum is fixed point (order-independent, as the rest of the solver).
-//   pressureSum    viscous path: the step's total pressure, pTotal += p of the second projection
+// The per-cell sums are never cleared wholesale: the pass that consumes them (cellInfo, driftCells) reads each word with
+// atomicExchange(·, 0), so the buffers are all-zero between substeps and only what particles wrote is touched (clearing
+// the 43 MB of a 64³ window every substep cost more than the drift's kernels together).
+//   faceAccel      faces, after the final projection: a = g − Du/Dt = (u* − u)/Δt where the projection set u, g_a on
+//                  SOLID faces, unset elsewhere — then extrapolated like the velocity (extrapolate.wgsl, the caller)
 //   alphaScatter   particles → per cell and material slot Σw (trilinear to cell centres), and the cell total
 //   cellInfo       cells → ε = 2·ν_eff·S:S, the majority slot c, ρ_m, α_c, α per slot
 //   slipParticles  particles → slip s and drop diameter d (0 = resolved), cell sums of slip per slot, statistics
@@ -23,22 +27,23 @@ struct ImmParams {
 @group(0) @binding(2) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> aux: array<vec4<u32>>;
 @group(0) @binding(4) var<storage, read_write> alphaSums: array<atomic<i32>>;   // 10 words per padded cell
-@group(0) @binding(5) var<storage, read> alphaSumsR: array<i32>;
 @group(0) @binding(6) var<storage, read_write> cellInf: array<f32>;             // 8 per padded cell
 @group(0) @binding(7) var<storage, read> cellInfR: array<f32>;
 @group(0) @binding(8) var<storage, read> u: array<f32>;
-@group(0) @binding(9) var<storage, read> pTotal: array<f32>;
-@group(0) @binding(10) var<storage, read> labels: array<u32>;
 @group(0) @binding(11) var<storage, read> faceType: array<u32>;
 @group(0) @binding(12) var<storage, read_write> slipState: array<vec4<f32>>;    // per particle (s, d)
 @group(0) @binding(13) var<storage, read_write> slipSums: array<atomic<i32>>;   // 7 per (padded cell, slot), then the stats
-@group(0) @binding(14) var<storage, read> slipSumsR: array<i32>;
 @group(0) @binding(15) var<storage, read_write> driftCell: array<vec4<f32>>;
 @group(0) @binding(16) var<storage, read> driftCellR: array<vec4<f32>>;
 @group(0) @binding(17) var<storage, read_write> drift: array<vec4<f32>>;
 @group(0) @binding(20) var<storage, read> slipStateR: array<vec4<f32>>;
-@group(0) @binding(22) var<storage, read> pSecond: array<f32>;
-@group(0) @binding(23) var<storage, read_write> pTotalW: array<f32>;
+@group(0) @binding(24) var<storage, read> faceSolid: array<f32>;
+@group(0) @binding(25) var<storage, read> uStar: array<f32>;
+@group(0) @binding(26) var<storage, read> validProj: array<u32>;
+@group(0) @binding(27) var<storage, read_write> accOut: array<f32>;
+@group(0) @binding(28) var<storage, read_write> accValidOut: array<u32>;
+@group(0) @binding(29) var<storage, read> acc: array<f32>;
+@group(0) @binding(30) var<storage, read> uProj: array<f32>;
 
 const MAXK: u32 = 4u;
 fn slotOfComp(id: u32) -> u32 { if (id >= 256u) { return MAXK; } return IP.slots[id / 4u][id % 4u]; }
@@ -63,11 +68,21 @@ fn oneMinusExpNeg(h: f32) -> f32 {
   return 1.0 - exp(-h);
 }
 
+/// a = g − Du/Dt on the faces (flipRef.captureFaceAccel): in FLIP the grid step is the material derivative, so on the
+/// faces the final projection set it is (u* − u)/Δt — the solver's own balance (g on every liquid face at rest,
+/// whatever the density); static walls g_a (Du_n/Dt = 0 there); every other face unset for the extrapolation.
 @compute @workgroup_size(256)
-fn pressureSum(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
-  if (i >= arrayLength(&pTotalW)) { return; }
-  pTotalW[i] = pTotalW[i] + pSecond[i];
+fn faceAccel(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let tid = gid.x;
+  if (tid >= 3u * P.size) { return; }
+  let a = tid / P.size;
+  let c = logicalOfThread(tid % P.size);
+  if (!inFaceRange(a, c)) { return; }
+  let s = gridBase(a) + slotOf(c);
+  if (faceType[s] == SOLID) { accOut[s] = P.gravity[a]; accValidOut[s] = 0u; return; }
+  if (faceSolid[s] >= 1.0 || validProj[s] != 1u) { accOut[s] = 0.0; accValidOut[s] = 0u; return; }
+  accOut[s] = (uStar[s] - uProj[s]) / P.dt;
+  accValidOut[s] = 1u;
 }
 
 @compute @workgroup_size(64)
@@ -105,9 +120,18 @@ fn cellInfo(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c = vec3<i32>(vec3<u32>(t % n.x, (t / n.x) % n.y, t / (n.x * n.y)));
   let li = linIdx(c);
   let base = 10u * li;
-  let tot = dec2(alphaSumsR[base + 8u], alphaSumsR[base + 9u], LS_SCALE);
+  // a cell no tracked particle reaches: nothing to clear, and nothing reads its info (slipParticles reads the cells of
+  // tracked particles, whose own weight makes Σw > 0; driftCells only where a drop was counted)
+  let totHi = atomicExchange(&alphaSums[base + 8u], 0);
+  let totLo = atomicExchange(&alphaSums[base + 9u], 0);
+  if (totHi == 0 && totLo == 0) { return; }
+  let tot = dec2(totHi, totLo, LS_SCALE);
   var al = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
-  if (tot > 0.0) { for (var k = 0u; k < IP.K; k++) { al[k] = dec2(alphaSumsR[base + 2u * k], alphaSumsR[base + 2u * k + 1u], LS_SCALE) / tot; } }
+  for (var k = 0u; k < IP.K; k++) {
+    let hi = atomicExchange(&alphaSums[base + 2u * k], 0);
+    let lo = atomicExchange(&alphaSums[base + 2u * k + 1u], 0);
+    al[k] = dec2(hi, lo, LS_SCALE) / tot;
+  }
   var cm = 0u;
   for (var k = 1u; k < IP.K; k++) { if (al[k] > al[cm]) { cm = k; } }
   var rm = 0.0;
@@ -134,18 +158,9 @@ fn cellInfo(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var k = 0u; k < 4u; k++) { cellInf[o + 4u + k] = al[k]; }
 }
 
-/// ∂p/∂x_a on face (a, c): (p₊ − p₋)/dx with p = 0 outside LIQUID, 0 on SOLID (wall) faces and outside the face range
-/// (flipRef.driftFlux gp)
-fn faceGradP(a: u32, c: vec3<i32>) -> f32 {
-  if (!inFaceRange(a, c)) { return 0.0; }
-  if (faceType[gridBase(a) + slotOf(c)] == SOLID) { return 0.0; }
-  var cm = c; cm[a] -= 1;
-  let pp = select(0.0, pTotal[linIdx(c)], labels[linIdx(c)] == LABEL_FLUID);
-  let pm = select(0.0, pTotal[linIdx(cm)], labels[linIdx(cm)] == LABEL_FLUID);
-  return (pp - pm) / P.dx;
-}
-/// ∇p at a point: each face grid sampled trilinearly (the stencil of g2pMac.sampleFace and flipRef.stencil).
-fn gradP(x: vec3<f32>) -> vec3<f32> {
+/// a = g − Du/Dt at a point: each face grid of the (extrapolated) face accelerations sampled trilinearly — the stencil of
+/// g2pMac.sampleFace and flipRef.stencil.
+fn accelAt(x: vec3<f32>) -> vec3<f32> {
   var g = vec3<f32>(0.0);
   for (var a = 0u; a < 3u; a++) {
     let f = x / P.dx - faceOffset(a);
@@ -155,7 +170,8 @@ fn gradP(x: vec3<f32>) -> vec3<f32> {
     for (var m = 0u; m < 8u; m++) {
       let d = vec3<i32>(i32(m & 1u), i32((m >> 1u) & 1u), i32((m >> 2u) & 1u));
       let wv = select(vec3<f32>(1.0) - t, t, d == vec3<i32>(1));
-      v += wv.x * wv.y * wv.z * faceGradP(a, b + d);
+      let c = b + d;
+      if (inFaceRange(a, c)) { v += wv.x * wv.y * wv.z * acc[gridBase(a) + slotOf(c)]; }
     }
     g[a] = v;
   }
@@ -174,11 +190,12 @@ fn slipParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
   let k = slotOfComp(aux[q].x);
+  if (k >= IP.K) { slipState[q] = vec4<f32>(0.0); return; }   // untracked: its cell's info may not exist
   let x = pos[q].xyz;
   let li = linIdx(cellOfPos(x));
   let o = 8u * li;
   let cm = u32(cellInfR[o + 1u]);
-  if (k >= IP.K || k == cm) { slipState[q] = vec4<f32>(0.0); return; }
+  if (k == cm) { slipState[q] = vec4<f32>(0.0); return; }
   let sig = IP.sigma[k][cm];
   if (!(sig > 0.0)) { slipState[q] = vec4<f32>(0.0); return; }
   let rp = IP.props[k].x; let mup = IP.props[k].y; let rc = IP.props[cm].x; let muc = IP.props[cm].y;
@@ -197,12 +214,12 @@ fn slipParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   let aD = 1.0 - cellInfR[o + 3u];
   let muStar = (mup + 0.4 * muc) / (mup + muc);
   let muM = muc * pow(max(1e-12, 1.0 - aD), -2.5 * muStar);
-  // (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = ∇p/ρ_m, integrated over the step with f at its start
+  // (ρ_p + ½ρ_c)·ds/dt = (ρ_p − ρ_m)·a − 18 μ_m f(Re)·s/d², a = g − Du/Dt, integrated over the step with f at its start
   // (OpenFOAM-10 MomentumParcel::calc + integrationSchemes::analytical; flipRef.driftFlux)
   let sOld = slipState[q].xyz;
   let kd = d * d / (18.0 * muM * dragFactor(d * rc * length(sOld) / muM));
   let m = oneMinusExpNeg(P.dt / ((rp + 0.5 * rc) * kd));
-  let s = sOld + ((rp - rm) * (gradP(x) / rm) * kd - sOld) * m;
+  let s = sOld + ((rp - rm) * accelAt(x) * kd - sOld) * m;
   slipState[q] = vec4<f32>(s, d);
   let cb = 7u * (MAXK * li + k);
   let v = s * SLIP_SCALE;
@@ -227,9 +244,11 @@ fn driftCells(@builtin(global_invocation_id) gid: vec3<u32>) {
   var J = vec3<f32>(0.0);
   for (var k = 0u; k < IP.K; k++) {
     let cb = 7u * (MAXK * li + k);
-    let cnt = slipSumsR[cb + 6u];
+    let cnt = atomicExchange(&slipSums[cb + 6u], 0);
     if (cnt <= 0) { continue; }
-    let sum = vec3<f32>(dec2(slipSumsR[cb], slipSumsR[cb + 1u], SLIP_SCALE), dec2(slipSumsR[cb + 2u], slipSumsR[cb + 3u], SLIP_SCALE), dec2(slipSumsR[cb + 4u], slipSumsR[cb + 5u], SLIP_SCALE));
+    var w: array<i32, 6>;
+    for (var i = 0u; i < 6u; i++) { w[i] = atomicExchange(&slipSums[cb + i], 0); }
+    let sum = vec3<f32>(dec2(w[0], w[1], SLIP_SCALE), dec2(w[2], w[3], SLIP_SCALE), dec2(w[4], w[5], SLIP_SCALE));
     J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));
   }
   driftCell[li] = vec4<f32>(J, 0.0);
