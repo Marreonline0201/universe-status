@@ -15,6 +15,7 @@ import { interfacialTension } from '../composition/interfacialTension'
 import { IMMISCIBLE_MAX_SLOTS, type DriftForm } from '../gpu-sim/flip/ImmiscibleSolver'
 import { StepProfiler, type StepProfile } from '../bench/stepProfiler'
 import { frameDispatches, budgetMismatch, type BudgetState } from '../gpu-sim/flip/dispatchBudget'
+import { FlipStateSnapshot, type SnapshotItem } from '../gpu-sim/flip/stateSnapshot'
 
 export type SolverKind = 'mpm' | 'flip'
 
@@ -100,6 +101,15 @@ export interface SimBackend {
 
 /** The page's view of the S3.6e solve (FlipBackend.stokesStatus). */
 export interface StokesStatus { active: boolean; iterations: number; converged: boolean; cap: number; capHits: number; maxIterations: number }
+
+/** Bench (the B1c same-state fork, spec rev 3 §2): FlipBackend's lagged readbacks in flight, per kind — max speed (→ v_lag),
+ *  the viscous solve's stats (→ its PCG cap), the ball, the Stokes solve's stats. */
+export interface ReadbackSlotsBusy { speed: number; visc: number; ball: number; stokes: number }
+/** Bench (the same-state fork): the two host values lagged readbacks set and the next advance reads — v_lag (the substep
+ *  count's input) and the viscous PCG's encoded iteration cap. */
+export interface FlipHostValues { vLag: number; viscCap: number }
+/** Bench (the same-state fork): the slots a drain found in flight at its entry and left at its exit, its rounds, its ms. */
+export interface FlipDrainReport { busyAtEntry: ReadbackSlotsBusy; busyAtExit: ReadbackSlotsBusy; rounds: number; ms: number }
 
 /** Decode the 80-byte legacy layout (present.wgsl / MpmGpuSimulator): pos 0–2, composition 3 (u32), vel 4–6, C 8–16. */
 function decodeLegacy(buf: ArrayBuffer, n: number): ParticleSample {
@@ -721,6 +731,87 @@ export class FlipBackend implements SimBackend {
         wallShearBooked: ws.booked, wallShearLaminar: ws.laminar, wallShearTauMax: ws.tauMax } : {}),
     }
   }
+  // ── bench: the same-state fork (the B1c forked drift-form study, spec rev 3 §2/§9; gpu-sim/flip/stateSnapshot.ts) ──────
+  // The FLUID TEST bench hook's drainReadbacks / snapshotState / restoreState / hostState / stateWords / disposeSnapshot
+  // (FluidEngine refuses them unless the sim is frozen at its step limit). Nothing below runs, encodes or allocates unless
+  // a bench calls it: advance() and step() are untouched.
+
+  /** The snapshot a bench took and the host values drained at that moment (null: none held). */
+  private benchSnap: { snap: FlipStateSnapshot; host: FlipHostValues } | null = null
+  /** The lagged readbacks in flight, per kind: a slot is busy from its copy's mapAsync until its callback has run. */
+  private slotsBusy(): ReadbackSlotsBusy {
+    const n = (slots: readonly { busy: boolean }[]) => slots.filter(s => s.busy).length
+    return { speed: n(this.speedSlots), visc: n(this.viscSlots), ball: n(this.ballSlots), stokes: n(this.stokesSlots) }
+  }
+  private static slotsIdle(b: ReadbackSlotsBusy): boolean { return b.speed + b.visc + b.ball + b.stokes === 0 }
+  private hostValues(): FlipHostValues { return { vLag: this.vLag, viscCap: this.sim.viscositySolver!.cap } }
+  /** Bench: the host values and the slots in flight now (no wait), and the held snapshot's items and host values. */
+  benchHostState(): FlipHostValues & { slotsBusy: ReadbackSlotsBusy; snapshot: { count: number; items: readonly SnapshotItem[]; host: FlipHostValues } | null } {
+    const b = this.benchSnap
+    return { ...this.hostValues(), slotsBusy: this.slotsBusy(), snapshot: b ? { count: b.snap.count, items: b.snap.items, host: { ...b.host } } : null }
+  }
+  /** Bench: drain — the device queue idle, then every readback slot idle (speed, visc, ball, stokes), so no callback is
+   *  left to overwrite v_lag or the viscous cap later. Steps nothing (the caller froze the sim; FluidEngine checks it).
+   *  Throws if a slot is still in flight after `timeoutMs`. */
+  async benchDrain(timeoutMs = 10_000): Promise<FlipDrainReport> {
+    const t0 = performance.now(), busyAtEntry = this.slotsBusy()
+    for (let rounds = 1; ; rounds++) {
+      await this.device.queue.onSubmittedWorkDone()
+      const busy = this.slotsBusy()
+      if (FlipBackend.slotsIdle(busy)) return { busyAtEntry, busyAtExit: busy, rounds, ms: performance.now() - t0 }
+      if (performance.now() - t0 > timeoutMs) throw new Error(`drain: readback slots still in flight after ${timeoutMs} ms (${JSON.stringify(busy)})`)
+      await new Promise<void>(r => setTimeout(r, 0))   // a macrotask: the map callbacks the queue's completion released run
+    }
+  }
+  /** Refused with a ball or the Stokes path: their state (the sphere, ballLag, the Stokes warm start and cap) is not
+   *  carried (spec §2: B1 has neither). */
+  private benchRefuseUncarried(what: string) {
+    if (this.sim.hasSphere || this.sim.stokesRuns) throw new Error(`${what}: a ball or the Stokes path is in the tank — its state is not carried by the snapshot`)
+  }
+  /** Bench: drain, then snapshot every carried GPU state (FlipStateSnapshot.take, less `omit`) and the two host values as
+   *  the drain left them; a snapshot already held is disposed first. */
+  async benchSnapshotState(opts: { omit?: readonly string[] } = {}): Promise<{ count: number; items: readonly SnapshotItem[]; host: FlipHostValues; drain: FlipDrainReport }> {
+    this.benchRefuseUncarried('snapshotState')
+    const drain = await this.benchDrain()
+    const host = this.hostValues()
+    this.benchDisposeSnapshot()
+    const snap = await FlipStateSnapshot.take(this.sim, opts)
+    this.benchSnap = { snap, host }
+    return { count: snap.count, items: snap.items, host: { ...host }, drain }
+  }
+  /** Bench: drain (no callback in flight may overwrite what is restored), restore the snapshot in place (less `omit`: that
+   *  item keeps its live value) and the two host values, then drain again (the copies done). Never through resize or
+   *  setParticles (stateSnapshot.ts). Refused without a snapshot, on a simulator other than the snapshot's (a tank resize
+   *  rebuilt it), and with a ball or the Stokes path. */
+  async benchRestoreState(opts: { omit?: readonly string[] } = {}): Promise<{ restored: SnapshotItem[]; kept: string[]; host: FlipHostValues; drain: { before: FlipDrainReport; after: FlipDrainReport } }> {
+    const b = this.benchSnap
+    if (!b) throw new Error('restoreState: no snapshot held (snapshotState first)')
+    if (b.snap.sim !== this.sim) throw new Error('restoreState: the simulator was rebuilt since the snapshot (a tank resize)')
+    this.benchRefuseUncarried('restoreState')
+    const before = await this.benchDrain()
+    const r = await b.snap.restore(opts)
+    this.vLag = b.host.vLag
+    this.sim.viscositySolver!.cap = b.host.viscCap
+    const after = await this.benchDrain()
+    return { ...r, host: this.hostValues(), drain: { before, after } }
+  }
+  /** Bench: the live words of carried states by name (FlipGpuSimulator.namedBuffers: the bytes that hold each). */
+  async benchReadState(names: readonly string[]): Promise<Record<string, ArrayBuffer>> {
+    const sim = this.sim, live = new Map(sim.namedBuffers().map(b => [b.name as string, b]))
+    const bad = names.filter(n => !live.has(n))
+    if (bad.length) throw new Error(`stateWords: ${bad.join(', ')} is not a carried state of this simulator (${[...live.keys()].join(', ')})`)
+    const out: Record<string, ArrayBuffer> = {}
+    for (const n of names) { const b = live.get(n)!; out[n] = await sim.readBuffer(b.buffer, b.bytes) }
+    return out
+  }
+  /** Bench: free the held snapshot's buffers (true: one was held). */
+  benchDisposeSnapshot(): boolean {
+    const had = this.benchSnap !== null
+    this.benchSnap?.snap.dispose()
+    this.benchSnap = null
+    return had
+  }
+
   destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots, ...this.viscSlots, ...this.stokesSlots]) s.buf.destroy() }
 }
 

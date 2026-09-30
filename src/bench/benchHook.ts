@@ -130,6 +130,22 @@ export interface BenchTarget {
   renderTiming?(opts: ProbeOptions & { frames?: number; warmup?: number }): Promise<unknown>
   /** PERF-1 baseline: profile the next frame's simulation step (per-pass GPU µs, dispatch counts, encode ms). */
   profileStep?(): Promise<unknown>
+  /** The B1c same-state fork (spec rev 3 §2/§9; FluidEngine / FlipBackend bench*, gpu-sim/flip/stateSnapshot.ts), each
+   *  refused unless the sim is frozen at its step limit — drain the lagged readbacks: the device queue idle, then every
+   *  readback slot idle; no frame stepped. */
+  drainReadbacks?(): Promise<unknown>
+  /** Drain, then snapshot the carried GPU state (less `omit`) and the host values v_lag and the viscous PCG cap. */
+  snapshotState?(opts?: { omit?: string[] }): Promise<unknown>
+  /** Restore the held snapshot in place (less `omit`: that item keeps its live value) and the two host values. */
+  restoreState?(opts?: { omit?: string[] }): Promise<unknown>
+  /** Free the held snapshot. */
+  disposeSnapshot?(): unknown
+  /** Set the bench clock (frames stepped, sim time, substeps) — bookkeeping only; refused if the sim would then step. */
+  setClock?(c: { steppedFrames?: number; simTime?: number; substepsTotal?: number }): unknown
+  /** The host values lagged readbacks set (v_lag, the viscous cap) and the readback slots in flight, now (no wait). */
+  hostState?(): unknown
+  /** The live words of carried states by name (FlipGpuSimulator.namedBuffers: pos, vel, aff, aux, slipState, pressureX). */
+  stateWords?(names: string[]): Promise<Record<string, ArrayBuffer>>
 }
 
 export function installBenchHook(target: BenchTarget, meta: { page: string }) {
@@ -200,6 +216,45 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     profileStep() {
       if (!target.profileStep) throw new Error(`${meta.page} has no step profiler`)
       return target.profileStep()
+    },
+
+    /** The B1c same-state fork (spec rev 3 §2/§9; scripts/fluid-gates/snapshot-page.mjs gates it), each refused unless
+     *  the sim is frozen at its step limit: the lagged readbacks drained — the device queue idle, then every readback
+     *  slot idle; no frame stepped. Reports the slots in flight at its entry and at its exit. */
+    drainReadbacks() {
+      if (!target.drainReadbacks) throw new Error(`${meta.page} has no state snapshot`)
+      return target.drainReadbacks()
+    },
+    /** Drain, then snapshot the carried GPU state (pos, vel, aff, aux, slipState, pressureX, less `omit`) and the host
+     *  values; returns the items with their bytes, the host values, the drain and the clock. */
+    snapshotState(opts: { omit?: string[] } = {}) {
+      if (!target.snapshotState) throw new Error(`${meta.page} has no state snapshot`)
+      return target.snapshotState(opts)
+    },
+    /** Restore the held snapshot in place (less `omit`: that item keeps its live value) and the host values. */
+    restoreState(opts: { omit?: string[] } = {}) {
+      if (!target.restoreState) throw new Error(`${meta.page} has no state snapshot`)
+      return target.restoreState(opts)
+    },
+    disposeSnapshot() {
+      if (!target.disposeSnapshot) throw new Error(`${meta.page} has no state snapshot`)
+      return target.disposeSnapshot()
+    },
+    /** Set the bench clock back (frames stepped, sim time, substeps) — bookkeeping only. */
+    setClock(c: { steppedFrames?: number; simTime?: number; substepsTotal?: number }) {
+      if (!target.setClock) throw new Error(`${meta.page} has no bench clock setter`)
+      return target.setClock(c)
+    },
+    /** The host values lagged readbacks set (v_lag, the viscous cap) and the readback slots in flight, now. */
+    hostState() {
+      if (!target.hostState) throw new Error(`${meta.page} has no state snapshot`)
+      return target.hostState()
+    },
+    /** The live words of carried states, base64 by name. */
+    async stateWords(names: string[]) {
+      if (!target.stateWords) throw new Error(`${meta.page} has no state snapshot`)
+      const r = await target.stateWords(names)
+      return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, toBase64(new Uint8Array(v))]))
     },
 
     /** Offscreen render probe; every requested target comes back base64-encoded (see SSFRPipeline ProbeResult). */

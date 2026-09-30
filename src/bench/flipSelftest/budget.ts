@@ -4,13 +4,17 @@
 // monolithic ball (with and without the split viscous path), the Stokes path, the drift in both forms, an empty tank,
 // three extrapolation layers, JPCG, the floor's wall shear (with particles, in an empty tank, and set but guarded off
 // by the split viscous path or by the drift — the latter added 2026-09-30, review INT-7 / prereg R-D, pre-registered
-// 2026-09-30 before its first run: 0 stage dispatches, its counts those of 'drift, face form', criteria unchanged)
+// 2026-09-30 before its first run: 0 stage dispatches, its counts those of 'drift, face form', criteria unchanged),
+// and B1's flags after a state snapshot and restore (the B1c same-state fork, spec rev 3 §9's L0 row, added 2026-09-30
+// with gpu-sim/flip/stateSnapshot.ts before its first run: the facility, once used and disposed, leaves the frame's
+// encode exactly the budget's — criteria unchanged)
 // — at 64³, 48³ and 24×16×12, n = 1…4, encoded through a counting wrapper and NEVER
 // submitted, against dispatchBudget.frameDispatches(sim.budgetState(n)) per pass label, tolerance 0 (vault
 // fluid/realism-2026-09 PERF-1 spec L0). Metrics only — scripts/fluid-gates/perf1-gpu.mjs applies the rule.
 import type { Vec3 } from '../../sim-ref/gridLayout'
 import { FlipGpuSimulator, type FlipSimOptions, type FlipParticleInit } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { frameDispatches, budgetMismatch } from '../../gpu-sim/flip/dispatchBudget'
+import { FlipStateSnapshot } from '../../gpu-sim/flip/stateSnapshot'
 import { DX, L_REF, TAU } from './util'
 import { LIQUIDS, waterDensity } from '../../composition/materialData'
 import { INCOMPRESSIBLE_NU_NUM } from '../../composition/liquidGate'
@@ -40,7 +44,7 @@ function counting(e: GPUCommandEncoder, counts: Map<string, number>): GPUCommand
   })
 }
 
-interface Combo { name: string; opts: Partial<FlipSimOptions>; particles?: boolean; setup?: (g: FlipGpuSimulator) => void }
+interface Combo { name: string; opts: Partial<FlipSimOptions>; particles?: boolean; setup?: (g: FlipGpuSimulator) => void | Promise<void> }
 const viscous = (g: FlipGpuSimulator, cap: number) => { g.viscositySolver!.setMuTable(new Float32Array([OIL.mu, OIL.mu])); g.viscositySolver!.muDefault = OIL.mu; g.viscositySolver!.cap = cap; g.viscosityActive = true }
 const ball = (g: FlipGpuSimulator, coupling: 'weak' | 'monolithic') => {
   const n = g.layout, c: Vec3 = [0.5 * n.nx * DX, 0.5 * n.ny * DX, 0.5 * n.nz * DX]
@@ -69,6 +73,8 @@ const COMBOS: Combo[] = [
   { name: 'drift, face form', opts: { ...GHOST, immiscible: true }, setup: g => drift(g, 'face') },
   { name: 'drift, cell form', opts: { ...GHOST, immiscible: true }, setup: g => drift(g, 'cell') },
   { name: 'drift, face form + split viscous path', opts: { ...GHOST, immiscible: true, viscosity: true }, setup: g => { viscous(g, 16); drift(g, 'face') } },
+  { name: 'drift, face form + split viscous path, after a state snapshot and restore', opts: { ...GHOST, immiscible: true, viscosity: true },
+    setup: async g => { viscous(g, 16); drift(g, 'face'); const s = await FlipStateSnapshot.take(g); await s.restore(); s.dispose() } },
   { name: 'wall shear', opts: GHOST, setup: shear },
   { name: 'wall shear, empty tank', opts: GHOST, particles: false, setup: shear },
   { name: 'wall shear set, guarded off by the split viscous path', opts: { ...GHOST, viscosity: true }, setup: g => { viscous(g, 16); shear(g) } },
@@ -98,7 +104,7 @@ export async function budgetKernels(device: GPUDevice, o: { shapes?: [number, nu
     try {
       gpu.dt = 1 / 120
       gpu.setParticles(parts)
-      c.setup?.(gpu)
+      await c.setup?.(gpu)
       const row = { combo: c.name, shape: `${nx}×${ny}×${nz}`, frames: 0, mismatches: [] as { n: number; label: string; counted: number; budget: number }[], totals: [] as number[] }
       for (const n of subs) {
         const counts = new Map<string, number>()

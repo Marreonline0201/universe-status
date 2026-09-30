@@ -6,7 +6,10 @@
 // monolithic ball with the split viscous path); the Stokes path; the drift in both forms (and the face form with the
 // split viscous path); the floor's wall shear (with particles, in an empty tank, and set but guarded off by the split
 // viscous path; added 2026-09-30 with the friction stage, criteria unchanged; and set but guarded off by the immiscible
-// drift, added with the friction fix round's INT-7 guard, criteria unchanged) — at 64³, 48³ and 24×16×12, n = 1, 2, 3, 4.
+// drift, added with the friction fix round's INT-7 guard, criteria unchanged); B1's flags (the drift in the face form with
+// the split viscous path) after a state snapshot and restore on the same simulator (the B1c same-state fork's L0 row,
+// spec rev 3 §9: "dispatch counts unchanged"; added 2026-09-30 with gpu-sim/flip/stateSnapshot.ts before its first run,
+// criteria unchanged) — at 64³, 48³ and 24×16×12, n = 1, 2, 3, 4.
 // Criteria, fixed 2026-09-30 02:48 at `3810066c` before the first run: every frame's dispatches per pass label equal
 // src/gpu-sim/flip/dispatchBudget.ts frameDispatches(sim.budgetState(n)) exactly (tolerance 0); every combination ×
 // shape ran all 4 frames; 0 uncaptured WebGPU errors, 0 console errors. Its positive controls are gpu-mutations

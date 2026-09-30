@@ -215,6 +215,12 @@ export interface FlipParticleInit {
   temperatureC: number
 }
 
+/** Bench (the B1c same-state fork, spec rev 3 §2): a state that survives a frame and changes the next — the particles,
+ *  the drift memory, the pressure warm start (namedBuffers, stateSnapshot.ts). */
+export type FlipStateName = 'pos' | 'vel' | 'aff' | 'aux' | 'slipState' | 'pressureX'
+/** One carried state: its buffer and the bytes that hold it, from offset 0. */
+export interface FlipNamedBuffer { name: FlipStateName; buffer: GPUBuffer; bytes: number }
+
 export interface FlipDiagnostics {
   wallClamps: number; unsetFaceReads: number; openFaces: number; unsetDivergenceFaces: number; densityClamps: number
   /** S3.5 face-density fallbacks: neighbour mean (Σw < wMin), and default density (no neighbour either). */
@@ -1124,6 +1130,23 @@ export class FlipGpuSimulator {
   writeSlipState(data: Float32Array<ArrayBuffer>): void {
     if (!this.immiscibleSolver || data.length === 0) return
     this.device.queue.writeBuffer(this.immiscibleSolver.bufs.slipState, 0, data)
+  }
+
+  /** Bench (the B1c same-state fork, spec rev 3 §2 — stateSnapshot.ts copies these in place): every state that survives
+   *  a frame and changes the next, by name, each with the bytes that hold it from offset 0 — the particles (pos, vel with
+   *  m̂ in w, aff, aux: 16 / 16 / 48 / 16 B × count, in index order), the drift memory (the immiscible solver's
+   *  slipState: slip s and drop size d, 16 B × count) and the pressure warm start (the pressure solver's x, 4 B × padded
+   *  cells: two warm solves per substep share it on the viscous path). Everything else is rebuilt every substep, is
+   *  configuration or is diagnostics. Read-only: nothing is encoded, allocated or changed. */
+  namedBuffers(): FlipNamedBuffer[] {
+    const n = this.count
+    const out: FlipNamedBuffer[] = [
+      { name: 'pos', buffer: this.posBuf, bytes: 16 * n }, { name: 'vel', buffer: this.velBuf, bytes: 16 * n },
+      { name: 'aff', buffer: this.affBuf, bytes: 48 * n }, { name: 'aux', buffer: this.auxBuf, bytes: 16 * n },
+    ]
+    if (this.immiscibleSolver) out.push({ name: 'slipState', buffer: this.immiscibleSolver.bufs.slipState, bytes: 16 * n })
+    if (this.solver) out.push({ name: 'pressureX', buffer: this.solver.buffers.x, bytes: 4 * this.solver.paddedCount })
+    return out
   }
 
   /** Every particle as it would be uploaded again (a tank resize rebuilds the simulator and re-adds them). */

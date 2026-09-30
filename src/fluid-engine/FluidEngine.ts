@@ -936,6 +936,44 @@ export class FluidEngine {
   get framesStepped(): number { return this.steppedFrames }
   /** Freeze the simulation after `frames` stepped frames (Infinity = run freely). */
   setStepLimit(frames: number) { this.stepLimit = frames }
+
+  /** Bench (the B1c same-state fork, spec rev 3 §2/§9): the scene the held state snapshot was taken in (null: none) — a
+   *  restore into another scene (a load or reset since) is refused. */
+  private benchSnapGen: number | null = null
+  /** Bench (the same-state fork): the FLIP backend, while the sim is frozen at its step limit — a drain, a snapshot, a
+   *  restore or a state read steps no frame (spec §2: t0 does not move). */
+  private frozenFlip(what: string): FlipBackend {
+    const s = this.sim
+    if (!(s instanceof FlipBackend)) throw new Error(`${what}: this solver has no state snapshot (the incompressible solver only)`)
+    if (this.resizing) throw new Error(`${what}: the tank is being rebuilt`)
+    if (!(this.steppedFrames >= this.stepLimit)) throw new Error(`${what}: the sim is not frozen (frame ${this.steppedFrames} < step limit ${this.stepLimit}) — setStepLimit(${this.steppedFrames}) first`)
+    return s
+  }
+  /** `op` on the frozen FLIP backend; throws if a frame was stepped or the scene or simulator changed while it ran. */
+  private async frozenOp<T>(what: string, op: (s: FlipBackend) => Promise<T>): Promise<T> {
+    const s = this.frozenFlip(what), frame = this.steppedFrames, gen = this.sceneGeneration
+    const r = await op(s)
+    if (this.sim !== s || this.steppedFrames !== frame || this.sceneGeneration !== gen) throw new Error(`${what}: the sim stepped or changed while it ran (frame ${frame} → ${this.steppedFrames})`)
+    return r
+  }
+  private benchClock() { return { steppedFrames: this.steppedFrames, simTime: this.simTime, substepsTotal: this.substepsTotal } }
+  /** Bench (the same-state fork, spec rev 3 §2): set the clock a restore returns to — the frames stepped, the sim time and
+   *  the substeps at the snapshot. Bookkeeping only: no physics reads them (a frame advances lockstepDt through the
+   *  backend). Refused for an unknown key, a frame or substep count that is not an integer ≥ 0, a sim time that is not
+   *  finite and ≥ 0, and when the sim would then step (the step limit above the new frame count: setStepLimit first). */
+  private setBenchClock(c: { steppedFrames?: number; simTime?: number; substepsTotal?: number } | undefined) {
+    const o = c ?? {}, keys = ['steppedFrames', 'simTime', 'substepsTotal'], bad = Object.keys(o).filter(k => !keys.includes(k))
+    if (bad.length) throw new Error(`setClock: unknown key ${bad.join(', ')} (known: ${keys.join(', ')})`)
+    const isCount = (v: number | undefined) => v === undefined || (Number.isInteger(v) && v >= 0)
+    if (!isCount(o.steppedFrames) || !isCount(o.substepsTotal)) throw new Error(`setClock: steppedFrames and substepsTotal must be integers ≥ 0 (got ${o.steppedFrames}, ${o.substepsTotal})`)
+    if (o.simTime !== undefined && !(Number.isFinite(o.simTime) && o.simTime >= 0)) throw new Error(`setClock: simTime must be finite and ≥ 0 (got ${o.simTime})`)
+    const frames = o.steppedFrames ?? this.steppedFrames
+    if (this.resizing || !(frames >= this.stepLimit)) throw new Error(`setClock: the sim would step (frame ${frames} < step limit ${this.stepLimit}) — setStepLimit(${frames}) first`)
+    this.steppedFrames = frames
+    if (o.simTime !== undefined) this.simTime = o.simTime
+    if (o.substepsTotal !== undefined) this.substepsTotal = o.substepsTotal
+    return this.benchClock()
+  }
   /** Raw GPU particle readback (positions/velocities/composition ids). */
   readParticleSample() { return this.sim?.readParticleSample() ?? Promise.resolve(null) }
 
@@ -1094,6 +1132,25 @@ export class FluidEngine {
         }
       },
       viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,
+      // bench (the B1c same-state fork, spec rev 3 §2/§9 — FlipBackend bench*, gpu-sim/flip/stateSnapshot.ts): each refused
+      // unless the sim is frozen at its step limit; a restore only into the scene its snapshot was taken in
+      drainReadbacks: () => this.frozenOp('drainReadbacks', s => s.benchDrain()),
+      snapshotState: async (o) => {
+        const r = await this.frozenOp('snapshotState', s => s.benchSnapshotState(o))
+        this.benchSnapGen = this.sceneGeneration
+        return { ...r, clock: this.benchClock() }
+      },
+      restoreState: (o) => {
+        if (this.benchSnapGen === null || this.benchSnapGen !== this.sceneGeneration) return Promise.reject(new Error('restoreState: no snapshot of this scene held (none taken, or a load or reset since)'))
+        return this.frozenOp('restoreState', s => s.benchRestoreState(o))
+      },
+      disposeSnapshot: () => { this.benchSnapGen = null; return this.sim instanceof FlipBackend ? this.sim.benchDisposeSnapshot() : false },
+      setClock: (c) => this.setBenchClock(c),
+      hostState: () => {
+        if (!(this.sim instanceof FlipBackend)) throw new Error('hostState: this solver has no state snapshot (the incompressible solver only)')
+        return this.sim.benchHostState()
+      },
+      stateWords: (names) => this.frozenOp('stateWords', s => s.benchReadState(names)),
       diagnostics: async () => {
         const d = await this.sim?.readDiagnostics()
         return { ...(d ?? {}), clampHits: d?.clampHits ?? null, particleSubsteps: this.particleSubsteps }
