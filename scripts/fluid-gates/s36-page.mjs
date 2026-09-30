@@ -27,6 +27,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
 import { loadTsModules } from './lib/loadTs.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S3.6 (implicit viscosity on the FLUID TEST page)')
@@ -127,4 +128,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's36-page', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

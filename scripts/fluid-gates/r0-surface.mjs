@@ -36,6 +36,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, makeGate, writeReport, loadScenario, waitStepped, sample } from '../lib/fluid-page.mjs'
 import * as ref from './lib/opticsRef.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE R0-surface (splat radius: OPT-1-h surface height and coverage)')
@@ -215,4 +216,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 'r0-surface', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

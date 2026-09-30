@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
 import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-page.mjs'
 import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, fitOmega, nuNum, columnScore, impulse, selfConvergence } from './lib/s34metrics.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const QUICK = process.argv.includes('--quick')
@@ -120,4 +121,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's34-gpu', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

@@ -50,6 +50,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
 import { powerState, describePower, timingValid, watchPower } from '../lib/power.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('OPT-1-cov (SSFR render cost against screen coverage)')
@@ -187,4 +188,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 'opt1-cov', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

@@ -24,6 +24,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, sampleAtFrame, makeGate, writeReport, fitQuadratic, centreOfMass, unitToTankM, DOMAIN_L_M, TAU_S, G_STANDARD, TANK_INNER_M, FLUID_TEST_URL_MPM } from '../lib/fluid-page.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 let SECONDS = 60
@@ -159,4 +160,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's1-walls', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

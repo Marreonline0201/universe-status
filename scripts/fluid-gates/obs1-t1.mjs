@@ -71,6 +71,7 @@ import { execFileSync } from 'node:child_process'
 import { chromium } from 'playwright-core'
 import { windowArgs } from '../lib/window.mjs'
 import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-page.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RECORD = process.argv.includes('--record')
@@ -185,4 +186,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 'obs1-t1', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

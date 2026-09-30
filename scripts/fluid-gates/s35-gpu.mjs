@@ -25,6 +25,7 @@ import { chromium } from 'playwright-core'
 import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-page.mjs'
 import { fitOmega } from './lib/s34metrics.mjs'
 import { loadTsModules } from './lib/loadTs.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const { two } = await loadTsModules({ two: 'src/sim-ref/twoLayer.ts' })
@@ -110,4 +111,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's35-gpu', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

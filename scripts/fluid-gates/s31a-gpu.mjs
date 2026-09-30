@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
 import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-page.mjs'
 import { loadTsModules } from './lib/loadTs.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S3.0/S3.1a (APIC-MAC kernels + transfer physics on the GPU)')
@@ -129,4 +130,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's31a-gpu', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)

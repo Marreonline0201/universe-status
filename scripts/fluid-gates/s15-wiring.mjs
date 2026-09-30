@@ -21,6 +21,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, makeGate, writeReport, TANK_INNER_M, G_STANDARD, FLUID_TEST_URL_MPM } from '../lib/fluid-page.mjs'
+import { exitGate } from '../lib/exit.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('GATE S1.5-W (material gates on every spawn path)')
@@ -169,4 +170,4 @@ try {
 }
 const pass = gate.finish()
 await writeReport(repoRoot, 's15-wiring', pass, report, gate.results)
-process.exit(pass ? 0 : 1)
+exitGate(pass ? 0 : 1)
