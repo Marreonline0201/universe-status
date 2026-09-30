@@ -71,7 +71,8 @@ try {
 
   await btn('RESET').click(); await page.waitForTimeout(300)
   const sr = await st()
-  check(sr.count === n0, `RESET restores the default scene (${n0} particles, got ${sr.count})`)
+  // owner preference 2026-09-30: RESET leaves the tank empty (it used to restore the default water block)
+  check(sr.count === 0, `RESET empties the tank (0 particles, got ${sr.count})`)
 
   if (shot) await canvas.screenshot({ path: shot, type: 'jpeg', quality: 75 })
   check(errors.length === 0, `no unexpected console errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`)

@@ -920,11 +920,12 @@ export class FluidEngine {
     this.sim?.clearBall()
   }
 
-  /** RESET: re-run the current scenario; otherwise the page's initial scene. */
+  /** RESET: re-run the current scenario (a scenario the page loaded, e.g. from the Lab); otherwise an EMPTY tank.
+   *  Owner preference 2026-09-30: RESET leaves the tank empty — it no longer brings back FLUID TEST's default water
+   *  block (the page still OPENS with that block: options.initialScene). A dropped ball is left as it is, as before. */
   reset() {
     if (this.rebuilding()) return
     if (this.lastScenario) this.loadScenario(this.lastScenario)
-    else if (this.options.initialScene === 'default-water') this.loadDefaultScene()
     else { this.sim?.setParticles([]); this.sceneIds.clear(); this.resetClock() }
   }
 

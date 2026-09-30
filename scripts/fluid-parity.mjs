@@ -18,10 +18,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const outRoot = path.join(repoRoot, 'bench-results', 'parity')
 const die = (msg, code = 1) => { console.error(`✗ ${msg}`); process.exit(code) }
 const FRAMES = 240
+// Each sequence starts from FLUID TEST's default water block. Until 2026-09-30 RESET restored that block; since the
+// owner's preference that day RESET leaves the tank empty, so the sequences load the block with the bench action
+// 'defaultScene' (engine.loadDefaultScene — the very scene RESET used to load). The names are kept, so captures made
+// before and after compare sequence by sequence.
 const SEQUENCES = [
-  { name: 'reset', steps: [['reset', 11]] },
-  { name: 'reset+batch10k', steps: [['reset', 12], ['batch10k', 13]] },
-  { name: 'reset+dropBall', steps: [['reset', 14], ['dropBall', 15]] },
+  { name: 'reset', steps: [['defaultScene', 11]] },
+  { name: 'reset+batch10k', steps: [['defaultScene', 12], ['batch10k', 13]] },
+  { name: 'reset+dropBall', steps: [['defaultScene', 14], ['dropBall', 15]] },
 ]
 
 const [mode, a, b, ...rest] = process.argv.slice(2)
