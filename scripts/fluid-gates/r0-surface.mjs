@@ -5,7 +5,7 @@
 //
 //   node scripts/fluid-gates/r0-surface.mjs
 //
-// A. Surface estimator, validated on a known answer: the pool scenario (water box 0–3.28 m × 0–0.60 m over the whole
+// A. Surface estimator, validated on a known answer: the pool scenario (water box 0–3.28 m × 0–0.43 m over the whole
 //    floor) frozen at frame 0 is spawn.ts's jittered lattice, whose top is exactly origin_y + n_y·s. Estimator (gated):
 //    the HALF-DENSITY height — where the particle number density, smoothed by a tent kernel of half-width s (a
 //    partition of unity on the lattice), falls to half the bulk density n_b (n_b over [y₈₅ − 6 s, y₈₅], y₈₅ = the 85th
@@ -49,7 +49,15 @@ const TOL = 0.25 * DX, HOLE_LIMIT = 0.01
 const R0 = 0.3, R1 = 0.7                          // central region in x and z (world units)
 const R_EQ = Math.cbrt(3 / (4 * Math.PI))         // volume-equivalent radius / spacing = 0.6204
 let FACTORS = [LEGACY, 1.5, 1.25, 1.0, 0.8, 0.7, R_EQ]
-const BOX_MAX_M = [3.28, 0.60, 3.28]
+// The pool's depth, 0.43 m (2026-09-30; was 0.60): at the incompressible solver's 8 ppc the 0.60 m pool is a
+// 115 × 21 × 115 lattice = 277,725 particles, over the page's 200,000-particle capacity (FlipBackend.capacityFor at 64³).
+// Until e968fa46 (2026-09-29 17:34) the page silently truncated a scenario at capacity, so every earlier pass of this
+// gate measured a pool cut to 200,000 particles (its settled depth ≈ 0.30 m, not the 0.60 m box); since e968fa46 the
+// page refuses it ("scenario refused: … needs 277725 particles; this tank holds at most 200000") and the gate could not
+// run. 0.43 m is the deepest whole lattice that fits (115 × 15 × 115 = 198,375) — the complete pool closest to the
+// 200,000-particle state the earlier passes measured. No criterion changed (A: 0.1 s; B: ±0.25 dx, the legacy radius
+// must fail; C: holes ≤ 1 %); pre-registered before its first run (vault decisions 2026-09-30).
+const BOX_MAX_M = [3.28, 0.43, 3.28]
 const pool = { name: 'r0-surface-pool', materials: [], gravity_mps2: 9.80665, spawns: [{ material: 'Water', box: { min: [0, 0, 0], max: BOX_MAX_M } }] }
 
 /** Surface estimators over the particles in the central region. */
