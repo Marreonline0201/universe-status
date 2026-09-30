@@ -249,10 +249,11 @@ function maxChange(a: Float64Array[], b: Float64Array[], S: number) {
 // ── physics (s36-ref scenes) ──
 
 /** S3.6a Taylor–Green in a closed free-slip box, L cells, viscosity on/off; returns ν_eff from the amplitude fit. */
-export async function viscTaylorGreen(device: GPUDevice, o: { cells: number; material: 'honey' | 'lava'; on: boolean; tight?: boolean; density?: boolean }) {
-  const m = o.material === 'honey' ? HONEY : LAVA, cells = o.cells
+export async function viscTaylorGreen(device: GPUDevice, o: { cells: number; material: 'honey' | 'lava' | 'custom'; on: boolean; tight?: boolean; density?: boolean; nu?: number; U?: number; seconds?: number }) {
+  // 'custom' (OBS-1 1b T1-meter): water's density with the given kinematic viscosity nu (m²/s)
+  const m = o.material === 'custom' ? { mu: (o.nu ?? 1e-3) * 998.2072, rho: 998.2072 } : o.material === 'honey' ? HONEY : LAVA, cells = o.cells
   const p = fill([0, 0, 0], [cells - 1, cells - 1, 3], m.rho, m.mu, mulberry32(60 + cells))
-  const k = Math.PI / (cells * DX), A0 = 0.05
+  const k = Math.PI / (cells * DX), A0 = o.U ?? 0.05
   const shape = (x: number, y: number) => [Math.sin(k * x) * Math.cos(k * y), -Math.cos(k * x) * Math.sin(k * y)]
   for (let q = 0; q < p.n; q++) {
     const x = p.pos[3 * q], y = p.pos[3 * q + 1], [su, sv] = shape(x, y)
@@ -266,7 +267,7 @@ export async function viscTaylorGreen(device: GPUDevice, o: { cells: number; mat
   gpu.viscosityActive = o.on
   gpu.dt = 1 / 120
   gpu.setParticles(toInit(p))
-  const nu = m.mu / m.rho, T = Math.min(0.5, 1.5 / (2 * nu * k * k)), ts: number[] = [], ys: number[] = []
+  const nu = m.mu / m.rho, T = o.seconds ?? Math.min(0.5, 1.5 / (2 * nu * k * k)), ts: number[] = [], ys: number[] = []
   for (let s = 1; s * gpu.dt <= T + 1e-9; s++) {
     await submit(device, e => gpu.step(e, 1))
     const r = await gpu.readParticles()
@@ -274,12 +275,12 @@ export async function viscTaylorGreen(device: GPUDevice, o: { cells: number; mat
     for (let q = 0; q < p.n; q++) { const [su, sv] = shape(r.pos[4 * q], r.pos[4 * q + 1]); num += p.mass[q] * (r.vel[4 * q] * su + r.vel[4 * q + 1] * sv); den += p.mass[q] * (su * su + sv * sv) }
     ts.push(s * gpu.dt); ys.push(Math.log(Math.abs(num / den) / A0))
   }
-  const st = o.on ? await gpu.viscositySolver!.readStats() : null, d = await gpu.readDiagnostics()
+  const st = o.on ? await gpu.viscositySolver!.readStats() : null, vf = o.on ? await gpu.viscositySolver!.readFaults() : null, d = await gpu.readDiagnostics()
   gpu.destroy()
   const tm = ts.reduce((a, b) => a + b, 0) / ts.length, ym = ys.reduce((a, b) => a + b, 0) / ys.length
   let sxy = 0, sxx = 0
   for (let i = 0; i < ts.length; i++) { sxy += (ts[i] - tm) * (ys[i] - ym); sxx += (ts[i] - tm) ** 2 }
-  return { nuEff: -(sxy / sxx) / (2 * k * k), nu, steps: ts.length, viscIterations: st?.iterations ?? 0, viscConverged: st?.converged ?? true, capHits: d.capHits, solves: d.solves, breakdowns: d.breakdowns, psiBreakdowns: d.psiBreakdowns, ys }
+  return { nuEff: -(sxy / sxx) / (2 * k * k), nu, steps: ts.length, viscIterations: st?.iterations ?? 0, viscConverged: st?.converged ?? true, viscFaults: vf, capHits: d.capHits, solves: d.solves, breakdowns: d.breakdowns, psiBreakdowns: d.psiBreakdowns, ys }
 }
 
 /** The D1 standing wave with a material: E_K series (s34-ref / s36-ref standingWave on the GPU). */
