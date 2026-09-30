@@ -86,6 +86,33 @@ export function b1cFrozenSet(s) {
   return { set, row }
 }
 
+/** b1cDense's exposure clauses for drop i of a window frame's sample `s` (the reported strata; the arms study's
+ *  definition), exported 2026-09-30 for the same-state fork (scripts/studies/b1c-fork.mjs; b1cDense calls it too):
+ *  `reading` — the kernel read the drop (slipIn ρ_m > 0); `hg` — and its mixture holds mercury, α_Hg = (ρ_m − (1 − α_d)ρ_w
+ *  − α_d·ρ_o)/(ρ_Hg − ρ_o) > 1e-4; `jy` — J_y = s_y − u_V,y < −1 cm/s (s_y = 0 unless dispersed). { RO, RW, RH }: the
+ *  sample's olive-oil, water and mercury densities. b1cDense's rule: exposed = hg || jy. */
+export function b1cExposure(s, i, { RO, RW, RH }) {
+  const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4], sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
+  return { reading: rm > 0, hg: rm > 0 && (rm - (1 - aD) * RW - aD * RO) / (RH - RO) > 1e-4, jy: sy - s.uV[4 * i + 1] < -0.01 }
+}
+/** b1cDense's displacement-budget terms of drop i over one window frame (header: the displacement budget), exported for
+ *  the same-state fork (b1cDense calls it too): dp = δ_dp = posDp − prev.posRaw (the density correction's own move), a =
+ *  posRaw − posDp, dtv = Δt·v_y, den = Δt·u_V,y, dtj = Δt·J_y (J_y = s_y − u_V,y) — metres; `prev` the previous frame's
+ *  sample (both with the density snapshot). */
+export function b1cBudgetTerms(s, prev, i) {
+  const vy = unitVelToMs(s.vel[3 * i + 1]), sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
+  return { dp: s.posDp[4 * i + 1] - prev.posRaw[4 * i + 1], a: s.posRaw[4 * i + 1] - s.posDp[4 * i + 1], dtv: DT * vy, den: DT * s.uV[4 * i + 1], dtj: DT * (sy - s.uV[4 * i + 1]) }
+}
+/** A stratum's displacement budget from its drops' sums, as b1cDense forms it (header): ratios of sums over the drops —
+ *  D_dp = Σδ_dp/ΣΔt·u_V,y, D_a = Σ(a − Δt·v_y − Δt·u_V,y)/ΣΔt·u_V,y, Λ_native = 1 + D_dp + D_a, U = Σδ_dp/ΣΔt·J_y and
+ *  ΣΔt·J_y/ΣΔt·u_V,y; `ds` per drop { dp, a, dtv, dtj, den, n } (n its substeps), summed in array order. Exported for the
+ *  same-state fork; b1cDense calls it. */
+export function b1cBudgetOf(ds) {
+  const sum = key => ds.reduce((q, d) => q + d[key], 0)
+  const dp = sum('dp'), a = sum('a'), dtv = sum('dtv'), dtj = sum('dtj'), den = sum('den'), n = sum('n')
+  return { drops: ds.length, substeps: n, Ddp: den !== 0 ? dp / den : NaN, Da: den !== 0 ? (a - dtv - den) / den : NaN, lambdaNative: den !== 0 ? (dp + a - dtv) / den : NaN, U: dtj !== 0 ? dp / dtj : NaN, dtJoverDtUV: den !== 0 ? dtj / den : NaN }
+}
+
 /** One dense-window run of the B1 scene; returns the B1c-M / B1c-T sums and the reported model ÷ law. */
 export async function b1cDense(page, scene, seed = 2) {
   const h = await b1cToF0(page, scene, seed)   // the schedule to t0 and the F0 sample
@@ -111,8 +138,8 @@ export async function b1cDense(page, scene, seed = 2) {
       // reported stratum (added after the first run, B1c-T unchanged): mercury exposure at ANY frame of the window —
       // the kernel's α_Hg > 1e-4 or J_y = s_y − u_V,y < −1 cm/s (the arms study's definition)
       for (const i of set) {
-        const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4], sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
-        if ((rm > 0 && (rm - (1 - aD) * RW - aD * RO) / (RH - RO) > 1e-4) || sy - s.uV[4 * i + 1] < -0.01) per.get(i).exposed = true
+        const e = b1cExposure(s, i, { RO, RW, RH })
+        if (e.hg || e.jy) per.get(i).exposed = true
       }
       if (nSub !== 1) excluded++
       else for (const i of set) {
@@ -121,10 +148,9 @@ export async function b1cDense(page, scene, seed = 2) {
         T.num += dy - DT * vy; T.den += DT * s.uV[4 * i + 1]; T.denCtrl += DT * (s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0); T.n++
         const pi = per.get(i); pi.num += dy - DT * vy; pi.den += DT * s.uV[4 * i + 1]
         if (s.posDp && prev.posRaw) {   // the displacement budget (header)
-          const dDp = s.posDp[4 * i + 1] - prev.posRaw[4 * i + 1], adv = s.posRaw[4 * i + 1] - s.posDp[4 * i + 1]
-          const sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
-          pi.dp += dDp; pi.a += adv; pi.dtv += DT * vy; pi.dtj += DT * (sy - s.uV[4 * i + 1]); pi.n++
-          B.maxMismatch = Math.max(B.maxMismatch, Math.abs(dy - (dDp + adv)))
+          const b = b1cBudgetTerms(s, prev, i)
+          pi.dp += b.dp; pi.a += b.a; pi.dtv += b.dtv; pi.dtj += b.dtj; pi.n++
+          B.maxMismatch = Math.max(B.maxMismatch, Math.abs(dy - (b.dp + b.a)))
         }
         // B1c-M (a dispersed drop-substep: the kernel logged its inputs)
         const g = k => s.slipIn[8 * i + k], rm = g(4), muM = g(5), ReLog = g(6), rc = g(7)
@@ -171,11 +197,7 @@ export async function b1cDense(page, scene, seed = 2) {
     // the displacement budget per stratum (header): D_dp, D_a, Λ_native, U; maxMismatch = max |Δy(presentation) − (δ_dp + a)| (m)
     budget: {
       maxMismatch: B.maxMismatch,
-      ...Object.fromEntries([['all', () => true], ['never', d => !d.exposed], ['exposed', d => d.exposed], ['row0', d => d.row === 0], ['row1', d => d.row === 1]].map(([k, f]) => {
-        const ds = [...per.values()].filter(f), sum = key => ds.reduce((q, d) => q + d[key], 0)
-        const dp = sum('dp'), a = sum('a'), dtv = sum('dtv'), dtj = sum('dtj'), den = sum('den'), n = sum('n')
-        return [k, { drops: ds.length, substeps: n, Ddp: den !== 0 ? dp / den : NaN, Da: den !== 0 ? (a - dtv - den) / den : NaN, lambdaNative: den !== 0 ? (dp + a - dtv) / den : NaN, U: dtj !== 0 ? dp / dtj : NaN, dtJoverDtUV: den !== 0 ? dtj / den : NaN }]
-      })),
+      ...Object.fromEntries([['all', () => true], ['never', d => !d.exposed], ['exposed', d => d.exposed], ['row0', d => d.row === 0], ['row1', d => d.row === 1]].map(([k, f]) => [k, b1cBudgetOf([...per.values()].filter(f))])),
     },
   }
 }
