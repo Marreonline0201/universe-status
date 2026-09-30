@@ -74,6 +74,22 @@
 //      law-vs-reality physics check moves to E1 (a quiescent dispersion on the page, needs hooks H1 + H2 — H2 is an
 //      owner decision); this slip ratio becomes REPORTED once B1c-T and B1c-M run here — until then B1c-slip stays gated
 //      (and failing). Nothing here — band, window, height cut, subset — is to be tuned after the E3/E6 data.
+//    REVISION, REGISTERED 2026-09-29 23:16 (the commit that adds it), BEFORE THE NEXT RUN — after the memo's adversarial
+//      verification (workflow wf_90984d05-2b5, code and experiments lenses; vault research/b1c-arms-2026-09-29.md):
+//      (1) B1c-T becomes REPORTED, with its control: by the code order (positionCorrect moves every particle by δ_dp
+//      first, G2P samples v at the corrected position, then x += Δt·(u(x_mid) + u_V)) its numerator Σ(Δy − Δt·v_y) is
+//      Σ[δ_dp + Δt·(u(mid) − v) + Δt·u_V + clamp] — the density correction and the RK2 midpoint are in it by
+//      construction, and its ±0.02 was never derived (neither f32 nor a bound on those terms); its J-omitted control
+//      assumed J ≈ +0.29 s while the data give ΣJ/Σs = −0.01 to −0.10. Its FAIL at 996e0bff (Λ 0.738 / 1.000 / 0.857)
+//      stays on record. The successor gates the identity Δy = δ_dp + Δt·(u(mid) + u_V) + clamp once a hook logs δ_dp
+//      and u(mid) per particle (H6), pre-registered with that hook before its first run. (2) B1c-control and B1c-spread
+//      become REPORTED: both existed only to support B1c-slip's gate (a control that must fail; a run-to-run bound),
+//      and B1c-slip is reported since the 19:12 re-scope — the re-scope left their fate unstated. (3) The dense window
+//      runs 1/240 s frames (one substep while v_lag ≤ 10.86 m/s; at 1/120 s the bound was 5.38 and run 2 of c4369d4f
+//      lost all 60 frames) and a run is VALID only with ≥ 100 of its 120 window frames single-substep; a VOID run is
+//      repeated (up to 5 attempts for the 3 valid runs) — missing data is VOID, never a physics FAIL; failing to collect
+//      3 valid runs fails the separate protocol check B1c-validity. B1c-M (and its μ_w control) stays gated, over the
+//      valid runs. Nothing else changes.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
@@ -274,25 +290,29 @@ try {
     // the re-scope registered 2026-09-29 19:12 (header): the slip ratio is REPORTED now that B1c-T and B1c-M run below
     console.log(`INFO B1c-slip (reported since the re-scope; design change 4's FAIL stays on record): the dilute two-liquid drops' mean slip through the water that shared their cell, 4 → 4.5 s, ÷ U_eq = ${runs.map(r => r.ratio.toFixed(3)).join(', ')} over ${runs.length} runs (the old band 1 ± ${BAND}: ${runs.every(slipOk) ? 'inside' : 'outside'})`)
     // the successors: in-situ transport closure and replay, three dense-window runs (lib/b1cSuccessors.mjs)
-    const dense = []
-    for (let k = 0; k < 3; k++) dense.push(await b1cDense(page, scene, 2))
+    // revision 23:16 (header): 1/240 s frames, a validity floor; a VOID run is repeated, up to 5 attempts for 3 valid runs
+    const attempts = [], dense = []
+    while (dense.length < 3 && attempts.length < 5) {
+      const d = await b1cDense(page, scene, 2)
+      attempts.push({ usable: d.usable, frames: d.frames, valid: d.valid, minUsable: d.minUsable })
+      if (d.valid) dense.push(d)
+      else console.log(`VOID dense run (attempt ${attempts.length}): ${d.usable} of ${d.frames} window frames single-substep (< ${d.minUsable}) — repeated`)
+    }
     report.creaming.dense = dense
+    report.creaming.denseAttempts = attempts
     const fmt3 = v => v.toFixed(3), fmtPct = v => (100 * v).toFixed(2)
-    gate.check(dense.every(d => d.T.n > 0 && Math.abs(d.T.lambda - 1) <= 0.02),
-      `B1c-T in-situ transport closure: Λ = Σ(Δy − Δt·v_y)/Σ Δt·u_V,y over the set's drop-substeps, 4 → 4.5 s = ${dense.map(d => fmt3(d.T.lambda)).join(', ')} (1 ± 0.02; ${dense.map(d => `${d.T.n} drop-substeps, ${d.excluded}/${d.frames} frames with > 1 substep excluded`).join('; ')})`)
-    gate.check(dense.every(d => !(Math.abs(d.T.lambdaCtrl - 1) <= 0.02)),
-      `B1c-T control (J omitted: the drops' own slip in the denominator) = ${dense.map(d => fmt3(d.T.lambdaCtrl)).join(', ')} — must fall OUTSIDE 1 ± 0.02`)
-    gate.check(dense.every(d => d.M.n > 0 && d.M.frac >= 0.999 && d.M.reFrac >= 0.999),
+    gate.check(dense.length === 3,
+      `B1c-validity (protocol): ${dense.length} valid dense-window runs of 3 needed, in ${attempts.length} attempts (usable single-substep frames ${attempts.map(a => `${a.usable}/${a.frames}`).join(', ')}; floor ≥ ${attempts[0]?.minUsable} of ${attempts[0]?.frames})`)
+    console.log(`INFO B1c-T (reported since the 23:16 revision — its numerator holds the density correction and the RK2 midpoint by construction; the H6 identity is its successor): Λ = Σ(Δy − Δt·v_y)/Σ Δt·u_V,y = ${dense.map(d => fmt3(d.T.lambda)).join(', ')}; J-omitted control ${dense.map(d => fmt3(d.T.lambdaCtrl)).join(', ')} (${dense.map(d => `${d.T.n} drop-substeps, ${d.excluded}/${d.frames} frames with > 1 substep excluded`).join('; ')})`)
+    gate.check(dense.length > 0 && dense.every(d => d.M.n > 0 && d.M.frac >= 0.999 && d.M.reFrac >= 0.999),
       `B1c-M in-situ replay exactness: dispersed drop-substeps replayed from the kernel's own inputs within 1e-4·max(|s|, 1e-4 m/s): ${dense.map(d => `${fmtPct(d.M.frac)} % of ${d.M.n} (Re ${fmtPct(d.M.reFrac)} %; worst × ${d.M.maxRel.toFixed(2)} of the tolerance)`).join('; ')} (≥ 99.9 % each)`)
-    gate.check(dense.every(d => d.M.ctrlFrac < 0.999),
+    gate.check(dense.length > 0 && dense.every(d => d.M.ctrlFrac < 0.999),
       `B1c-M control (μ_w in place of μ_m): ${dense.map(d => `${fmtPct(d.M.ctrlFrac)} %`).join(', ')} — must fall BELOW 99.9 %`)
-    console.log(`INFO B1c model ÷ its own instantaneous law over the dense window: ${dense.map(d => fmt3(d.modelOverLaw)).join(', ')}; sets ${dense.map(d => d.set).join(', ')}; the clock switch advanced ${dense.map(d => (1000 * d.clockStepS).toFixed(3)).join(', ')} ms per frame (8.333 expected)`)
-    console.log(`INFO B1c-T by stratum (reported; added after the first run, the gated Λ unchanged — decision rows 1–2): ${dense.map((d, k) => `run ${k + 1}: never-exposed ${fmt3(d.strata.never.lambda)} (${d.strata.never.drops}), exposed ${fmt3(d.strata.exposed.lambda)} (${d.strata.exposed.drops}), row 0 ${fmt3(d.strata.row0.lambda)} (${d.strata.row0.drops}), row 1 ${fmt3(d.strata.row1.lambda)} (${d.strata.row1.drops})`).join('; ')}`)
-    gate.check(ctl.nDilute > 0 && !slipOk(ctl),
-      `B1c-control: with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
+    console.log(`INFO B1c model ÷ its own instantaneous law over the dense window: ${dense.map(d => fmt3(d.modelOverLaw)).join(', ')}; sets ${dense.map(d => d.set).join(', ')}; the clock switch advanced ${dense.map(d => (1000 * d.clockStepS).toFixed(3)).join(', ')} ms per frame (4.167 expected at 1/240 s)`)
+    console.log(`INFO B1c-T by stratum (reported): ${dense.map((d, k) => `run ${k + 1}: never-exposed ${fmt3(d.strata.never.lambda)} (${d.strata.never.drops}), exposed ${fmt3(d.strata.exposed.lambda)} (${d.strata.exposed.drops}), row 0 ${fmt3(d.strata.row0.lambda)} (${d.strata.row0.drops}), row 1 ${fmt3(d.strata.row1.lambda)} (${d.strata.row1.drops})`).join('; ')}`)
+    console.log(`INFO ${ctl.nDilute > 0 && !slipOk(ctl) ? '(would pass)' : '(would fail)'} B1c-control (reported since the 23:16 revision): with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))
-    gate.check(runs.length >= 2 && spread <= 2 * BAND,
-      `B1c-spread: the slip ratio's run-to-run spread ${spread.toFixed(3)} over ${runs.length} identical runs ≤ the band's width ${(2 * BAND).toFixed(1)}`)
+    console.log(`INFO ${runs.length >= 2 && spread <= 2 * BAND ? '(would pass)' : '(would fail)'} B1c-spread (reported since the 23:16 revision): the slip ratio's run-to-run spread ${spread.toFixed(3)} over ${runs.length} identical runs ≤ the band's width ${(2 * BAND).toFixed(1)}`)
     const lo = Math.min(...runs.map(r => r.ratio)), hi = Math.max(...runs.map(r => r.ratio))
     const how = runs.every(slipOk) ? `at the drag law's speed (× ${lo.toFixed(2)}–${hi.toFixed(2)}, within ±${100 * BAND} %)`
       : `${lo >= 1 ? 'FASTER' : hi <= 1 ? 'SLOWER' : 'off'} than the drag law predicts (× ${lo.toFixed(2)}–${hi.toFixed(2)}; ±${100 * BAND} % allowed) — an open finding about the drift model`

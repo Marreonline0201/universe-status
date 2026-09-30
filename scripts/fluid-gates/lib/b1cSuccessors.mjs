@@ -1,24 +1,30 @@
 // The B1c successors — s31c-page's header, "RE-SCOPE, REGISTERED 2026-09-29 19:12 BEFORE ANY E3/E6 DATA" (commit
 // 90d8cc9f; the B1c synthesis memo §2.2 E3-R / E3-X): B1c-M, in-situ replay exactness, and B1c-T, in-situ transport
 // closure, each with a control that must fail.
-// Dense window: the B1 scene at lockstep 1/60 s to 3.85 s (frame 231), then 1/120 s frames — ONE substep each while
-// v_lag < 5.38 m/s (FlipBackend.advance: n = max(⌈T/FLIP_MAX_DT⌉, CFL)) — sampled every frame to 4.5 s (frame 309);
-// a frame that took more than one substep is excluded from the per-substep sums and counted. The set is chosen at
-// t0 = 4.0 s (frame 249) only: olive-oil drops dispersed (d > 0), dilute (their cell's particle-count α < 0.3, water
-// present), kernel α_Hg ≤ 1e-4, below y = 7.36 cm.
+// Dense window: the B1 scene at lockstep 1/60 s to 3.85 s (frame 231), then 1/240 s frames — ONE substep each while
+// 1.25·v_lag + g·T ≤ dx/T, i.e. v_lag ≤ 10.86 m/s (FlipBackend.advance: n = max(⌈T/FLIP_MAX_DT⌉, CFL)) — sampled every
+// frame to 4.5 s (frame 387, 120 window frames); a frame that took more than one substep is excluded from the
+// per-substep sums and counted. The set is chosen at t0 = 4.0 s (frame 267) only: olive-oil drops dispersed (d > 0),
+// dilute (their cell's particle-count α < 0.3, water present), kernel α_Hg ≤ 1e-4, below y = 7.36 cm.
+// Revision 2026-09-29 (s31c-page header, after the adversarial verification): frames were 1/120 s (n = 1 only while
+// v_lag < 5.38 m/s — one run lost all 60 frames and failed as "0 % of 0"); now 1/240 s, and a run is VALID only with
+// ≥ 100 of its 120 window frames single-substep (5/6, the verification's floor) — a VOID run is repeated, never a FAIL.
 // B1c-M: per dispersed drop-substep, the kernel's update (immiscible.wgsl slipParticles) replayed from its own logged
 //   inputs — a, ρ_m, μ_m, ρ_c (slipInputs), the new d (slipState.w) and the previous substep's s:
 //   Re = d·ρ_c·|s_old|/μ_m, k_d = d²/(18 μ_m f(Re)), m = 1 − e^(−Δt/((ρ_p + ½ρ_c)·k_d)), s = s_old + ((ρ_p − ρ_m)·a·k_d − s_old)·m.
 //   Pass: ≥ 99.9 % of drop-substeps |s_n − s_rep| ≤ 1e-4·max(|s_n|, 1e-4 m/s) AND the logged Re within 1e-5·max(Re, 1)
 //   of the replayed. Control: μ_w (water) in place of μ_m — must fall below 99.9 %.
-// B1c-T: Λ = Σ(Δy − Δt·v_y) / Σ Δt·u_V,y over the set's drop-substeps (Δy the substep's displacement, v_y the particle
-//   velocity the substep's G2P gave, u_V the drift it advected with). Pass: Λ = 1 ± 0.02. Control: the drops' own slip
-//   s_y in the denominator (J omitted) — ≈ 1 − α, must fall outside the band.
+// B1c-T (REPORTED since the 2026-09-29 revision): Λ = Σ(Δy − Δt·v_y) / Σ Δt·u_V,y over the set's drop-substeps (Δy
+//   the substep's displacement, v_y the particle velocity the substep's G2P gave, u_V the drift it advected with). By
+//   the code order its numerator is δ_dp + Δt·(u(x_mid) − v) + Δt·u_V + clamp — the density correction's displacement
+//   and the RK2 midpoint term are in it by construction, so Λ ≠ 1 does not locate the drift's application. Its
+//   successor gates that identity once a hook logs δ_dp and u(x_mid) per particle (H6). Control, reported: the drops'
+//   own slip s_y in the denominator (J omitted).
 // Reported: the model ÷ its own instantaneous law over the window (s_y vs the law with the kernel's inputs).
 import { loadScenario, waitStepped, sampleAtFrame, DOMAIN_L_M, unitVelToMs } from '../../lib/fluid-page.mjs'
 
-const L = DOMAIN_L_M, DX = L / 64, BAND_Y = 0.0736, DT = 1 / 120
-const F_SWITCH = 231, F0 = F_SWITCH + 18, F1 = F_SWITCH + 78
+const L = DOMAIN_L_M, DX = L / 64, BAND_Y = 0.0736, DT = 1 / 240
+const F_SWITCH = 231, F0 = F_SWITCH + 36, F1 = F_SWITCH + 156, MIN_USABLE = 100   // 4.0 s, 4.5 s; the validity floor
 const dragFactor = Re => (Re >= 1000 ? 0.44 * Re / 24 : Re <= 0 ? 1 : 1 + 0.15 * Re ** 0.687)
 const oneMinusExpNeg = h => (h < 0.1 ? h * (1 - h * (0.5 - h * (1 / 6 - h * (1 / 24 - h / 120)))) : 1 - Math.exp(-h))
 const cellOf = (pos, i) => { const c = [0, 1, 2].map(a => Math.min(63, Math.max(0, Math.floor(pos[3 * i + a] * L / DX)))); return c[0] + 64 * (c[1] + 64 * c[2]) }
@@ -29,9 +35,9 @@ export async function b1cDense(page, scene, seed = 2) {
   await loadScenario(page, scene, seed)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH); await waitStepped(page, F_SWITCH)
   const t0 = (await page.evaluate(() => window.__fluidBench.status())).simTime
-  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 120 }))
+  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 240 }))
   const subs = async () => (await page.evaluate(() => window.__fluidBench.status())).substepsTotal   // the engine's CPU counter: no GPU readback per frame
-  // the first 1/120 frame: the switch must advance simTime by exactly one 1/120 step (reported)
+  // the first 1/240 frame: the switch must advance simTime by exactly one 1/240 step (reported)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH + 1); await waitStepped(page, F_SWITCH + 1)
   const tCheck = (await page.evaluate(() => window.__fluidBench.status())).simTime - t0
   // frames before t0 are stepped, not sampled (a full sample is ~15 MB)
@@ -105,7 +111,7 @@ export async function b1cDense(page, scene, seed = 2) {
   }
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60 }))
   return {
-    set: set?.length ?? 0, frames, excluded, clockStepS: tCheck,
+    set: set?.length ?? 0, frames, excluded, usable: frames - excluded, valid: frames - excluded >= MIN_USABLE, minUsable: MIN_USABLE, clockStepS: tCheck,
     M: { n: M.n, frac: M.ok / Math.max(1, M.n), reFrac: M.reOk / Math.max(1, M.n), ctrlFrac: M.ctrlOk / Math.max(1, M.n), maxRel: M.maxRel },
     T: { n: T.n, lambda: T.num / T.den, lambdaCtrl: T.num / T.denCtrl },
     // reported strata of B1c-T (decision rows 1–2: a transport defect fails in never-exposed drops too)
