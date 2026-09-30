@@ -38,6 +38,12 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=perf1    (PERF-1 L0 dispatch budget, gate perf1-gpu.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=opt2a    (OPT-2a in-scatter / deep colour, gate opt2a-render.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=wallShear (FRICTION: the floor's wall shear, gate s38-gpu.mjs, full: ~2 min)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=pageResize (FRICTION enable: the stage across a tank resize, gate tank-page.mjs)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=pageScene  (FRICTION enable: the per-scene stage log, gate s31c-page.mjs, ~8 min a run)
+// The page sets mutate FlipBackend (src/fluid-engine/backends.ts) and run a PAGE gate, whose hygiene lines read
+// 'R GPU: n uncaptured WebGPU errors …' and 'R console: n errors' (2026-09-30, the enable): HYGIENE takes that optional
+// 'R ' too, so a page catch is judged like any other (without it every page catch would score INVALID). No script of
+// the earlier sets prints such a line, so their verdicts are unchanged.
 // A mutant is [file, find, replace, why]: find and replace are two strings, or two arrays of equal length ≥ 1 — several
 // edits in one file, applied in order (a call moved from one method to another); every find a non-empty string, every
 // replacement a string different from its find (an empty one deletes). editsOf refuses any other shape (review MH-4);
@@ -263,8 +269,25 @@ SETS.opt2a = [
   [CO, 'let Esun = scene.irradiance.w;', 'let Esun = scene.sunRadiance.r * 2.0 * PI * (1.0 - cos(scene.sun.w));', '13: E_sun without the sun-on flag'],
   [CO, 'if (params.flags.x > 0.5 && m1.w > 0.5) {', 'if (m1.w > 0.5) {', '14: deep branch forced'],
 ]
+// FRICTION ENABLE (2026-09-30; review wf_fbc58c55-116 plan §8 "new set at the enable", §10 INT-1 and M4/INT-2): page-level
+// mutants of FlipBackend, each run through the page gate that must catch it. The catchers are derived from the code and
+// pre-registered 2026-09-30 before the first run (not from any earlier scratch run):
+// - 'resize drops the stage' (INT-1): FlipBackend.resize no longer re-applies the held stage, so every rebuilt simulator
+//   runs without it — status().wallShear 'off', no wallShear* keys in diagnostics(). tank-page must FAIL T-a (the (a)
+//   UI resize's simulator), T-c ((c) runs on that simulator) and T-d0 ((d0) on the one (d)'s shrinks built).
+// - 'per-scene log reset removed' (M4/INT-2): FlipBackend.setParticles no longer clears the stage log, so a scene's
+//   readout carries the frames before its load. s31c-page must FAIL S-B1 (B1, guarded from its first frame, reads P1's
+//   ≥ 720 applications and its acted cells); S-P1 FAILS too when the page's default scene stepped before P1's load
+//   (P1's applications then exceed its substeps). (tank-page's T-c would catch it as well — the (a) simulator's log
+//   keeps the default scene's post-resize frames — T-d0 would not: (d)'s simulator is new and frozen until d0's load.)
+SETS.pageResize = [
+  ['src/fluid-engine/backends.ts', '    this.applyWallShear()   // the held stage on the new simulator (review INT-1), its log starting empty\n', '', 'resize drops the stage'],
+]
+SETS.pageScene = [
+  ['src/fluid-engine/backends.ts', '    if (this.sim.wallShear !== null) this.sim.resetWallShearStats()\n', '', 'per-scene log reset removed'],
+]
 // the gate script each set runs (default: <set>-gpu.mjs)
-const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs' }
+const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs', pageResize: 'tank-page.mjs', pageScene: 's31c-page.mjs' }
 // a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order. Any other shape throws
 // (header; review MH-4: a short replace array wrote the text 'undefined', a string replace against an array find
 // paired single characters, an array replace against a string find wrote 'x,y')
@@ -294,8 +317,9 @@ function dryRun(src, find, repl) {
   })
   return { text, problems }
 }
-// the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
-const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
+// the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …"); the page
+// gates print them as 'R GPU: …' / 'R console: …' (header: the page sets)
+const HYGIENE = /^[✓✗] (R )?(GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
 // the checks a set's CLEAN control is known to fail, by exact label (header: known control failures)
 const MAY_FAIL = { wallShear: ['W1c validity, sheet along z'] }
 const labelOf = l => l.slice(2).split(':')[0].trim()

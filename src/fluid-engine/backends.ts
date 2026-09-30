@@ -248,10 +248,14 @@ export class FlipBackend implements SimBackend {
    *  kept here and set on every applyImmiscible, so a resize's new solver keeps it. */
   private immDriftForm: DriftForm = 'face'
   /** FRICTION (vault FRICTION-spec §3.3): the floor's wall shear every new simulator of this page gets (create, resize).
-   *  null = OFF: the page runs the solver without the stage — never set, so nothing is encoded, allocated or read back.
-   *  The enable commit sets { wall: 'y-', law: 'keulegan1938' } after the stage's certification (review 2026-09-30,
-   *  plan §10 and §15). */
-  static readonly WALL_SHEAR_DEFAULT: FlipWallShear | null = null
+   *  ON since the enable, 2026-09-30 (vault project/decisions.md, the 2026-09-30 11:14 entry: W1c.z is not a blocker of
+   *  the enable — "W1c.z stand-ins recorded at the enable": the GPU W1a z arm with the Δv_z-dropped mutant CAUGHT at
+   *  2a8d3e09, the CPU W1a-K, the W1c drift study's D1 symmetry to f64 rounding; the certifying z full-step revision
+   *  follows the enable). The simulator guards it off while a liquid reaches VISCOUS_RUN_NU or the immiscible drift runs
+   *  (FlipGpuSimulator.wallShearRuns; status 'guarded'), so it acts where every liquid is below VISCOUS_RUN_NU and no
+   *  immiscible pair is in the tank (water alone, the dam break). null would be OFF: the solver without the stage —
+   *  never set, so nothing is encoded, allocated or read back. */
+  static readonly WALL_SHEAR_DEFAULT: FlipWallShear | null = { wall: 'y-', law: 'keulegan1938' }
   /** The floor's wall shear this page runs (null: off): WALL_SHEAR_DEFAULT until the bench toggle (setWallShear) sets it
    *  — one field is both the stage's config and the toggle's state. Kept here and set on every new simulator (create,
    *  resize), like immDriftForm, so a tank resize keeps the stage (review 2026-09-30 INT-1). */

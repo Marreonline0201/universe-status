@@ -110,6 +110,25 @@
 // R  the page runs the incompressible solver; SSFR drew; no NaN positions; 0 uncaptured GPU errors; 0 console errors.
 // FPS (recorded): the B1 scene on the real-time clock for 10 s — present interval p50/p95, real-time factor, substeps — in
 //     its own window on the PRIMARY display (owner 2026-09-29: timing runs stay there; lib/window.mjs).
+// FRICTION ENABLE — the floor's wall shear, on by default on the page (review wf_fbc58c55-116 M4 / INT-2 and INT-5; the
+// checks as proposed in FR/fixround/Z/page_asserts.md, FR = the FRICTION scratch root; each pre-registered 2026-09-30
+// before its first run). status().wallShear is the live simulator's: 'on' (FlipGpuSimulator.wallShearRuns), 'guarded'
+// while a liquid reaches VISCOUS_RUN_NU or the immiscible drift runs. A scene's log (diagnostics() wallShear*) counts from
+// its own load (FlipBackend.setParticles resets it); status().substepsTotal counts the scene's substeps (FluidEngine
+// resetClock at every load); the stage is applied once per substep (wallShearCell.wgsl WS_ST_APPLIED), so a scene that
+// runs it throughout reads applications = substepsTotal. With the stage off the keys are absent and every predicate
+// FAILS (Number.isInteger), never throws.
+//   S-typo configure({ wallshear: false }), a misspelt option, is refused: 'configure: unknown option wallshear' (INT-5).
+//   S-P1   P1's pool, water only (ν ≈ 1.0e-6 m²/s < VISCOUS_RUN_NU, no drift pair: 'on' throughout): applications = P1's
+//          substeps ≥ 720 (360 frames × ≥ 2 at Δt ≤ 1/120 s), counted from P1's own load (the default scene steps before
+//          it), and booked > 0 — the pool starts at rest, but after the first projection the floor row carries
+//          roundoff-level tangential velocities and the laminar branch's Δv = U·k is ≠ 0 in f32 for any U > 0 (booked 0
+//          would be a real vacuity finding for this scene, not a harness fault).
+//   S-B1   B1 (olive oil ν ≈ 9.2e-5 m²/s ≥ VISCOUS_RUN_NU; the water/oil/mercury drift) is guarded from its first frame
+//          (one setParticles): status 'guarded', wallShearRuns 0, 0 applications and 0 cells over the scene's ≥ 960
+//          substeps (480 frames × ≥ 2: the frames ran) — its log is its own (a log that is not per scene reads P1's ≥ 720).
+//   Its must-fail mutant: gpu-mutations --gate=pageScene ('per-scene log reset removed': S-B1 must FAIL; S-P1 fails as
+//   well when the default scene stepped before P1's load).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, sampleAtFrame, waitStepped, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -130,10 +149,15 @@ try {
   const st0 = await status(page)
   gate.check(st0.solver === 'flip', `R the FLUID TEST page runs the incompressible solver (status.solver = ${st0.solver})`)
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
+  // S-typo (INT-5) — pre-registered 2026-09-30 before its first run: a misspelt configure option is refused, not ignored
+  const typo = await page.evaluate(() => { try { window.__fluidBench.configure({ wallshear: false }); return 'no error' } catch (e) { return String(e.message) } })
+  gate.check(typo.startsWith('configure: unknown option wallshear'), `INT-5 a misspelt configure option is refused, not ignored: ${typo.slice(0, 90)}`)
 
   // P1 + P2: the pool alone
   await loadScenario(page, { name: 's31c-pool', materials: [], spawns: [pool], gravity_mps2: G_STANDARD }, 1)
   const s = await sampleAtFrame(page, 360)
+  // S-P1 — pre-registered 2026-09-30 before its first run: read while frozen at frame 360 (P1's own frames)
+  const dP = await page.evaluate(() => window.__fluidBench.diagnostics()), stP = await status(page)
   const n = s.n, H = n * VP / (L * L)
   let v2 = 0, ySum = 0, bad = 0
   for (let i = 0; i < n; i++) {
@@ -143,8 +167,11 @@ try {
   }
   const rms = Math.sqrt(v2 / (n - bad)), meanY = ySum / (n - bad), lim = 0.01 * Math.sqrt(G_STANDARD * H)
   report.pool = { n, H, rms, meanY, bad }
+  report.pool.wallShear = { status: stP.wallShear, applications: dP.wallShearApplications, substeps: stP.substepsTotal, cells: dP.wallShearCells, booked: dP.wallShearBooked, laminar: dP.wallShearLaminar, tauMaxPa: dP.wallShearTauMax }
   gate.check(rms <= lim && bad === 0, `P1 stillness after 6 s (${n} particles, H = N·V_p/A = ${(100 * H).toFixed(2)} cm): RMS speed ${rms.toExponential(2)} m/s (≤ ${lim.toExponential(2)} = 1 % √(gH)); non-finite ${bad}`)
   gate.check(Math.abs(meanY - H / 2) <= 0.25 * DX, `P2 level: mean particle height ${(100 * meanY).toFixed(2)} cm vs H/2 ${(100 * H / 2).toFixed(2)} cm (±¼·dx = ${(25 * DX).toFixed(2)} cm)`)
+  gate.check(stP.wallShear === 'on' && Number.isInteger(dP.wallShearApplications) && dP.wallShearApplications === stP.substepsTotal && stP.substepsTotal >= 720 && dP.wallShearBooked > 0,
+    `P1-WS the floor's wall shear ran on every substep of P1's own frames: status ${stP.wallShear}, applications ${dP.wallShearApplications} = P1's substeps ${stP.substepsTotal} (≥ 720), booked ${dP.wallShearBooked} (> 0), acted ${dP.wallShearCells}, laminar ${dP.wallShearLaminar}, τ_max ${dP.wallShearTauMax?.toExponential(2)} Pa`)
 
   // B1: pool + oil + mercury
   await loadScenario(page, { name: 's31c-buoyancy', materials: [], spawns: [pool, oil, hg], gravity_mps2: G_STANDARD }, 2)
@@ -152,6 +179,8 @@ try {
   const b45 = await sampleAtFrame(page, 270)
   const b5 = await sampleAtFrame(page, 300)
   const b = await sampleAtFrame(page, 480)
+  // S-B1 — pre-registered 2026-09-30 before its first run: read while frozen at frame 480 (B1's own frames)
+  const dB = await page.evaluate(() => window.__fluidBench.diagnostics()), stB = await status(page)
   const nameOf = new Map(b.materials.map(m => [m.id, m.name]))
   const ys = { Water: [], 'Olive Oil': [], Mercury: [] }
   let nan = 0
@@ -166,8 +195,11 @@ try {
   const oilAbove = ys['Olive Oil'].filter(y => y > wMedian).length / ys['Olive Oil'].length
   const hgBelow = ys.Mercury.filter(y => y < wMedian).length / ys.Mercury.length
   report.buoyancy = { counts: Object.fromEntries(Object.entries(ys).map(([k, v]) => [k, v.length])), cW, cO, cH, wMedian, oilAbove, hgBelow, nan }
+  report.buoyancy.wallShear = { status: stB.wallShear, runs: dB.wallShearRuns, applications: dB.wallShearApplications, cells: dB.wallShearCells, substeps: stB.substepsTotal }
   gate.check(cH + 0.5 * DX <= cW && cW + 0.5 * DX <= cO && nan === 0,
     `B1 order after 8 s (water ${ys.Water.length}, oil ${ys['Olive Oil'].length}, mercury ${ys.Mercury.length} particles): COM height mercury ${(100 * cH).toFixed(1)} cm < water ${(100 * cW).toFixed(1)} cm < oil ${(100 * cO).toFixed(1)} cm (each gap ≥ ½·dx = ${(50 * DX).toFixed(1)} cm)`)
+  gate.check(stB.wallShear === 'guarded' && dB.wallShearRuns === 0 && dB.wallShearApplications === 0 && dB.wallShearCells === 0 && stB.substepsTotal >= 960,
+    `B1-WS the floor's wall shear is set but guarded off for the whole B1 scene (viscous oil; the immiscible drift): status ${stB.wallShear}, applications ${dB.wallShearApplications} (0) over the scene's ${stB.substepsTotal} substeps (≥ 960: the frames ran)`)
   console.log(`INFO B1 separation at 8 s: ${(100 * oilAbove).toFixed(1)} % of the oil above the water's median height ${(100 * wMedian).toFixed(1)} cm, ${(100 * hgBelow).toFixed(1)} % of the mercury below it (the old unsourced ≥ 90 % criteria, reported)`)
 
   // B1c: creaming of the page's own drops — the slip validated (convection-free), the end state reported, a drift-off control

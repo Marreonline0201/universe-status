@@ -32,6 +32,22 @@
 //       the −x drag is 45 px (expected ≈ 72–80) instead of 60 px (80–88); and every GROWING drag also checks where the
 //       liquid went: each particle moved by exactly the shift (−x face: the growth; other faces: 0), ≤ 1e-5 m (f32).
 //   (e) the FPS window opens after the gate page is closed (its SSFR frames were running on the same GPU).
+// FRICTION ENABLE — the floor's wall shear, on by default on the page (review wf_fbc58c55-116 INT-1 / M4; the checks as
+// proposed in FR/fixround/Z/page_asserts.md, FR = the FRICTION scratch root; each pre-registered 2026-09-30 before its
+// first run). Every scene here is water only (ν below VISCOUS_RUN_NU, no drift pair), so the stage must read 'on'
+// (status().wallShear: the live simulator's FlipGpuSimulator.wallShearRuns). The stage's log (diagnostics() wallShear*)
+// counts from the scene's load (FlipBackend.setParticles resets it) or from the simulator's creation (a resize allocates
+// it anew); status().substepsTotal counts the scene's substeps (FluidEngine.resetClock at every load); the stage is
+// applied once per substep (wallShearCell.wgsl WS_ST_APPLIED), so a scene that runs it throughout reads applications =
+// substepsTotal. With the stage off the keys are absent and every predicate FAILS (Number.isInteger), never throws.
+//   T-a  after the UI resize in (a): status 'on', wallShearRuns 1, applications > 0 on the NEW simulator (the default
+//        scene keeps stepping after the resize) — INT-1, the stage survives a tank resize.
+//   T-c  (c)'s pool on the (a) simulator: status 'on', applications = the scene's substeps, ≥ 720 (360 frames × ≥ 2 at
+//        Δt ≤ 1/120 s), wallShearBooked > 0 (a floor cell with an f32 Δv ≠ 0).
+//   T-d0 (d0)'s dropped block on the simulator (d)'s shrinks rebuilt: the same, ≥ 480 (240 frames × ≥ 2).
+//   (e)  records status().wallShear and the window's applications (substeps beside them in its diagnostics, both counted
+//        from configure({ resetDiagnostics: true })); gates nothing — a timing run.
+//   Its must-fail mutant: gpu-mutations --gate=pageResize ('resize drops the stage': T-a, T-c and T-d0 must FAIL).
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sample, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
@@ -159,10 +175,17 @@ try {
   report.a = { tank: ta, handle: hA, projected: pA, info }
   gate.check(ta.cells.join() === '48,40,72' && sizeOk && info.includes(shown) && Math.hypot(hA.x - pA.x, hA.y - pA.y) <= 1,
     `(a) numbers 2.72 / 2.27 / 4.08 m + APPLY → status ${ta.cells.join(' × ')} cells = ${ta.sizeM.map(v => v.toFixed(3)).join(' × ')} m (cells·dx ${sizeOk ? 'ok' : 'WRONG'}); the page's engine-derived tank line shows ${shown} m: ${info.includes(shown)}; +x face handle at (${hA.x.toFixed(1)}, ${hA.y.toFixed(1)}) vs the projected face centre (${pA.x.toFixed(1)}, ${pA.y.toFixed(1)})`)
+  // (a) INT-1 — pre-registered 2026-09-30 before its first run: the floor's wall shear survives the resize
+  const dA = await page.evaluate(() => window.__fluidBench.diagnostics()), stA = await status(page)
+  report.a.wallShear = { status: stA.wallShear, applications: dA.wallShearApplications, runs: dA.wallShearRuns }
+  gate.check(stA.wallShear === 'on' && dA.wallShearRuns === 1 && Number.isInteger(dA.wallShearApplications) && dA.wallShearApplications > 0,
+    `(a) INT-1 the floor's wall shear on the resized ${ta.cells.join(' × ')} simulator: status ${stA.wallShear} (on), its log ${dA.wallShearApplications} applications since the resize (> 0)`)
 
   // (c) P1/P2 in the 48 × 40 × 72 tank
   await loadScenario(page, poolOver(ta.cells), 1)
   const s = await sampleAtFrame(page, 360)
+  // T-c — pre-registered 2026-09-30 before its first run: read while frozen at frame 360, before (d)'s resizes
+  const dC = await page.evaluate(() => window.__fluidBench.diagnostics()), stC = await status(page)
   const A = ta.sizeM[0] * ta.sizeM[2], n = s.n, Hh = n * VP / A
   let v2 = 0, ySum = 0, bad = 0
   for (let i = 0; i < n; i++) {
@@ -172,8 +195,11 @@ try {
   }
   const rms = Math.sqrt(v2 / (n - bad)), meanY = ySum / (n - bad), lim = 0.01 * Math.sqrt(G_STANDARD * Hh)
   report.c = { n, H: Hh, rms, meanY, bad }
+  report.c.wallShear = { status: stC.wallShear, applications: dC.wallShearApplications, substeps: stC.substepsTotal, cells: dC.wallShearCells, booked: dC.wallShearBooked, laminar: dC.wallShearLaminar, tauMaxPa: dC.wallShearTauMax }
   gate.check(rms <= lim && bad === 0, `(c) P1 stillness in 48 × 40 × 72 after 6 s (${n} particles, H = N·V_p/A = ${(100 * Hh).toFixed(2)} cm): RMS ${rms.toExponential(2)} m/s (≤ ${lim.toExponential(2)} = 1 % √(gH)); non-finite ${bad}`)
   gate.check(Math.abs(meanY - Hh / 2) <= 0.25 * DX, `(c) P2 level: mean particle height ${(100 * meanY).toFixed(2)} cm vs H/2 ${(100 * Hh / 2).toFixed(2)} cm (±¼·dx = ${(25 * DX).toFixed(2)} cm)`)
+  gate.check(stC.wallShear === 'on' && Number.isInteger(dC.wallShearApplications) && dC.wallShearApplications === stC.substepsTotal && stC.substepsTotal >= 720 && dC.wallShearBooked > 0,
+    `(c) the floor's wall shear ran on every substep of this scene in the resized tank: status ${stC.wallShear}, applications ${dC.wallShearApplications} = the scene's substeps ${stC.substepsTotal} (≥ 720: 360 frames × ≥ 2 at Δt ≤ 1/120 s), booked ${dC.wallShearBooked} (> 0), acted ${dC.wallShearCells}, laminar ${dC.wallShearLaminar}, τ_max ${dC.wallShearTauMax?.toExponential(2)} Pa`)
 
   // (d) kept on a shrink (the pool settled and frozen)
   report.d = []
@@ -192,6 +218,8 @@ try {
   const t32 = await tankOf(page)
   await loadScenario(page, { name: 'tank-drop', materials: [], gravity_mps2: G_STANDARD, spawns: [{ material: 'Water', box: { min: [0.4, 0.8, 0.8], max: [1.4, 1.6, 2.2] } }] }, 3)
   const sd = await sampleAtFrame(page, 240), extD = t32.sizeM
+  // T-d0 — pre-registered 2026-09-30 before its first run: read while frozen at frame 240, before the grow rebuilds the sim
+  const dD = await page.evaluate(() => window.__fluidBench.diagnostics()), stD = await status(page)
   let atRisk = 0
   for (let i = 0; i < sd.n; i++) if ([0, 1, 2].some(a => { const v = sd.pos[3 * i + a] * L; return v <= 1e-6 || v >= extD[a] - 1e-6 })) atRisk++
   const g = await page.evaluate(([c, sh]) => window.__fluidBench.resizeTank(c, sh), [[48, 40, 56], [16 * DX, 0, 0]])
@@ -199,6 +227,9 @@ try {
   report.d0 = { tank: t32.cells, before: sd.n, atRisk, r: g, after: gAfter }
   gate.check(t32.cells.join() === '32,40,56' && atRisk >= 100 && g.ok && g.kept === sd.n && g.removed === 0 && gAfter === sd.n,
     `(d0) grow −x face out 32 → 48 (liquid shifted +16 dx), a dropped block 4 s after impact: ${sd.n} particles, ${atRisk} within 1 µm of a wall (≥ 100 for teeth) → kept ${g.kept}, removed ${g.removed}, page count ${gAfter}`)
+  report.d0.wallShear = { status: stD.wallShear, applications: dD.wallShearApplications, substeps: stD.substepsTotal, cells: dD.wallShearCells, booked: dD.wallShearBooked, laminar: dD.wallShearLaminar, tauMaxPa: dD.wallShearTauMax }
+  gate.check(stD.wallShear === 'on' && Number.isInteger(dD.wallShearApplications) && dD.wallShearApplications === stD.substepsTotal && stD.substepsTotal >= 480 && dD.wallShearBooked > 0,
+    `(d0) the floor's wall shear ran on every substep of the dropped block, on the simulator (d)'s shrinks rebuilt: status ${stD.wallShear}, applications ${dD.wallShearApplications} = the scene's substeps ${stD.substepsTotal} (≥ 480: 240 frames × ≥ 2 at Δt ≤ 1/120 s), booked ${dD.wallShearBooked} (> 0), acted ${dD.wallShearCells}, laminar ${dD.wallShearLaminar}, τ_max ${dD.wallShearTauMax?.toExponential(2)} Pa`)
 
   // (b) the real pointer path, each drag from the 64³ tank
   // drag directions from the handles' own screen positions (outward = from the opposite handle to this one)
@@ -280,7 +311,9 @@ try {
       await fp.page.evaluate(() => window.__fluidBench.setStepLimit(Infinity))
       await fp.page.waitForTimeout(10_000)
       const f = await status(fp.page), d = await fp.page.evaluate(() => window.__fluidBench.diagnostics())
-      report.e.push({ cells, count: f.count, fps: f.fps, rtFactor: f.rtFactor, p50: f.presentIntervalP50, p95: f.presentIntervalP95, gpuErrors: f.gpuErrors, diagnostics: d })
+      // FRICTION enable (pre-registered 2026-09-30, record only — a timing run gates nothing new): the stage's status and
+      // the window's applications (d.substeps beside them: both counted from the resetDiagnostics above)
+      report.e.push({ cells, count: f.count, fps: f.fps, rtFactor: f.rtFactor, p50: f.presentIntervalP50, p95: f.presentIntervalP95, gpuErrors: f.gpuErrors, wallShear: f.wallShear, wallShearApplications: d.wallShearApplications, diagnostics: d })
       console.log(`  [recorded] FPS ${cells.join('×')}: ${f.count} particles (17 cm pool) on the real-time clock for 10 s: ${f.fps} fps, present p50 ${f.presentIntervalP50?.toFixed(1)} ms / p95 ${f.presentIntervalP95?.toFixed(1)} ms, real-time factor ${f.rtFactor.toFixed(3)}; substeps ${d.substeps}, p caps ${d.pressureCapHits}/${d.pressureSolves}`)
       await fp.page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
     }
