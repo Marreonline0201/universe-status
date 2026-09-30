@@ -4,11 +4,13 @@
 // src/bench/flipSelftest/budget.ts — transfers only; voxel; voxel + variable density; ghost + density (with particles,
 // with none, with 3 extrapolation layers, with JPCG); the split viscous path; the weak and the monolithic ball (and the
 // monolithic ball with the split viscous path); the Stokes path; the drift in both forms (and the face form with the
-// split viscous path) — at 64³, 48³ and 24×16×12, n = 1, 2, 3, 4.
+// split viscous path); the floor's wall shear (with particles, in an empty tank, and set but guarded off by the split
+// viscous path; added 2026-09-30 with the friction stage, criteria unchanged) — at 64³, 48³ and 24×16×12, n = 1, 2, 3, 4.
 // Criteria, fixed 2026-09-30 02:48 at `3810066c` before the first run: every frame's dispatches per pass label equal
 // src/gpu-sim/flip/dispatchBudget.ts frameDispatches(sim.budgetState(n)) exactly (tolerance 0); every combination ×
 // shape ran all 4 frames; 0 uncaptured WebGPU errors, 0 console errors. Its positive controls are gpu-mutations
-// --gate=perf1 (D1 one extra dispatch in the encode; D2 the rank term dropped from the formula — each must fail here).
+// --gate=perf1 (D1 one extra dispatch in the encode; D2 the rank term dropped from the formula; D3 one extra wall-shear
+// cell dispatch — each must fail here).
 //
 //   node scripts/fluid-gates/perf1-gpu.mjs     (default server: the clean gate tree; FLUID_BASE to override)
 import { windowArgs } from '../lib/window.mjs'

@@ -1,7 +1,7 @@
 // dispatchBudget.ts — PERF-1 L0, S3N-23 "a per-kernel dispatch budget" (vault fluid/realism-2026-09 PERF-1 spec §4 L0):
 // the dispatches ONE frame of FlipGpuSimulator.step(encoder, n) encodes, per compute-pass label, as a formula of the
 // frame's state. It follows the encode paths (FlipGpuSimulator.step → encodeSphereStart, encodeDensityCorrection,
-// encodeSubstepBody → encodeProjection | encodeStokes; PoissonSolver.encodePrepare / encodeSolve through its static
+// encodeSubstepBody → encodeWallShear, encodeProjection | encodeStokes; PoissonSolver.encodePrepare / encodeSolve through its static
 // `dispatches`; ViscositySolver.encode / encodePrepare; StokesSolver.encode; ImmiscibleSolver.encode) and never reads a
 // count an encoder returns: it is the budget every later dispatch lever is checked against. The self-test kind
 // 'dispatchBudget' and scripts/fluid-gates/perf-profile.mjs compare it with counted dispatches at tolerance 0 — a change
@@ -30,6 +30,8 @@ export interface BudgetState {
   /** the drift flux runs (immiscibleActive) and where J is formed */
   immiscible: boolean
   driftForm: 'face' | 'cell'
+  /** FRICTION: the floor's wall shear runs (set, and not guarded off by the viscous path — FlipGpuSimulator.wallShearRuns) */
+  wallShear: boolean
   extrapolationLayers: number
   caps: { pressure: number; psi: number; viscous: number; stokes: number }
   pressure: SolveShape
@@ -84,7 +86,9 @@ export function frameDispatches(s: BudgetState): Map<string, number> {
       add('flip.psi:prepare', s.psi.prepare); add('flip.psi:solve', solve(s.psi, s.caps.psi, false))
       add('flip.faceDisplacement', 1); add('flip.positionCorrect', P)
     }
-    // encodeSubstepBody: P2G, grid update, (projection | Stokes), extrapolation, drift, G2P
+    // encodeSubstepBody: (the wall shear: floor-row scatter, the per-cell law, the update), P2G, grid update,
+    // (projection | Stokes), extrapolation, drift, G2P
+    if (s.wallShear) { add('flip.wallShearScatter', P); add('flip.wallShearCell', 1); add('flip.wallShearApply', P) }
     add('flip.faceScatter', P); add('flip.gridUpdate', 1)
     if (s.projection) {
       if (s.stokes) {

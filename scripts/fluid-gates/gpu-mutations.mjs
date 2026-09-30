@@ -20,6 +20,9 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s37      (S3.7 monolithic ball kernels, gate s37-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=perf1    (PERF-1 L0 dispatch budget, gate perf1-gpu.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=opt2a    (OPT-2a in-scatter / deep colour, gate opt2a-render.mjs)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=wallShear (FRICTION: the floor's wall shear, gate s38-gpu.mjs, full: ~2 min)
+// A mutant is [file, find, replace, why]; find and replace may be arrays of equal length — several edits in one file,
+// applied in order (a call moved from one method to another), each find unique in the file.
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -176,6 +179,23 @@ SETS.s37 = [
 SETS.perf1 = [
   ['src/gpu-sim/flip/FlipGpuSimulator.ts', "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", 'D1: one extra dispatch (fillLiquidFaces twice)'],
   ['src/gpu-sim/flip/dispatchBudget.ts', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? sh.rankInit + cap * sh.rankPerIteration : 0)', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? 0 : 0)', "D2: the rank term dropped from the budget"],
+  // FRICTION (2026-09-30, spec §3.3): the wall-shear stage's own dispatches, caught by budget.ts's stage-on combinations
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', "    this.dispatch(encoder, 'wallShearCell', ws.bg.cell, cells, 64)\n", "    this.dispatch(encoder, 'wallShearCell', ws.bg.cell, cells, 64)\n    this.dispatch(encoder, 'wallShearCell', ws.bg.cell, cells, 64)\n", 'D3: one extra stage dispatch (wallShearCell twice)'],
+]
+// FRICTION (2026-09-30; spec §4 W3's GPU set): each keeps every binding of its kernel statically used. Caught by
+// s38-gpu: the sign and τ×2 by W1a, W1a-K and W1c; the floor row binned as y < dx/2 by W1a-K (and W1a: the films'
+// upper particles leave the sums); the momentum words at 2^24 only by W1a-K's dense cell (Σm̂·v ≈ 149 overflows a
+// ±128 word); the stage moved from encodeSubstepBody to once per frame in step() only by W1c through step() with
+// substeps = 2 (half the applications) — the stage-level tests call encodeWallShear directly
+SETS.wallShear = [
+  [`${SH}/wallShearCell.wgsl`, '        let k = -a / (1.0 + a);', '        let k = a / (1.0 + a);', 'Δv sign flipped'],
+  [`${SH}/wallShearCell.wgsl`, '        let a = P.dt * tau * WP.kA / (Mh * U);', '        let a = P.dt * 2.0 * tau * WP.kA / (Mh * U);', 'τ×2'],
+  [`${SH}/wallShearScatter.wgsl`, '  if (c.y != 0) { return; }', '  if (pos[q].y >= 0.5 * P.dx) { return; }', 'floor row binned as y < dx/2'],
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'f[10] = MOM_SCALE; f[11] = 1 / MOM_SCALE', 'f[10] = MASS_SCALE; f[11] = 1 / MASS_SCALE', "momentum words at 2^24 (the mass word's scale)"],
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts',
+    ['    if (this.wallShearRuns) this.encodeWallShear(encoder)\n    this.encodeScatter(encoder)\n', '    for (let s = 0; s < substeps; s++) {\n      this.encodeSphereStart(encoder)\n'],
+    ['    this.encodeScatter(encoder)\n', '    if (this.wallShearRuns) this.encodeWallShear(encoder)\n    for (let s = 0; s < substeps; s++) {\n      this.encodeSphereStart(encoder)\n'],
+    'stage once per frame (step), not per substep'],
 ]
 // OPT-2a (2026-09-30; spec §4.6): the composite's in-scatter and deep-water terms. Each find string is one line of the
 // shader, unique in the file; every edit keeps each binding statically used. Sizes at the centre rays (spec table):
@@ -198,16 +218,21 @@ SETS.opt2a = [
   [CO, 'if (params.flags.x > 0.5 && m1.w > 0.5) {', 'if (m1.w > 0.5) {', '14: deep branch forced'],
 ]
 // the gate script each set runs (default: <set>-gpu.mjs)
-const SCRIPT = { opt2a: 'opt2a-render.mjs' }
+const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs' }
+// a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order
+const editsOf = (find, repl) => (Array.isArray(find) ? find.map((f, i) => [f, repl[i]]) : [[find, repl]])
 // --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
 // refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2
 // (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them.
 if (process.argv.includes('--check')) {
   let bad = 0, n = 0
-  for (const [gate, list] of Object.entries(SETS)) for (const [f, find, , why] of list) {
+  for (const [gate, list] of Object.entries(SETS)) for (const [f, find, repl, why] of list) {
     n++
-    const c = readFileSync(join(REPO, f), 'utf8').replace(/\r\n/g, '\n').split(find).length - 1
-    if (c !== 1) { bad++; console.error(`${gate}: find occurs ${c}× in ${f} — ${why}`) }
+    const src = readFileSync(join(REPO, f), 'utf8').replace(/\r\n/g, '\n')
+    for (const [fs] of editsOf(find, repl)) {
+      const c = src.split(fs).length - 1
+      if (c !== 1) { bad++; console.error(`${gate}: find occurs ${c}× in ${f} — ${why}`) }
+    }
   }
   console.log(`${n} mutants in ${Object.keys(SETS).length} sets: ${bad} without a unique match in the working tree`)
   process.exit(bad ? 1 : 0)
@@ -220,9 +245,12 @@ const git = (...a) => execFileSync('git', a, { cwd: TREE, encoding: 'utf8' }).tr
 const stampFile = join(TREE, 'gate-sha.txt')
 const stamp = readFileSync(stampFile, 'utf8')
 if (!/ clean\s*$/.test(stamp) || git('status', '--porcelain', '--', 'src') !== '') { console.error('✗ .gate-tree is not a clean gate tree — start scripts/gate-server.mjs first'); process.exit(2) }
-for (const [f, find, , why] of M) {
-  const n = readFileSync(join(TREE, f), 'utf8').replace(/\r\n/g, '\n').split(find).length - 1
-  if (n !== 1) { console.error(`ABORT (${why}): find string occurs ${n}× in ${f}`); process.exit(2) }
+for (const [f, find, repl, why] of M) {
+  const src = readFileSync(join(TREE, f), 'utf8').replace(/\r\n/g, '\n')
+  for (const [fs] of editsOf(find, repl)) {
+    const n = src.split(fs).length - 1
+    if (n !== 1) { console.error(`ABORT (${why}): find string occurs ${n}× in ${f}`); process.exit(2) }
+  }
 }
 
 // the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
@@ -257,7 +285,7 @@ if (control.passed) {
     const orig = readFileSync(path, 'utf8')
     try {
       writeFileSync(stampFile, stamp.replace(' clean', ' MUTATED'))
-      writeFileSync(path, orig.replace(/\r\n/g, '\n').replace(find, repl))
+      writeFileSync(path, editsOf(find, repl).reduce((s, [fs, rs]) => s.replace(fs, rs), orig.replace(/\r\n/g, '\n')))
       const r = runGate()
       if (r.verdict === 'CAUGHT') caught++
       if (r.verdict === 'INVALID') invalid++

@@ -28,7 +28,9 @@ export const FaceType = {
   OPEN: 2,
   /** Tangential ghost-layer face (index −1 or n on an axis other than its own). Filled by velocity extrapolation,
    *  i.e. free slip for interpolation — the inviscid pressure solve only constrains u·n at walls (FINAL-PLAN §4.1);
-   *  wall friction belongs to the viscous solve (S3.6, no-slip). */
+   *  wall friction belongs to the viscous solve (S3.6, no-slip) where it runs. An inviscid liquid's floor gets its
+   *  turbulent wall shear from a particle-side stage instead (flipRef `wallShear`, S3.8 friction), which leaves these
+   *  faces as they are. */
   GHOST: 3,
 } as const
 export type FaceType = (typeof FaceType)[keyof typeof FaceType]

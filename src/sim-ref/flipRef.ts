@@ -9,7 +9,7 @@
 //   AIR, SOLID faces keep the wall velocity, Jacobi-preconditioned CG to ‖r‖∞ ≤ tolerance, then u = u* − (Δt/ρ)∇p on
 //   every non-solid face touching a LIQUID cell; those faces are the extrapolation sources.
 // The density projection (S3.2), ghost-fluid surface (S3.4), variable density (S3.5) and viscosity (S3.6) are added
-// here first, each before its GPU kernel.
+// here first, each before its GPU kernel — and so is the floor's wall shear (S3.8 friction: `wallShear`, applyWallShear).
 //
 // Physics conventions (SI, window-local metres — S3N-5):
 // - APIC on a MAC grid (Jiang et al. 2015 §6): each particle carries, per velocity component a, an affine vector
@@ -171,6 +171,50 @@ export interface FlipRefOptions {
   sphereDensity?: number
   /** Immiscible liquids: sub-grid drop slip (driftFlux). Absent: every material moves with the grid (F1's limit). */
   immiscible?: ImmiscibleOptions
+  /** The floor's wall shear on the particles of its first cell row (S3.4 follow-up; spec vault
+   *  fluid/realism-2026-09/FRICTION-spec.md). 'keulegan1938': Keulegan 1938 eq. 32 — a smooth bed under an infinitely
+   *  wide channel — ū/u* = 3.0 + 2.5·ln(R·u* / ν) (a_s = 5.5, b = 2.5, κ = 0.40; R the liquid depth over the floor cell,
+   *  capped at dx), τ = ρ_c·u*² against the cell's tangential mean; below Re_h = ūR/ν = WALL_SHEAR_RE_CROSS (428.26) the
+   *  developed laminar film τ = 3μ_c·ū/R instead (the branches meet there: τ continuous, non-decreasing, τ(0) = 0).
+   *  'darcyTest' τ = ρ_c·(f/8)·ū² and 'constantTest' τ = tau exist for the gates only. Absent: off, the solver
+   *  bit-identical to one without it. Skipped while the viscous solve runs or any particle's ν ≥ viscosityThreshold (the
+   *  page's rule): those liquids' walls are already no-slip. Side walls, the lid and solids stay free-slip. */
+  wallShear?: { wall: 'y-'; law: 'keulegan1938' | 'darcyTest' | 'constantTest'; f?: number; tau?: number }
+}
+
+/** Keulegan 1938's smooth-wall constants (eq. 13–14 via Nikuradse; eq. 32 integrates them over the section): a_s, b. */
+export const KEULEGAN_AS = 5.5, KEULEGAN_B = 2.5
+/** Where the laminar film τ = 3μū/h and eq. 32 meet: with h⁺ = h·u* / ν, U⁺ = ū/u*, the film gives h⁺ = 3U⁺ and eq. 32
+ *  gives U⁺ = a_s − b + b·ln h⁺, so h⁺ = 3(a_s − b) + 3b·ln h⁺ — its upper root, by Newton in f64 — and Re_h = U⁺·h⁺ =
+ *  h⁺²/3 = 428.26 (the lower root, Re_h = 0.0329, is where max(τ_turb, τ_lam) would jump back to the log branch). */
+export const WALL_SHEAR_RE_CROSS = (() => {
+  let hp = 36
+  for (let it = 0; it < 60; it++) {
+    const g = hp - 3 * (KEULEGAN_AS - KEULEGAN_B) - 3 * KEULEGAN_B * Math.log(hp), dg = 1 - 3 * KEULEGAN_B / hp
+    const next = hp - g / dg
+    if (Math.abs(next - hp) <= 1e-15 * hp) { hp = next; break }
+    hp = next
+  }
+  return hp * hp / 3
+})()
+
+/** The floor's wall shear τ (Pa) for a tangential mean speed U (m/s) over a liquid depth h (m) of density ρ and
+ *  kinematic viscosity ν (μ = ρν): Keulegan 1938 eq. 32 by Newton on g(u*) = u*·(a_s − b + b·ln(h·u* / ν)) − U from
+ *  u* = U/25 — g' = a_s + b·ln(h·u* / ν) > 0 while h·u* / ν > e^(−a_s/b) = e^(−2.2), and g is convex (g'' = b/u*), so an
+ *  iterate that would leave that range is halved instead; on this branch the root has h⁺ ≥ 35.8 — stopping at
+ *  |Δu*| ≤ 1e-14·u*; the laminar film 3ρνU/h below WALL_SHEAR_RE_CROSS. */
+export function keuleganTau(U: number, h: number, nu: number, rho: number): { tau: number; ustar: number; laminar: boolean } {
+  if (!(U > 0) || !(h > 0)) return { tau: 0, ustar: 0, laminar: true }
+  if (U * h / nu < WALL_SHEAR_RE_CROSS) { const tau = 3 * rho * nu * U / h; return { tau, ustar: Math.sqrt(tau / rho), laminar: true } }
+  let us = U / 25
+  for (let it = 0; it < 100; it++) {
+    const L = KEULEGAN_AS - KEULEGAN_B + KEULEGAN_B * Math.log(h * us / nu), g = us * L - U, dg = L + KEULEGAN_B
+    let next = us - g / dg
+    if (!(next > 0) || !(h * next / nu > Math.exp(-(KEULEGAN_AS) / KEULEGAN_B))) next = 0.5 * us
+    if (Math.abs(next - us) <= 1e-14 * us) { us = next; break }
+    us = next
+  }
+  return { tau: rho * us * us, ustar: us, laminar: false }
 }
 
 /** S3.6 viscous solve report. */
@@ -341,6 +385,11 @@ export class FlipRef {
   sphere: RefSphere | null = null
   /** The dam-break gate (options.gate) and the simulated time its lift follows, s. */
   readonly gate: { i: number; speed: number } | null
+  /** The floor's wall shear (options.wallShear; null: off) and its log: per step the cells acted on, the booked impulse
+   *  Σ M_c·Δv (N·s, x and z), the largest τ (Pa) and the laminar-branch cells; per cell of the last step (gates). */
+  readonly wallShear: FlipRefOptions['wallShear'] | null
+  wallShearLog: { t: number; cells: number; impX: number; impZ: number; tauMax: number; laminar: number }[] = []
+  wallShearField: { i: number; k: number; n: number; M: number; hc: number; rho: number; nu: number; Ux: number; Uz: number; tau: number; laminar: boolean; dvx: number; dvz: number }[] = []
   time = 0
   private gateBaseType: Uint32Array | null = null
   /** This step's gate edge (m): the faces above it are SOLID, and particles above it keep their side of the plane. */
@@ -353,7 +402,8 @@ export class FlipRef {
   /** The counter-flux J on the three MAC face grids from the last driftFlux in the face form (m/s; null before it or in
    *  the 'cell' form) — the gates' view of pass 2. */
   driftFaceJ: [Float64Array, Float64Array, Float64Array] | null = null
-  /** Immiscibility: the grid velocity after the grid update (u* = uⁿ + Δt·g, walls applied), and the acceleration each
+  /** Immiscibility: the grid velocity after the grid update (u* = uⁿ + Δt·g, walls applied — and the floor's wall shear
+   *  when it runs: it acts on the particles before P2G, so u* contains it like gravity), and the acceleration each
    *  face received from the projection (and, on the viscous path, the viscous solve): a_f = (u*_f − u_f)/Δt = g − Du/Dt
    *  on the faces the final projection set (m/s²); 0 on SOLID faces, faces no liquid touches and faces inside the ball. */
   uStar: [Float64Array, Float64Array, Float64Array] | null = null
@@ -381,6 +431,8 @@ export class FlipRef {
     const f64 = () => [new Float64Array(layout.size), new Float64Array(layout.size), new Float64Array(layout.size)] as [Float64Array, Float64Array, Float64Array]
     this.faceType = [layout.defaultFaceTypes(0), layout.defaultFaceTypes(1), layout.defaultFaceTypes(2)]
     this.gate = opts.gate ?? null
+    this.wallShear = opts.wallShear ?? null
+    if (this.wallShear && this.wallShear.wall !== 'y-') throw new Error(`FlipRef: wall shear on ${this.wallShear.wall} is not sourced (the floor 'y-' only)`)
     if (this.gate) {
       if (!(this.gate.i > 0 && this.gate.i < layout.nx && Number.isInteger(this.gate.i))) throw new Error(`FlipRef: gate face ${this.gate.i} is not an interior x-face plane`)
       if (!(this.gate.speed > 0)) throw new Error('FlipRef: gate speed must be > 0')
@@ -476,6 +528,8 @@ export class FlipRef {
     // S3.7 (Batty et al. 2007 §3.2): body forces on every velocity before the pressure solve — V* = Vⁿ + Δt·g
     if (this.monolithic()) for (let a = 0; a < 3; a++) this.sphere!.velocity[a] += dt * this.gravity[a]
     if (this.densityProjection) this.densityCorrect(p)
+    // the floor's wall shear on the particles (off unless options.wallShear; never while a liquid's walls are no-slip)
+    if (this.wallShear && !(this.projection && this.viscosityRuns(p)) && !this.anyViscousLiquid(p)) this.applyWallShear(p, dt)
     this.p2g(p)
     this.gridUpdate(dt)
     if (this.projection) {
@@ -868,6 +922,62 @@ export class FlipRef {
   }
 
   // ── S3.6 implicit viscosity (Batty & Bridson 2008) ─────────────────────────────────────────────────────────
+
+  /** The page's rule without the solve's on/off switch (backends.ts: viscosityActive = maxν ≥ VISCOUS_RUN_NU): any
+   *  particle's ν = μ/ρ ≥ viscosityThreshold. The wall shear never runs then — a CPU run with viscosity 'off' must not
+   *  give it to a liquid the page never would. */
+  anyViscousLiquid(p: RefParticles): boolean {
+    const vp = this.layout.dx ** 3 / this.ppc
+    for (let q = 0; q < p.n; q++) {
+      const mu = p.mu ? p.mu[q] : this.viscosityDefault
+      if (mu / (p.mass[q] / vp) >= this.viscosityThreshold) return true
+    }
+    return false
+  }
+
+  /** The floor's wall shear (options.wallShear), particle-side, after the density correction and before P2G: per floor
+   *  cell (i, k) the particles with ⌊y/dx⌋ = 0 give M_c = Σm, n_c, V_c = n_c·V_p (the solver's own particle volume, so
+   *  mixtures and variable density get the right depth), h_c = min(V_c/dx², dx), ρ_c = M_c/V_c, the tangential mean
+   *  U_c = Σ m·v_t / M_c (x and z) and μ_c = Σ m·μ / M_c, ν_c = μ_c/ρ_c; τ from the law; then the cell mean is updated
+   *  semi-implicitly with the coefficient τ/|U_c| lagged at the step's start: a_c = Δt·τ·dx²/(M_c·|U_c|), Δv = −U_c·a_c/
+   *  (1 + a_c) (so U_c′ = U_c/(1 + a_c): never reversed, the cell's tangential energy never raised; exact for the Darcy
+   *  test law; this form avoids U_c·(f − 1)'s cancellation), added to every floor-row particle of the cell — the normal
+   *  component and the APIC matrix untouched. A cell that holds any particle counts as wetted over its whole dx². */
+  applyWallShear(p: RefParticles, dt: number): void {
+    const W = this.wallShear!, L = this.layout, h = L.dx, vp = h ** 3 / this.ppc, nx = L.nx, nz = L.nz, NC = nx * nz
+    const M = new Float64Array(NC), Nc = new Uint32Array(NC), Px = new Float64Array(NC), Pz = new Float64Array(NC), MU = new Float64Array(NC)
+    const cellOf = (q: number) => cellIndex(p.pos[3 * q], h, nx) + nx * cellIndex(p.pos[3 * q + 2], h, nz)
+    const onFloorRow = (q: number) => Math.floor(p.pos[3 * q + 1] / h) === 0
+    for (let q = 0; q < p.n; q++) {
+      if (!onFloorRow(q)) continue
+      const c = cellOf(q), m = p.mass[q]
+      M[c] += m; Nc[c]++; Px[c] += m * p.vel[3 * q]; Pz[c] += m * p.vel[3 * q + 2]; MU[c] += m * (p.mu ? p.mu[q] : this.viscosityDefault)
+    }
+    const dvx = new Float64Array(NC), dvz = new Float64Array(NC)
+    let cells = 0, impX = 0, impZ = 0, tauMax = 0, laminar = 0
+    this.wallShearField = []
+    for (let c = 0; c < NC; c++) {
+      if (!Nc[c]) continue
+      const Vc = Nc[c] * vp, hc = Math.min(h, Vc / (h * h)), rho = M[c] / Vc
+      const Ux = Px[c] / M[c], Uz = Pz[c] / M[c], U = Math.hypot(Ux, Uz)
+      if (!(U > 0)) continue
+      const muC = MU[c] / M[c], nuC = muC / rho
+      let tau: number, lam = false
+      if (W.law === 'darcyTest') tau = rho * (W.f! / 8) * U * U
+      else if (W.law === 'constantTest') tau = W.tau!
+      else { const r = keuleganTau(U, hc, nuC, rho); tau = r.tau; lam = r.laminar }
+      const a = dt * tau * h * h / (M[c] * U)
+      dvx[c] = -Ux * a / (1 + a); dvz[c] = -Uz * a / (1 + a)
+      cells++; impX += M[c] * dvx[c]; impZ += M[c] * dvz[c]; tauMax = Math.max(tauMax, tau); if (lam) laminar++
+      this.wallShearField.push({ i: c % nx, k: Math.floor(c / nx), n: Nc[c], M: M[c], hc, rho, nu: nuC, Ux, Uz, tau, laminar: lam, dvx: dvx[c], dvz: dvz[c] })
+    }
+    for (let q = 0; q < p.n; q++) {
+      if (!onFloorRow(q)) continue
+      const c = cellOf(q)
+      p.vel[3 * q] += dvx[c]; p.vel[3 * q + 2] += dvz[c]
+    }
+    this.wallShearLog.push({ t: this.time, cells, impX, impZ, tauMax, laminar })
+  }
 
   /** The whole-solve rule (FINAL-PLAN §5.6): 'auto' runs when any particle's ν = μ/ρ reaches viscosityThreshold. */
   viscosityRuns(p: RefParticles): boolean {

@@ -2,7 +2,8 @@
 // PERF-1 L0 on the GPU (flip-selftest.html): FlipGpuSimulator.step(encoder, n) of every flag combination the solver has
 // — transfers only, voxel, voxel + variable density, ghost + density, the split viscous path, the weak and the
 // monolithic ball (with and without the split viscous path), the Stokes path, the drift in both forms, an empty tank,
-// three extrapolation layers, JPCG — at 64³, 48³ and 24×16×12, n = 1…4, encoded through a counting wrapper and NEVER
+// three extrapolation layers, JPCG, the floor's wall shear (with particles, in an empty tank, and set but guarded off
+// by the split viscous path) — at 64³, 48³ and 24×16×12, n = 1…4, encoded through a counting wrapper and NEVER
 // submitted, against dispatchBudget.frameDispatches(sim.budgetState(n)) per pass label, tolerance 0 (vault
 // fluid/realism-2026-09 PERF-1 spec L0). Metrics only — scripts/fluid-gates/perf1-gpu.mjs applies the rule.
 import type { Vec3 } from '../../sim-ref/gridLayout'
@@ -48,6 +49,7 @@ const drift = (g: FlipGpuSimulator, form: 'face' | 'cell') => {
   g.immiscibleSolver!.driftForm = form
   g.immiscibleActive = true
 }
+const shear = (g: FlipGpuSimulator) => g.setWallShear({ wall: 'y-', law: 'keulegan1938' })
 const GHOST: Partial<FlipSimOptions> = { projection: true, freeSurface: 'ghost', densityProjection: true, variableDensity: true }
 const COMBOS: Combo[] = [
   { name: 'transfers only', opts: { projection: false } },
@@ -65,6 +67,9 @@ const COMBOS: Combo[] = [
   { name: 'drift, face form', opts: { ...GHOST, immiscible: true }, setup: g => drift(g, 'face') },
   { name: 'drift, cell form', opts: { ...GHOST, immiscible: true }, setup: g => drift(g, 'cell') },
   { name: 'drift, face form + split viscous path', opts: { ...GHOST, immiscible: true, viscosity: true }, setup: g => { viscous(g, 16); drift(g, 'face') } },
+  { name: 'wall shear', opts: GHOST, setup: shear },
+  { name: 'wall shear, empty tank', opts: GHOST, particles: false, setup: shear },
+  { name: 'wall shear set, guarded off by the split viscous path', opts: { ...GHOST, viscosity: true }, setup: g => { viscous(g, 16); shear(g) } },
 ]
 
 /** A 2-particle-per-axis block over a quarter of the floor (materials 0 and 1 alternating by cell), f32 positions. */

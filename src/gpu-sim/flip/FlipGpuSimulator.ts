@@ -30,6 +30,10 @@
 //   S3.5 variable density (`variableDensity: true`): faceScatter also sums Σw; ghostCoef forms each face's density
 //         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
+//   FRICTION the floor's wall shear (setWallShear; off by default: nothing is encoded or allocated), first in
+//         encodeSubstepBody and skipped while the viscous path runs: wallShearScatter (floor-row particles into their
+//         floor cells: m̂, n, m̂·v_x, m̂·v_z, μ·m̂) → wallShearCell (Keulegan 1938 eq. 32 / the laminar film, Δv = −U_c·a/
+//         (1 + a)) → wallShearApply (v_x, v_z += Δv); flipRef.applyWallShear       (gate s38-gpu.mjs; spec FRICTION §3.3)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -72,13 +76,17 @@ import sphereGravityWGSL from './shaders/sphereGravity.wgsl?raw'
 import sphereRankWGSL from './shaders/sphereRank.wgsl?raw'
 import sphereMonoUpdateWGSL from './shaders/sphereMonoUpdate.wgsl?raw'
 import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
+import wallShearCommonWGSL from './shaders/wallShearCommon.wgsl?raw'
+import wallShearScatterWGSL from './shaders/wallShearScatter.wgsl?raw'
+import wallShearCellWGSL from './shaders/wallShearCell.wgsl?raw'
+import wallShearApplyWGSL from './shaders/wallShearApply.wgsl?raw'
 import type { BudgetState } from './dispatchBudget'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { ViscositySolver } from './ViscositySolver'
 import { StokesSolver } from './StokesSolver'
 import { ImmiscibleSolver } from './ImmiscibleSolver'
-import { FACE_WEIGHT_MIN, THETA_MIN } from '../../sim-ref/flipRef'
+import { FACE_WEIGHT_MIN, THETA_MIN, KEULEGAN_AS, KEULEGAN_B, WALL_SHEAR_RE_CROSS } from '../../sim-ref/flipRef'
 
 /** Fixed-point scales (FINAL-PLAN §5.7): mass in ρ_ref·dx³ at 2^24 (range ±128), momentum at 2^19 (±4096). */
 export const MASS_SCALE = 2 ** 24
@@ -158,6 +166,28 @@ export interface FlipSimOptions {
 /** Remainder scale of the two-word fixed point (LO_SCALE in common.wgsl). */
 export const LO_SCALE = 4096
 
+/** The floor's wall shear (vault fluid/realism-2026-09/FRICTION-spec.md §3.3; flipRef FlipRefOptions.wallShear):
+ *  'keulegan1938' is Keulegan 1938 eq. 32 (a smooth bed under an infinitely wide channel, R = the liquid depth over the
+ *  floor cell capped at dx, τ = ρ_c·u*²) with the developed laminar film τ = 3μ_c·U/h_c below Re_h =
+ *  WALL_SHEAR_RE_CROSS; 'darcyTest' τ = ρ_c·(f/8)·U² and 'constantTest' τ = tau exist for the gates only. μ per particle
+ *  is its composition's entry of the viscosity solver's table (the page uploads it whatever viscosityActive is); a sim
+ *  without that solver keeps its own: `muTable` (Pa·s per composition id) over `muDefault` (default water at 20 °C,
+ *  NIST), which is also the μ of an id past the table. */
+export interface FlipWallShear {
+  wall: 'y-'
+  law: 'keulegan1938' | 'darcyTest' | 'constantTest'
+  f?: number
+  /** Pa (constantTest). */
+  tau?: number
+  muTable?: Float32Array
+  muDefault?: number
+}
+/** Newton steps of eq. 32 on the turbulent branch, from U/25 (spec §3.3: in f64 at most 5 reach 1e-14 on the W1b grid). */
+export const WALL_SHEAR_NEWTON = 6
+/** Bytes of the stage's uniform (wallShearCommon.wgsl WallShearParams); i32 words per floor cell of its accumulator
+ *  (hi: mass, momentum x, momentum z, μ·m̂, count; the four remainders); u32 words of its log. */
+const WS_PARAMS_BYTES = 64, WS_WORDS = 9, WS_STATS_WORDS = 8
+
 export interface FlipParticleInit {
   /** Window-local metres. */
   pos: Vec3
@@ -190,6 +220,7 @@ type Kernel = 'faceScatter' | 'gridUpdate' | 'extrapolate' | 'g2pMac' | 'present
   | 'cellScatter' | 'densityRhs' | 'faceDisplacement' | 'positionCorrect' | 'lsScatter' | 'lsFinalize' | 'lsResolve' | 'ghostCoef'
   | 'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef' | 'sphereFaceVel'
   | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'fillLiquidFaces' | 'sphereVolume' | 'sphereGravity' | 'sphereRank' | 'sphereMonoUpdate'
+  | 'wallShearScatter' | 'wallShearCell' | 'wallShearApply' | 'wallShearLaw'
 
 export class FlipGpuSimulator {
   readonly device: GPUDevice
@@ -273,6 +304,10 @@ export class FlipGpuSimulator {
   get densitySnapshotBuffer(): GPUBuffer | null { return this.snapBuf }
   /** The velocity's extrapolation kernel over the immiscible face accelerations: [A→B, B→A]. */
   private accExtrapolate: [GPUBindGroup, GPUBindGroup] | null = null
+  /** The floor's wall shear (setWallShear; null: off — nothing encoded, nothing allocated): its floor-cell sums, the
+   *  per-cell Δv (vec4: Δv_x, Δv_z, τ, branch), its log, its uniform, its own μ table (none with a viscosity solver). */
+  private ws: { cfg: FlipWallShear; acc: GPUBuffer; cell: GPUBuffer; stats: GPUBuffer; params: GPUBuffer; ownMu: GPUBuffer | null
+    bg: { scatter: GPUBindGroup; cell: GPUBindGroup; apply: GPUBindGroup } } | null = null
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
     | 'sphereFaceVel' | 'sphereForce' | 'sphereIntegrate' | 'psiCoef' | 'projectRaw' | 'sphereVolume' | 'sphereGravity' | 'sphereRank'
     | 'sphereMonoUpdate', GPUBindGroup>> = {}
@@ -612,9 +647,12 @@ export class FlipGpuSimulator {
   encodeG2P(encoder: GPUCommandEncoder): void {
     if (this.count > 0) this.dispatch(encoder, 'g2pMac', this.bg.g2pMac[this.finalVelocityBuffer], this.count, 64)
   }
-  /** One substep after the density correction: P2G, grid update, (projection), extrapolation, (immiscible drift), G2P +
-   *  advection. */
+  /** One substep after the density correction: (the floor's wall shear), P2G, grid update, (projection), extrapolation,
+   *  (immiscible drift), G2P + advection. The wall shear is first here, not in step(), so the self-tests that encode
+   *  the body themselves run it too (FRICTION spec §3.3); it acts on velocities only, after the correction's positions
+   *  and before the immiscible u* snapshot (the stress is inside u*, like gravity). */
   encodeSubstepBody(encoder: GPUCommandEncoder): void {
+    if (this.wallShearRuns) this.encodeWallShear(encoder)
     this.encodeScatter(encoder)
     this.encodeGridUpdate(encoder)
     if (this.immActive && !this.stokesRuns) this.immiscibleSolver!.encodeSnapshot(encoder)
@@ -622,6 +660,114 @@ export class FlipGpuSimulator {
     this.encodeExtrapolate(encoder)
     if (this.immActive) this.immiscibleSolver!.encode(encoder, this.count)
     this.encodeG2P(encoder)
+  }
+
+  // ── FRICTION: the floor's wall shear (spec vault fluid/realism-2026-09/FRICTION-spec.md §3.3) ──────────────────────
+
+  /** The stage as set (null: off). */
+  get wallShear(): FlipWallShear | null { return this.ws ? { ...this.ws.cfg } : null }
+  /** The stage runs while set and not guarded off: never while the viscous path runs — the predicate budgetState()
+   *  reports as `viscous`; the page sets viscosityActive = maxν ≥ VISCOUS_RUN_NU, the CPU's anyViscousLiquid rule —
+   *  whose liquids' walls are already no-slip (spec §3.2). */
+  get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) }
+
+  /** Set, change or (null) clear the floor's wall shear. Off by default, and off nothing is encoded or allocated, so the
+   *  solver is the one without it. The log (readWallShearStats) starts empty at the first set and survives a change. */
+  setWallShear(w: FlipWallShear | null): void {
+    if (!w) {
+      if (this.ws) { for (const b of [this.ws.acc, this.ws.cell, this.ws.stats, this.ws.params, this.ws.ownMu]) b?.destroy(); this.ws = null }
+      return
+    }
+    if (w.wall !== 'y-') throw new Error(`FlipGpuSimulator: wall shear on ${w.wall} is not sourced (the floor 'y-' only)`)
+    if (w.law === 'darcyTest' && !Number.isFinite(w.f)) throw new Error('FlipGpuSimulator: the darcyTest law needs f')
+    if (w.law === 'constantTest' && !Number.isFinite(w.tau)) throw new Error('FlipGpuSimulator: the constantTest law needs tau')
+    if (w.muTable && this.viscositySolver) throw new Error("FlipGpuSimulator: the wall shear reads the viscosity solver's μ table — set μ there (setMuTable)")
+    const d = this.device, L = this.layout, cells = L.nx * L.nz, muDefault = w.muDefault ?? 1.001596e-3
+    if (!this.ws) {
+      const S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST, R = GPUBufferUsage.COPY_SRC
+      const buf = (label: string, size: number, usage = S | D | R) => d.createBuffer({ label: `flip.${label}`, size, usage })
+      const acc = buf('wallShearAcc', 4 * WS_WORDS * cells), cell = buf('wallShearCells', 16 * cells), stats = buf('wallShearStats', 4 * WS_STATS_WORDS)
+      const params = buf('wallShearParams', WS_PARAMS_BYTES, GPUBufferUsage.UNIFORM | D)
+      const ownMu = this.viscositySolver ? null : buf('wallShearMu', 4 * 256)
+      const mu = this.viscositySolver ? this.viscositySolver.bufs.muTable : ownMu!
+      for (const [k, code, entryPoint] of [['wallShearScatter', wallShearScatterWGSL, 'main'], ['wallShearCell', wallShearCellWGSL, 'main'],
+        ['wallShearApply', wallShearApplyWGSL, 'main'], ['wallShearLaw', wallShearCellWGSL, 'lawTest']] as const) {
+        if (this.pipelines[k]) continue
+        this.pipelines[k] = d.createComputePipeline({
+          label: `flip.${k}`, layout: 'auto',
+          compute: { module: d.createShaderModule({ label: `flip.${k}`, code: `${commonWGSL}\n${wallShearCommonWGSL}\n${code}` }), entryPoint,
+            constants: k === 'wallShearScatter' || k === 'wallShearCell' ? { PRECISE_P2G: this.preciseP2G ? 1 : 0 } : undefined },
+        })
+      }
+      const group = (k: Kernel, entries: [number, GPUBuffer][]) => d.createBindGroup({
+        label: `flip.${k}`, layout: this.pipelines[k]!.getBindGroupLayout(0), entries: entries.map(([binding, buffer]) => ({ binding, resource: { buffer } })),
+      })
+      this.ws = { cfg: w, acc, cell, stats, params, ownMu, bg: {
+        scatter: group('wallShearScatter', [[0, this.paramsBuf], [1, params], [2, this.posBuf], [3, this.velBuf], [4, this.auxBuf], [5, mu], [6, acc]]),
+        cell: group('wallShearCell', [[0, this.paramsBuf], [1, params], [2, acc], [3, cell], [4, stats]]),
+        apply: group('wallShearApply', [[0, this.paramsBuf], [2, this.posBuf], [3, this.velBuf], [4, cell]]),
+      } }
+    }
+    this.ws.cfg = { ...w }
+    // WallShearParams: the law and its constants, the accumulator's fixed-point scales (mass and μ·m̂ at MASS_SCALE,
+    // momentum at MOM_SCALE, spec §3.3), kA = dx²/massUnit
+    const b = new ArrayBuffer(WS_PARAMS_BYTES), u = new Uint32Array(b), f = new Float32Array(b)
+    u[0] = w.law === 'keulegan1938' ? 0 : w.law === 'darcyTest' ? 1 : 2; u[1] = WALL_SHEAR_NEWTON
+    f[2] = w.f ?? 0; f[3] = w.tau ?? 0; f[4] = KEULEGAN_AS; f[5] = KEULEGAN_B; f[6] = WALL_SHEAR_RE_CROSS; f[7] = muDefault
+    f[8] = MASS_SCALE; f[9] = 1 / MASS_SCALE
+    f[10] = MOM_SCALE; f[11] = 1 / MOM_SCALE
+    f[12] = L.dx ** 2 / this.massUnit
+    d.queue.writeBuffer(this.ws.params, 0, b)
+    if (this.ws.ownMu) {
+      const t = new Float32Array(256).fill(muDefault)
+      if (w.muTable) t.set(w.muTable.subarray(0, 256))
+      d.queue.writeBuffer(this.ws.ownMu, 0, t)
+    }
+  }
+
+  /** One application of the stage: the floor-cell sums cleared, the floor row scattered, the law per floor cell, the
+   *  update. encodeSubstepBody calls it first while wallShearRuns; the stage-level self-tests call it directly. Reads
+   *  the FlipParams uniform (writeParams: Δt, dx) and the stage's own (setWallShear). */
+  encodeWallShear(encoder: GPUCommandEncoder): void {
+    const ws = this.ws
+    if (!ws) throw new Error('FlipGpuSimulator: the wall shear is not set (setWallShear)')
+    const cells = this.layout.nx * this.layout.nz
+    encoder.clearBuffer(ws.acc)
+    if (this.count > 0) this.dispatch(encoder, 'wallShearScatter', ws.bg.scatter, this.count, 64)
+    this.dispatch(encoder, 'wallShearCell', ws.bg.cell, cells, 64)
+    if (this.count > 0) this.dispatch(encoder, 'wallShearApply', ws.bg.apply, this.count, 64)
+  }
+
+  /** The stage's log since it was set or last reset: applications, cells acted on, of those the cells with Δv ≠ 0
+   *  (a non-zero booked impulse), laminar-branch cells, the largest |τ| (Pa). */
+  async readWallShearStats(): Promise<{ applications: number; cells: number; booked: number; laminar: number; tauMax: number }> {
+    if (!this.ws) throw new Error('FlipGpuSimulator: the wall shear is not set')
+    const b = await this.readBuffer(this.ws.stats, 4 * WS_STATS_WORDS), u = new Uint32Array(b), f = new Float32Array(b)
+    return { applications: u[0], cells: u[1], booked: u[2], laminar: u[3], tauMax: f[4] }
+  }
+  resetWallShearStats(): void { if (this.ws) this.device.queue.writeBuffer(this.ws.stats, 0, new Uint32Array(WS_STATS_WORDS)) }
+  /** Per floor cell (i + nx·k), the last application: Δv_x, Δv_z (m/s), τ (Pa), branch (0 not acted on, 1 laminar,
+   *  2 eq. 32, 3 a test law). */
+  async readWallShearCells(): Promise<Float32Array> {
+    if (!this.ws) throw new Error('FlipGpuSimulator: the wall shear is not set')
+    return new Float32Array(await this.readBuffer(this.ws.cell, 16 * this.layout.nx * this.layout.nz))
+  }
+  /** Gate W1b: wallShearCell.wgsl's law alone (entry lawTest) on `points`, 8 f32 each (U m/s, h m, ν m²/s, μ Pa·s,
+   *  ρ kg/m³, 0, 0, 0) → 4 f32 each: τ (Pa), u* (m/s), 1 laminar / 0 eq. 32, 0. Uses the stage's uniform (setWallShear). */
+  async wallShearLaw(points: Float32Array<ArrayBuffer>): Promise<Float32Array> {
+    if (!this.ws) throw new Error('FlipGpuSimulator: the wall shear is not set')
+    const d = this.device, n = points.length / 8
+    const inBuf = d.createBuffer({ label: 'flip.wallShearLawIn', size: Math.max(32, points.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    const outBuf = d.createBuffer({ label: 'flip.wallShearLawOut', size: 16 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC })
+    try {
+      d.queue.writeBuffer(inBuf, 0, points)
+      const bg = d.createBindGroup({ label: 'flip.wallShearLaw', layout: this.pipelines.wallShearLaw!.getBindGroupLayout(0),
+        entries: [[1, this.ws.params], [5, inBuf], [6, outBuf]].map(([binding, buffer]) => ({ binding: binding as number, resource: { buffer: buffer as GPUBuffer } })) })
+      const e = d.createCommandEncoder()
+      this.dispatch(e, 'wallShearLaw', bg, n, 64)
+      d.queue.submit([e.finish()])
+      return new Float32Array(await this.readBuffer(outBuf, 16 * n))
+    } finally { inBuf.destroy(); outBuf.destroy() }
   }
 
   /** Run the drift flux (the solver must be configured with ≥ 2 materials). Switching it off clears the drift, so g2pMac
@@ -844,7 +990,7 @@ export class FlipGpuSimulator {
     return {
       substeps, particles: this.count > 0, projection: this.projection, densityProjection: this.densityProjection,
       ghost: this.freeSurface === 'ghost', variableDensity: this.variableDensity, sphere: this.sphereActive, monolithic: this.sphereMono,
-      viscous: this.viscosityActive && !!this.viscositySolver, stokes: this.stokesRuns, immiscible: this.immActive,
+      viscous: this.viscosityActive && !!this.viscositySolver, stokes: this.stokesRuns, immiscible: this.immActive, wallShear: this.wallShearRuns,
       driftForm: this.immiscibleSolver?.driftForm ?? 'face', extrapolationLayers: this.extrapolationLayers,
       caps: { pressure: this.solveCfg?.cap ?? this.pressureCap, psi: this.psiCfg?.cap ?? this.psiCap, viscous: this.viscositySolver?.cap ?? 0, stokes: this.stokesSolver?.cap ?? 0 },
       pressure: this.solver ? { ...this.solver.dispatches } : { prepare: 0, init: 0, perIteration: 0, finalize: 0, rankInit: 0, rankPerIteration: 0 },
@@ -1013,6 +1159,7 @@ export class FlipGpuSimulator {
   }
 
   destroy(): void {
+    this.setWallShear(null)
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, this.weightBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
     this.snapBuf?.destroy()
