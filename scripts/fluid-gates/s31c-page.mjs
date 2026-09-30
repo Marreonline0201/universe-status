@@ -287,6 +287,7 @@ try {
     gate.check(dense.every(d => d.M.ctrlFrac < 0.999),
       `B1c-M control (μ_w in place of μ_m): ${dense.map(d => `${fmtPct(d.M.ctrlFrac)} %`).join(', ')} — must fall BELOW 99.9 %`)
     console.log(`INFO B1c model ÷ its own instantaneous law over the dense window: ${dense.map(d => fmt3(d.modelOverLaw)).join(', ')}; sets ${dense.map(d => d.set).join(', ')}; the clock switch advanced ${dense.map(d => (1000 * d.clockStepS).toFixed(3)).join(', ')} ms per frame (8.333 expected)`)
+    console.log(`INFO B1c-T by stratum (reported; added after the first run, the gated Λ unchanged — decision rows 1–2): ${dense.map((d, k) => `run ${k + 1}: never-exposed ${fmt3(d.strata.never.lambda)} (${d.strata.never.drops}), exposed ${fmt3(d.strata.exposed.lambda)} (${d.strata.exposed.drops}), row 0 ${fmt3(d.strata.row0.lambda)} (${d.strata.row0.drops}), row 1 ${fmt3(d.strata.row1.lambda)} (${d.strata.row1.drops})`).join('; ')}`)
     gate.check(ctl.nDilute > 0 && !slipOk(ctl),
       `B1c-control: with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))

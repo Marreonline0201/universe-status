@@ -37,6 +37,7 @@ export async function b1cDense(page, scene, seed = 2) {
   // frames before t0 are stepped, not sampled (a full sample is ~15 MB)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F0 - 1); await waitStepped(page, F0 - 1)
   let subPrev = await subs(), prev = null, set = null, mats = null, excluded = 0, frames = 0
+  const per = new Map()   // per drop: row at t0, mercury exposure in the window, its B1c-T sums (the reported strata)
   const M = { n: 0, ok: 0, reOk: 0, ctrlOk: 0, maxRel: 0 }, T = { num: 0, den: 0, denCtrl: 0, n: 0 }, K = { s: 0, law: 0 }
   for (let f = F0; f <= F1; f++) {
     const s = await sampleAtFrame(page, f)
@@ -55,14 +56,22 @@ export async function b1cDense(page, scene, seed = 2) {
         const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4]
         if (!(rm > 0) || !((rm - (1 - aD) * RW - aD * RO) / (RH - RO) <= 1e-4)) continue
         set.push(i)
+        per.set(i, { row: s.pos[3 * i + 1] * L < DX ? 0 : 1, exposed: false, num: 0, den: 0 })
       }
     } else if (set && prev && f > F0) {
       frames++
+      // reported stratum (added after the first run, B1c-T unchanged): mercury exposure at ANY frame of the window —
+      // the kernel's α_Hg > 1e-4 or J_y = s_y − u_V,y < −1 cm/s (the arms study's definition)
+      for (const i of set) {
+        const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4], sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
+        if ((rm > 0 && (rm - (1 - aD) * RW - aD * RO) / (RH - RO) > 1e-4) || sy - s.uV[4 * i + 1] < -0.01) per.get(i).exposed = true
+      }
       if (nSub !== 1) excluded++
       else for (const i of set) {
         // B1c-T
         const dy = (s.pos[3 * i + 1] - prev.pos[3 * i + 1]) * L, vy = unitVelToMs(s.vel[3 * i + 1])
         T.num += dy - DT * vy; T.den += DT * s.uV[4 * i + 1]; T.denCtrl += DT * (s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0); T.n++
+        const pi = per.get(i); pi.num += dy - DT * vy; pi.den += DT * s.uV[4 * i + 1]
         // B1c-M (a dispersed drop-substep: the kernel logged its inputs)
         const g = k => s.slipIn[8 * i + k], rm = g(4), muM = g(5), ReLog = g(6), rc = g(7)
         if (!(rm > 0) || !(muM > 0) || !(rc > 0)) continue
@@ -99,6 +108,11 @@ export async function b1cDense(page, scene, seed = 2) {
     set: set?.length ?? 0, frames, excluded, clockStepS: tCheck,
     M: { n: M.n, frac: M.ok / Math.max(1, M.n), reFrac: M.reOk / Math.max(1, M.n), ctrlFrac: M.ctrlOk / Math.max(1, M.n), maxRel: M.maxRel },
     T: { n: T.n, lambda: T.num / T.den, lambdaCtrl: T.num / T.denCtrl },
+    // reported strata of B1c-T (decision rows 1–2: a transport defect fails in never-exposed drops too)
+    strata: Object.fromEntries([['never', d => !d.exposed], ['exposed', d => d.exposed], ['row0', d => d.row === 0], ['row1', d => d.row === 1]].map(([k, f]) => {
+      const ds = [...per.values()].filter(f), num = ds.reduce((q, d) => q + d.num, 0), den = ds.reduce((q, d) => q + d.den, 0)
+      return [k, { drops: ds.length, lambda: den !== 0 ? num / den : NaN }]
+    })),
     modelOverLaw: K.law !== 0 ? K.s / K.law : NaN,
   }
 }
