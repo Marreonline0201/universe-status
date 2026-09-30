@@ -43,16 +43,26 @@ export async function wallShearW1a(device: GPUDevice, o: { f?: number } = {}) {
     const vel = new Float32Array(await gpu.readBuffer(gpu.velBuf, 16 * parts.length))
     const UN = 1 / (1 / U0 + N * dt * (f / 8) / hc)
     let worst = 0, otherNonZero = 0, normalNonZero = 0, massChanged = 0, minU = Infinity, maxU = -Infinity
+    // per arm (the films along x, the films along z): the same numbers, so a defect of one tangential component shows
+    // in its own arm — 'other' is the component the arm's films do not flow along (z for x, x for z)
+    const arm = () => ({ cells: 0, wallCells: 0, particles: 0, worst: 0, minU: Infinity, maxU: -Infinity, otherNonZero: 0, normalNonZero: 0, massChanged: 0 })
+    const arms = { x: arm(), z: arm() }
+    for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) {
+      const r = (i + k) % 2 === 0 ? arms.x : arms.z
+      r.cells++
+      if (i === 0 || i === nx - 1 || k === 0 || k === nz - 1) r.wallCells++
+    }
     const vb = bits(vel), mb = new Uint32Array(new Float32Array([mhat]).buffer)[0]
     parts.forEach((_, q) => {
-      const a = along[q], U = vel[4 * q + a]
+      const a = along[q], U = vel[4 * q + a], r = a === 0 ? arms.x : arms.z
       worst = Math.max(worst, Math.abs(U / UN - 1)); minU = Math.min(minU, U); maxU = Math.max(maxU, U)
-      if (vb[4 * q + (2 - a)] !== 0) otherNonZero++
-      if (vb[4 * q + 1] !== 0) normalNonZero++
-      if (vb[4 * q + 3] !== mb) massChanged++
+      r.particles++; r.worst = Math.max(r.worst, Math.abs(U / UN - 1)); r.minU = Math.min(r.minU, U); r.maxU = Math.max(r.maxU, U)
+      if (vb[4 * q + (2 - a)] !== 0) { otherNonZero++; r.otherNonZero++ }
+      if (vb[4 * q + 1] !== 0) { normalNonZero++; r.normalNonZero++ }
+      if (vb[4 * q + 3] !== mb) { massChanged++; r.massChanged++ }
     })
     const stats = await gpu.readWallShearStats()
-    return { f, N, dt, hc, U0, UN, particles: parts.length, cells: nx * nz, worst, minU, maxU, otherNonZero, normalNonZero, massChanged, stats }
+    return { f, N, dt, hc, U0, UN, particles: parts.length, cells: nx * nz, worst, minU, maxU, otherNonZero, normalNonZero, massChanged, arms, stats }
   } finally { gpu.destroy() }
 }
 
@@ -132,7 +142,7 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
     // (1) floor-row particles: |v_GPU − v_ref| per tangential component / |U_c|; (2) rows ≥ 1: v and c bit-identical;
     // (3) every particle's v_y, m̂ and c bit-identical
     let worst = 0, worstAt = -1, floorN = 0, offRowChanged = 0, vyOrCChanged = 0, unactedMoved = 0
-    let bookX = 0, bookZ = 0, gBookX = 0, gBookZ = 0, spreadMax = 0
+    let bookX = 0, bookZ = 0, gBookX = 0, gBookZ = 0, spreadMax = 0, xSignal = 0, zSignal = 0
     for (let q = 0; q < pts.length; q++) {
       if (vb[4 * q + 1] !== vib[4 * q + 1] || vb[4 * q + 3] !== vib[4 * q + 3]) vyOrCChanged++
       for (let w = 0; w < 12; w++) if (ab[12 * q + w] !== cib[12 * q + w]) { vyOrCChanged++; break }
@@ -144,6 +154,8 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
       const err = Math.max(Math.abs(vel[4 * q] - p.vel[3 * q]), Math.abs(vel[4 * q + 2] - p.vel[3 * q + 2])) / Uc
       if (err > worst) { worst = err; worstAt = q }
       spreadMax = Math.max(spreadMax, Math.hypot(vBefore[3 * q], vBefore[3 * q + 2]) / Uc)
+      // each component's signal: what a kernel dropping Δv_x (Δv_z) would miss this particle by, in |U_c|
+      xSignal = Math.max(xSignal, Math.abs(e.dvx) / Uc); zSignal = Math.max(zSignal, Math.abs(e.dvz) / Uc)
       gBookX += p.mass[q] * (vel[4 * q] - vIn[4 * q]); gBookZ += p.mass[q] * (vel[4 * q + 2] - vIn[4 * q + 2])
     }
     // the set's preconditions (the derivation's assumptions) and its coverage, from the reference's per-cell field
@@ -164,7 +176,7 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
       cellsRef: cpu.wallShearLog[0].cells, cellsGpu: stats.cells, applications: stats.applications, bookedNonZero: stats.booked,
       laminarRef: cpu.wallShearLog[0].laminar, laminarGpu: stats.laminar,
       pre: { spreadMax, aMax, laminar, turbulent, capped, denseSum, denseN: field.get(DENSE)?.n ?? 0, muMixed: muCell ? { mu: muCell.nu * muCell.rho, n: muCell.n } : null, muEthanol: etCell ? etCell.nu * etCell.rho : null },
-      booked: { ref: [bookX, bookZ], gpu: [gBookX, gBookZ] }, tauRel,
+      booked: { ref: [bookX, bookZ], gpu: [gBookX, gBookZ] }, tauRel, signal: { x: xSignal, z: zSignal },
     }
   } finally { gpu.destroy() }
 }

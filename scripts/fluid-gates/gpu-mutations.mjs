@@ -7,6 +7,15 @@
 // SURVIVED = the gate printed PASS; INVALID = anything else — a crash before the verdict, or a WebGPU error (a binding
 // left unused changes the auto layout): the mutated kernel never ran as intended, so it tests nothing and is never
 // counted as a catch (2026-09-30: s36's "mass-less unknowns written back" had been counted caught from a crash).
+// Known control failures (revision 2026-09-30, FRICTION follow-up, the lead): a set may list the checks its CLEAN
+// control is known to fail (MAY_FAIL), by label — a check line's text after its ✓/✗ up to the first ':' — matched
+// EXACTLY. Reason: s38-gpu's W1c z validity fails on the clean tree — the stage-off control sheet's own drift exceeds
+// the pre-registered 0.2 % on the CPU reference too (the solver is exactly x/z-symmetric and tolerance-independent,
+// per-seed maxima 0.06–0.55 %: FR/impl/A/w1c_drift_study.out, FR = the FRICTION spec's scratch root), so W1c.z is VOID
+// and s38-gpu exits non-zero. For a listed set the control is usable only if its failing labels EQUAL the list —
+// nothing else fails and every listed label fails exactly once (a listed check that passes, is missing or repeats
+// makes the list stale: the control is rejected); a mutant is CAUGHT only through a failing check OUTSIDE the list;
+// INVALID is unchanged. VOID lines carry neither ✓ nor ✗: neither pass nor fail. Sets without a list: as before.
 //
 //   node scripts/gate-server.mjs HEAD   (in another shell)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31a     (S3.1a transfer kernels, gate s31a-gpu.mjs)
@@ -196,6 +205,11 @@ SETS.wallShear = [
     ['    if (this.wallShearRuns) this.encodeWallShear(encoder)\n    this.encodeScatter(encoder)\n', '    for (let s = 0; s < substeps; s++) {\n      this.encodeSphereStart(encoder)\n'],
     ['    this.encodeScatter(encoder)\n', '    if (this.wallShearRuns) this.encodeWallShear(encoder)\n    for (let s = 0; s < substeps; s++) {\n      this.encodeSphereStart(encoder)\n'],
     'stage once per frame (step), not per substep'],
+  // (2026-09-30 follow-up) z ignored in the update: wallShearApply adds Δv_x only (cellR stays used through d.x). Should
+  // be caught by W1a's z arm — its films stay at U0 = 3 m/s, derived miss +35.3 % against the 3e-5 bound — and by
+  // W1a-K per particle: its cells at 90°/270° (and the 45° ones in part) lose their whole Δv_z; s38-gpu's W1a-K info
+  // line prints that z signal, the largest |Δv_z,ref|/|U_c| — measured 4.50e-3 (2026-09-30), 15 000× the 3e-7 bound
+  [`${SH}/wallShearApply.wgsl`, '  vel[q] = vec4<f32>(v.x + d.x, v.y, v.z + d.y, v.w);', '  vel[q] = vec4<f32>(v.x + d.x, v.y, v.z, v.w);', 'Δv_z dropped (z ignored in the update)'],
 ]
 // OPT-2a (2026-09-30; spec §4.6): the composite's in-scatter and deep-water terms. Each find string is one line of the
 // shader, unique in the file; every edit keeps each binding statically used. Sizes at the centre rays (spec table):
@@ -221,11 +235,45 @@ SETS.opt2a = [
 const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs' }
 // a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order
 const editsOf = (find, repl) => (Array.isArray(find) ? find.map((f, i) => [f, repl[i]]) : [[find, repl]])
+// the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
+const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
+// the checks a set's CLEAN control is known to fail, by exact label (header: known control failures)
+const MAY_FAIL = { wallShear: ['W1c validity, sheet along z'] }
+const labelOf = l => l.slice(2).split(':')[0].trim()
+/** The verdict of one gate run from its stdout, stderr and exit status. `mayFail` absent: the rule every set had before
+ *  2026-09-30 (usable = passed). Present: see the header — `usable` for a control, CAUGHT only outside the list. */
+function judge(out, stderr, status, mayFail) {
+  const checks = out.split('\n').filter(l => l.startsWith('✓') || l.startsWith('✗'))
+  const hygiene = checks.filter(l => HYGIENE.test(l))
+  const physicsFailed = checks.filter(l => l.startsWith('✗') && !HYGIENE.test(l))
+  let failed = physicsFailed.map(l => l.slice(2, 40).trim())
+  // judged by the printed verdict, not the exit code: Node on Windows can abort with a libuv assertion while
+  // closing handles AFTER the verdict is printed, which would turn a pass into a non-zero exit
+  const passed = /: PASS \(\d+\/\d+\)/.test(out)
+  const hygieneOk = hygiene.length >= 2 && hygiene.every(l => l.startsWith('✓'))
+  let verdict, usable = passed, note = ''
+  if (!mayFail) verdict = passed ? 'SURVIVED' : failed.length && hygieneOk ? 'CAUGHT' : 'INVALID'
+  else {
+    const outside = physicsFailed.filter(l => !mayFail.includes(labelOf(l)))
+    const listed = mayFail.map(label => ({ label, fails: physicsFailed.filter(l => labelOf(l) === label).length, passes: checks.filter(l => l.startsWith('✓') && labelOf(l) === label).length }))
+    const stale = listed.filter(x => x.fails !== 1 || x.passes !== 0)
+    const printed = /: (PASS|FAIL) \(\d+\/\d+\)/.test(out)
+    usable = printed && hygieneOk && outside.length === 0 && stale.length === 0
+    failed = outside.map(l => l.slice(2, 40).trim())
+    verdict = !printed || !hygieneOk ? 'INVALID' : outside.length ? 'CAUGHT' : 'SURVIVED'
+    if (stale.length) note = `listed check not failed exactly once: ${stale.map(x => `${x.label} (✗ ${x.fails}, ✓ ${x.passes})`).join('; ')}`
+  }
+  const err = (stderr || '').split('\n').find(l => /Error/.test(l)) ?? ''
+  const why = verdict !== 'INVALID' ? '' : hygiene.filter(l => l.startsWith('✗')).map(l => l.slice(2, 110)).join(' | ')
+    || (err ? `crash: ${err.slice(0, 100)}` : `no verdict (exit ${status})`)
+  return { passed, usable, verdict, failed, why, note }
+}
 // --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
 // refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2
 // (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them.
 if (process.argv.includes('--check')) {
   let bad = 0, n = 0
+  for (const k of Object.keys(MAY_FAIL)) if (!SETS[k]) { bad++; console.error(`MAY_FAIL names no set: ${k}`) }
   for (const [gate, list] of Object.entries(SETS)) for (const [f, find, repl, why] of list) {
     n++
     const src = readFileSync(join(REPO, f), 'utf8').replace(/\r\n/g, '\n')
@@ -253,33 +301,20 @@ for (const [f, find, repl, why] of M) {
   }
 }
 
-// the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
-const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
+const LIST = MAY_FAIL[GATE]
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
   const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${SCRIPT[GATE] ?? `${GATE}-gpu.mjs`}`), ...(['s32', 's34', 's35', 's36', 's35i', 's37'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
-  const out = r.stdout || ''
-  const checks = out.split('\n').filter(l => l.startsWith('✓') || l.startsWith('✗'))
-  const hygiene = checks.filter(l => HYGIENE.test(l))
-  const failed = checks.filter(l => l.startsWith('✗') && !HYGIENE.test(l)).map(l => l.slice(2, 40).trim())
-  // judged by the printed verdict, not the exit code: Node on Windows can abort with a libuv assertion while
-  // closing handles AFTER the verdict is printed, which would turn a pass into a non-zero exit
-  const passed = /: PASS \(\d+\/\d+\)/.test(out)
-  const hygieneOk = hygiene.length >= 2 && hygiene.every(l => l.startsWith('✓'))
-  const verdict = passed ? 'SURVIVED' : failed.length && hygieneOk ? 'CAUGHT' : 'INVALID'
-  const err = (r.stderr || '').split('\n').find(l => /Error/.test(l)) ?? ''
-  const why = verdict !== 'INVALID' ? '' : hygiene.filter(l => l.startsWith('✗')).map(l => l.slice(2, 110)).join(' | ')
-    || (err ? `crash: ${err.slice(0, 100)}` : `no verdict (exit ${r.status})`)
-  return { code: r.status, passed, verdict, failed, why }
+  return { code: r.status, ...judge(r.stdout || '', r.stderr, r.status, LIST) }
 }
 
 const control = runGate()
-console.log(`CONTROL (clean tree, ${GATE}): ${control.passed ? 'PASS' : 'FAIL'} (exit ${control.code})${control.failed.length ? `, FAIL ${control.failed.join(' | ')}` : ''}`)
+console.log(`CONTROL (clean tree, ${GATE}): ${control.passed ? 'PASS' : 'FAIL'} (exit ${control.code})${control.failed.length ? `, FAIL ${control.failed.join(' | ')}` : ''}${LIST ? ` — known failures [${LIST.join(' | ')}]: control ${control.usable ? 'USABLE (it failed exactly those)' : `UNUSABLE${control.note ? ` (${control.note})` : control.verdict === 'INVALID' ? ` (${control.why})` : ' (a check outside the list failed)'}`}` : ''}`)
 let caught = 0, invalid = 0
-if (control.passed) {
+if (control.usable) {
   for (const [f, find, repl, why] of M) {
     const path = join(TREE, f)
     const orig = readFileSync(path, 'utf8')
@@ -289,7 +324,7 @@ if (control.passed) {
       const r = runGate()
       if (r.verdict === 'CAUGHT') caught++
       if (r.verdict === 'INVALID') invalid++
-      console.log(`${r.verdict.padEnd(8)} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || '-'}${r.why ? ` — ${r.why}` : ''}`)
+      console.log(`${r.verdict.padEnd(8)} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || '-'}${r.why ? ` — ${r.why}` : ''}${r.note ? ` [${r.note}]` : ''}`)
     } finally {
       git('checkout', '--', f)
       writeFileSync(stampFile, stamp)
@@ -297,5 +332,5 @@ if (control.passed) {
   }
 }
 const clean = git('status', '--porcelain', '--', 'src') === ''
-console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (a crash or WebGPU error is not a catch: rewrite the mutant so its kernel keeps every binding in use)` : ''}; control ${control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
-process.exit(control.passed && caught === M.length && clean ? 0 : 1)
+console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (a crash or WebGPU error is not a catch: rewrite the mutant so its kernel keeps every binding in use)` : ''}; control ${LIST ? (control.usable ? 'usable (failed exactly its known failures)' : 'UNUSABLE (results invalid)') : control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
+process.exit(control.usable && caught === M.length && clean ? 0 : 1)

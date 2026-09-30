@@ -17,6 +17,14 @@
 //         and booked in each. In-gate controls through the same kernel — the Darcy law's exact equivalents of the
 //         spec's W1a mutants: f = −0.02 (the sign flip: U/(1 − kU), derived +108.9 %) and f = 0.04 (τ×2: −20.7 %) —
 //         must each FAIL the 3e-5 bound against the f = 0.02 answer.
+//         Per-arm verdicts (2026-09-30 follow-up, the lead: nothing showed a kernel dropping Δv_z caught; pre-registered
+//         here before the arms' first separate run). The scene is unchanged — its z set (the spec's "a second set along
+//         z") was in it from the first run, the 32 cells with (i + k) odd, and the one combined line judged both arms
+//         together. Now each arm is its own check with the same bound and exact answer: the x arm (32 cells, U0 along x)
+//         and the z arm (32 cells, U0 along z), each 96 particles with interior and wall-adjacent cells: every particle
+//         |U_N/2.217922606925 − 1| ≤ 3e-5; the arm's other tangential component (z for the x arm, x for the z arm) and
+//         v_y exactly 0; m̂ unchanged. The stage log is its own check: 240 applications, all 64 cells acted on and booked
+//         in each. A kernel that drops Δv_z leaves the z arm's films at U0: derived miss 3/2.217922606925 − 1 = +35.3 %.
 //  W1a-K  one application, the production law (Keulegan 1938 eq. 32 + the Re_h rule), lab dx, Δt = 1/240 s, the
 //         hand-built non-uniform set of wallShear.ts (0–9 and 12 floor-row particles per cell, rows 1–2 occupied,
 //         v_y ≠ 0, APIC c ≠ 0, ±20 % spread + 5 % jitter, 45° directions, |U| 1e-3–5 m/s, wall cells, a μ table of
@@ -96,8 +104,13 @@ try {
   // ── W1a ──
   const a = await run('wallShearW1a', {})
   report.w1a = a
-  gate.check(a.worst <= 3e-5 && a.otherNonZero === 0 && a.normalNonZero === 0 && a.massChanged === 0 && a.stats.applications === a.N && a.stats.cells === a.N * a.cells && a.stats.booked === a.N * a.cells,
-    `W1a operator, Darcy f = 0.02, ${a.N} applications on ${a.cells} floor cells (${a.particles} particles, h_c ${(1000 * a.hc).toFixed(2)} mm, Δt ${(1000 * a.dt).toFixed(4)} ms): U_N ${a.minU.toFixed(9)}…${a.maxU.toFixed(9)} vs exact ${a.UN.toFixed(12)} m/s, worst |U_N/exact − 1| ${x(a.worst)} (≤ 3e-5); other tangential component ≠ 0: ${a.otherNonZero}, v_y ≠ 0: ${a.normalNonZero}, m̂ changed: ${a.massChanged}; log ${a.stats.applications} applications, ${a.stats.cells} cells acted on, ${a.stats.booked} booked`)
+  for (const [name, other] of [['x', 'z'], ['z', 'x']]) {
+    const r = a.arms[name]
+    gate.check(r.cells > 0 && r.particles > 0 && r.worst <= 3e-5 && r.otherNonZero === 0 && r.normalNonZero === 0 && r.massChanged === 0,
+      `W1a operator, ${name} arm, Darcy f = 0.02, ${a.N} applications, U0 along ${name} in ${r.cells} floor cells (${r.wallCells} wall-adjacent; ${r.particles} particles, h_c ${(1000 * a.hc).toFixed(2)} mm, Δt ${(1000 * a.dt).toFixed(4)} ms): U_N ${r.minU.toFixed(9)}…${r.maxU.toFixed(9)} vs exact ${a.UN.toFixed(12)} m/s, worst |U_N/exact − 1| ${x(r.worst)} (≤ 3e-5); v_${other} ≠ 0: ${r.otherNonZero}, v_y ≠ 0: ${r.normalNonZero}, m̂ changed: ${r.massChanged}`)
+  }
+  gate.check(a.stats.applications === a.N && a.stats.cells === a.N * a.cells && a.stats.booked === a.N * a.cells,
+    `W1a stage log: ${a.stats.applications} applications (${a.N}), ${a.stats.cells} cells acted on and ${a.stats.booked} booked (${a.N * a.cells}: all ${a.cells} cells of both arms in every application)`)
   for (const [label, f, cpu] of [['the sign flip', -0.02, '+108.9 %'], ['τ×2', 0.04, '−20.7 %']]) {
     const c = await run('wallShearW1a', { f })
     const miss = Math.max(Math.abs(c.minU / a.UN - 1), Math.abs(c.maxU / a.UN - 1))
@@ -114,6 +127,7 @@ try {
   gate.check(k.floorRowChecked > 0 && k.worst <= 3e-7 && k.offRowChanged === 0 && k.vyOrCChanged === 0 && k.unactedMoved === 0 && k.cellsRef > 0 && k.cellsGpu === k.cellsRef && k.applications === 1,
     `W1a-K production law through the stage, one application (${k.particles} particles, ${k.floorRowChecked} floor-row particles in acted cells): worst |Δv_GPU − Δv_ref|/|U_c| ${x(k.worst)} (≤ 3e-7; cell ${k.worstCell}); rows ≥ 1 changed ${k.offRowChanged}, v_y/m̂/c changed ${k.vyOrCChanged}, unacted floor-row particles moved ${k.unactedMoved}; cells acted on GPU ${k.cellsGpu} / reference ${k.cellsRef} (laminar ${k.laminarGpu} / ${k.laminarRef}), ${k.applications} application logged`)
   console.log(`  [info] W1a-K booked impulse (N·s): reference x ${k.booked.ref[0].toExponential(6)} z ${k.booked.ref[1].toExponential(6)}; GPU (Σ m_p·Δv_p) x ${k.booked.gpu[0].toExponential(6)} z ${k.booked.gpu[1].toExponential(6)}; per-cell τ, GPU vs reference, worst relative ${x(k.tauRel)}`)
+  console.log(`  [info] W1a-K per-component signal (the largest |Δv_ref|/|U_c| of one component over the checked particles — what a kernel dropping it would miss by, against the 3e-7 bound): x ${x(k.signal.x)}, z ${x(k.signal.z)}; the booked z SUM is small because the set's 45° directions cancel in it, not per particle`)
 
   // ── W1b ──
   const b = await run('wallShearW1b')
