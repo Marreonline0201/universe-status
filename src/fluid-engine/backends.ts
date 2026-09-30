@@ -231,6 +231,8 @@ export class FlipBackend implements SimBackend {
   private immExclude = new Set<LiquidKey>()
   /** Bench (PERF-1 baseline): a pending one-frame profile request (profileNextStep). */
   private profileReq: { resolve: (p: StepProfile) => void; reject: (e: unknown) => void } | null = null
+  /** The plain frames' CPU encode (ms, substeps), the last 32 — the profile's uninstrumented encode (review 2026-09-29). */
+  private encodeRecent: { ms: number; n: number }[] = []
   /** The ball as the GPU left it, read back 1–2 frames late (FINAL-PLAN S3.1c: the mesh uses a late readback, disclosed). */
   private ballLag: { center: Vec3; velocity: Vec3 } | null = null
   private readonly ballSlots: { buf: GPUBuffer; busy: boolean }[]
@@ -412,11 +414,16 @@ export class FlipBackend implements SimBackend {
       if (!key) { this.immReason = `composition ${id} is not a cited liquid`; sim.immiscibleActive = false; return }
       byLiquid.set(key, [...(byLiquid.get(key) ?? []), id])
     }
+    const hadPairs = FlipBackend.pairCount([...byLiquid.keys()]) > 0
     for (const k of this.immExclude) byLiquid.delete(k)   // bench hook X: untracked from here on
     const keys = [...byLiquid.keys()]
-    const pairs = keys.flatMap((a, i) => keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null))
     this.immReason = null
-    if (pairs.length === 0) { sim.immiscibleActive = false; return }   // nothing to separate
+    if (FlipBackend.pairCount(keys) === 0) {   // nothing to separate
+      // review 2026-09-29: never silently — hook X leaving no pair switches the drift off (the off switch clears every
+      // particle's slip state); setImmiscibleExcluded refuses that, a later load that leads here says so
+      if (hadPairs && this.immExclude.size) this.immReason = `bench hook X (excluded ${[...this.immExclude].join(', ')}) leaves no immiscible pair`
+      sim.immiscibleActive = false; return
+    }
     const multi = keys.filter(k => byLiquid.get(k)!.length > 1)
     if (multi.length) { this.immReason = `${multi.join(', ')} at several temperatures: one slot needs one ρ and μ (per-cell slot properties come with HEAT-1)`; sim.immiscibleActive = false; return }
     if (keys.length > IMMISCIBLE_MAX_SLOTS) { this.immReason = `${keys.length} liquids > ${IMMISCIBLE_MAX_SLOTS} drift slots`; sim.immiscibleActive = false; return }
@@ -428,6 +435,10 @@ export class FlipBackend implements SimBackend {
     sim.immiscibleActive = true
   }
   setImmiscibleDisabled(v: boolean) { this.immDisabled = v; this.applyImmiscible() }
+  /** Liquid pairs with a sourced interfacial tension among these liquids (the drift's slots need at least one). */
+  private static pairCount(keys: readonly LiquidKey[]): number {
+    return keys.reduce((n, a, i) => n + keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null).length, 0)
+  }
   /** Bench (PERF-1's baseline, S3N-23): profile the NEXT frame's simulation step — every compute pass timed with
    *  timestamp queries, every dispatch / copy / upload counted per pass label, the CPU encode timed
    *  (bench/stepProfiler.ts). Resolves once that frame's GPU work is read back; the sim must be stepping. */
@@ -438,12 +449,19 @@ export class FlipBackend implements SimBackend {
   /** Bench hook X (the B1c experiments — E5′ oil excluded, E6 mercury excluded): leave these liquids out of the drift
    *  slots. An untracked liquid gets no slip and no part in α, ρ_m, μ_m or J (immiscible.wgsl alphaScatter and
    *  slipParticles skip it and zero its slipState), yet still moves with −J of its cell (driftParticles). configure()
-   *  rewrites only the slot table, never slipState, so the tracked liquids' drift memory is untouched by a switch.
-   *  [] restores the default; an unknown liquid key throws (a typo must not silently exclude nothing). */
+   *  rewrites only the slot table, never slipState, so the tracked liquids' drift memory is untouched by a switch —
+   *  while at least one immiscible pair stays tracked: an exclusion that would leave none (e.g. oil in a water + oil
+   *  tank) throws, because the drift would switch off and the off switch clears every particle's slip state (review
+   *  2026-09-29; use disableImmiscible for "no drift"). [] restores the default; an unknown liquid key throws (a typo
+   *  must not silently exclude nothing). */
   setImmiscibleExcluded(keys: readonly string[]) {
     const known = new Set(this.liquidOf.filter((k): k is LiquidKey => k !== null))
     const bad = keys.filter(k => !known.has(k as LiquidKey))
     if (bad.length) throw new Error(`immExcludeLiquids: not a liquid of this tank's material table: ${bad.join(', ')} (known: ${[...known].join(', ')})`)
+    const present = [...new Set(this.liquidOf.filter((k, id): k is LiquidKey => k !== null && this.compCount[id] > 0))]
+    const left = present.filter(k => !keys.includes(k))
+    if (FlipBackend.pairCount(present) > 0 && FlipBackend.pairCount(left) === 0)
+      throw new Error(`immExcludeLiquids: excluding ${keys.join(', ')} leaves no immiscible pair among ${present.join(', ')} — the drift would switch off and clear every particle's slip state; use disableImmiscible for that`)
     this.immExclude = new Set(keys as LiquidKey[])
     this.applyImmiscible()
   }
@@ -526,7 +544,12 @@ export class FlipBackend implements SimBackend {
     let prof: StepProfiler | null = null, encodeMs = 0
     if (req) { try { prof = new StepProfiler(this.device) } catch (err) { req.reject(err) } }
     if (prof) encodeMs = prof.record(e, w => this.sim.step(w, n))
-    else this.sim.step(e, n)
+    else {
+      const t0 = performance.now()
+      this.sim.step(e, n)
+      this.encodeRecent.push({ ms: performance.now() - t0, n })
+      if (this.encodeRecent.length > 32) this.encodeRecent.shift()
+    }
     const slot = this.speedSlots.find(s => !s.busy)
     if (slot) e.copyBufferToBuffer(this.sim.diagBuf, 28, slot.buf, 0, 4)
     const bslot = ball.active && this.sim.hasSphere ? this.ballSlots.find(s => !s.busy) : undefined
@@ -538,7 +561,7 @@ export class FlipBackend implements SimBackend {
     const sslot = sk && this.sim.stokesRuns ? this.stokesSlots.find(s => !s.busy) : undefined
     if (sslot) e.copyBufferToBuffer(sk!.bufs.st, 0, sslot.buf, 0, 64)
     q.submit([e.finish()])
-    if (prof && req) prof.finish(n, encodeMs).then(req.resolve, req.reject)
+    if (prof && req) prof.finish(n, encodeMs, this.encodeRecent).then(req.resolve, req.reject)
     if (sslot) {
       sslot.busy = true
       sslot.buf.mapAsync(GPUMapMode.READ).then(() => {

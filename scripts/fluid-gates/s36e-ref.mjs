@@ -44,7 +44,10 @@ const DX = 3.63 / 64
 let fails = 0
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) fails++ }
 const info = msg => console.log(`INFO ${msg}`)
-const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(['u0', 'st2', 'st1', 'a1s', 'a5s'])
+const SECTIONS = ['u0', 'st2', 'st1', 'a1s', 'a5s']
+const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(SECTIONS)
+// an unknown argument would run nothing and print PASS (review 2026-09-29): refuse it
+for (const s of want) if (!SECTIONS.includes(s)) throw new Error(`unknown section "${s}" (${SECTIONS.join(', ')})`)
 const t0 = Date.now()
 const HONEY = { mu: 40, rho: 1415 }
 const e = v => v.toExponential(2)

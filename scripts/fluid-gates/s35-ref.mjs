@@ -33,6 +33,9 @@ const { GridLayout } = gridLayout
 const { FlipRef, kineticEnergy } = flipRef
 const { G_STD: G, mulberry32, fillMaterials: fill, lambTwoLayer, interfaceAmplitude, columnCounts, fitCosh, lockFront } = two
 const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7).split(',').filter(Boolean)
+const SECTIONS = ['D', 'F1', 'F2', 'F3', 'F4', 'LX']
+// an unknown name would run nothing and print PASS (review 2026-09-29): refuse it
+for (const s of ONLY) if (!SECTIONS.includes(s)) throw new Error(`--only: unknown section "${s}" (${SECTIONS.join(', ')})`)
 const run = name => ONLY.length === 0 || ONLY.includes(name)
 
 const DX = 3.63 / 64

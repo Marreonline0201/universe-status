@@ -58,10 +58,16 @@
 // with U in every column of the table at 1/120 s, so the 0.175 m/s value bounds the wave's bulk damping from above and
 // 1 − ν_T1/ν_D2 bounds the non-bulk share (free surface, walls, a potential rather than a vortical flow) from below.
 // The D2 value is read from the newest clean-tree s34-gpu report in bench-results/gates and printed with its provenance.
+// Review fixes (2026-09-29 23:33, the evening-commit review; the commit that adds them): T1-store compares with the baseline COMMITTED at the served
+// commit (git show <sha>:path), not the working tree's file (a non-attributable run reads that file and says so);
+// --record needs a clean gate tree and is not a regression check — its T1-record check reports the write, the
+// comparison with the previous committed table is reported, and the report carries record: true. (The finding that
+// T1-decay accepted a sign-reversed mode was already closed by revision 1's A(t) > 0.)
 // --only=table|meter|d2 runs those sections (a diagnostic run; the report records it). --record needs the table.
 import path from 'node:path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { chromium } from 'playwright-core'
 import { windowArgs } from '../lib/window.mjs'
 import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-page.mjs'
@@ -74,7 +80,19 @@ const want = s => !ONLY || ONLY.includes(s)
 if (RECORD && !want('table')) throw new Error('--record needs the table section')
 const BASELINE = path.join(repoRoot, 'scripts', 'fluid-gates', 'baselines', 'obs1-t1.json')
 const gate = makeGate('OBS-1 T1-report (Taylor–Green bulk damping of the production solver)')
-const report = { prov: await provenance(), only: ONLY, rows: [], meter: [], d2: null }
+const report = { prov: await provenance(), only: ONLY, record: RECORD, rows: [], meter: [], d2: null }
+// review 2026-09-29: the stored table is the one COMMITTED at the served commit (the gate tree), never the working
+// tree's file; a run from a non-attributable server reads the working tree's file and says so. --record needs a clean
+// gate tree, and a record run never compares a table with the file it has just written (T1-record replaces T1-store).
+const BASE_REL = 'scripts/fluid-gates/baselines/obs1-t1.json'
+function loadBaseline() {
+  if (report.prov.attributable) {
+    try { return { src: `${report.prov.sha.slice(0, 8)}:${BASE_REL} (committed at the served commit)`, rows: JSON.parse(execFileSync('git', ['show', `${report.prov.sha}:${BASE_REL}`], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })).rows } }
+    catch { return null }   // no baseline committed at that commit
+  }
+  return existsSync(BASELINE) ? { src: `working tree ${BASE_REL} (NON-ATTRIBUTABLE run)`, rows: JSON.parse(readFileSync(BASELINE, 'utf8')).rows } : null
+}
+if (RECORD && !report.prov.attributable) throw new Error(`--record needs a clean gate tree (provenance ${report.prov.state}); a baseline from a live or dirty tree is not attributable`)
 const NU_WATER = 1.0e-6
 // X3 Table E (research/x3-turbulence-damping.md; 2-D proxy, APIC at the plan's operating step): key `${U}|${dt}|${λ}`
 const X3E = { '0.1|60|16': 4.8e-4, '0.1|60|32': 1.7e-4, '0.5|60|16': 9.2e-4, '0.5|60|32': 6.5e-4, '2|60|16': 4.5e-3, '2|60|32': 6.4e-3 }
@@ -107,29 +125,29 @@ try {
     const grow = rows.filter(r => !(r.nuNum > 0 && r.aEnd < 1 && r.aMin > 0))
     gate.check(grow.length === 0, `T1-decay: every mode decays (ν_num > 0, A(end) < A0, A(t) > 0 throughout — no sign reversal)${grow.length ? ` — ${grow.length} do not: ${grow.map(r => `λ${r.lambdaCells}/U${r.U}/1/${r.hz}`).join(', ')}` : ''}`)
     const key = r => `${r.lambdaCells}|${r.U}|${r.hz}`
+    const stored = loadBaseline(), base = stored ? new Map(stored.rows.map(r => [r.key, r.nuNum])) : null
+    const worse = base ? rows.filter(r => base.has(key(r)) && r.nuNum > 1.10 * base.get(key(r))) : []
+    const missing = base ? rows.filter(r => !base.has(key(r))) : []
+    const vs = base ? `${rows.length} rows vs ${stored.src}${worse.length ? ` — raised: ${worse.map(r => `${key(r)} × ${(r.nuNum / base.get(key(r))).toFixed(2)}`).join(', ')}` : ''}${missing.length ? ` — ${missing.length} rows not in it` : ''}` : ''
     if (RECORD) {
-      // revision 1: a baseline is only written from a table whose every row passed T1-decay and T1-clean
-      if (grow.length || !rows.every(r => r.breakdowns === 0)) console.log('  NOT recording: the table has rows that failed T1-decay or T1-clean — a baseline must be valid')
-      else {
+      // revision 1: a baseline is only written from a table whose every row passed T1-decay and T1-clean; the review
+      // (2026-09-29): only from a clean gate tree (checked at start), and the record run is not a regression check
+      const valid = grow.length === 0 && rows.every(r => r.breakdowns === 0)
+      if (valid) {
         mkdirSync(path.dirname(BASELINE), { recursive: true })
         writeFileSync(BASELINE, JSON.stringify({ recorded: new Date().toISOString(), prov: report.prov, rows: rows.map(r => ({ key: key(r), nuNum: r.nuNum })) }, null, 1))
-        console.log(`  recorded the baseline → ${path.relative(repoRoot, BASELINE)}`)
       }
-    }
-    if (!existsSync(BASELINE)) gate.check(false, 'T1-store: no stored baseline (run once with --record, and commit it)')
-    else {
-      const base = new Map(JSON.parse(readFileSync(BASELINE, 'utf8')).rows.map(r => [r.key, r.nuNum]))
-      const worse = rows.filter(r => base.has(key(r)) && r.nuNum > 1.10 * base.get(key(r)))
-      const missing = rows.filter(r => !base.has(key(r)))
-      gate.check(worse.length === 0 && missing.length === 0, `T1-store: no ν_num above 1.10 × the stored table (${rows.length} rows)${worse.length ? ` — raised: ${worse.map(r => `${key(r)} × ${(r.nuNum / base.get(key(r))).toFixed(2)}`).join(', ')}` : ''}${missing.length ? ` — ${missing.length} rows not in the baseline` : ''}`)
-    }
+      gate.check(valid, `T1-record: ${valid ? `the table (${rows.length} rows, clean tree ${report.prov.sha.slice(0, 8)}) written to ${BASE_REL} — commit it; T1-store gates the next run against it` : 'NOT written — rows failed T1-decay or T1-clean (a baseline must be valid)'}`)
+      console.log(`  [reported] the re-baseline against the previous committed table: ${base ? vs : 'none (first record)'}`)
+    } else if (!base) gate.check(false, `T1-store: no stored baseline ${report.prov.attributable ? `committed at ${report.prov.sha.slice(0, 8)}` : 'in the working tree'} (record one on a clean tree with --record, and commit it)`)
+    else gate.check(worse.length === 0 && missing.length === 0, `T1-store: no ν_num above 1.10 × the stored table (${vs})`)
     const cross = rows.filter(r => r.x3)
     console.log(`[reported] cross-check vs X3 Table E (2-D proxy): ${cross.map(r => `λ${r.lambdaCells}/U${r.U}: × ${(r.nuNum / r.x3).toFixed(2)}`).join('; ')}${cross.some(r => r.nuNum / r.x3 > 2 || r.nuNum / r.x3 < 0.5) ? ' — some OUTSIDE 2×: an investigation item (roadmap §5.3 1a)' : ' — all within 2×'}`)
   }
   if (want('meter')) {
     // revision 2 (header): T1-meter, X3 §4.1(a) / roadmap §5.3 1b
     const NU = 1e-3, UM = 0.1, DXB = 3.63 / 64
-    const table = existsSync(BASELINE) ? new Map(JSON.parse(readFileSync(BASELINE, 'utf8')).rows.map(r => [r.key, r.nuNum])) : new Map()
+    const table = new Map((loadBaseline()?.rows ?? []).map(r => [r.key, r.nuNum]))
     for (const cells of [8, 16, 32]) {
       const k = Math.PI / (cells * DXB), seconds = 0.1 / (NU * k * k), lam = 2 * cells
       const p = { cells, material: 'custom', nu: NU, U: UM, seconds, density: false }

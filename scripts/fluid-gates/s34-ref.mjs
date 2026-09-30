@@ -61,6 +61,18 @@
 //     held by the grid itself (0 particle clamps at the gate: the SOLID faces are the wall, the clamp only a safety net);
 //     at 4.53 m/s, over the first 0.12 s, no particle is past the plane above the edge at any step and the flow under
 //     the edge grows (more particles past the plane at 0.06 s than at 0.03 s, and some at 0.03 s); gate clamps reported.
+// A2g-kin — revision 2026-09-29 23:33 (the commit that adds it), after the evening review (split finding: "A2g still
+//     passes when the gate is missing or opens too fast"): the gate's effect on the front (≈ 0.06 T: instant −0.04, gated
+//     +0.02) equals A2g's resolution, so A2g does not test the gate model — its reading (the lead over MM is MM's origin)
+//     holds for either release, since MM itself sits 0.12 T behind ETSIN. What was untested is the mechanism: a gate
+//     lifted k× too fast still holds 1 cm/s for 0.2 s (the edge reaches 2k mm, below the first face centre at 25 mm).
+//     Now, at every step s of every gated run, the SOLID faces of the gate column are counted from the solver's face
+//     types and compared with the pre-registered schedule — edge = speed·(s − ½)·Δt (t = 0 at the first motion, the
+//     mid-step edge), SOLID exactly where the face centre is above it (faces within 1e-9 m of the edge not compared) —
+//     independent of the solver's own clock and gateEdge. Gated inside A2g-mech (its hold and open runs: 0 mismatching
+//     faces, and SOLID faces at step 1) and inside A2g (the same evidence from its own run, so an A2g PASS proves the
+//     release was gated). s34g-mutations gains three mutants: the gate option ignored, its clock doubled, its speed
+//     doubled.
 //   --only=<names> runs only those sections (S34a, G1c, D1, A1, A2gmech, A2g, V1; comma-separated) — s34g-mutations
 //   runs A2gmech alone.
 // V1  violent confined column (added after φ-only labels lost 42 % of a violent flow's volume in 6 s — the gentle scenes
@@ -72,7 +84,7 @@ import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, ETSIN600, ETSIN600_FRONT, fitOmega
 
 const SRC = process.env.FLUID_REF_SRC ?? 'src/sim-ref'
 const { gridLayout, flipRef } = await loadTsModules({ gridLayout: `${SRC}/gridLayout.ts`, flipRef: `${SRC}/flipRef.ts` })
-const { GridLayout } = gridLayout
+const { GridLayout, FaceType } = gridLayout
 const { FlipRef, makeParticles, kineticEnergy, CellLabel } = flipRef
 
 const G = 9.80665, DX = 3.63 / 64, RHO = 998.2072, gvec = [0, -G, 0]
@@ -108,6 +120,9 @@ function block(lo, hi, rng, ppc = 8, h = DX, mode = 'lattice') {
 const opts = (extra = {}) => ({ gravity: gvec, density: RHO, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5, ...extra })
 const t0 = Date.now()
 const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
+const SECTIONS = ['S34a', 'G1c', 'D1', 'A1', 'A2gmech', 'A2g', 'V1']
+// an unknown name would run nothing and print PASS (review 2026-09-29): refuse it
+for (const s of ONLY ?? []) if (!SECTIONS.includes(s)) throw new Error(`--only: unknown section "${s}" (${SECTIONS.join(', ')})`)
 const run = name => !ONLY || ONLY.includes(name)
 
 // S34a
@@ -192,15 +207,29 @@ function frontSlab(pos, n, h, nz, ppc = 8) {
 }
 // gate: the release — 0 = instant (the column's side simply absent at t = 0), else a gate on the column's edge plane
 // lifted at that speed (m/s) from t = 0 (FlipRef options.gate)
+// A2g-kin (header): the gate column's SOLID faces at step s against the pre-registered schedule edge = speed·(s − ½)·Δt,
+// read from the solver's face types — independent of its clock and gateEdge
+function gateKin(sim, L, gi, h, speed, s, dt, acc) {
+  const edge = speed * (s - 0.5) * dt, t = sim.faceType[0]
+  let solid = 0, mis = 0
+  for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) {
+    const yc = (j + 0.5) * h, isSolid = t[L.idx(gi, j, k)] === FaceType.SOLID
+    if (isSolid) solid++
+    if (Math.abs(yc - edge) > 1e-9 && isSolid !== (yc > edge)) mis++
+  }
+  acc.steps++; acc.mismatch += mis
+  if (s === 1) acc.firstSolid = solid
+}
 function column({ aCells, n2, h, nx, tauEnd, gate = 0 }) {
   const a = aCells * h, tUnit = Math.sqrt(a / G), rows = Math.round(n2 * aCells), nz = 8
   const L = new GridLayout({ nx, ny: rows + 8, nz, dx: h })
   const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...(gate > 0 ? { gate: { i: aCells, speed: gate } } : {}) }))
   const p = block([0, 0, 0], [aCells - 1, rows - 1, nz - 1], mulberry32(60 + aCells), 8, h)
   const dt = (1 / 240) * (h / DX)
-  const ts = [], Z = [], Zraw = [], Zpct = [], Hh = [], wallP = []
+  const ts = [], Z = [], Zraw = [], Zpct = [], Hh = [], wallP = [], kin = { steps: 0, mismatch: 0, firstSolid: 0 }
   for (let s = 1; s * dt <= tauEnd * tUnit + 1e-9; s++) {
     sim.step(p, dt)
+    if (gate > 0) gateKin(sim, L, aCells, h, gate, s, dt, kin)
     let hMax = 0
     const xs = new Float64Array(p.n)
     for (let q = 0; q < p.n; q++) { xs[q] = p.pos[3 * q]; if (p.pos[3 * q] < h) hMax = Math.max(hMax, p.pos[3 * q + 1]) }
@@ -212,7 +241,7 @@ function column({ aCells, n2, h, nx, tauEnd, gate = 0 }) {
     for (let k = 1; k < nz - 1; k++) pw += sim.pressure[L.idx(nx - 1, 0, k)]
     wallP.push(pw / (nz - 2))
   }
-  return { a, n: Math.sqrt(n2), tUnit, dt, ts, Z, Zraw, Zpct, H: Hh, wallP, particles: p.n, gateClamps: sim.diag.gateClamps }
+  return { a, n: Math.sqrt(n2), tUnit, dt, ts, Z, Zraw, Zpct, H: Hh, wallP, particles: p.n, gateClamps: sim.diag.gateClamps, kin }
 }
 if (run('A1')) {
   const r1 = column({ aCells: 12, n2: 2, h: DX, nx: 128, tauEnd: 3.33 / Math.SQRT2 + 0.1 }), s1 = columnScore(r1, MM2, MM2H, [1.43, 3.33])
@@ -242,28 +271,30 @@ if (run('A2gmech')) {
     const L = new GridLayout({ nx: 72, ny: aC + 8, nz, dx: h })
     const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, gate: { i: aC, speed } }))
     const p = block([0, 0, 0], [aC - 1, aC - 1, nz - 1], mulberry32(60 + aC), 8, h)
-    const dt = (1 / 240) * (h / DX), xg = aC * h, out = []
+    const dt = (1 / 240) * (h / DX), xg = aC * h, out = [], kin = { steps: 0, mismatch: 0, firstSolid: 0 }
     for (let s = 1; s * dt <= seconds + 1e-9; s++) {
       sim.step(p, dt)
+      gateKin(sim, L, aC, h, speed, s, dt, kin)
       let past = 0, pastAbove = 0
       for (let q = 0; q < p.n; q++) if (p.pos[3 * q] > xg) { past++; if (p.pos[3 * q + 1] > sim.gateEdge(sim.time)) pastAbove++ }
       out.push({ t: sim.time, past, pastAbove })
     }
-    return { out, clamps: sim.diag.gateClamps }
+    return { out, clamps: sim.diag.gateClamps, kin }
   }
   const hold = gateRun(0.01, 0.2), held = hold.out.at(-1)
   const open = gateRun(4.53, 0.12), above = Math.max(...open.out.map(o => o.pastAbove))
   const pastAt = t => open.out.reduce((b, o) => (Math.abs(o.t - t) < Math.abs(b.t - t) ? o : b)).past
-  check(held.past === 0 && hold.clamps === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03),
-    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0), held by the grid: gate clamps ${hold.clamps} (0); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}`)
+  const kinOk = r => r.kin.steps > 0 && r.kin.firstSolid > 0 && r.kin.mismatch === 0   // A2g-kin (header)
+  check(held.past === 0 && hold.clamps === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03) && kinOk(hold) && kinOk(open),
+    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0), held by the grid: gate clamps ${hold.clamps} (0); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}; A2g-kin: SOLID gate faces vs the schedule speed·(s − ½)·Δt — hold ${hold.kin.mismatch} mismatching over ${hold.kin.steps} steps (${hold.kin.firstSolid} SOLID at step 1), open ${open.kin.mismatch} over ${open.kin.steps} (${open.kin.firstSolid}) (0 each, SOLID > 0 at step 1)`)
 }
 if (run('A2g')) {
   const WIN = [1, ETSIN600_FRONT.T.at(-1)], ETSIN_SLOPE = 1.339
   // run past the window by the largest shift the scorer tries (+0.5), so no shifted sample is clamped to the run's end
   const rg = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: WIN[1] + 0.55, gate: 4.53 })
   const sg = columnScore(rg, ETSIN600_FRONT, [], WIN, WIN)
-  check(sg.rmsZ <= 0.10 && Math.abs(sg.bestShift) <= 0.06 && sg.slope >= 0.9 * ETSIN_SLOPE && sg.slope <= 1.74,
-    `A2g gated release (4.53 m/s, t = 0 at the gate's first motion) vs Lobovský ETSIN H = 0.6 m, ${sg.points} points T ∈ [1, ${WIN[1]}] before their wall (${rg.particles} particles): no-shift RMS Z error ${(100 * sg.rmsZ).toFixed(2)} % (≤ 10 %, validity); best shift s = ${sg.bestShift >= 0 ? '+' : ''}${sg.bestShift.toFixed(2)} → ${(100 * sg.bestRms).toFixed(2)} % (|s| ≤ 0.06, the discriminating quantity; s > 0 = the solver late); dZ/dT ${sg.slope.toFixed(3)} (${(0.9 * ETSIN_SLOPE).toFixed(3)}–1.74; ETSIN ${ETSIN_SLOPE}); gate clamps ${rg.gateClamps}`)
+  check(sg.rmsZ <= 0.10 && Math.abs(sg.bestShift) <= 0.06 && sg.slope >= 0.9 * ETSIN_SLOPE && sg.slope <= 1.74 && rg.kin.steps > 0 && rg.kin.firstSolid > 0 && rg.kin.mismatch === 0,
+    `A2g gated release (4.53 m/s, t = 0 at the gate's first motion) vs Lobovský ETSIN H = 0.6 m, ${sg.points} points T ∈ [1, ${WIN[1]}] before their wall (${rg.particles} particles): no-shift RMS Z error ${(100 * sg.rmsZ).toFixed(2)} % (≤ 10 %, validity); best shift s = ${sg.bestShift >= 0 ? '+' : ''}${sg.bestShift.toFixed(2)} → ${(100 * sg.bestRms).toFixed(2)} % (|s| ≤ 0.06, the discriminating quantity; s > 0 = the solver late); dZ/dT ${sg.slope.toFixed(3)} (${(0.9 * ETSIN_SLOPE).toFixed(3)}–1.74; ETSIN ${ETSIN_SLOPE}); gate clamps ${rg.gateClamps}; A2g-kin: the release was gated — ${rg.kin.firstSolid} SOLID gate faces at step 1, ${rg.kin.mismatch} mismatching the schedule over ${rg.kin.steps} steps (0)`)
   const raw = columnScore({ ...rg, Z: rg.Zraw }, ETSIN600_FRONT, [], WIN, WIN)
   const zWin = { T: ETSIN600_FRONT.T.filter((t, i) => ETSIN600_FRONT.Z[i] >= 1.67), Z: ETSIN600_FRONT.Z.filter(z => z >= 1.67) }
   const z167 = columnScore(rg, zWin, [], WIN, [0, 9]), early = columnScore(rg, ETSIN600, [], WIN, [0, 0.999])

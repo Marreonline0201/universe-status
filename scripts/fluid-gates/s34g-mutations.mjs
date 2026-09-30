@@ -20,6 +20,10 @@ const M = [
   [[['if (!this.gate || !(y1 > this.gateY)) return x1', 'return x1']], 'gate particle clamp removed'],
   [[['gateEdge(t: number): number { return this.gate ? this.gate.speed * t : Infinity }', 'gateEdge(t: number): number { return this.gate ? 0 : Infinity }']], 'gate edge never rises'],
   [[['    this.time += dt\n', '']], 'simulated time never advances'],
+  // A2g-kin (s34-ref header, 2026-09-29 review): the old A2g-mech passed all three — its hold at 1 cm/s never reaches a face
+  [[["    if (!this.gate) return\n    if (this.sphere) throw new Error('FlipRef: a gate with a ball", "    return\n    if (this.sphere) throw new Error('FlipRef: a gate with a ball"]], 'gate option ignored (never applied)'],
+  [[['yEdge = this.gateEdge(this.time + 0.5 * dt)', 'yEdge = this.gateEdge(2 * this.time + dt)']], 'gate clock runs double'],
+  [[['return this.gate ? this.gate.speed * t : Infinity', 'return this.gate ? 2 * this.gate.speed * t : Infinity']], 'gate speed doubled'],
 ]
 
 const pristine = (await readFile(join(REPO, 'src/sim-ref/flipRef.ts'), 'utf8')).replace(/\r\n/g, '\n')

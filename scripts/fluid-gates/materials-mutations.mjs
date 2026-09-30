@@ -2,6 +2,7 @@
 // materials-mutations.mjs — mutation test of the S1.5 materials gate (does the gate catch real defects?).
 //
 //   node scripts/fluid-gates/materials-mutations.mjs          (exit 0 = control passed AND every mutation was caught)
+//   node scripts/fluid-gates/materials-mutations.mjs --check  (only verify the find strings against the working tree)
 //
 // For each (file, find, replace) triple it copies src/composition AND src/fluid-engine/{units,spawn}.ts into a temp dir
 // with the src/ layout preserved (liquidGate imports ../fluid-engine/*), applies ONE edit, and runs materials.mjs with
@@ -61,6 +62,8 @@ for (const [f, find] of M) {
   const n = pristine[f].split(find).length - 1
   if (n !== 1) { console.error(`ABORT: find string occurs ${n}× in ${f}: ${find.slice(0, 80)}`); process.exit(2) }
 }
+// --check (the patterns-log rule: every mutation suite has one — run it before committing edits to the files it mutates)
+if (process.argv.includes('--check')) { await rm(tmpRoot, { recursive: true, force: true }); console.log(`materials mutants: all ${M.length} find strings match the working tree`); process.exit(0) }
 
 async function runWith(label, file, find, replace) {
   const dir = join(tmpRoot, label.replace(/[^a-z0-9]+/gi, '_'))

@@ -29,7 +29,10 @@ const SCHEME = process.env.S36_SCHEME ?? 'split'
 if (SCHEME !== 'split' && SCHEME !== 'stokes') throw new Error(`S36_SCHEME must be split or stokes, not ${SCHEME}`)
 /** The viscous solve's report on either scheme: iterations and the residual (split: ‖r‖₂/‖b‖₂; stokes: ‖b − Ay‖∞, 1/s). */
 const vstats = sim => (sim.lastStokes ? { iterations: sim.lastStokes.iterations, relResidual: sim.lastStokes.trueResidualInf, muFallbacks: sim.lastStokes.muFallbacks } : sim.lastViscosity)
-const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(['a', 'c', 'f', 'b', 'd'])
+const SECTIONS = ['a', 'c', 'f', 'b', 'd']
+const want = process.argv.slice(2).length ? new Set(process.argv.slice(2)) : new Set(SECTIONS)
+// an unknown argument would run nothing and print PASS (review 2026-09-29): refuse it
+for (const s of want) if (!SECTIONS.includes(s)) throw new Error(`unknown section "${s}" (${SECTIONS.join(', ')})`)
 const t0 = Date.now()
 function mulberry32(seed) {
   let a = seed >>> 0

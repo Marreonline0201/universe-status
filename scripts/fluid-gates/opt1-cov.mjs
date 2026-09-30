@@ -49,7 +49,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, status, sampleAtFrame, makeGate, writeReport, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
-import { powerState, describePower } from '../lib/power.mjs'
+import { powerState, describePower, timingValid, watchPower } from '../lib/power.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const gate = makeGate('OPT-1-cov (SSFR render cost against screen coverage)')
@@ -87,6 +87,7 @@ function agreedLow(m) {
 
 report.power = { start: powerState() }
 console.log(`power at the start: ${describePower(report.power.start)}`)
+const powerWatch = watchPower()   // review 2026-09-29: sampled every 10 s DURING the run, not only at its ends
 const { browser, page, errors, adapter } = await openFluidPage(undefined, { timing: true, gpuTimestamps: true })
 report.adapter = adapter
 const timeOpts = async opts => {
@@ -148,6 +149,7 @@ try {
   const again = agreedLow(againM)
   report.contention = { first: first.row.gpuMedianMs, again: again?.gpuMedianMs ?? null, medians: againM.map(x => x.gpuMedianMs), ratio: again ? again.gpuMedianMs / first.row.gpuMedianMs : null }
   report.power.end = powerState()
+  report.power.watch = await powerWatch.stop()
 
   // ---- checks (validity of the measurement)
   const all = report.scenes.flatMap(sc => sc.rows)
@@ -164,7 +166,7 @@ try {
   const ct = report.contention
   gate.check(ct.ratio != null && Math.abs(ct.ratio - 1) <= 0.2, `contention: the first configuration re-measured at the end ${ct.again == null ? 'with NO agreeing pair' : `${ct.again.toFixed(3)} ms`} vs ${ct.first.toFixed(3)} ms (${ct.ratio == null ? '—' : `× ${ct.ratio.toFixed(3)}`}, ±20 %; revision 3: the agreeing-pair estimator, measurements ${ct.medians.map(v => v.toFixed(2)).join(' / ')})`)
   const pw = report.power
-  gate.check(pw.start.ac === true && pw.end.ac === true, `power: on AC at the start and the end (revision 3 — on battery the GPU clock hops between states): start ${describePower(pw.start)}; end ${describePower(pw.end)}`)
+  gate.check(timingValid(pw.start) && timingValid(pw.end) && pw.watch.allValid, `power: on AC outside a power-limited scheme at the start, the end and every 10-s sample during the run (revision 3 — on battery the GPU clock hops between states; review 2026-09-29 — fail closed, sampled throughout, the scheme checked): start ${describePower(pw.start)}; end ${describePower(pw.end)}; ${pw.watch.samples} samples${pw.watch.bad.length ? ` — ${pw.watch.bad.length} invalid: ${pw.watch.bad.map(b => `${b.t} ac=${b.ac} ${b.scheme ?? ''}`).join(', ')}` : ', all valid'}`)
   const lone = all.filter(r => !r.agreed), thirds = all.filter(r => r.medians.length > 2).length
   gate.check(lone.length === 0, `every configuration has two measurements within 15 % (revision 2): ${lone.length ? `${lone.length} without — ${lone.map(b => `${b.shape}/${b.view} ${b.medians.map(v => v.toFixed(2)).join('/')}`).join(', ')}` : `all ${all.length}`}; ${thirds} needed a third measurement`)
   const gpuErr = (await status(page)).gpuErrors

@@ -3,7 +3,9 @@
 // profile ONE frame's simulation step on the real page. The command encoder handed to the simulator is wrapped — as
 // bench/flipSelftest/perf.ts profileStep does for the self-test scene — so that every compute pass carries begin/end
 // timestamp writes and every dispatch, buffer copy and queue upload is counted per pass label; the CPU time spent
-// encoding is timed too. Nothing else changes: the same kernels, dispatches and buffers run. Timestamps need the
+// encoding is timed too. Nothing else changes: the same kernels, dispatches and buffers run — but the CPU encode of the
+// profiled frame runs through the Proxy (about 10^4 trapped calls in B1), so it is an upper bound; the page's own encode
+// time is measured on the plain frames around it (encodeMsPlain; review 2026-09-29). Timestamps need the
 // device's 'timestamp-query' feature (three.js's WebGPU backend requests every feature the adapter has); with
 // --enable-webgpu-developer-features they are unquantized.
 
@@ -16,8 +18,12 @@ export interface StepProfile {
   indirect: number
   copies: number
   uploads: number
-  /** CPU ms spent inside the simulator's encode (the frame's command recording) */
+  /** CPU ms inside the simulator's encode in the PROFILED frame — through the Proxy, so an upper bound */
   encodeMs: number
+  /** the page's own encode: the median CPU ms of the recent plain (unprofiled) frames with the same substep count, and
+   *  how many there were (NaN / 0 when none) */
+  encodeMsPlain: number
+  encodeMsPlainFrames: number
   /** Σ of the passes' GPU durations, and the first pass's start → the last pass's end (µs) */
   gpuSumUs: number
   gpuSpanUs: number
@@ -97,7 +103,9 @@ export class StepProfiler {
   }
 
   /** After the frame's submit: resolves the timestamps and reads them back (queue order puts this after the frame). */
-  async finish(substeps: number, encodeMs: number): Promise<StepProfile> {
+  async finish(substeps: number, encodeMs: number, plain: { ms: number; n: number }[] = []): Promise<StepProfile> {
+    const same = plain.filter(f => f.n === substeps).map(f => f.ms).sort((a, b) => a - b)
+    const encodeMsPlain = same.length ? same[Math.floor(same.length / 2)] : NaN
     const n = this.labels.length
     try {
       if (n > 0) {
@@ -119,7 +127,7 @@ export class StepProfiler {
       }
       const dispatches = this.disp.reduce((q, v) => q + v, 0) + this.untimedDisp
       return {
-        substeps, passes: n + this.untimed, dispatches, indirect: this.indirect, copies: this.copies, uploads: this.uploads, encodeMs,
+        substeps, passes: n + this.untimed, dispatches, indirect: this.indirect, copies: this.copies, uploads: this.uploads, encodeMs, encodeMsPlain, encodeMsPlainFrames: same.length,
         gpuSumUs: sum, gpuSpanUs: n > 0 ? Number(t[2 * n - 1] - t[0]) / 1000 : 0,
         byLabel: [...by.entries()].map(([pass, r]) => ({ pass, ...r })).sort((a, b) => b.us - a.us),
         untimedPasses: this.untimed,

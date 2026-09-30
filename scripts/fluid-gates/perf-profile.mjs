@@ -18,7 +18,7 @@ import path from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, loadScenario, sampleAtFrame, provenance, G_STANDARD } from '../lib/fluid-page.mjs'
-import { powerState, describePower } from '../lib/power.mjs'
+import { powerState, describePower, timingValid, watchPower } from '../lib/power.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const L = 3.63, R = 0.05 * L
@@ -35,7 +35,8 @@ const med = v => { const q = [...v].sort((a, b) => a - b); return q.length ? q[M
 
 const power = powerState()
 console.log(`power: ${describePower(power)}`)
-if (power.ac !== true) { console.error('refusing: a timing report runs on AC only (owner rule 2026-09-29; OPT-1-cov revision 3)'); process.exit(3) }
+if (!timingValid(power)) { console.error('refusing: a timing report runs on AC, outside a power-limited scheme (owner rule 2026-09-29; OPT-1-cov revision 3; the review: fail closed)'); process.exit(3) }
+const powerWatch = watchPower()   // sampled during the run (review 2026-09-29)
 const prov = await provenance()
 const { browser, page, errors, adapter } = await openFluidPage(undefined, { timing: true, gpuTimestamps: true })
 const out = { prov, adapter, power: { start: power }, scenes: [] }
@@ -53,17 +54,21 @@ try {
     const st = await page.evaluate(() => window.__fluidBench.status())
     const m = k => med(profs.map(p => p[k]))
     const labels = new Map()
-    for (const p of profs) for (const r of p.byLabel) { const e = labels.get(r.pass) ?? { us: [], passes: r.passes, dispatches: r.dispatches }; e.us.push(r.us); labels.set(r.pass, e) }
-    const top = [...labels.entries()].map(([pass, e]) => ({ pass, us: med(e.us), passes: e.passes, dispatches: e.dispatches })).sort((a, b) => b.us - a.us)
-    const row = { name: sc.name, particles: st.count ?? null, substeps: m('substeps'), passes: m('passes'), dispatches: m('dispatches'), indirect: m('indirect'), copies: m('copies'), uploads: m('uploads'), encodeMs: m('encodeMs'), gpuSumUs: m('gpuSumUs'), gpuSpanUs: m('gpuSpanUs'), untimed: m('untimedPasses'), top }
+    // review 2026-09-29: passes and dispatches are medians over the same frames as the time (the substep count varies
+    // frame to frame; the first frame's counts beside a 5-frame median time mixed different frames)
+    for (const p of profs) for (const r of p.byLabel) { const e = labels.get(r.pass) ?? { us: [], passes: [], dispatches: [] }; e.us.push(r.us); e.passes.push(r.passes); e.dispatches.push(r.dispatches); labels.set(r.pass, e) }
+    const top = [...labels.entries()].map(([pass, e]) => ({ pass, us: med(e.us), passes: med(e.passes), dispatches: med(e.dispatches), frames: e.us.length })).sort((a, b) => b.us - a.us)
+    const row = { name: sc.name, particles: st.count ?? null, substeps: m('substeps'), passes: m('passes'), dispatches: m('dispatches'), indirect: m('indirect'), copies: m('copies'), uploads: m('uploads'), encodeMs: m('encodeMs'), encodeMsPlain: m('encodeMsPlain'), gpuSumUs: m('gpuSumUs'), gpuSpanUs: m('gpuSpanUs'), untimed: m('untimedPasses'), top }
     out.scenes.push(row)
-    console.log(`\n${sc.name}: ${row.particles ?? '?'} particles, ${row.substeps} substeps/frame — ${row.passes} passes, ${row.dispatches} dispatches (${row.indirect} indirect), ${row.copies} copies, ${row.uploads} uploads per frame; CPU encode ${row.encodeMs.toFixed(2)} ms; GPU Σ passes ${(row.gpuSumUs / 1000).toFixed(2)} ms, span ${(row.gpuSpanUs / 1000).toFixed(2)} ms${row.untimed ? `; ${row.untimed} passes untimed (query set full)` : ''}`)
+    console.log(`\n${sc.name}: ${row.particles ?? '?'} particles, ${row.substeps} substeps/frame — ${row.passes} passes, ${row.dispatches} dispatches (${row.indirect} indirect), ${row.copies} copies, ${row.uploads} uploads per frame; CPU encode ${Number.isFinite(row.encodeMsPlain) ? row.encodeMsPlain.toFixed(2) : '?'} ms (plain frames; ${row.encodeMs.toFixed(2)} ms through the profiler's Proxy); GPU Σ passes ${(row.gpuSumUs / 1000).toFixed(2)} ms, span ${(row.gpuSpanUs / 1000).toFixed(2)} ms${row.untimed ? `; ${row.untimed} passes untimed (query set full)` : ''}`)
     for (const t of top.slice(0, 15)) console.log(`   ${t.pass.padEnd(34)} ${(t.us / 1000).toFixed(3).padStart(7)} ms  ${String(t.passes).padStart(4)} passes  ${String(t.dispatches).padStart(5)} dispatches`)
   }
 } finally { await browser.close() }
 out.power.end = powerState()
+out.power.watch = await powerWatch.stop()
+out.power.valid = timingValid(out.power.end) && out.power.watch.allValid
 out.errors = errors
-console.log(`\npower: start ${describePower(out.power.start)}; end ${describePower(out.power.end)}; console errors ${errors.length}`)
+console.log(`\npower: start ${describePower(out.power.start)}; end ${describePower(out.power.end)}; ${out.power.watch.samples} samples during the run${out.power.valid ? ', all valid' : ' — INVALID (a sample off AC or power-limited): these timings are not a baseline'}; console errors ${errors.length}`)
 const dir = path.join(repoRoot, 'bench-results', 'studies'); mkdirSync(dir, { recursive: true })
 const file = path.join(dir, `perf-profile-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`)
 writeFileSync(file, JSON.stringify(out, null, 1))
