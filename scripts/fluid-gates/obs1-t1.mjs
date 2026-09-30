@@ -49,9 +49,18 @@
 // per-step viscous change 2νk²Δt = 8e-4 / 2e-4 / 5e-5 against the viscous PCG's ‖r‖ ≤ 1e-5·‖b‖ stop — is a
 // viscous-tolerance item, diagnosed separately (the tolerance is not changed here). A failure at L = 8, where ν_num ≈ 0.9 ν,
 // is an additivity failure (the transfer damping and the viscous solve interact), reported to X3.
-// --only=table|meter runs one section (a diagnostic run; the report records it). --record needs the table.
+// Revision 3 (2026-09-29 22:53, the commit that adds it; before its first run): OBS-1 item 3 — D2 interpreted against T1
+// (roadmap §5.3 item 3: "comparing D2 with T1 at the same λ and U separates surface damping from bulk damping").
+// Reported, not gated. D2 (S3.4, s34-gpu) measures ν_num = 1.12e-3 m²/s from the E_K envelope of the H/dx = 28 standing
+// wave (L = 56 cells, Δt = 1/120 s). This section runs the T1 Taylor–Green slab at that wave's λ = 56 cells (a 56 × 56 × 8
+// slab: λ must divide 2n), Δt = 1/120 s, 2 s, ψ off, at U = εHgk/(2ω) = 0.175 m/s — the wave's initial surface speed
+// amplitude, its fastest point (the speed falls with depth as cosh, to 0.09× at the bed) — and at U = 0.1 m/s. ν_num rises
+// with U in every column of the table at 1/120 s, so the 0.175 m/s value bounds the wave's bulk damping from above and
+// 1 − ν_T1/ν_D2 bounds the non-bulk share (free surface, walls, a potential rather than a vortical flow) from below.
+// The D2 value is read from the newest clean-tree s34-gpu report in bench-results/gates and printed with its provenance.
+// --only=table|meter|d2 runs those sections (a diagnostic run; the report records it). --record needs the table.
 import path from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright-core'
 import { windowArgs } from '../lib/window.mjs'
@@ -60,12 +69,12 @@ import { CHROME, BASE, provenance, writeReport, makeGate } from '../lib/fluid-pa
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const RECORD = process.argv.includes('--record')
 const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
-for (const s of ONLY ?? []) if (!['table', 'meter'].includes(s)) throw new Error(`--only: unknown section "${s}" (table, meter)`)
+for (const s of ONLY ?? []) if (!['table', 'meter', 'd2'].includes(s)) throw new Error(`--only: unknown section "${s}" (table, meter, d2)`)
 const want = s => !ONLY || ONLY.includes(s)
 if (RECORD && !want('table')) throw new Error('--record needs the table section')
 const BASELINE = path.join(repoRoot, 'scripts', 'fluid-gates', 'baselines', 'obs1-t1.json')
 const gate = makeGate('OBS-1 T1-report (Taylor–Green bulk damping of the production solver)')
-const report = { prov: await provenance(), only: ONLY, rows: [], meter: [] }
+const report = { prov: await provenance(), only: ONLY, rows: [], meter: [], d2: null }
 const NU_WATER = 1.0e-6
 // X3 Table E (research/x3-turbulence-damping.md; 2-D proxy, APIC at the plan's operating step): key `${U}|${dt}|${λ}`
 const X3E = { '0.1|60|16': 4.8e-4, '0.1|60|32': 1.7e-4, '0.5|60|16': 9.2e-4, '0.5|60|32': 6.5e-4, '2|60|16': 4.5e-3, '2|60|32': 6.4e-3 }
@@ -133,6 +142,21 @@ try {
       report.meter.push({ cells, lambdaCells: lam, seconds, steps: on.steps, nu: on.nu, nuOn: on.nuEff, nuOff: off.nuEff, rec, err, bias, viscFaults: vf, viscIterations: on.viscIterations, capOn: on.capHits, solvesOn: on.solves, capOff: off.capHits, solvesOff: off.solves, breakdowns: brk, t1Row: t1 ?? null, ysOn: on.ys, ysOff: off.ys })
       gate.check(Math.abs(err) <= 0.05 && clean, `T1-meter λ ${lam} cells (L = ${cells}, ${seconds.toFixed(1)} s, ${on.steps} steps): ν_eff(on) ${on.nuEff.toExponential(3)} − ν_num(off) ${off.nuEff.toExponential(3)} = ${rec.toExponential(3)} m²/s vs ν ${on.nu.toExponential(3)} → ${(100 * err).toFixed(2)} % (±5 %; the operator's expected ${(100 * bias).toFixed(2)} %); viscous PCG ${vf.solves} solves, ${vf.capHits} cap hits, ≤ ${vf.maxIterations} it; pressure caps ${on.capHits}/${on.solves} on, ${off.capHits}/${off.solves} off; breakdowns ${brk}`)
       console.log(`  [reported] λ ${lam}: total ν_eff(on)/ν ${(on.nuEff / on.nu).toFixed(3)}; ν_num(off) ${off.nuEff.toExponential(3)}${t1 ? ` (the table's λ ${lam} / 0.1 m/s / 1/120 s row: ${t1.toExponential(3)} — the 64 × 64 × 8 slab, a different box)` : ''}`)
+    }
+  }
+  if (want('d2')) {
+    // revision 3 (header): D2 against T1 at the wave's λ, U and Δt — reported
+    const G = 9.80665, DXB = 3.63 / 64, H = 28 * DXB, kw = 2 * Math.PI / (56 * DXB), om = Math.sqrt(G * kw * Math.tanh(kw * H))
+    const Us = 0.05 * H * G * kw / (2 * om)
+    const dir = path.join(repoRoot, 'bench-results', 'gates')
+    const s34 = existsSync(dir) ? readdirSync(dir).filter(f => /^s34-gpu-.*\.json$/.test(f)).sort().reverse()
+      .map(f => ({ f, r: JSON.parse(readFileSync(path.join(dir, f), 'utf8')) })).find(x => x.r.provenance?.attributable && x.r.d2?.nu28 > 0) : null
+    const d2 = s34 ? s34.r.d2.nu28 : null
+    report.d2 = { Us, d2, d2Report: s34?.f ?? null, d2Sha: s34?.r.provenance.sha ?? null, rows: [] }
+    for (const U of [Us, 0.1]) {
+      const r = await run('taylorGreen', { lambdaCells: 56, U, dt: 1 / 120, cells: [56, 56, 8], densityProjection: false })
+      report.d2.rows.push({ U, nuNum: r.nuNum, nuEnd: r.nuEnd, aMin: Math.min(...r.As) / r.As[0], capHits: r.capHits, breakdowns: r.breakdowns })
+      console.log(`  [reported] D2 vs T1: λ 56 cells, U ${U.toFixed(3)} m/s, Δt 1/120: ν_T1 ${r.nuNum.toExponential(3)} m²/s (end-point ${r.nuEnd.toExponential(3)}; min A/A0 ${(Math.min(...r.As) / r.As[0]).toFixed(3)}; p caps ${r.capHits}, breakdowns ${r.breakdowns})${d2 ? ` — D2 ${d2.toExponential(3)} (${s34.f}, ${s34.r.provenance.sha.slice(0, 8)}): bulk share ≤ ${(100 * r.nuNum / d2).toFixed(1)} %, non-bulk ≥ ${(100 * (1 - r.nuNum / d2)).toFixed(1)} %` : ' — no clean-tree s34-gpu report with D2 found'}`)
     }
   }
   const info = await page.evaluate(() => window.__flipTest.info())
