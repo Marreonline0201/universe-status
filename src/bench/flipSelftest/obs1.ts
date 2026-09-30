@@ -11,7 +11,7 @@ import { makeParticles } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { DX, RHO, L_REF, TAU, mulberry32, f32round, toInit, submit } from './util'
 
-export async function taylorGreen(device: GPUDevice, o: { lambdaCells: number; U: number; dt: number; seconds?: number; samples?: number; cells?: [number, number, number] }) {
+export async function taylorGreen(device: GPUDevice, o: { lambdaCells: number; U: number; dt: number; seconds?: number; samples?: number; cells?: [number, number, number]; densityProjection?: boolean; freeSurface?: 'ghost' | 'voxel' }) {
   const [nx, ny, nz] = o.cells ?? [64, 64, 8], h = DX, k = 2 * Math.PI / (o.lambdaCells * h)
   if (!((2 * nx) % o.lambdaCells === 0 && (2 * ny) % o.lambdaCells === 0)) throw new Error(`taylorGreen: λ = ${o.lambdaCells} cells must divide 2·n (the walls on the mode's zero-stress lines)`)
   const rng = mulberry32(900 + o.lambdaCells)
@@ -28,7 +28,7 @@ export async function taylorGreen(device: GPUDevice, o: { lambdaCells: number; U
   f32round(p)
   const gpu = await FlipGpuSimulator.create(device, {
     nx, ny, nz, dx: h, gravity: [0, 0, 0], maxParticles: n, lRef: L_REF, tauS: TAU,
-    projection: true, density: RHO, densityProjection: true, freeSurface: 'ghost', variableDensity: true, ppc: 8,
+    projection: true, density: RHO, densityProjection: o.densityProjection ?? true, freeSurface: o.freeSurface ?? 'ghost', variableDensity: true, ppc: 8,
   })
   gpu.dt = o.dt
   gpu.setParticles(toInit(p))

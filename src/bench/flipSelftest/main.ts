@@ -342,7 +342,7 @@ try {
     else if (test === 'immCost') out = await immCost(device, params as { settle?: number; reps?: number })
     else if (test === 'immRest') out = await immRest(device, params as { light: 'water' | 'honey'; tol?: number })
     else if (test === 'immLayered') out = await immLayered(device, params as { lower: 'water' | 'oil' | 'mercury' | 'ethanol'; upper: 'water' | 'oil' | 'mercury' | 'ethanol'; seconds: number; seed: number; immiscible: boolean })
-    else if (test === 'taylorGreen') out = await taylorGreen(device, params as { lambdaCells: number; U: number; dt: number; seconds?: number; samples?: number })
+    else if (test === 'taylorGreen') out = await taylorGreen(device, params as { lambdaCells: number; U: number; dt: number; seconds?: number; samples?: number; densityProjection?: boolean; freeSurface?: 'ghost' | 'voxel' })
     else if (test === 'viscTaylorGreen') out = await viscTaylorGreen(device, params as { cells: number; material: 'honey' | 'lava'; on: boolean })
     else if (test === 'viscStandingWave') out = await viscStandingWave(device, params as { cellsPerH: number; material: 'water' | 'lava'; on: boolean; walls: 'no-slip' | 'free-slip'; periods: number })
     else if (test === 'viscHuppert') out = await viscHuppert(device)
