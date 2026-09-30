@@ -115,6 +115,12 @@ check([seedFor(1, 0), seedFor(1, 1), seedFor(1, 2), seedFor(1, 3)].join() === '2
     `common frames: single-substep in EVERY run (F multi at q 3,4,5; A at 5,90 → ${cf.count} common, the union of multi frames ${unionMulti(sn.records)})`)
   const many = synth({ H: 'face', k: 1, nDrops: 5, h: { cell: 0, face: 0 }, w: { cell: 0, face: 0 }, multi: { C: Array.from({ length: 21 }, (_, i) => 10 + i) } })
   check(commonFrames(many.records).count === 99 && commonFrames(many.records).count < B1C.MIN_USABLE, `VOID: 21 multi-substep frames in one arm → 99 common frames < ${B1C.MIN_USABLE}`)
+  // the UNION across arms decides: R and C each ≤ 20 multi-substep frames (12 each, disjoint) — a per-arm check would pass
+  // them — but 24 frames are not single-substep in every arm → 96 common frames → VOID
+  const split = synth({ H: 'cell', k: 1, nDrops: 5, h: { cell: 0, face: 0 }, w: { cell: 0, face: 0 }, multi: { R: Array.from({ length: 12 }, (_, i) => 10 + i), C: Array.from({ length: 12 }, (_, i) => 50 + i) } })
+  const perArm = split.records.map(r => r.multiFrames().length), cfs = commonFrames(split.records)
+  check(Math.max(...perArm) === 12 && Math.max(...perArm) <= FRAMES - B1C.MIN_USABLE && unionMulti(split.records) === 24 && cfs.count === 96 && cfs.count < B1C.MIN_USABLE,
+    `VOID counts the UNION across arms: per-arm multi-substep frames ${perArm.join('/')} (each ≤ 20), union ${unionMulti(split.records)} → ${cfs.count} common frames < ${B1C.MIN_USABLE} (VOID)`)
   const R = sn.records.find(x => x.meta.arm === 'R'), C = sn.records.find(x => x.meta.arm === 'C'), A = sn.records.find(x => x.meta.arm === 'A'), F = sn.records.find(x => x.meta.arm === 'F')
   const same = compareRuns(A, C), fid = compareRuns(R, C), other = compareRuns(F, C)
   check(same.identical && fid.identical && !other.identical && other.first.frame === B1C.F0 + 1 && other.frames === FRAMES,
@@ -220,23 +226,58 @@ for (const [name, h, w, sWant, want] of cases) {
   check(!inStep || !inStep.holds || Math.abs(E) > fl, `non-bitwise IN-WINDOW floor: |E_H| ${f3(Math.abs(E))} vs 2·max(A_H, Rg_H) ${f3(fl)} → IN-WINDOW ${inStep?.holds ? 'holds' : 'does not hold'} (reading ${noisy.rd.reading})`)
   const fid = { cell: { branch: 'nonbitwise', mismatch: null, Rg: { row1: 0, all: 0 }, A: { row1: 0, all: 0 } }, face: { branch: 'nonbitwise', mismatch: null, Rg: { row1: 0, all: 0 }, A: { row1: 0, all: 0 } } }
   const forced = evaluateReading({ name: 'primary', stratum: 'row1', fidelity: fid, delta: -0.3, s: { cell: 1, face: 1 }, ci: { cell: { lo: 0.9, hi: 1.1 }, face: { lo: 0.9, hi: 1.1 } },
-    E: { cell: 0.3, face: 0.3 }, floors: { cell: { A: 0.2, Rg: 0 }, face: { A: 0, Rg: 0 } }, repro: { value: -0.3, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' } })
+    E: { cell: 0.3, face: 0.3 }, floors: { cell: { A: 0.2, Rg: 0 }, face: { A: 0, Rg: 0 } }, repro: { value: -0.3, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' }, allCi: { cell: { lo: 0.5, hi: 1.5 }, face: { lo: 0.5, hi: 1.5 } } })
   check(forced.reading === 'PARTIAL' && !forced.steps.find(s => s.name === 'IN-WINDOW').holds, `the floor clause decides: |E| 0.3 ≤ 2·A_H 0.4 in one history → IN-WINDOW fails, PARTIAL (got ${forced.reading})`)
 }
-{   // the guard (MIXED's all-drop clause): computed and reported; under the literal order it vetoes nothing
+{   // the guard stratum "all" — amendment A3: BINDING (the sign rule on IN-WINDOW and PARTIAL, the zero rule on HISTORY)
   const g = guardCheck({ cell: 0.5, face: 0.4 }, { cell: { lo: -0.9, hi: -0.1 }, face: { lo: 0.1, hi: 0.9 } })
-  check(g.cell && !g.face && g.fires, 'guard: s_H(all) CI entirely below 0 while s_H(row 1) > 0 → opposite (cell); a CI on the same side → not (face)')
+  check(g.cell && !g.face && g.fires, 'guard sign rule: s_H(all) CI entirely below 0 while s_H(row 1) > 0 → fires (cell); a CI on the same side → not (face)')
   const g2 = guardCheck({ cell: 0.5, face: -0.4 }, { cell: { lo: -0.2, hi: 0.3 }, face: { lo: -0.3, hi: 0.2 } }), g3 = guardCheck({ cell: -0.5, face: 0 }, { cell: { lo: 0.05, hi: 0.3 }, face: { lo: -0.9, hi: -0.1 } })
-  check(!g2.cell && !g2.face && !g2.fires && g3.cell && !g3.face, 'guard: a CI straddling 0 excludes nothing (never opposite); s_H(row 1) < 0 with the CI above 0 → opposite; s_H = 0 has no side')
+  check(!g2.cell && !g2.face && !g2.fires && g3.cell && !g3.face, 'guard sign rule: a CI straddling 0 excludes nothing (never fires); s_H(row 1) < 0 with the CI above 0 → fires; s_H = 0 has no side')
+  const g4 = guardCheck({ cell: 0.02, face: -0.01 }, { cell: { lo: 0.05, hi: 0.3 }, face: { lo: -0.2, hi: 0.1 } })
+  check(g4.zero.cell && !g4.zero.face && g4.zero.fires && !g4.fires && !g2.zero.fires && g3.zero.cell && g3.zero.face,
+    'guard zero rule: fires on a CI excluding 0 on EITHER side, regardless of s_H(row 1)\'s sign (cell: CI above 0 on the same side as s_H > 0 — the sign rule does not fire, the zero rule does); a CI straddling 0 → not')
   const fid = { cell: { branch: 'bitwise', checked: 3, mismatch: null }, face: { branch: 'bitwise', checked: 3, mismatch: null } }
-  const rd = evaluateReading({ name: 'primary', stratum: 'row1', fidelity: fid, delta: -0.3, s: { cell: 0.5, face: 0.4 }, ci: { cell: { lo: 0.2, hi: 0.8 }, face: { lo: 0.1, hi: 0.7 } },
-    E: { cell: 0.15, face: 0.12 }, floors: { cell: { A: 0, Rg: 0 }, face: { A: 0, Rg: 0 } }, repro: { value: -0.3, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' }, allS: { cell: -0.5, face: 0.4 },
-    allCi: { cell: { lo: -0.9, hi: -0.1 }, face: { lo: 0.1, hi: 0.9 } } })
-  check(rd.reading === 'PARTIAL' && rd.guard.fires && rd.guard.wouldVeto, `guard reported beside the reading: ${rd.reading} (literal order) with "would veto" flagged — ${rd.guard.text.slice(0, 120)}…`)
+  const mk = (s, ci, allCi, delta = -0.3, name = 'primary', stratum = 'row1', fidelity = fid) => evaluateReading({ name, stratum, fidelity, delta, s, ci, E: { cell: 0.2, face: 0.2 },
+    floors: { cell: { A: 0, Rg: 0 }, face: { A: 0, Rg: 0 } }, repro: { value: delta, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' }, allCi })
+  const order = r => r.steps.map(s => `${s.name}${s.holds ? '✓' : '✗'}`).join(' ')
+  // (a) IN-WINDOW's own conditions hold; s_H(all)'s CI lies entirely below 0 in the cell history → MIXED
+  const sIn = { cell: 1, face: 0.9 }, ciIn = { cell: { lo: 0.8, hi: 1.2 }, face: { lo: 0.7, hi: 1.1 } }
+  const inV = mk(sIn, ciIn, { cell: { lo: -0.6, hi: -0.05 }, face: { lo: 0.5, hi: 1.2 } }), inOk = mk(sIn, ciIn, { cell: { lo: -0.1, hi: 0.9 }, face: { lo: 0.5, hi: 1.2 } })
+  check(inV.reading === 'MIXED' && inV.vetoed === 'IN-WINDOW' && order(inV) === 'RESTORE NOT FAITHFUL✗ NOTHING TO ATTRIBUTE✗ IN-WINDOW✗ MIXED✓' && inOk.reading === 'IN-WINDOW' && inOk.vetoed === null,
+    `A3 against IN-WINDOW: s_H 1.0 / 0.9 with CIs above 0.25, s_H(all) CI cell [−0.60, −0.05] → ${inV.reading} (${order(inV)}); the same with s_H(all) CI [−0.10, 0.90] (straddling 0) → ${inOk.reading}`)
+  // (b) PARTIAL's own conditions hold; s_H(all)'s CI lies entirely below 0 in the face history → MIXED; a CI above 0
+  //     (excluding 0, but on the SAME side as s_H(row 1)) does not fire the sign rule → PARTIAL
+  const sPa = { cell: 0.5, face: 0.4 }, ciPa = { cell: { lo: 0.2, hi: 0.8 }, face: { lo: 0.1, hi: 0.7 } }
+  const paV = mk(sPa, ciPa, { cell: { lo: 0.1, hi: 0.9 }, face: { lo: -0.9, hi: -0.1 } }), paOk = mk(sPa, ciPa, { cell: { lo: 0.1, hi: 0.9 }, face: { lo: 0.05, hi: 0.8 } })
+  check(paV.reading === 'MIXED' && paV.vetoed === 'PARTIAL' && order(paV).endsWith('PARTIAL✗ MIXED✓') && paOk.reading === 'PARTIAL',
+    `A3 against PARTIAL: s_H 0.5 / 0.4, CIs above 0, s_H(all) CI face [−0.90, −0.10] → ${paV.reading} (${order(paV)}); s_H(all) CIs above 0 (the same side) → ${paOk.reading}`)
+  // (c) HISTORY's own conditions hold; s_H(all)'s CI excludes 0 — above 0 (the same side as s_H(row 1) = +0.02: only the
+  //     zero rule catches it) or below 0 → MIXED; containing 0 in both histories → HISTORY
+  const sH = { cell: 0.02, face: -0.01 }, ciH = { cell: { lo: -0.1, hi: 0.12 }, face: { lo: -0.15, hi: 0.1 } }
+  const hAbove = mk(sH, ciH, { cell: { lo: 0.03, hi: 0.3 }, face: { lo: -0.1, hi: 0.1 } }), hBelow = mk(sH, ciH, { cell: { lo: -0.1, hi: 0.1 }, face: { lo: -0.3, hi: -0.02 } })
+  const hOk = mk(sH, ciH, { cell: { lo: -0.05, hi: 0.1 }, face: { lo: -0.1, hi: 0.08 } })
+  check(hAbove.reading === 'MIXED' && hAbove.vetoed === 'HISTORY' && hBelow.reading === 'MIXED' && hBelow.vetoed === 'HISTORY' && hOk.reading === 'HISTORY' && order(hAbove).endsWith('HISTORY✗ MIXED✓'),
+    `A3 against HISTORY: s_H(all) CI cell [0.03, 0.30] → ${hAbove.reading}; face [−0.30, −0.02] → ${hBelow.reading}; both containing 0 → ${hOk.reading}`)
+  // (d) the never secondary: the same rules with s_H(joint never) in place of s_H(row 1)
+  const sec = mk({ cell: 0.9, face: 0.8 }, { cell: { lo: 0.6, hi: 1.2 }, face: { lo: 0.5, hi: 1.1 } }, { cell: { lo: 0.2, hi: 0.9 }, face: { lo: -0.4, hi: -0.02 } }, -0.3, 'secondary', 'jointNever')
+  const secH = mk({ cell: -0.02, face: 0.01 }, ciH, { cell: { lo: -0.3, hi: -0.01 }, face: { lo: -0.1, hi: 0.1 } }, -0.3, 'secondary', 'jointNever')
+  check(sec.reading === 'MIXED' && sec.vetoed === 'IN-WINDOW' && /s_H\(jointNever\)/.test(sec.guard.text) && secH.reading === 'MIXED' && secH.vetoed === 'HISTORY',
+    `A3 on the secondary: IN-WINDOW on the joint never stratum with s_H(all) CI face [−0.40, −0.02] → ${sec.reading}; HISTORY with s_H(all) CI cell [−0.30, −0.01] (the same side as s_H(joint never) −0.02) → ${secH.reading}`)
+  // (e) RESTORE NOT FAITHFUL and NOTHING TO ATTRIBUTE come first, unaffected by a firing guard
+  const bad = { cell: { branch: 'bitwise', checked: 3, mismatch: { k: 2, frame: 268, buffer: 'pos' } }, face: fid.face }
+  const rnf = mk(sIn, ciIn, { cell: { lo: -0.6, hi: -0.05 }, face: { lo: 0.5, hi: 1.2 } }, -0.3, 'primary', 'row1', bad), not = mk(sIn, ciIn, { cell: { lo: -0.6, hi: -0.05 }, face: { lo: 0.5, hi: 1.2 } }, -0.05)
+  check(rnf.reading === 'RESTORE NOT FAITHFUL' && not.reading === 'NOTHING TO ATTRIBUTE' && rnf.guard.sign.fires && not.guard.sign.fires, `A3 leaves the first two readings alone: a fidelity mismatch → ${rnf.reading}, |Δ_own| 0.05 → ${not.reading} (the guard fires in both, reported)`)
+  // (f) binding needs the data; every reading carries the guard's numbers
+  let threw = null
+  try { mk(sIn, ciIn, undefined) } catch (e) { threw = e.message }
+  check(!!threw && /A3/.test(threw) && [inV, inOk, paV, paOk, hAbove, hBelow, hOk, sec, rnf, not].every(r => r.guard && /s_H\(all\) CI/.test(r.guard.text) && /sign rule/.test(r.guard.text) && /zero rule/.test(r.guard.text)),
+    `A3's data: a reading reaching IN-WINDOW without s_H(all)'s CI throws ("${threw?.slice(0, 70)}…"); every reading carries the guard's numbers (both rules)`)
 }
 {   // HISTORY needs the reproduction band too
   const fid = { cell: { branch: 'bitwise', checked: 3, mismatch: null }, face: { branch: 'bitwise', checked: 3, mismatch: null } }
-  const base = { name: 'primary', stratum: 'row1', fidelity: fid, s: { cell: 0.02, face: -0.01 }, ci: { cell: { lo: -0.1, hi: 0.12 }, face: { lo: -0.15, hi: 0.1 } }, E: { cell: 0, face: 0 }, floors: { cell: { A: 0, Rg: 0 }, face: { A: 0, Rg: 0 } } }
+  const base = { name: 'primary', stratum: 'row1', fidelity: fid, s: { cell: 0.02, face: -0.01 }, ci: { cell: { lo: -0.1, hi: 0.12 }, face: { lo: -0.15, hi: 0.1 } }, E: { cell: 0, face: 0 }, floors: { cell: { A: 0, Rg: 0 }, face: { A: 0, Rg: 0 } },
+    allCi: { cell: { lo: -0.05, hi: 0.1 }, face: { lo: -0.1, hi: 0.08 } } }
   const inBand = evaluateReading({ ...base, delta: -0.30, repro: { value: -0.30, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' } })
   const outBand = evaluateReading({ ...base, delta: -0.20, repro: { value: -0.20, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' } })
   check(inBand.reading === 'HISTORY' && outBand.reading === 'MIXED', `HISTORY needs Δ_own(row 1) inside [−0.369, −0.221]: −0.30 → ${inBand.reading}; −0.20 → ${outBand.reading} (the CI alone is not enough)`)

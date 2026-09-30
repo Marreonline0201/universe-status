@@ -18,6 +18,25 @@
 //   2 + k + 3, …), recorded — so the K = 3 snapshots are distinct states. The 02:30 study's same-seed histories diverged
 //   (drop sets 1430/1342/1362), so the re-draw is expected to be unused."
 //   Identity = the F0 pos, vel and slipState words (FlipGpuSimulator.namedBuffers via stateWords), word for word.
+//   "A2 (2026-09-30 18:47, lead, before any study run; implementer F's gap 1): the confidence level every reading uses is
+//   95 %, a percentile bootstrap with B = 2000 resamples, the limits at sorted positions floor(0.025·B) and floor(0.975·B),
+//   the generator mulberry32 seeded 20260930. (§4/§5 named a CI but no level; 95 % is the project's convention, b1c-arms
+//   ratioCI.)"
+//   "A3 (2026-09-30 18:47, lead with the advisor, before any study run; implementer F's gap 2): the guard stratum "all" is
+//   BINDING. §5's MIXED clause "s_H(all) with a CI excluding 0 on the opposite side from s_H(row 1)" could never change a
+//   reading under the fixed first-match order — a pre-registered condition silently dropped. Therefore:
+//     - IN-WINDOW and PARTIAL each additionally require that s_H(all)'s 95 % CI does NOT lie entirely on the other side of
+//       0 from s_H(row 1)'s point estimate; if it does, the reading is MIXED.
+//     - HISTORY additionally requires that s_H(all)'s 95 % CI contains 0 (an in-window share on all drops contradicts
+//       "history, not in-window"); if it excludes 0 on either side, the reading is MIXED. (Row 1's share is near 0 under
+//       HISTORY by construction, so a sign-based test would fire on noise; this rule can only turn HISTORY into MIXED.)
+//     - The never SECONDARY uses the same rules with s_H(joint never) in place of s_H(row 1).
+//     - RESTORE NOT FAITHFUL and NOTHING TO ATTRIBUTE are unaffected (checked first, as before)."
+//   (A1–A3: scratch b1c_fork/spec_rev3_amendments.md, sha256 90c53ccadd3a509d686759ee937bfbcd30499de9dcb95d259622c8828f0bb985.)
+//   Implemented 2026-09-30 18:57 EDT, before any run: A2 is choice (1) below, unchanged; A3 supersedes choice (2) — the guard
+//   binds (lib/b1cFork.mjs evaluateReading: when a reading's own conditions hold and its A3 rule fires, the reading is
+//   MIXED and its steps say which rule fired); the guard's numbers are printed beside every reading; the "WOULD veto" print
+//   is gone. A "fires in either history" reading of A3's per-history rules, as §5's own "in either history".
 //
 // Protocol (spec §3). One page session, the B1 scene of snapshot-page.mjs / b1c-driftform.mjs, lockstep, g = 9.80665.
 // H = cell (k = 1…3), then H = face (k = 1…3). A history: configure({ immDriftForm: H }), lib/b1cSuccessors.mjs b1cToF0
@@ -122,7 +141,10 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SPEC = 'B1c fork spec rev 3 (FROZEN, sha256 a3290c5464eb3cc57f17f34ddd83151f2d1e1b6b5d49ec7007ec1444ef6189c6)'
-const AMENDMENTS = ['A1 (2026-09-30, before any run): replicate k\'s history uses seed 2 as §3 says; if its F0 snapshot is bitwise identical to an earlier replicate\'s of the same H (a deterministic history), that replicate is re-drawn with seed 2 + k (then 2 + k + 3, …), recorded — so the K = 3 snapshots are distinct states. The 02:30 study\'s same-seed histories diverged (drop sets 1430/1342/1362), so the re-draw is expected to be unused.']
+const AMENDMENTS = ['A1 (2026-09-30, before any run): replicate k\'s history uses seed 2 as §3 says; if its F0 snapshot is bitwise identical to an earlier replicate\'s of the same H (a deterministic history), that replicate is re-drawn with seed 2 + k (then 2 + k + 3, …), recorded — so the K = 3 snapshots are distinct states. The 02:30 study\'s same-seed histories diverged (drop sets 1430/1342/1362), so the re-draw is expected to be unused.',
+  'A2 (2026-09-30 18:47, lead, before any study run; implementer F\'s gap 1): the confidence level every reading uses is 95 %, a percentile bootstrap with B = 2000 resamples, the limits at sorted positions floor(0.025·B) and floor(0.975·B), the generator mulberry32 seeded 20260930. (§4/§5 named a CI but no level; 95 % is the project\'s convention, b1c-arms ratioCI.)',
+  'A3 (2026-09-30 18:47, lead with the advisor, before any study run; implementer F\'s gap 2): the guard stratum "all" is BINDING. §5\'s MIXED clause "s_H(all) with a CI excluding 0 on the opposite side from s_H(row 1)" could never change a reading under the fixed first-match order — a pre-registered condition silently dropped. Therefore: - IN-WINDOW and PARTIAL each additionally require that s_H(all)\'s 95 % CI does NOT lie entirely on the other side of 0 from s_H(row 1)\'s point estimate; if it does, the reading is MIXED. - HISTORY additionally requires that s_H(all)\'s 95 % CI contains 0 (an in-window share on all drops contradicts "history, not in-window"); if it excludes 0 on either side, the reading is MIXED. (Row 1\'s share is near 0 under HISTORY by construction, so a sign-based test would fire on noise; this rule can only turn HISTORY into MIXED.) - The never SECONDARY uses the same rules with s_H(joint never) in place of s_H(row 1). - RESTORE NOT FAITHFUL and NOTHING TO ATTRIBUTE are unaffected (checked first, as before).']
+const AMENDMENTS_FILE = 'scratch b1c_fork/spec_rev3_amendments.md, sha256 90c53ccadd3a509d686759ee937bfbcd30499de9dcb95d259622c8828f0bb985'
 const { F0 } = B1C
 const HISTORIES = ['cell', 'face'], K = 3, MAX_ATTEMPTS = 5, MAX_MULTI = FRAMES - MIN_COMMON, ALL_ITEMS = ['pos', 'vel', 'aff', 'aux', 'slipState', 'pressureX']
 // the B1 scene of scripts/studies/b1c-driftform.mjs:33-36 (s31c-page's B1; snapshot-page.mjs), verbatim
@@ -378,7 +400,7 @@ function analyze(snaps, stop) {
   const inputs = (name, st, repro) => ({
     name, stratum: st, fidelity, delta: stats[st].delta, s: stats[st].s, ci: { cell: stats[st].ci['4^3'].s.cell, face: stats[st].ci['4^3'].s.face },
     E: { cell: stats[st].per.cell.E, face: stats[st].per.face.E }, floors: Object.fromEntries(HISTORIES.map(H => [H, { A: stats[st].per[H].A, Rg: stats[st].per[H].Rg }])),
-    repro, allS: stats.all.s, allCi: { cell: stats.all.ci['4^3'].s.cell, face: stats.all.ci['4^3'].s.face },
+    repro, allCi: { cell: stats.all.ci['4^3'].s.cell, face: stats.all.ci['4^3'].s.face },   // A3's guard: s_H(all)'s 95 % CI (4³ blocks)
   })
   const primary = evaluateReading(inputs('primary', 'row1', { value: stats.row1.delta, band: RULES.HIST_ROW1, what: 'Δ_own(row 1)' }))
   const secondary = evaluateReading(inputs('secondary', 'jointNever', { value: never0230Delta, band: RULES.HIST_NEVER, what: 'Δ_own(the 02:30-definition never stratum, R arms)' }))
@@ -397,7 +419,9 @@ function report(a) {
           const arms = x.runs.map(r => `${r.arm}${r.run > 1 ? r.run : ''} D_dp ${f4(r.Ddp)} (Σδ_dp ${r.sumDp.toExponential(3)} m / ΣΔt·u_V,y ${r.sumDen.toExponential(3)} m) D_a ${f3(r.Da)} Λ ${f3(r.lambdaNative)} U ${f3(r.U)}`).join('; ')
           log(`  ${x.label}: ${x.drops} drops; E ${f4(x.E)} CI ${x.Eci ? Object.entries(x.Eci).map(([z, c]) => `${z} ${ci(c)}`).join(', ') : '—'}; sub-windows ${x.Ew.map(f4).join(' / ')}; A ${x.Aran ? f4(x.A) : '0 (not run: bitwise branch)'} Rg ${f4(x.Rg)}; ${arms}`)
         }
-        const sTxt = Math.abs(S.delta) >= RULES.NOTHING ? `s_H ${f3(S.s[H])} CI ${Object.entries(S.ci).map(([z, c]) => `${z} ${ci(c.s[H])}`).join(', ')}; per-k s_H,k ${P.sk.map(f3).join(' / ')}` : `s_H undefined (|Δ_own| ${f4(Math.abs(S.delta))} < ${RULES.NOTHING}, §5)`
+        // s_H always printed (A3 reads s_H(all)'s CI whatever Δ_own(all) is); flagged where |Δ_own| < 0.10 — §5 calls s_H
+        // undefined there on a reading's stratum (row 1, the joint never stratum), and −E/Δ_own is ill-conditioned
+        const sTxt = `s_H ${f3(S.s[H])} CI ${Object.entries(S.ci).map(([z, c]) => `${z} ${ci(c.s[H])}`).join(', ')}; per-k s_H,k ${P.sk.map(f3).join(' / ')}${Math.abs(S.delta) >= RULES.NOTHING ? '' : ` [|Δ_own| ${f4(Math.abs(S.delta))} < ${RULES.NOTHING}: s_H ill-conditioned; §5: undefined on a reading's stratum]`}`
         log(`  ${H}: E_H ${f4(P.E)} (per k ${P.snapshots.map(x => f4(x.E)).join(' / ')}; SD ${f4(P.Esd)}, range ${P.Erange.map(f4).join('…')}); E_H per sub-window ${P.Ew.map(f4).join(' / ')}; own-form D_dp ${f4(P.own)}; A_H ${f4(P.A)}, Rg_H ${f4(P.Rg)}; ${sTxt}`)
       }
       log(`  Δ_own ${f4(S.delta)} (CI ${ci(S.ci['4^3'].delta)})`)
@@ -410,7 +434,7 @@ function report(a) {
     log(`${r.name === 'primary' ? 'PRIMARY (row 1; guard all)' : 'SECONDARY — the never question (joint never stratum; a principal stratum: post-treatment, the E contrast paired within it)'}:`)
     for (const s of r.steps) log(`  ${s.holds ? '✓' : '✗'} ${s.name}: ${s.text}`)
     log(`  → READING: ${r.reading}`)
-    if (r.guard) log(`  guard (§5 MIXED's all-drop clause; implemented literally — the fixed order decides): ${r.guard.text}; fires ${r.guard.fires ? 'YES' : 'no'}${r.guard.wouldVeto ? ' — it WOULD veto this reading if read as a veto (flagged: the lead decides)' : ''}`)
+    log(`  guard (A3, binding — the stratum "all"): ${r.guard ? `${r.guard.text}; the sign rule ${r.guard.sign.fires ? 'FIRES' : 'does not fire'}, the zero rule ${r.guard.zero.fires ? 'FIRES' : 'does not fire'}${r.vetoed ? ` → it turned ${r.vetoed} into MIXED` : ''}` : 'n/a (no statistics)'}`)
   }
   log('\n== consequences (spec §6, decided before any run) ==')
   for (const c of a.consequences) log(`- ${c}`)
@@ -426,12 +450,12 @@ if (analyzeArg) {
   const recs = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
   const snaps = recs.filter(r => r.type === 'snapshot').map(fromJson), stopRec = recs.find(r => r.type === 'stop')
   const stop = stopRec?.kind === 'fidelity' ? { kind: 'fidelity', snapRec: fromJson(stopRec.snapRec) } : null
-  log(`${SPEC} — offline analysis of ${file}: ${snaps.length} snapshots${stopRec ? `; the run stopped: ${stopRec.kind}` : ''}`)
+  log(`${SPEC}; amendments A1, A2, A3 — offline analysis of ${file}: ${snaps.length} snapshots${stopRec ? `; the run stopped: ${stopRec.kind}` : ''}`)
   const a = analyze(snaps, stop)
   report(a)
   mkdirSync(outDir, { recursive: true })
   const out = path.join(outDir, `b1c-fork-analysis-${tag}.json`)
-  writeFileSync(out, jsonText({ spec: SPEC, amendments: AMENDMENTS, source: file, analysis: a }, 1))
+  writeFileSync(out, jsonText({ spec: SPEC, amendments: AMENDMENTS, amendmentsFile: AMENDMENTS_FILE, source: file, analysis: a }, 1))
   log(`→ ${path.relative(repoRoot, out)}`)
   exitGate(a.complete ? 0 : 1)
 } else {
@@ -439,10 +463,10 @@ if (analyzeArg) {
   log(`power: ${describePower(p0)}`)
   if (p0.ac !== true) { console.error('refusing: a GPU study runs on AC only (the owner\'s power rule)'); process.exit(3) }
   const prov = await provenance()
-  log(`${SPEC}; amendments: A1; provenance ${prov.sha?.slice(0, 10)} ${prov.state}${prov.attributable ? '' : ' — NON-ATTRIBUTABLE (not the clean gate tree)'}`)
+  log(`${SPEC}; amendments A1, A2, A3 (${AMENDMENTS_FILE}); provenance ${prov.sha?.slice(0, 10)} ${prov.state}${prov.attributable ? '' : ' — NON-ATTRIBUTABLE (not the clean gate tree)'}`)
   mkdirSync(outDir, { recursive: true })
   const partial = path.join(outDir, `b1c-fork-partial-${tag}.jsonl`)
-  const out = { study: 'b1c-fork', spec: SPEC, amendments: AMENDMENTS, prov, power: p0, started: new Date().toISOString(), partialFile: path.relative(repoRoot, partial), constants: { RULES, BOOT, K, MAX_ATTEMPTS, MIN_COMMON, FRAMES, NSUB } }
+  const out = { study: 'b1c-fork', spec: SPEC, amendments: AMENDMENTS, amendmentsFile: AMENDMENTS_FILE, prov, power: p0, started: new Date().toISOString(), partialFile: path.relative(repoRoot, partial), constants: { RULES, BOOT, K, MAX_ATTEMPTS, MIN_COMMON, FRAMES, NSUB } }
   const st = { earlier: { cell: [], face: [] }, branch: 'bitwise', attempts: [], switches: [] }
   const snaps = []
   let stop = null

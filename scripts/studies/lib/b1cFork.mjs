@@ -24,9 +24,9 @@ export const RULES = Object.freeze({
   HIST_ROW1: [-0.369, -0.221],            // … and Δ_own(row 1) inside −0.295 ± 2·√2·0.026
   HIST_NEVER: [0.28, 0.43],               // the secondary's reproduction: Δ_own(02:30-definition never) inside 0.355 ± 2·√2·0.027
 })
-/** §4/§5 bootstrap: 2000 resamples, a fixed seed (mulberry32), 95 % percentile limits by the project's convention
- *  (scripts/studies/b1c-arms.mjs ratioCI: sorted[floor(0.025·B)], sorted[floor(0.975·B)]); t0 blocks of 4³ cells, 2³ and
- *  8³ as the sensitivity. */
+/** §4/§5 bootstrap — amendment A2 (2026-09-30 18:47, before any study run): 95 %, a percentile bootstrap with B = 2000
+ *  resamples, the limits at sorted positions floor(0.025·B) and floor(0.975·B), mulberry32 seeded 20260930 (the project's
+ *  convention, scripts/studies/b1c-arms.mjs ratioCI); t0 blocks of 4³ cells, 2³ and 8³ as the sensitivity (§4). */
 export const BOOT = Object.freeze({ B: 2000, SEED: 20260930, LO: 0.025, HI: 0.975, SIZES: [4, 2, 8] })
 
 /** mulberry32 (src/bench/benchHook.ts; b1c-arms.mjs) — the bootstrap's seeded generator. */
@@ -310,21 +310,31 @@ export function stratumStudy(byH, stratum, { B = BOOT.B, seed = BOOT.SEED, sizes
 const f3 = v => (Number.isFinite(v) ? v.toFixed(3) : String(v))
 const ciTxt = c => `[${f3(c.lo)}, ${f3(c.hi)}]${c.nan ? ` (${c.nan} NaN draws dropped)` : ''}`
 const inside = (x, [lo, hi]) => x >= lo && x <= hi
-/** The guard (§5 MIXED: "s_H(all) with a CI excluding 0 on the opposite side from s_H(row 1) in either history"): per
- *  history, s_H(all)'s CI entirely on the other side of 0 from the sign of s_H of the reading's stratum. */
+/** The guard stratum "all" — amendment A3 (2026-09-30 18:47, before any study run): BINDING. Per history, from s_H(all)'s
+ *  95 % CI: the sign rule (binds IN-WINDOW and PARTIAL) — the CI lies entirely on the other side of 0 from the sign of
+ *  s_H of the reading's stratum (row 1; the secondary: the joint never stratum), i.e. hi < 0 while s_H > 0 or lo > 0 while
+ *  s_H < 0 (s_H = 0 has no side); the zero rule (binds HISTORY) — the CI excludes 0 on either side (lo > 0 or hi < 0).
+ *  Either fires when it holds in either history. */
 export function guardCheck(s, allCi) {
   const opp = H => (s[H] > 0 && allCi[H].hi < 0) || (s[H] < 0 && allCi[H].lo > 0)
-  return { cell: opp('cell'), face: opp('face'), fires: opp('cell') || opp('face') }
+  const ex0 = H => allCi[H].lo > 0 || allCi[H].hi < 0
+  return { cell: opp('cell'), face: opp('face'), fires: opp('cell') || opp('face'), zero: { cell: ex0('cell'), face: ex0('face'), fires: ex0('cell') || ex0('face') } }
 }
 
 /** §5, one reading (primary on row 1, or the never secondary on the joint never stratum), evaluated in the fixed order —
- *  the first that holds is the reading; every step is returned with the numbers that decided it.
+ *  the first that holds is the reading; every step is returned with the numbers that decided it. Amendment A3: IN-WINDOW
+ *  and PARTIAL also need the guard's sign rule not to fire, HISTORY its zero rule; when a reading's own conditions hold
+ *  and its guard rule fires, the reading is MIXED (RESTORE NOT FAITHFUL and NOTHING TO ATTRIBUTE come first, unaffected).
  *  in = { name, stratum, fidelity: { cell, face } (each { branch, mismatch: first differing frame/buffer of any k (bitwise)
  *  or null, Rg: { row1, all }, A: { row1, all } }), delta, s: { cell, face }, ci: { cell, face }, E: { cell, face },
- *  floors: { cell: { A, Rg }, face } (this stratum), repro: { value, band, what }, allS, allCi (the guard) } */
+ *  floors: { cell: { A, Rg }, face } (this stratum), repro: { value, band, what }, allCi: s_H(all)'s CI per history (A3) } */
 export function evaluateReading(inp) {
   const steps = [], HS = ['cell', 'face']
   const step = (name, holds, text) => { steps.push({ name, holds, text }); return holds }
+  // A3: the guard stratum "all", binding on IN-WINDOW, HISTORY and PARTIAL (its numbers are reported with every reading)
+  const g = inp.allCi ? guardCheck(inp.s, inp.allCi) : null
+  const signTxt = () => HS.map(H => `${H}: s_H(all) CI ${ciTxt(inp.allCi[H])} vs the sign of s_H(${inp.stratum}) ${f3(inp.s[H])} — ${g[H] ? 'entirely on the OTHER side of 0' : 'not on the other side'}`).join('; ')
+  const zeroTxt = () => HS.map(H => `${H}: s_H(all) CI ${ciTxt(inp.allCi[H])} — ${g.zero[H] ? 'EXCLUDES 0' : 'contains 0'}`).join('; ')
   // RESTORE NOT FAITHFUL — each history by its own branch
   const nf = HS.map(H => {
     const f = inp.fidelity[H]
@@ -334,21 +344,35 @@ export function evaluateReading(inp) {
   })
   if (step('RESTORE NOT FAITHFUL', nf.some(x => x.holds), nf.map(x => x.text).join('; ') + (inp.name === 'secondary' ? ' (the primary\'s fidelity verdict)' : ''))) return finish('RESTORE NOT FAITHFUL')
   if (step('NOTHING TO ATTRIBUTE', !(Math.abs(inp.delta) >= RULES.NOTHING), `|Δ_own(${inp.stratum})| = ${f3(Math.abs(inp.delta))} against < ${RULES.NOTHING}${Math.abs(inp.delta) >= RULES.NOTHING ? '' : ' → s_H undefined; E_H and the strata reported'}`)) return finish('NOTHING TO ATTRIBUTE')
+  /** a reading whose own conditions hold: its A3 rule decides between it and MIXED */
+  const guarded = (name, text, rule) => {
+    if (!g) throw new Error(`A3: ${inp.name} ${name} needs s_H(all)'s CI (allCi) — the guard is binding`)
+    const fires = rule === 'zero' ? g.zero.fires : g.fires, gt = rule === 'zero' ? zeroTxt() : signTxt()
+    if (!fires) { step(name, true, `${text}; A3 guard (${rule === 'zero' ? 's_H(all)\'s CI contains 0' : 's_H(all)\'s CI not on the other side of 0'}): ${gt} — holds`); return finish(name) }
+    step(name, false, `${text} — its own conditions hold, but A3's guard fires: ${gt}`)
+    step('MIXED', true, `A3: the guard stratum "all" contradicts ${name} (${rule === 'zero' ? 's_H(all)\'s CI excludes 0' : 's_H(all)\'s CI lies entirely on the other side of 0 from s_H(' + inp.stratum + ')'}) → MIXED`)
+    return finish('MIXED', name)
+  }
   const floorOk = H => inp.fidelity[H].branch === 'bitwise' || Math.abs(inp.E[H]) > RULES.IN_FLOOR * Math.max(inp.floors[H].A, inp.floors[H].Rg)
   const inW = H => inp.s[H] >= RULES.IN_S && inp.ci[H].lo >= RULES.IN_LO && floorOk(H)
-  if (step('IN-WINDOW', HS.every(inW), HS.map(H => `${H}: s_H ${f3(inp.s[H])} CI ${ciTxt(inp.ci[H])}${inp.fidelity[H].branch === 'bitwise' ? ' (bitwise: the floor clause is vacuous)' : `, |E_H| ${f3(Math.abs(inp.E[H]))} vs 2·max(A_H, Rg_H) ${f3(2 * Math.max(inp.floors[H].A, inp.floors[H].Rg))}`}`).join('; ') + ` — needs s_H ≥ ${RULES.IN_S} and CI lower end ≥ ${RULES.IN_LO} in both`)) return finish('IN-WINDOW')
+  const inText = HS.map(H => `${H}: s_H ${f3(inp.s[H])} CI ${ciTxt(inp.ci[H])}${inp.fidelity[H].branch === 'bitwise' ? ' (bitwise: the floor clause is vacuous)' : `, |E_H| ${f3(Math.abs(inp.E[H]))} vs 2·max(A_H, Rg_H) ${f3(2 * Math.max(inp.floors[H].A, inp.floors[H].Rg))}`}`).join('; ') + ` — needs s_H ≥ ${RULES.IN_S} and CI lower end ≥ ${RULES.IN_LO} in both`
+  if (HS.every(inW)) return guarded('IN-WINDOW', inText, 'sign')
+  step('IN-WINDOW', false, inText)
   const histCi = H => inp.ci[H].lo >= -RULES.HIST_CI && inp.ci[H].hi <= RULES.HIST_CI
   const repro = inside(inp.repro.value, inp.repro.band)
-  if (step('HISTORY', HS.every(histCi) && repro, `CIs inside [−${RULES.HIST_CI}, +${RULES.HIST_CI}]: ${HS.map(H => `${H} ${ciTxt(inp.ci[H])} ${histCi(H) ? 'yes' : 'no'}`).join(', ')}; ${inp.repro.what} ${f3(inp.repro.value)} inside [${inp.repro.band.join(', ')}]: ${repro ? 'yes' : 'no'}`)) return finish('HISTORY')
-  if (step('PARTIAL', HS.every(H => inp.ci[H].lo > 0), `CI above 0 in both: ${HS.map(H => `${H} lower end ${f3(inp.ci[H].lo)}`).join(', ')}`)) return finish('PARTIAL')
+  const histText = `CIs inside [−${RULES.HIST_CI}, +${RULES.HIST_CI}]: ${HS.map(H => `${H} ${ciTxt(inp.ci[H])} ${histCi(H) ? 'yes' : 'no'}`).join(', ')}; ${inp.repro.what} ${f3(inp.repro.value)} inside [${inp.repro.band.join(', ')}]: ${repro ? 'yes' : 'no'}`
+  if (HS.every(histCi) && repro) return guarded('HISTORY', histText, 'zero')
+  step('HISTORY', false, histText)
+  const partText = `CI above 0 in both: ${HS.map(H => `${H} lower end ${f3(inp.ci[H].lo)}`).join(', ')}`
+  if (HS.every(H => inp.ci[H].lo > 0)) return guarded('PARTIAL', partText, 'sign')
+  step('PARTIAL', false, partText)
   step('MIXED', true, `anything else${HS.some(H => inp.ci[H].hi < 0) ? ` — an s_H CI below 0 (${HS.filter(H => inp.ci[H].hi < 0).join(', ')}: the in-window form opposing the own-form difference)` : ''}`)
   return finish('MIXED')
 
-  function finish(reading) {
-    const defined = reading !== 'RESTORE NOT FAITHFUL' && reading !== 'NOTHING TO ATTRIBUTE'
-    const g = defined && inp.allCi ? guardCheck(inp.s, inp.allCi) : null
-    return { name: inp.name, stratum: inp.stratum, reading, steps, guard: g && { ...g, wouldVeto: g.fires && ['IN-WINDOW', 'HISTORY', 'PARTIAL'].includes(reading),
-      text: `s_H(all) CI ${HS.map(H => `${H} ${ciTxt(inp.allCi[H])} vs sign of s_H(${inp.stratum}) ${f3(inp.s[H])}: ${g[H] ? 'OPPOSITE' : 'not opposite'}`).join('; ')}` } }
+  /** the reading, its steps, and the guard's numbers (printed beside every reading; `vetoed`: the reading A3 turned into MIXED) */
+  function finish(reading, vetoed = null) {
+    return { name: inp.name, stratum: inp.stratum, reading, vetoed, steps, guard: g && { sign: { cell: g.cell, face: g.face, fires: g.fires }, zero: g.zero,
+      text: `${signTxt()} (sign rule: binds IN-WINDOW, PARTIAL); ${zeroTxt()} (zero rule: binds HISTORY)` } }
   }
 }
 
@@ -360,9 +384,9 @@ export function consequences(primary, secondary) {
   if (p === 'IN-WINDOW') out.push('Primary IN-WINDOW: the row-1 (and all-drop) own-form difference of the 02:30 study is attributed in-window — the drift\'s form applied within the window carries it.')
   else if (p === 'HISTORY') out.push('Primary HISTORY: the row-1 (and all-drop) attribution of the 02:30 difference is corrected to "history, not in-window" — it came from accumulated state / drop selection.')
   else if (p === 'PARTIAL') out.push('Primary PARTIAL: s_H with its CI is recorded as the in-window share of the row-1 (and all-drop) own-form difference; no single-cause claim.')
-  else out.push(`Primary ${p}: no change; the item stays open with the measured gaps.${p === 'RESTORE NOT FAITHFUL' ? ' (§5: stop — the first differing frame and buffer are reported above; repair the restore.)' : ''}`)
+  else out.push(`Primary ${p}${primary.vetoed ? ` (A3: the guard stratum "all" contradicted ${primary.vetoed})` : ''}: no change; the item stays open with the measured gaps.${p === 'RESTORE NOT FAITHFUL' ? ' (§5: stop — the first differing frame and buffer are reported above; repair the restore.)' : ''}`)
   if (s === 'IN-WINDOW' || s === 'HISTORY' || s === 'PARTIAL') out.push(`"ATTRIBUTED (candidate)" (the 02:30 NEVER reading) follows the never secondary's reading: ${s} — on the joint never stratum, a principal stratum (post-treatment; the E contrast is paired within it).`)
-  else if (s) out.push(`"ATTRIBUTED (candidate)" (the 02:30 NEVER reading) follows the never secondary's reading: ${s} — no change to it; the item stays open with the measured gaps (a principal stratum).`)
+  else if (s) out.push(`"ATTRIBUTED (candidate)" (the 02:30 NEVER reading) follows the never secondary's reading: ${s}${secondary.vetoed ? ` (A3: the guard stratum "all" contradicted ${secondary.vetoed})` : ''} — no change to it; the item stays open with the measured gaps (a principal stratum).`)
   if (s && p !== s) out.push(`The primary (${p}) and the secondary (${s}) disagree: both are recorded and the item stays open.`)
   out.push('Whatever the reading: the cell form stays in code as W4\'s must-fail control and K32c\'s subject, bench-only (configure({ immDriftForm }) — on no page option list); the face form stays the default on its own gates (W, K32).')
   return out
