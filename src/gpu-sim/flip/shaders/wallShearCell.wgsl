@@ -1,7 +1,8 @@
 // wallShearCell.wgsl — the floor's wall shear, pass 2 of 3 (FRICTION spec §3.2–3.3; flipRef.applyWallShear per cell):
 // per floor cell c = i + nx·k with n_c floor-row particles, from wallShearScatter's sums:
-//   M̂_c = Σm̂, U_c = Σm̂·v_t/Σm̂ (x and z), h_c = min(n_c·V_p/dx², dx) with V_p = dx³/ppc (the depth from the count),
-//   ρ_c = M_c/(n_c·V_p), μ_c = Σμ·m̂/Σm̂, ν_c = μ_c/ρ_c;
+//   M̂_c = Σm̂, U_c = Σm̂·v_t/Σm̂ (x and z), h_c = R = min((n_c + n1_c)·V_p/dx², dx) with V_p = dx³/ppc and n1_c the
+//   particles of row 1 over the cell (the depth from the counts of rows 0 and 1: prereg R-F2, review CPU-F2,
+//   2026-09-30; a cell with n_c = 0 is not acted on, whatever n1_c), ρ_c = M_c/(n_c·V_p), μ_c = Σμ·m̂/Σm̂, ν_c = μ_c/ρ_c;
 //   τ from the law — Keulegan 1938 eq. 32, ū/u* = a_s − b + b·ln(R·u*/ν) with R = h_c, τ = ρ_c·u*², and the developed
 //   laminar film τ = 3μ_c·U/h_c where Re_h = U·h_c/ν_c < WP.reCross (428.26: the branches meet there) — or a gate's
 //   test law (darcyTest τ = ρ_c·(f/8)·U², constantTest τ);
@@ -73,7 +74,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
       if (U > 0.0) {
         let Mh = Mq * WP.invMassScale;
         let nf = f32(n);
-        let hc = min(nf * P.dx * P.invPpc, P.dx);
+        let n1 = accR[base + WS_COUNT1];
+        let hc = min(f32(n + n1) * P.dx * P.invPpc, P.dx);
         let rho = Mh * P.rhoPpc / nf;
         let muC = decode(base, WS_MU) / Mq;
         var tau = 0.0;

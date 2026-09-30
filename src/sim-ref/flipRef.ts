@@ -174,9 +174,9 @@ export interface FlipRefOptions {
   /** The floor's wall shear on the particles of its first cell row (S3.4 follow-up; spec vault
    *  fluid/realism-2026-09/FRICTION-spec.md). 'keulegan1938': Keulegan 1938 eq. 32 — a smooth bed under an infinitely
    *  wide channel — ū/u* = 3.0 + 2.5·ln(R·u* / ν) (a_s = 5.5, b = 2.5, κ = 0.40; R the liquid depth over the floor cell,
-   *  capped at dx), τ = ρ_c·u*² against the cell's tangential mean; below Re_h = ūR/ν = WALL_SHEAR_RE_CROSS (428.26) the
-   *  developed laminar film τ = 3μ_c·ū/R instead (the branches meet there: τ continuous, non-decreasing, τ(0) = 0; the
-   *  film assumes a stress-free surface at h_c — spec §2.4 note).
+   *  from its rows 0–1 — (n₀ + n₁)·V_p/dx² — capped at dx), τ = ρ_c·u*² against the cell's tangential mean; below
+   *  Re_h = ūR/ν = WALL_SHEAR_RE_CROSS (428.26) the developed laminar film τ = 3μ_c·ū/R instead (the branches meet
+   *  there: τ continuous, non-decreasing, τ(0) = 0; the film assumes a stress-free surface at h_c — spec §2.4 note).
    *  'darcyTest' τ = ρ_c·(f/8)·ū² and 'constantTest' τ = tau exist for the gates only. Absent: off, the solver
    *  bit-identical to one without it. Refused (the constructor throws; review 2026-09-30, M1/M2): a law outside
    *  WALL_SHEAR_LAW_NAMES, darcyTest without a finite f, constantTest without a finite tau, a parameter the law does not
@@ -409,7 +409,7 @@ export class FlipRef {
    *  Σ M_c·Δv (N·s, x and z), the largest τ (Pa) and the laminar-branch cells; per cell of the last step (gates). */
   readonly wallShear: FlipRefOptions['wallShear'] | null
   wallShearLog: { t: number; cells: number; impX: number; impZ: number; tauMax: number; laminar: number }[] = []
-  wallShearField: { i: number; k: number; n: number; M: number; hc: number; rho: number; nu: number; Ux: number; Uz: number; tau: number; laminar: boolean; dvx: number; dvz: number }[] = []
+  wallShearField: { i: number; k: number; n: number; n1: number; M: number; hc: number; rho: number; nu: number; Ux: number; Uz: number; tau: number; laminar: boolean; dvx: number; dvz: number }[] = []
   time = 0
   private gateBaseType: Uint32Array | null = null
   /** This step's gate edge (m): the faces above it are SOLID, and particles above it keep their side of the plane. */
@@ -993,8 +993,12 @@ export class FlipRef {
 
   /** The floor's wall shear (options.wallShear), particle-side, after the density correction and before P2G: per floor
    *  cell (i, k) the particles with ⌊y/dx⌋ = 0 give M_c = Σm, n_c, V_c = n_c·V_p (the solver's own particle volume, so
-   *  mixtures and variable density get the right depth), h_c = min(V_c/dx², dx), ρ_c = M_c/V_c, the tangential mean
-   *  U_c = Σ m·v_t / M_c (x and z) and μ_c = Σ m·μ / M_c, ν_c = μ_c/ρ_c; τ from the law; then the cell mean is updated
+   *  mixtures and variable density get the right depth), ρ_c = M_c/V_c, the tangential mean U_c = Σ m·v_t / M_c (x and
+   *  z) and μ_c = Σ m·μ / M_c, ν_c = μ_c/ρ_c; the depth the law sees is h_c = R = min((n_c + n_1)·V_p/dx², dx), n_1 the
+   *  particles with ⌊y/dx⌋ = 1 over the same cell (revision 2026-09-30, review CPU-F2, prereg R-F2: from row 0 alone,
+   *  the density-corrected count scatters around ppc under deep liquid and its low side was read as a sheet — 31.9 % of
+   *  A2g's acted cell-steps, +1.1 % booked; everything but the depth stays row 0's, and a cell with n_c = 0 is not acted
+   *  on, whatever n_1); τ from the law; then the cell mean is updated
    *  semi-implicitly with the coefficient τ/|U_c| lagged at the step's start: a_c = Δt·τ·dx²/(M_c·|U_c|), Δv = −U_c·a_c/
    *  (1 + a_c) (so U_c′ = U_c/(1 + a_c): never reversed, the cell's tangential energy never raised — for τ ≥ 0, i.e. every
    *  physical law; the test laws' negative f and tau are the gates' sign-flip controls; exact for the Darcy test law;
@@ -1005,11 +1009,11 @@ export class FlipRef {
    *  water cell leaves ν_c > 0. */
   applyWallShear(p: RefParticles, dt: number): void {
     const W = this.wallShear!, L = this.layout, h = L.dx, vp = h ** 3 / this.ppc, nx = L.nx, nz = L.nz, NC = nx * nz
-    const M = new Float64Array(NC), Nc = new Uint32Array(NC), Px = new Float64Array(NC), Pz = new Float64Array(NC), MU = new Float64Array(NC)
+    const M = new Float64Array(NC), Nc = new Uint32Array(NC), N1 = new Uint32Array(NC), Px = new Float64Array(NC), Pz = new Float64Array(NC), MU = new Float64Array(NC)
     const cellOf = (q: number) => cellIndex(p.pos[3 * q], h, nx) + nx * cellIndex(p.pos[3 * q + 2], h, nz)
     const onFloorRow = (q: number) => Math.floor(p.pos[3 * q + 1] / h) === 0
     for (let q = 0; q < p.n; q++) {
-      if (!onFloorRow(q)) continue
+      if (!onFloorRow(q)) { if (Math.floor(p.pos[3 * q + 1] / h) === 1) N1[cellOf(q)]++; continue }   // row 1: the depth only
       const c = cellOf(q), m = p.mass[q], muq = p.mu ? p.mu[q] : this.viscosityDefault
       if (!(Number.isFinite(muq) && muq > 0)) throw new Error(`FlipRef.applyWallShear: particle ${q} on the floor row has μ = ${muq} Pa·s (must be finite and > 0)`)
       M[c] += m; Nc[c]++; Px[c] += m * p.vel[3 * q]; Pz[c] += m * p.vel[3 * q + 2]; MU[c] += m * muq
@@ -1019,7 +1023,7 @@ export class FlipRef {
     this.wallShearField = []
     for (let c = 0; c < NC; c++) {
       if (!Nc[c]) continue
-      const Vc = Nc[c] * vp, hc = Math.min(h, Vc / (h * h)), rho = M[c] / Vc
+      const Vc = Nc[c] * vp, hc = Math.min(h, (Nc[c] + N1[c]) * vp / (h * h)), rho = M[c] / Vc
       const Ux = Px[c] / M[c], Uz = Pz[c] / M[c], U = Math.hypot(Ux, Uz)
       if (!(U > 0)) continue
       const muC = MU[c] / M[c], nuC = muC / rho
@@ -1030,7 +1034,7 @@ export class FlipRef {
       const a = dt * tau * h * h / (M[c] * U)
       dvx[c] = -Ux * a / (1 + a); dvz[c] = -Uz * a / (1 + a)
       cells++; impX += M[c] * dvx[c]; impZ += M[c] * dvz[c]; tauMax = Math.max(tauMax, tau); if (lam) laminar++
-      this.wallShearField.push({ i: c % nx, k: Math.floor(c / nx), n: Nc[c], M: M[c], hc, rho, nu: nuC, Ux, Uz, tau, laminar: lam, dvx: dvx[c], dvz: dvz[c] })
+      this.wallShearField.push({ i: c % nx, k: Math.floor(c / nx), n: Nc[c], n1: N1[c], M: M[c], hc, rho, nu: nuC, Ux, Uz, tau, laminar: lam, dvx: dvx[c], dvz: dvz[c] })
     }
     for (let q = 0; q < p.n; q++) {
       if (!onFloorRow(q)) continue

@@ -32,9 +32,9 @@
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
 //   FRICTION the floor's wall shear (setWallShear; off by default: nothing is encoded or allocated), first in
 //         encodeSubstepBody and skipped while the viscous path or the immiscible drift runs (wallShearRuns):
-//         wallShearScatter (floor-row particles into their floor cells: m̂, n, m̂·v_x, m̂·v_z, μ·m̂) → wallShearCell
-//         (Keulegan 1938 eq. 32 / the laminar film, Δv = −U_c·a/(1 + a)) → wallShearApply (v_x, v_z += Δv);
-//         flipRef.applyWallShear                                                  (gate s38-gpu.mjs; spec FRICTION §3.3)
+//         wallShearScatter (floor-row particles into their floor cells: m̂, n, m̂·v_x, m̂·v_z, μ·m̂; row 1's count)
+//         → wallShearCell (Keulegan 1938 eq. 32 / the laminar film, Δv = −U_c·a/(1 + a)) → wallShearApply
+//         (v_x, v_z += Δv); flipRef.applyWallShear                            (gate s38-gpu.mjs; spec FRICTION §3.3)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -169,7 +169,8 @@ export const LO_SCALE = 4096
 
 /** The floor's wall shear (vault fluid/realism-2026-09/FRICTION-spec.md §3.3; flipRef FlipRefOptions.wallShear):
  *  'keulegan1938' is Keulegan 1938 eq. 32 (a smooth bed under an infinitely wide channel, R = the liquid depth over the
- *  floor cell capped at dx, τ = ρ_c·u*²) with the developed laminar film τ = 3μ_c·U/h_c below Re_h =
+ *  floor cell from the particles of rows 0 and 1 (prereg R-F2), capped at dx, τ = ρ_c·u*²) with the developed laminar
+ *  film τ = 3μ_c·U/h_c below Re_h =
  *  WALL_SHEAR_RE_CROSS; 'darcyTest' τ = ρ_c·(f/8)·U² and 'constantTest' τ = tau exist for the gates only. μ per particle
  *  is its composition's entry of the viscosity solver's table (the page uploads it whatever viscosityActive is); a sim
  *  without that solver keeps its own: `muTable` (Pa·s per composition id) over `muDefault` (default water at 20 °C,
@@ -192,8 +193,9 @@ export interface FlipWallShear {
 /** Newton steps of eq. 32 on the turbulent branch, from U/25 (spec §3.3: in f64 at most 5 reach 1e-14 on the W1b grid). */
 export const WALL_SHEAR_NEWTON = 6
 /** Bytes of the stage's uniform (wallShearCommon.wgsl WallShearParams); i32 words per floor cell of its accumulator
- *  (hi: mass, momentum x, momentum z, μ·m̂, count; the four remainders); u32 words of its log. */
-const WS_PARAMS_BYTES = 64, WS_WORDS = 9, WS_STATS_WORDS = 8
+ *  (hi: mass, momentum x, momentum z, μ·m̂, count; the four remainders; the row-1 count WS_COUNT1 = 9, which only the
+ *  depth reads — prereg R-F2, review CPU-F2); u32 words of its log. */
+const WS_PARAMS_BYTES = 64, WS_WORDS = 10, WS_STATS_WORDS = 8
 /** wallShearCell.wgsl's law ids (LAW_KEULEGAN, LAW_DARCY, LAW_CONSTANT). A Map, so that an unknown name — 'constructor'
  *  or 'toString' too, which a plain object would answer from its prototype — finds nothing and setWallShear refuses it
  *  (review M2: the old ternary ran any unknown name as constantTest with τ = 0). */

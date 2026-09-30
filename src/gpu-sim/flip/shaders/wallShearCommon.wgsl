@@ -23,14 +23,17 @@ struct WallShearParams {
 @group(0) @binding(1) var<uniform> WP: WallShearParams;
 
 // Floor-cell accumulator: WS_WORDS i32 per floor cell (i + nx·k); the hi words, then (PRECISE_P2G) the remainder words
-// of mass, momentum x, momentum z and μ·m̂ at WS_LO + their index. The particle count is exact in one word.
-const WS_WORDS: u32 = 9u;
+// of mass, momentum x, momentum z and μ·m̂ at WS_LO + their index, then the row-1 count. The particle counts are exact
+// in one word each: WS_COUNT the floor row's (⌊y/dx⌋ = 0), WS_COUNT1 row 1's (⌊y/dx⌋ = 1), which only the depth reads
+// (prereg R-F2, review CPU-F2: R = min(dx, (n₀ + n₁)·V_p/dx²)).
+const WS_WORDS: u32 = 10u;
 const WS_MASS: u32 = 0u;
 const WS_MX: u32 = 1u;
 const WS_MZ: u32 = 2u;
 const WS_MU: u32 = 3u;
 const WS_COUNT: u32 = 4u;
 const WS_LO: u32 = 5u;
+const WS_COUNT1: u32 = 9u;
 
 // The stage log (u32 words, cumulative until the host resets it): encodes of the stage (applications), cells acted
 // on (a floor-row particle and |U_c| > 0), of those the cells with Δv ≠ 0 (a non-zero booked impulse), cells on the

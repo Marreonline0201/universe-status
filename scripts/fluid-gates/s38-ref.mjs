@@ -136,6 +136,21 @@
 //      every particle. Pass, each arm: assert (1) at 1e-9·|U_c| and assert (4) at 1e-9 relative, cells acted on > 0.
 //      Controls (must FAIL; s38-mutations, named W1aK.default): the fallback read as viscosityThreshold (a ν, 94× low)
 //      fails both arms; the fallback as the literal 1.001596e-3 fails arm (b).
+//      REVISED 2026-09-30 — the depth the law sees (review CPU-F2, prereg R-F2; a pre-registered CRITERION change, not a
+//      bound change; pre-registered 2026-09-30 before its first run): h_c = R = min(dx, (n₀ + n₁)·V_p/dx²), n₀ the
+//      row-0 particles (⌊y/dx⌋ = 0) and n₁ those with ⌊y/dx⌋ = 1 over the same floor cell; M_c, ρ_c = M_c/(n₀·V_p), U_c,
+//      μ_c and Δv stay row 0's, and a cell with n₀ = 0 is not acted on, whatever n₁. The oracle above bins n₁ and applies
+//      this rule (every W1aK line, the .default arms included); the set itself is unchanged (c = i + 6k does not grow).
+//      W1aK.col, a new scene (fixed positions, no rng draws; its own 2 × 3 × 2 grid of 5 cm — the k = 1 cells empty; the
+//      first run's 2 × 3 × 1 is refused by GridLayout, ≥ 2 cells per axis, before any check printed — Δt = A2's 3.673 ms, water at
+//      20 °C with p.mu, every APIC c entry (0.5, −0.5, 0.25) /s): (column) cell (0, 0) — 4 row-0 particles at the sub-cell
+//      centres (y = dx/4) moving (3.25, 0.1, 0) m/s under 8 row-1 particles at the 2 × 2 × 2 sub-cell centres of row 1
+//      moving (2, 0.2, 0.5) m/s: the oracle's R = min(dx, 12·V_p/dx²) = dx; (sheet) cell (1, 0) — 4 row-0 particles
+//      moving 3.25 m/s at 45° in (x, z), nothing above: R = 4·V_p/dx² = dx/2. Pass: both R exactly so (the scene is
+//      built right); assert (1) at 1e-9·|U_c|, (2) and (3) — rows ≥ 1 untouched, every v_y and c bit-identical — (4) at
+//      1e-9 relative, cells acted on 2 (the stage's own field h_c and n₁ are printed, not gated).
+//      Control (must FAIL; s38-mutations, named W1aK): depth from row 0 only (the pre-revision rule) — on the column cell
+//      R = dx/2 instead of dx, τ(2.5 cm)/τ(5 cm) = 1.139 at 3.25 m/s (derived), a Δv miss ≈ 1e-4 of |U_c| ≫ 1e-9.
 // W1b  the law [spec §4 W1b; revise_numbers.py §2–3; FR/gatedesign/w1b_extra_point.out]: keuleganTau(U, h, ν, ρ) alone,
 //      water at 20 °C (ρ = 998.2072, μ = 1.001596e-3: NIST, materialData.ts:88), ν = μ/ρ. (resid) on the turbulent
 //      branch by this file's rule (Re_h ≥ Re_c) of the grid U ∈ [1e-3, 5] m/s (41 geometric) × h ∈ [1 mm, 0.0567 m] (21
@@ -520,25 +535,30 @@ if (run('W1aK')) {
     for (let a = 0; a < 3; a++) p.c[a].set([2 * rng() - 1, 2 * rng() - 1, 2 * rng() - 1], 3 * q)
   })
   const pre = snap(p), preMu = Float64Array.from(p.mu)
-  /** The oracle, from a particle state s (pos, vel, mass) and each particle's μ: the floor row ⌊y/dx⌋ = 0 binned into
-   *  (⌊x/dx⌋, ⌊z/dx⌋), every wetted cell's M_c, n_c, U_c and Δv_c (the header's rule), and Σ M_c·Δv_c. */
-  const oracleOf = (s, muOf) => {
-    const cells = new Map()
+  /** The oracle, from a particle state s (pos, vel, mass) and each particle's μ, on a floor grid g (dx, nx, V_p, Δt; the
+   *  set's by default): the floor row ⌊y/dx⌋ = 0 binned into (⌊x/dx⌋, ⌊z/dx⌋), n₁ the particles with ⌊y/dx⌋ = 1 over the
+   *  same cell, every wetted cell's M_c, n_c, R = min(dx, (n_c + n₁)·V_p/dx²), U_c and Δv_c (the header's rule, revised
+   *  2026-09-30), and Σ M_c·Δv_c. */
+  const G1AK = { h, NX, VP, dt }
+  const oracleOf = (s, muOf, g = G1AK) => {
+    const cells = new Map(), n1 = new Map()
     for (let q = 0; q < s.mass.length; q++) {
-      if (Math.floor(s.pos[3 * q + 1] / h) !== 0) continue
-      const key = Math.floor(s.pos[3 * q] / h) + NX * Math.floor(s.pos[3 * q + 2] / h)
+      const row = Math.floor(s.pos[3 * q + 1] / g.h), key = Math.floor(s.pos[3 * q] / g.h) + g.NX * Math.floor(s.pos[3 * q + 2] / g.h)
+      if (row === 1) n1.set(key, (n1.get(key) ?? 0) + 1)
+      if (row !== 0) continue
       const e = cells.get(key) ?? { M: 0, n: 0, Px: 0, Pz: 0, Mmu: 0, KE0: 0, KE1: 0 }
       const m = s.mass[q]
       e.M += m; e.n++; e.Px += m * s.vel[3 * q]; e.Pz += m * s.vel[3 * q + 2]; e.Mmu += m * muOf(q); e.KE0 += 0.5 * m * (s.vel[3 * q] ** 2 + s.vel[3 * q + 2] ** 2)
       cells.set(key, e)
     }
     let oBx = 0, oBz = 0, aMax = 0, lam = 0, turb = 0
-    for (const e of cells.values()) {
-      const Vc = e.n * VP, hc = Math.min(h, Vc / (h * h)), rho = e.M / Vc, Ux = e.Px / e.M, Uz = e.Pz / e.M, U = Math.hypot(Ux, Uz)
+    for (const [key, e] of cells) {
+      e.n1 = n1.get(key) ?? 0
+      const Vc = e.n * g.VP, hc = Math.min(g.h, (e.n + e.n1) * g.VP / (g.h * g.h)), rho = e.M / Vc, Ux = e.Px / e.M, Uz = e.Pz / e.M, U = Math.hypot(Ux, Uz)
       const mu = e.Mmu / e.M, nu = mu / rho, Re = U * hc / nu
       const tau = Re < RE_C ? 3 * mu * U / hc : rho * ustarBisect(U, hc, nu) ** 2
-      const a = dt * tau * h * h / (e.M * U)
-      Object.assign(e, { U, dvx: -Ux * a / (1 + a), dvz: -Uz * a / (1 + a) })
+      const a = g.dt * tau * g.h * g.h / (e.M * U)
+      Object.assign(e, { U, hc, dvx: -Ux * a / (1 + a), dvz: -Uz * a / (1 + a) })
       oBx += e.M * e.dvx; oBz += e.M * e.dvz; aMax = Math.max(aMax, a); if (Re < RE_C) lam++; else turb++
     }
     return { cells, oBx, oBz, aMax, lam, turb }
@@ -597,6 +617,41 @@ if (run('W1aK')) {
     }
     const book2 = Math.hypot(lg.impX - o.oBx, lg.impZ - o.oBz) / Math.hypot(o.oBx, o.oBz)
     check(worst2 <= 1e-9 && book2 <= 1e-9 && lg.cells > 0, `W1aK.default.${arm}`, `μ_c from viscosityDefault (p.mu absent), ${desc}: (1) ${n0} row-0 particles, worst |Δv − Δv_c|/|U_c| ${e2(worst2)} (≤ 1e-9); (4) booked (${e2(lg.impX)}, ${e2(lg.impZ)}) vs Σ M_c·Δv_c (${e2(o.oBx)}, ${e2(o.oBz)}) N·s, relative ${e2(book2)} (≤ 1e-9); cells acted on ${lg.cells} (> 0)`)
+  }
+  // W1aK.col (CPU-F2): the depth from rows 0–1 on fixed positions — a column cell and a one-row sheet cell (header)
+  {
+    const hC = 0.05, GC = { h: hC, NX: 2, VP: hC ** 3 / 8, dt: DT_A2 }, LC = new GridLayout({ nx: 2, ny: 3, nz: 2, dx: hC })   // GridLayout needs ≥ 2 per axis: row k = 1 stays empty
+    const SUB = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]], S2 = Math.SQRT1_2
+    const pts = [
+      ...SUB.map(([x, z]) => ({ x, y: 0.25, z, v: [3.25, 0.1, 0] })),                                     // (column) row 0
+      ...[1.25, 1.75].flatMap(y => SUB.map(([x, z]) => ({ x, y, z, v: [2, 0.2, 0.5] }))),                 // (column) row 1
+      ...SUB.map(([x, z]) => ({ x: x + 1, y: 0.25, z, v: [3.25 * S2, 0.1, 3.25 * S2] })),                  // (sheet) row 0
+    ]
+    const pc = makeParticles(pts.length)
+    pc.mu = new Float64Array(pts.length).fill(W20.mu)
+    pts.forEach((s, q) => {
+      pc.pos.set([s.x * hC, s.y * hC, s.z * hC], 3 * q); pc.vel.set(s.v, 3 * q); pc.mass[q] = W20.rho * GC.VP
+      for (let a = 0; a < 3; a++) pc.c[a].set([0.5, -0.5, 0.25], 3 * q)
+    })
+    const preC = snap(pc), oc = oracleOf(preC, () => W20.mu, GC)
+    const simC = new FlipRef(LC, opts({ wallShear: SHEAR_ON }))
+    simC.applyWallShear(pc, GC.dt)
+    const lgC = simC.wallShearLog.at(-1), fld = new Map(simC.wallShearField.map(e => [e.i + GC.NX * e.k, e]))
+    const V1 = words(pc.vel), V01 = words(preC.vel)
+    let worstC = 0, changed = 0
+    for (let q = 0; q < pc.n; q++) {
+      for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) if (words(pc.c[a])[3 * q + b] !== words(preC.c[a])[3 * q + b]) changed++
+      if (Math.floor(preC.pos[3 * q + 1] / hC) !== 0) { for (let a = 0; a < 3; a++) if (V1[3 * q + a] !== V01[3 * q + a]) changed++; continue }
+      if (V1[3 * q + 1] !== V01[3 * q + 1]) changed++
+      const e = oc.cells.get(Math.floor(preC.pos[3 * q] / hC) + GC.NX * Math.floor(preC.pos[3 * q + 2] / hC))
+      const ex = Math.abs((pc.vel[3 * q] - preC.vel[3 * q]) - e.dvx) / e.U, ez = Math.abs((pc.vel[3 * q + 2] - preC.vel[3 * q + 2]) - e.dvz) / e.U
+      worstC = Math.max(worstC, Number.isFinite(ex) ? ex : Infinity, Number.isFinite(ez) ? ez : Infinity)
+    }
+    const bookC = Math.hypot(lgC.impX - oc.oBx, lgC.impZ - oc.oBz) / Math.hypot(oc.oBx, oc.oBz)
+    const col = oc.cells.get(0), sheet = oc.cells.get(1), Rsheet = 4 * GC.VP / (hC * hC)
+    const built = col?.hc === hC && col.n === 4 && col.n1 === 8 && sheet?.hc === Rsheet && sheet.n === 4 && sheet.n1 === 0
+    const f = k => { const e = fld.get(k); return e ? `h_c ${e.hc} m, n₁ ${e.n1}` : 'not acted on' }
+    check(built && worstC <= 1e-9 && changed === 0 && bookC <= 1e-9 && lgC.cells === 2, 'W1aK.col', `the depth from rows 0–1 (fixed positions, dx 5 cm, 3.25 m/s): the oracle's R — column cell ${col?.hc} m (n₀ ${col?.n}, n₁ ${col?.n1}; dx required), sheet cell ${sheet?.hc} m (n₀ ${sheet?.n}, n₁ ${sheet?.n1}; 4·V_p/dx² = ${Rsheet} required); the stage's field: column ${f(0)}, sheet ${f(1)}; (1) worst |Δv − Δv_c|/|U_c| ${e2(worstC)} (≤ 1e-9); (2)(3) rows ≥ 1, v_y and c: words changed ${changed} (0); (4) booked (${e2(lgC.impX)}, ${e2(lgC.impZ)}) vs Σ M_c·Δv_c (${e2(oc.oBx)}, ${e2(oc.oBz)}) N·s, relative ${e2(bookC)} (≤ 1e-9); cells acted on ${lgC.cells} (2)`)
   }
 }
 

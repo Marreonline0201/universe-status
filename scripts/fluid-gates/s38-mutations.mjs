@@ -55,6 +55,11 @@
 // max() form (above). The guard's find string gained the drift clause, and the two guard mutants keep it (they remove
 // only the viscous clauses). "stage runs when the option is absent" names W0a's same-tree labels (s38-ref W0a,
 // redesigned 2026-09-30: the 7b248dc4 pin had made the whole W0a label unusable after any solver change).
+// ADDED 2026-09-30, CPU-F2 (prereg R-F2; pre-registered 2026-09-30 before its first run): the stage's depth is now
+// h_c = min(dx, (n₀ + n₁)·V_p/dx²), so the h_c line (HC) is the new one; "h_c := dx" and "ρ_ref instead of ρ_c" edit it
+// as before, and "depth from row 0 only" restores the pre-revision rule (named W1aK: its W1aK.col cell must miss by
+// ≫ 1e-9). "floor row taken as rows 0–1 (binning)" still moves the floor-row test (onFloorRow) itself, so row 1 is then
+// binned as floor row (M_c, U_c and Δv) instead of counted as depth; "Δv applied to rows 0–1" is unchanged.
 //
 //   node scripts/fluid-gates/s38-mutations.mjs               (exit 0 = control passed every check AND every mutant caught)
 //   node scripts/fluid-gates/s38-mutations.mjs --check       (only verify the find strings against the working tree)
@@ -89,7 +94,7 @@ const DV = 'dvx[c] = -Ux * a / (1 + a); dvz[c] = -Uz * a / (1 + a)'
 const AC = 'const a = dt * tau * h * h / (M[c] * U)'
 const APPLY = 'p.vel[3 * q] += dvx[c]; p.vel[3 * q + 2] += dvz[c]'
 const VP = 'vp = h ** 3 / this.ppc, nx = L.nx, nz = L.nz, NC = nx * nz'
-const HC = 'hc = Math.min(h, Vc / (h * h)), rho = M[c] / Vc'
+const HC = 'hc = Math.min(h, (Nc[c] + N1[c]) * vp / (h * h)), rho = M[c] / Vc'
 const ROW = 'const onFloorRow = (q: number) => Math.floor(p.pos[3 * q + 1] / h) === 0'
 const APPLY_ROW = '      if (!onFloorRow(q)) continue\n      const c = cellOf(q)\n'
 const UC = 'const Ux = Px[c] / M[c], Uz = Pz[c] / M[c], U = Math.hypot(Ux, Uz)'
@@ -128,7 +133,7 @@ const M = [
   ['3-D |U| (v_y counted)', BIN, sub(sub(sub(BIN, 'MU = new Float64Array(NC)', 'MU = new Float64Array(NC), Py = new Float64Array(NC)'),
     'Pz[c] += m * p.vel[3 * q + 2];', 'Pz[c] += m * p.vel[3 * q + 2]; Py[c] += m * p.vel[3 * q + 1];'), 'U = Math.hypot(Ux, Uz)', 'U = Math.hypot(Ux, Py[c] / M[c], Uz)'), ['W1aK']],
   ['v_p *= f per particle', APPLY, '{ const ux = Px[c] / M[c], uz = Pz[c] / M[c], u2 = ux * ux + uz * uz, fm1 = u2 > 0 ? (dvx[c] * ux + dvz[c] * uz) / u2 : 0; p.vel[3 * q] *= 1 + fm1; p.vel[3 * q + 2] *= 1 + fm1 }', ['W1aK']],
-  ['ρ_ref instead of ρ_c', HC, 'hc = Math.min(h, Vc / (h * h)), rho = this.density', ['W1aK']],
+  ['ρ_ref instead of ρ_c', HC, 'hc = Math.min(h, (Nc[c] + N1[c]) * vp / (h * h)), rho = this.density', ['W1aK']],
   ['per-cell μ ignored (constant ν)', NUC, 'const muC = MU[c] / M[c], nuC = this.viscosityDefault / this.density', ['W1aK']],
   ['z-component ignored', UC, 'const Ux = Px[c] / M[c], Uz = 0, U = Math.abs(Ux)', ['W1c.z', 'W1aK']],
   ['b = 5.75 used with ln', NEWTON_L, 'const L = KEULEGAN_AS - KEULEGAN_B + 5.75 * Math.log(h * us / nu), g = us * L - U, dg = L + 5.75', ['W1b']],
@@ -146,6 +151,8 @@ const M = [
   ['default μ read as viscosityThreshold (a ν)', MU_FALLBACK, 'muq = p.mu ? p.mu[q] : this.viscosityThreshold', ['W1aK.default']],
   ['default μ the literal 1.001596e-3', MU_FALLBACK, 'muq = p.mu ? p.mu[q] : 1.001596e-3', ['W1aK.default']],
   ['max() in place of the Re_h rule, literally (the stage\'s Newton from U/25; refused below Re_h ≈ 2.77)', BODY, sub(sub(BODY, LAM, ''), TURB, MAXRET), ['W1b.scan']],
+  // CPU-F2 (R-F2): today's rule until 2026-09-30 — the depth from row 0 alone
+  ['depth from row 0 only', HC, 'hc = Math.min(h, Vc / (h * h)), rho = M[c] / Vc', ['W1aK']],
 ]
 // none since 2026-09-30: the literal max() form is refused below Re_h ≈ 2.77 and runs in M (header)
 const EQUIV = []

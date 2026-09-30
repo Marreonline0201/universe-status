@@ -101,12 +101,21 @@
 //         off): stage set vs never set, 20 frames — 0 differing words, an empty log, budgetState immiscible true and
 //         wallShear false. Sensitivity control: the same scene with the drift configured but off — the stage must act
 //         (words differ, cells > 0, budgetState wallShear true).
+//  CPU-F2 (prereg R-F2, its own commit; pre-registered 2026-09-30 before its first run): the depth the law sees is
+//         h_c = R = min(dx, (n₀ + n₁)·V_p/dx²), n₁ the particles of row 1 over the same clamped floor cell, in the
+//         kernel (wallShearScatter counts row 1 in WS_COUNT1; wallShearCell reads it) and in W1a-K's reference
+//         flipRef.applyWallShear alike — the two land together. No check or bound changes; expected: every s38-gpu
+//         verdict unchanged (W1a/W1c use the Darcy law, independent of h_c; A2's reported slope moves ≈ 4e-4); W1a-K's
+//         printed laminar count on its set 26 → 25 (CPU, FR/fixround/Y/m3_miss.out). Positive control: 'depth from row
+//         0 only' (the rule before R-F2) must be CAUGHT by W1a-K — 23 of its acted cells hold row-1 particles over
+//         n₀ < 8; derived CPU miss 2.4879e-4 at cell 22, so the GPU misses by ≥ 2.48e-4, 828× the 3e-7 bound.
 // Code-level positive controls: gpu-mutations.mjs --gate=wallShear (the Δv sign, τ×2, the floor row binned as
 // y < dx/2, the momentum words at 2^24, the stage per frame instead of per substep, Δv_z dropped in wallShearApply
 // (caught by W1a's z arm and W1a-K); added 2026-09-30 by the fix round: the stage always binds its own table (W1a-K on
 // the solver's table only), cellOut written only for acted cells (W1a-K.skip), unknown law maps to constantTest and
 // muDefault accepted on a solver sim (W0c), stage log not reset by resetDiagnostics (W1g.reset), drift guard removed
-// (W0b's drift arm)) and --gate=perf1 (D3: one extra stage dispatch); they run against the clean gate tree only.
+// (W0b's drift arm), depth from row 0 only (W1a-K; CPU-F2)) and --gate=perf1 (D3: one extra stage dispatch); they run
+// against the clean gate tree only.
 import { windowArgs } from '../lib/window.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

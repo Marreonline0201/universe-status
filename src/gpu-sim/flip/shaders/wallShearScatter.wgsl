@@ -4,6 +4,8 @@
 // ViscositySolver's muTable, or the simulator's own), as fixed-point i32 atomics like faceScatter.wgsl: mass and μ·m̂
 // at WP.massScale, momentum at WP.momScale (a momentum word at 2^24 would span only ±128 m̂·m/s — eight mercury
 // particles overflow it above 9.5 m/s), the two-word form with PRECISE_P2G. m̂ = mass/(ρ_ref·dx³) (vel.w).
+// A particle of row 1, ⌊y/dx⌋ = 1, adds only 1 to its cell's row-1 count (WS_COUNT1, the same clamped cell): the depth
+// R = min(dx, (n₀ + n₁)·V_p/dx²) reads it; every other sum stays row 0's (prereg R-F2, review CPU-F2, 2026-09-30).
 
 @group(0) @binding(2) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> vel: array<vec4<f32>>;
@@ -16,8 +18,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let q = gid.x;
   if (q >= P.numParticles) { return; }
   let c = vec3<i32>(floor(pos[q].xyz / P.dx));
-  if (c.y != 0) { return; }
   let base = WS_WORDS * u32(clamp(c.x, 0, P.n.x - 1) + P.n.x * clamp(c.z, 0, P.n.z - 1));
+  if (c.y == 1) { atomicAdd(&acc[base + WS_COUNT1], 1); return; }
+  if (c.y != 0) { return; }
   let v = vel[q];
   let id = aux[q].x;
   var mu = WP.muDefault;

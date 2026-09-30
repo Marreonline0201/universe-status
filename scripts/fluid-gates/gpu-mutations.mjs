@@ -238,6 +238,10 @@ SETS.wallShear = [
   ['src/gpu-sim/flip/FlipGpuSimulator.ts', '    this.resetWallShearStats()\n', '', 'stage log not reset by resetDiagnostics'],
   // INT-7 — the stage runs while the immiscible drift runs: caught by W0b's drift arm (0 differing words, an empty log)
   ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) && !this.immActive }', 'get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) }', 'drift guard removed'],
+  // CPU-F2 (prereg R-F2) — the depth read from row 0 alone, the rule before R-F2 (n1 kept in use): caught by W1a-K,
+  // whose reference follows R-F2 (23 acted cells hold row-1 particles over n0 < 8; derived CPU miss 2.49e-4 at cell 22,
+  // ≥ 2.48e-4 on the GPU = 828× the 3e-7 bound; FR/fixround/Y/m3_miss.out)
+  [`${SH}/wallShearCell.wgsl`, '        let hc = min(f32(n + n1) * P.dx * P.invPpc, P.dx);', '        let hc = min(f32(n + 0 * n1) * P.dx * P.invPpc, P.dx);', 'depth from row 0 only'],
 ]
 // OPT-2a (2026-09-30; spec §4.6): the composite's in-scatter and deep-water terms. Each find string is one line of the
 // shader, unique in the file; every edit keeps each binding statically used. Sizes at the centre rays (spec table):
