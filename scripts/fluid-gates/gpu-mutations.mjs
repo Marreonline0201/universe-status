@@ -3,6 +3,10 @@
 // the clean gate tree (.gate-tree, served by scripts/gate-server.mjs on port 5175 with HMR off — a fresh page load
 // compiles the edited shader), runs that stage's gate, and restores the file with git. The tree's provenance stamp is
 // rewritten to MUTATED while a mutant is live, so no mutated run can pass as a clean result.
+// Verdicts: CAUGHT = at least one physics check failed on a CLEAN run (both hygiene checks printed and passing);
+// SURVIVED = the gate printed PASS; INVALID = anything else — a crash before the verdict, or a WebGPU error (a binding
+// left unused changes the auto layout): the mutated kernel never ran as intended, so it tests nothing and is never
+// counted as a catch (2026-09-30: s36's "mass-less unknowns written back" had been counted caught from a crash).
 //
 //   node scripts/gate-server.mjs HEAD   (in another shell)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31a     (S3.1a transfer kernels, gate s31a-gpu.mjs)
@@ -111,7 +115,7 @@ SETS.s36 = [
   [`${SH}/viscosity.wgsl`, 'let visc = P.dt * sumStress(a, c);', 'let visc = sumStress(a, c);', 'viscous operator without Δt'],
   // (a 'faces with V ≤ ½ not unknowns' mutant is EQUIVALENT: the sample rule below re-marks them — measured, it survived)
   [`${SH}/viscosity.wgsl`, 'for (var a = 0u; a < 3u; a++) { var e = vec3<i32>(0); e[a] = 1; markUnknown(a, c + e); markUnknown(a, c); }', '', 'cell samples add no auxiliary unknowns'],
-  [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
+  [`${SH}/viscosity.wgsl`, 'if (kindR[s] == 1u && volFaceR[s] > 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'if (kindR[s] == 1u && volFaceR[s] >= 0.0) { uOut[s] = xR[s]; validOut[s] = 1u; }', 'mass-less unknowns written back'],
 ]
 // S3.5-i: each targets a kernel that K30–K34 cover; every mutant keeps its kernel's bindings statically used (a removed
 // binding changes the auto layout and the run crashes — a crash is not a caught defect)
@@ -170,22 +174,32 @@ for (const [f, find, , why] of M) {
   if (n !== 1) { console.error(`ABORT (${why}): find string occurs ${n}× in ${f}`); process.exit(2) }
 }
 
+// the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
+const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
   const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36', 's35i', 's37'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
-  const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('✗')).map(l => l.slice(2, 40).trim())
+  const out = r.stdout || ''
+  const checks = out.split('\n').filter(l => l.startsWith('✓') || l.startsWith('✗'))
+  const hygiene = checks.filter(l => HYGIENE.test(l))
+  const failed = checks.filter(l => l.startsWith('✗') && !HYGIENE.test(l)).map(l => l.slice(2, 40).trim())
   // judged by the printed verdict, not the exit code: Node on Windows can abort with a libuv assertion while
   // closing handles AFTER the verdict is printed, which would turn a pass into a non-zero exit
-  const passed = /: PASS \(\d+\/\d+\)/.test(r.stdout || '')
-  return { code: r.status, passed, failed, err: (r.stderr || '').split('\n').find(l => /Error/.test(l)) ?? '' }
+  const passed = /: PASS \(\d+\/\d+\)/.test(out)
+  const hygieneOk = hygiene.length >= 2 && hygiene.every(l => l.startsWith('✓'))
+  const verdict = passed ? 'SURVIVED' : failed.length && hygieneOk ? 'CAUGHT' : 'INVALID'
+  const err = (r.stderr || '').split('\n').find(l => /Error/.test(l)) ?? ''
+  const why = verdict !== 'INVALID' ? '' : hygiene.filter(l => l.startsWith('✗')).map(l => l.slice(2, 110)).join(' | ')
+    || (err ? `crash: ${err.slice(0, 100)}` : `no verdict (exit ${r.status})`)
+  return { code: r.status, passed, verdict, failed, why }
 }
 
 const control = runGate()
 console.log(`CONTROL (clean tree, ${GATE}): ${control.passed ? 'PASS' : 'FAIL'} (exit ${control.code})${control.failed.length ? `, FAIL ${control.failed.join(' | ')}` : ''}`)
-let caught = 0
+let caught = 0, invalid = 0
 if (control.passed) {
   for (const [f, find, repl, why] of M) {
     const path = join(TREE, f)
@@ -194,9 +208,9 @@ if (control.passed) {
       writeFileSync(stampFile, stamp.replace(' clean', ' MUTATED'))
       writeFileSync(path, orig.replace(/\r\n/g, '\n').replace(find, repl))
       const r = runGate()
-      const ok = !r.passed
-      if (ok) caught++
-      console.log(`${ok ? 'CAUGHT  ' : 'SURVIVED'} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || (r.err ? `(crash: ${r.err.slice(0, 80)})` : '-')}`)
+      if (r.verdict === 'CAUGHT') caught++
+      if (r.verdict === 'INVALID') invalid++
+      console.log(`${r.verdict.padEnd(8)} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || '-'}${r.why ? ` — ${r.why}` : ''}`)
     } finally {
       git('checkout', '--', f)
       writeFileSync(stampFile, stamp)
@@ -204,5 +218,5 @@ if (control.passed) {
   }
 }
 const clean = git('status', '--porcelain', '--', 'src') === ''
-console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught; control ${control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
+console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (a crash or WebGPU error is not a catch: rewrite the mutant so its kernel keeps every binding in use)` : ''}; control ${control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
 process.exit(control.passed && caught === M.length && clean ? 0 : 1)

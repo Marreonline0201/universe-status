@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // s30-mutations.mjs — does the S3.0 reference gate catch real defects? Copies src/sim-ref to a temp dir, applies ONE
 // plausible bug per run, and runs s30-ref.mjs against the copy (FLUID_REF_SRC). Every mutant must make the gate fail;
-// the unmutated copy (control) must pass.
+// the unmutated copy (control) must pass. CAUGHT = at least one check printed FAIL; SURVIVED = the gate's PASS verdict;
+// INVALID = neither (a crash or timeout before any check failed: it tests nothing and is never counted as a catch).
 //
 //   node scripts/fluid-gates/s30-mutations.mjs       (exit 0 = control passed AND every mutant caught)
 import { spawnSync } from 'node:child_process'
@@ -55,20 +56,21 @@ async function runWith(label, file, edits) {
     cwd: REPO, env: { ...process.env, FLUID_REF_SRC: dir.replaceAll('\\', '/') }, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 300_000,
   })
   const failed = (r.stdout || '').split('\n').filter(l => l.startsWith('FAIL')).map(l => l.split(' ')[1])
-  return { code: r.status, failed, err: (r.stderr || '').split('\n').find(l => /Error/.test(l)) ?? '' }
+  const passed = /reference gate: PASS/.test(r.stdout || '')
+  return { code: r.status, passed, failed, verdict: failed.length ? 'CAUGHT' : passed ? 'SURVIVED' : 'INVALID', err: (r.stderr || '').split('\n').find(l => /Error/.test(l)) ?? '' }
 }
 
 const control = await runWith('control')
 console.log(`CONTROL (unmutated copy): exit ${control.code}${control.failed.length ? `, FAIL ${control.failed.join(',')}` : ''}`)
-let caught = 0
-if (control.code === 0) {
+let caught = 0, invalid = 0
+if (control.passed) {
   for (const [file, edits, why] of M) {
     const r = await runWith(why, file, edits)
-    const ok = r.code !== 0
-    if (ok) caught++
-    console.log(`${ok ? 'CAUGHT  ' : 'SURVIVED'} ${why.padEnd(48)} exit ${r.code}  failed: ${r.failed.join(',') || (r.err ? `(crash: ${r.err.slice(0, 60)})` : '-')}`)
+    if (r.verdict === 'CAUGHT') caught++
+    if (r.verdict === 'INVALID') invalid++
+    console.log(`${r.verdict.padEnd(8)} ${why.padEnd(48)} exit ${r.code}  failed: ${r.failed.join(',') || (r.err ? `(crash: ${r.err.slice(0, 60)})` : '-')}`)
   }
 }
 await rm(tmpRoot, { recursive: true, force: true })
-console.log(`\nmutations: ${caught}/${M.length} caught; control ${control.code === 0 ? 'passed' : 'FAILED (results invalid)'}`)
-process.exit(control.code === 0 && caught === M.length ? 0 : 1)
+console.log(`\nmutations: ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (no failed check: a crash is not a catch)` : ''}; control ${control.passed ? 'passed' : 'FAILED (results invalid)'}`)
+process.exit(control.passed && caught === M.length ? 0 : 1)

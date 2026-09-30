@@ -6,7 +6,8 @@
 //
 // For each (file, find, replace) triple it copies src/composition AND src/fluid-engine/{units,spawn}.ts into a temp dir
 // with the src/ layout preserved (liquidGate imports ../fluid-engine/*), applies ONE edit, and runs materials.mjs with
-// FLUID_GATE_SRC pointing at the copy. A mutation is "caught" when the gate exits non-zero. An unmutated CONTROL copy is
+// FLUID_GATE_SRC pointing at the copy. A mutation is CAUGHT when the gate's JSON report lists a FAIL; no JSON (a crash)
+// is INVALID, never a catch — a crash tests no check. An unmutated CONTROL copy is
 // run first and must exit 0 — otherwise every "catch" could be a broken harness. A find string that does not occur
 // exactly once in the pristine file aborts the run (a silently skipped mutation would count as caught).
 
@@ -75,22 +76,22 @@ async function runWith(label, file, find, replace) {
   const r = spawnSync(process.execPath, [join(REPO, 'scripts/fluid-gates/materials.mjs'), '--json'], {
     cwd: REPO, env: { ...process.env, FLUID_GATE_SRC: join(dir, 'src/composition').replaceAll('\\', '/') }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
   })
-  let failed = []
-  try { failed = JSON.parse(r.stdout).results.filter(x => x.status === 'FAIL').map(x => x.id) } catch { failed = [`(no JSON: ${(r.stderr || '').split('\n')[0].slice(0, 100)})`] }
-  return { code: r.status, failed }
+  let failed = [], ran = false
+  try { failed = JSON.parse(r.stdout).results.filter(x => x.status === 'FAIL').map(x => x.id); ran = true } catch { failed = [`(no JSON: ${(r.stderr || '').split('\n')[0].slice(0, 100)})`] }
+  return { code: r.status, failed, passed: ran && failed.length === 0, verdict: !ran ? 'INVALID' : failed.length ? 'CAUGHT' : 'SURVIVED' }
 }
 
 const control = await runWith('control')
 console.log(`CONTROL (unmutated copy): exit ${control.code}${control.failed.length ? `, FAIL ${control.failed.join(',')}` : ''}`)
-let caught = 0
-if (control.code === 0) {
+let caught = 0, invalid = 0
+if (control.passed) {
   for (const [file, find, replace, why] of M) {
     const r = await runWith(why, file, find, replace)
-    const ok = r.code !== 0
-    if (ok) caught++
-    console.log(`${ok ? 'CAUGHT  ' : 'SURVIVED'} ${why.padEnd(58)} exit ${r.code}  failed: ${r.failed.join(',') || '-'}`)
+    if (r.verdict === 'CAUGHT') caught++
+    if (r.verdict === 'INVALID') invalid++
+    console.log(`${r.verdict.padEnd(8)} ${why.padEnd(58)} exit ${r.code}  failed: ${r.failed.join(',') || '-'}`)
   }
 }
 await rm(tmpRoot, { recursive: true, force: true })
-console.log(`\nmutations: ${caught}/${M.length} caught; control ${control.code === 0 ? 'passed' : 'FAILED (results invalid)'}`)
-process.exit(control.code === 0 && caught === M.length ? 0 : 1)
+console.log(`\nmutations: ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (no JSON report: a crash is not a catch)` : ''}; control ${control.passed ? 'passed' : 'FAILED (results invalid)'}`)
+process.exit(control.passed && caught === M.length ? 0 : 1)
