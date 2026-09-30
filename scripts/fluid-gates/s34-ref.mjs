@@ -79,22 +79,64 @@
 //     above never exercised it; the first fix, every occupied cell LIQUID, then broke D1 — flipRef.classifyLevelSet): an 8×36-cell (2.0 m) column collapsing in a 16×40×8 tank, hitting the far wall at
 //     ~8 m/s and running up to the lid; |φ-volume/(N·V_p) − 1| ≤ 2 % every second for 6 s (S3.2 G2's tolerance).
 // G2  (--g2, slow on the CPU) the 30 s double dam break again with the ghost-fluid surface: ≤ 2 % at 30 s.
+// --wall-shear=keulegan1938, --water-temp=<°C> — the floor's wall shear (bed friction) in these scenes: FRICTION-spec
+//     revision 2 (vault fluid/realism-2026-09/FRICTION-spec.md) §4 W2a, W2b's one rule and W3, PRE-REGISTERED
+//     2026-09-30 before this file's first stage-on run. Both absent, the output is byte-identical to 7b248dc4's (opts()
+//     moved to lib/s34solver.mjs unchanged). Unknown arguments are refused (a misspelt switch would print a stage-off
+//     PASS). --wall-shear adds FlipRef options.wallShear = { wall: 'y-', law } to every solver built here, through
+//     opts(). --water-temp sets the COLUMN scenes' water (A1, A1c, A2 front and impulse, A2g: s34scenes column() — each
+//     particle's mass ρ·V_p, the solver's density and its viscosityDefault, the stage's μ, as the particles carry none)
+//     to ρ = waterDensity(T), μ = LIQUIDS.water.viscosity(T) (src/composition/materialData.ts: the NIST WebBook isobar at
+//     0.101325 MPa); S34a, G1c, D1, A2g-mech and V1 keep the solver default, the NIST 20 °C row (998.2072 kg/m³,
+//     1.001596e-3 Pa·s) — no experiment sets their water. With the wall shear on:
+//     (i) every criterion above is unchanged except: the A1 and A2 late-slope bands (A1 [1.19, 1.74] on [1.43, 3.33],
+//         A2 [1.26, 1.74] on [1, 3.3]) are REPORTED, not gated (spec W2b: the stage moves the late slope — the instant
+//         A2 1.720 → 1.669 in the spec's scratch — and "the remaining excess over the references cannot be split
+//         between missing friction and" the thin-film artefact); A2g keeps its dZ/dT band on [1, 1.5767] (spec W2a); D2
+//         is REPORTED (spec W3 D1: "D2 is reported"; ν_num is the scheme's, 1.038e-3 → 1.043e-3 in the scratch);
+//     (ii) non-vacuity joins every check whose runs step the solver (G1c, D1, A1, A1c, A2 front and impulse, A2g-mech,
+//         A2g, V1, G2): the stage's own log over those runs holds cell-applications > 0 and Σ|booked| = Σ over steps of
+//         |impX| + |impZ| > 0 (spec §4 "Non-vacuity, in every stage-on gate"; s38-ref's definition). S34a never steps:
+//         the stage cannot act there, so its lines under the switch are vacuous, not stage-on evidence;
+//     (iii) A2g's in-run control (must FAIL): its stage-off twin — the same run, water and gate with the option absent,
+//         the "option ignored" defect — must fail the non-vacuity assert (0 cell-applications); its A2g numbers are
+//         printed beside, the stage's effect on that water. A2g bounds the friction from above only (spec W2a: the
+//         null, a sign flip and τ×2 pass it; τ×10 fails it, s = +0.09 in the spec's scratch — not run here).
+//     W2a = `--wall-shear=keulegan1938 --water-temp=25 --only=A2g` (Lobovský's water, "preheated to 25 °C", spec §2.1),
+//     its 20 °C preview the same without --water-temp; W3 D1 and the other sections = `--wall-shear=keulegan1938`.
+//     The reported W2b–W2e studies and W3's pool energy check: s38-dambreak.mjs (no A2g criterion there).
 import { loadTsModules } from './lib/loadTs.mjs'
 import { MM1, MM1H, MM2, MM2H, LOBOVSKY_I600, ETSIN600, ETSIN600_FRONT, fitOmega, nuNum, columnScore, impulse, selfConvergence } from './lib/s34metrics.mjs'
 import { s34Scenes, mulberry32, G, DX, RHO } from './lib/s34scenes.mjs'
+import { s34Opts, refuseUnknownArgs, wallShearArg, waterTempArg, waterAt, waterOpts, waterText, stageActed, actedText } from './lib/s34solver.mjs'
 
+// the friction switches (header: --wall-shear, --water-temp); both absent → this file's solver and scenes, unchanged
+refuseUnknownArgs(process.argv, ['--only=', '--g2', '--wall-shear=', '--water-temp='])
+const STAGE = wallShearArg(process.argv), WATER_T = waterTempArg(process.argv)
 const SRC = process.env.FLUID_REF_SRC ?? 'src/sim-ref'
-const { gridLayout, flipRef } = await loadTsModules({ gridLayout: `${SRC}/gridLayout.ts`, flipRef: `${SRC}/flipRef.ts` })
+const { gridLayout, flipRef, materialData } = await loadTsModules({ gridLayout: `${SRC}/gridLayout.ts`, flipRef: `${SRC}/flipRef.ts`, ...(WATER_T !== null ? { materialData: `${SRC}/../composition/materialData.ts` } : {}) })
 const { GridLayout, FaceType } = gridLayout
 const { FlipRef, makeParticles, kineticEnergy, CellLabel } = flipRef
+const WATER = WATER_T !== null ? waterAt(materialData, WATER_T) : null
 
-const gvec = [0, -G, 0]
 let fails = 0
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) fails++ }
 const info = msg => console.log(`INFO ${msg}`)
-const opts = (extra = {}) => ({ gravity: gvec, density: RHO, projection: true, densityProjection: true, freeSurface: 'ghost', pressureTolerance: 1e-6, psiTolerance: 1e-5, ...extra })
-// the scene builders (block, frontSlab, gateKin, column) live in lib/s34scenes.mjs, shared with the friction gates
-const { block, frontSlab, gateKin, column } = s34Scenes({ FlipRef, GridLayout, FaceType, makeParticles }, opts)
+// s34-ref's solver (lib/s34solver.mjs, moved there unchanged), with the floor's wall shear under --wall-shear
+const opts = (extra = {}) => s34Opts({ ...(STAGE ? { wallShear: { wall: 'y-', law: STAGE } } : {}), ...extra })
+// the scene builders (block, frontSlab, gateKin, column) live in lib/s34scenes.mjs, shared with the friction gates;
+// --water-temp gives the column scenes their water (particle mass, the solver's density and μ — header)
+const scenes = s34Scenes({ FlipRef, GridLayout, FaceType, makeParticles }, opts)
+const { block, frontSlab, gateKin } = scenes
+const column = WATER ? a => scenes.column({ ...a, rho: WATER.rho, extra: { ...waterOpts(WATER), ...(a.extra ?? {}) } }) : scenes.column
+// stage-on non-vacuity (header (ii)): null with the stage off, so every stage-off condition and message is unchanged
+const acted = (...sims) => (STAGE ? stageActed(sims) : null)
+const nvOk = a => a === null || a.ok
+const nvTxt = a => (a === null ? '' : `; ${actedText(a)}`)
+if (STAGE || WATER) {
+  const probe = new FlipRef(new GridLayout({ nx: 2, ny: 2, nz: 2, dx: DX }), opts())
+  info(`friction switches (header): wall shear ${STAGE ? `${STAGE} (FlipRef options.wallShear, the floor 'y-')` : 'off'}; the column scenes' ${waterText(WATER, probe)}; S34a, G1c, D1, A2g-mech, V1: ${waterText(null, probe)}`)
+}
 const t0 = Date.now()
 const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
 const SECTIONS = ['S34a', 'G1c', 'D1', 'A1', 'A2gmech', 'A2g', 'V1']
@@ -103,6 +145,7 @@ for (const s of ONLY ?? []) if (!SECTIONS.includes(s)) throw new Error(`--only: 
 const run = name => !ONLY || ONLY.includes(name)
 
 // S34a
+if (run('S34a') && STAGE) info('S34a never steps the solver (a static fill, classifyLevelSet only): the wall shear cannot act there — the S34a lines below are vacuous under the switch, not stage-on evidence (header (ii))')
 if (run('S34a')) for (const [ppc, mode] of [[8, 'lattice'], [4, 'lattice'], [4, 'random']]) {
   const H = 10
   const L = new GridLayout({ nx: 16, ny: 20, nz: 16, dx: DX })
@@ -138,8 +181,8 @@ if (run('G1c')) {
   for (let k = 1; k < 15; k++) for (let i = 1; i < 15; i++) sum1 += sim.pressure[L.idx(i, 1, k)]
   const pCell1 = sum1 / 196, pFloor = pCell0 + (pCell0 - pCell1) / 2
   const hTrue = p.n * (DX ** 3 / 8) / (16 * DX * 16 * DX)
-  const off = pFloor - RHO * G * hTrue
-  check(Math.abs(off) <= RHO * G * 0.2 * DX, `G1c ghost fluid after 3 s: floor p ${pFloor.toFixed(0)} Pa vs ρg·h_true ${(RHO * G * hTrue).toFixed(0)} Pa: offset ${off.toFixed(1)} Pa (≤ ${(RHO * G * 0.2 * DX).toFixed(0)} Pa = ρg·0.2dx; the voxel surface gave +277)`)
+  const off = pFloor - RHO * G * hTrue, g1cActed = acted(sim)
+  check(Math.abs(off) <= RHO * G * 0.2 * DX && nvOk(g1cActed), `G1c ghost fluid after 3 s: floor p ${pFloor.toFixed(0)} Pa vs ρg·h_true ${(RHO * G * hTrue).toFixed(0)} Pa: offset ${off.toFixed(1)} Pa (≤ ${(RHO * G * 0.2 * DX).toFixed(0)} Pa = ρg·0.2dx; the voxel surface gave +277)${nvTxt(g1cActed)}`)
 }
 
 // D1 + D2
@@ -163,34 +206,38 @@ function standingWave(cellsPerH) {
   const ts = [0], es = [kineticEnergy(p)]
   for (let s = 1; s * dt <= T + 1e-9; s++) { sim.step(p, dt); ts.push(s * dt); es.push(kineticEnergy(p)) }
   const wFit = fitOmega(ts, es, omega), d2 = nuNum(ts, es, omega, k)
-  return { cellsPerH, particles: p.n, omega, wFit, err: Math.abs(wFit / omega - 1), nuNum: d2.nu, peaks: d2.peaks, E0: es[0], clamps: sim.diag.wallClamps + sim.diag.densityClamps, relabels: sim.diag.enclosedRelabels }
+  return { cellsPerH, particles: p.n, omega, wFit, err: Math.abs(wFit / omega - 1), nuNum: d2.nu, peaks: d2.peaks, E0: es[0], clamps: sim.diag.wallClamps + sim.diag.densityClamps, relabels: sim.diag.enclosedRelabels, acted: acted(sim) }
 }
 if (run('D1')) {
   const s28 = standingWave(28), s14 = standingWave(14)
-  check(s28.err <= 0.03 && s28.err < s14.err, `D1 standing wave: E_K period π/ω' vs π/ω (ω = ${s28.omega.toFixed(4)} rad/s, period ${(Math.PI / s28.omega).toFixed(4)} s): error ${(100 * s28.err).toFixed(2)} % at H/dx = 28 (≤ 3 %, ${s28.particles} particles), ${(100 * s14.err).toFixed(2)} % at H/dx = 14 (must be larger)`)
-  check(s28.nuNum <= 1.1e-4, `D2 numerical viscosity at H/dx = 28: ν_num ${s28.nuNum.toExponential(2)} m²/s from ${s28.peaks} E_K peaks (≤ 1.1e-4 = ν_glycerol/10; water ν = 1.0e-6); H/dx = 14: ${s14.nuNum.toExponential(2)}${s28.nuNum <= 1.1e-4 ? '' : ` — FINAL-PLAN consequence: glycerol-level viscosity is unresolvable at dx = ${(100 * DX).toFixed(2)} cm (validity HUD); the remedy is resolution, never tuning; S3.6 runs the viscous solve for ν_phys ≥ 0.01·ν_num = ${(0.01 * s28.nuNum).toExponential(2)} m²/s`}`)
+  check(s28.err <= 0.03 && s28.err < s14.err && nvOk(s28.acted) && nvOk(s14.acted), `D1 standing wave: E_K period π/ω' vs π/ω (ω = ${s28.omega.toFixed(4)} rad/s, period ${(Math.PI / s28.omega).toFixed(4)} s): error ${(100 * s28.err).toFixed(2)} % at H/dx = 28 (≤ 3 %, ${s28.particles} particles), ${(100 * s14.err).toFixed(2)} % at H/dx = 14 (must be larger)${STAGE ? `; H/dx = 28: ${actedText(s28.acted)}; H/dx = 14: ${actedText(s14.acted)}` : ''}`)
+  const d2ok = s28.nuNum <= 1.1e-4, d2msg = `D2 numerical viscosity at H/dx = 28: ν_num ${s28.nuNum.toExponential(2)} m²/s from ${s28.peaks} E_K peaks (≤ 1.1e-4 = ν_glycerol/10; water ν = 1.0e-6); H/dx = 14: ${s14.nuNum.toExponential(2)}${s28.nuNum <= 1.1e-4 ? '' : ` — FINAL-PLAN consequence: glycerol-level viscosity is unresolvable at dx = ${(100 * DX).toFixed(2)} cm (validity HUD); the remedy is resolution, never tuning; S3.6 runs the viscous solve for ν_phys ≥ 0.01·ν_num = ${(0.01 * s28.nuNum).toExponential(2)} m²/s`}`
+  if (STAGE) info(`${d2msg} [REPORTED with the wall shear on — header (i), spec W3 "D2 is reported"; by its criterion ν_num ${d2ok ? '≤' : '>'} 1.1e-4]`)
+  else check(d2ok, d2msg)
   info(`D1 push-backs (advection + density) ${s28.clamps} at H/dx = 28; unresolved-cell relabels ${s28.relabels} at H/dx = 28, ${s14.relabels} at 14 (0 expected: every occupied φ ≥ 0 cell of a gentle surface lies between φ < 0 liquid and empty space)`)
 }
 
 // A1 again + A2 (column collapses with the ghost-fluid surface)
 if (run('A1')) {
   const r1 = column({ aCells: 12, n2: 2, h: DX, nx: 128, tauEnd: 3.33 / Math.SQRT2 + 0.1 }), s1 = columnScore(r1, MM2, MM2H, [1.43, 3.33])
-  // time-origin revision (header): the no-shift RMS is reported; the shape after the best shift is gated
-  check(s1.bestRms <= 0.10 && Math.abs(s1.bestShift) <= 0.3 && s1.slope >= 1.19 && s1.slope <= 1.74 && s1.dH <= 0.05,
-    `A1 again (ghost fluid), n² = 2, a = 12 cells: after the best shift ΔT ${s1.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s1.bestRms).toFixed(2)} % over ${s1.points} points (≤ 10 %); no-shift RMS ${(100 * s1.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header]; dZ/dT ${s1.slope.toFixed(3)} (1.19–1.74; MM 1.319), max |ΔH| ${s1.dH.toFixed(3)} (≤ 0.05)`)
-  const aP = 8 * DX, conv = selfConvergence([8, 12, 16].map(c => column({ aCells: c, n2: 2, h: aP / c, nx: 2 * Math.ceil(2.75 * c), tauEnd: 3.33 / Math.SQRT2 + 0.1 })))
-  check(conv.e2 <= conv.e1, `A1c grid self-convergence, one column a = ${aP.toFixed(3)} m at 8/12/16 cells: RMS|Z12 − Z8| ${conv.e1.toFixed(4)}, RMS|Z16 − Z12| ${conv.e2.toFixed(4)} (must shrink)`)
+  // time-origin revision (header): the no-shift RMS is reported; the shape after the best shift is gated; with the wall
+  // shear on, the late-slope band is reported (header (i))
+  check(s1.bestRms <= 0.10 && Math.abs(s1.bestShift) <= 0.3 && (STAGE !== null || (s1.slope >= 1.19 && s1.slope <= 1.74)) && s1.dH <= 0.05 && nvOk(acted(r1.sim)),
+    `A1 again (ghost fluid), n² = 2, a = 12 cells: after the best shift ΔT ${s1.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s1.bestRms).toFixed(2)} % over ${s1.points} points (≤ 10 %); no-shift RMS ${(100 * s1.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header]; dZ/dT ${s1.slope.toFixed(3)} (${STAGE ? 'REPORTED with the wall shear on, header (i); the stage-off band ' : ''}1.19–1.74; MM 1.319), max |ΔH| ${s1.dH.toFixed(3)} (≤ 0.05)${nvTxt(acted(r1.sim))}`)
+  const aP = 8 * DX, a1c = [8, 12, 16].map(c => column({ aCells: c, n2: 2, h: aP / c, nx: 2 * Math.ceil(2.75 * c), tauEnd: 3.33 / Math.SQRT2 + 0.1 })), conv = selfConvergence(a1c)
+  const a1cActed = acted(...a1c.map(r => r.sim))
+  check(conv.e2 <= conv.e1 && nvOk(a1cActed), `A1c grid self-convergence, one column a = ${aP.toFixed(3)} m at 8/12/16 cells: RMS|Z12 − Z8| ${conv.e1.toFixed(4)}, RMS|Z16 − Z12| ${conv.e2.toFixed(4)} (must shrink)${nvTxt(a1cActed)}`)
   const p1 = columnScore({ ...r1, Z: r1.Zpct }, MM2, MM2H, [1.43, 3.33])
   info(`A1 residuals (T:%) ${s1.resid}; raw max(x) ahead of the bulk front by up to ${s1.rawAhead.toFixed(2)} a; operator sensitivity: the pre-S3.4 99.5th-percentile front gives RMS ${(100 * p1.rmsZ).toFixed(2)} % (best shift ${p1.bestShift.toFixed(2)})`)
   const r2 = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: 3.5 }), s2 = columnScore(r2, MM1, MM1H, [1, 3.3])
-  check(s2.bestRms <= 0.10 && Math.abs(s2.bestShift) <= 0.3 && s2.slope >= 0.9 * 1.40 && s2.slope <= 1.74 && s2.dH <= 0.05,
-    `A2 front, square column n² = 1, a = H = 0.6 m (${r2.particles} particles): vs MM n² = 1 after the best shift ΔT ${s2.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s2.bestRms).toFixed(2)} % over ${s2.points} points (≤ 10 %); no-shift RMS ${(100 * s2.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header; the no-shift test is A2g]; dZ/dT on T ∈ [1, 3.3] ${s2.slope.toFixed(3)} (1.26–1.74; MM 1.400; Lobovský 600 mm 1.34), max |ΔH| ${s2.dH.toFixed(3)} (≤ 0.05)`)
+  check(s2.bestRms <= 0.10 && Math.abs(s2.bestShift) <= 0.3 && (STAGE !== null || (s2.slope >= 0.9 * 1.40 && s2.slope <= 1.74)) && s2.dH <= 0.05 && nvOk(acted(r2.sim)),
+    `A2 front, square column n² = 1, a = H = 0.6 m (${r2.particles} particles): vs MM n² = 1 after the best shift ΔT ${s2.bestShift.toFixed(2)} (|ΔT| ≤ 0.3) RMS Z error ${(100 * s2.bestRms).toFixed(2)} % over ${s2.points} points (≤ 10 %); no-shift RMS ${(100 * s2.rmsZ).toFixed(2)} % [reported: MM's time origin is unverified — header; the no-shift test is A2g]; dZ/dT on T ∈ [1, 3.3] ${s2.slope.toFixed(3)} (${STAGE ? 'REPORTED with the wall shear on, header (i); the stage-off band ' : ''}1.26–1.74; MM 1.400; Lobovský 600 mm 1.34), max |ΔH| ${s2.dH.toFixed(3)} (≤ 0.05)${nvTxt(acted(r2.sim))}`)
   const p2 = columnScore({ ...r2, Z: r2.Zpct }, MM1, MM1H, [1, 3.3])
   info(`A2 residuals (T:%) ${s2.resid}; raw max(x) ahead of the bulk front by up to ${s2.rawAhead.toFixed(2)} a; operator sensitivity: 99.5th-percentile front RMS ${(100 * p2.rmsZ).toFixed(2)} % (best shift ${p2.bestShift.toFixed(2)})`)
   // impulse: Lobovský's tank (1610 mm → 32 cells of 5 cm)
   const ri = column({ aCells: 12, n2: 1, h: 0.05, nx: 32, tauEnd: 6 })
   const imp = impulse(ri.ts, ri.wallP), Imed = LOBOVSKY_I600
-  check(imp.I >= 0.5 * Imed && imp.I <= 2 * Imed, `A2 impulse, Lobovský tank (32 cells, wall at 1.60 m): downstream-wall bottom-cell I = ∫p dt over the impact time ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians: 185.69 mbar, 7 ms, 104 ms; dt = ${(1000 * ri.dt).toFixed(2)} ms)`)
+  check(imp.I >= 0.5 * Imed && imp.I <= 2 * Imed && nvOk(acted(ri.sim)), `A2 impulse, Lobovský tank (32 cells, wall at 1.60 m): downstream-wall bottom-cell I = ∫p dt over the impact time ${(imp.I / 100).toFixed(2)} mbar·s (within [0.5, 2] × the H = 600 mm sensor-1 median 12.74 mbar·s); peak ${(imp.peak / 100).toFixed(1)} mbar at t = ${imp.tPeak.toFixed(3)} s, rise ${(1000 * imp.rise).toFixed(1)} ms, decay ${(1000 * imp.decay).toFixed(1)} ms (Lobovský medians: 185.69 mbar, 7 ms, 104 ms; dt = ${(1000 * ri.dt).toFixed(2)} ms)${nvTxt(acted(ri.sim))}`)
 }
 
 // A2g-mech (the gate's mechanics — the gate mutants key on it) and A2g (Lobovský's gate; pre-registered in the header
@@ -209,22 +256,29 @@ if (run('A2gmech')) {
       for (let q = 0; q < p.n; q++) if (p.pos[3 * q] > xg) { past++; if (p.pos[3 * q + 1] > sim.gateEdge(sim.time)) pastAbove++ }
       out.push({ t: sim.time, past, pastAbove })
     }
-    return { out, clamps: sim.diag.gateClamps, kin }
+    return { out, clamps: sim.diag.gateClamps, kin, acted: acted(sim) }
   }
   const hold = gateRun(0.01, 0.2), held = hold.out.at(-1)
   const open = gateRun(4.53, 0.12), above = Math.max(...open.out.map(o => o.pastAbove))
   const pastAt = t => open.out.reduce((b, o) => (Math.abs(o.t - t) < Math.abs(b.t - t) ? o : b)).past
   const kinOk = r => r.kin.steps > 0 && r.kin.firstSolid > 0 && r.kin.mismatch === 0   // A2g-kin (header)
-  check(held.past === 0 && hold.clamps === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03) && kinOk(hold) && kinOk(open),
-    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0), held by the grid: gate clamps ${hold.clamps} (0); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}; A2g-kin: SOLID gate faces vs the schedule speed·(s − ½)·Δt — hold ${hold.kin.mismatch} mismatching over ${hold.kin.steps} steps (${hold.kin.firstSolid} SOLID at step 1), open ${open.kin.mismatch} over ${open.kin.steps} (${open.kin.firstSolid}) (0 each, SOLID > 0 at step 1)`)
+  check(held.past === 0 && hold.clamps === 0 && above === 0 && pastAt(0.03) > 0 && pastAt(0.06) > pastAt(0.03) && kinOk(hold) && kinOk(open) && nvOk(hold.acted) && nvOk(open.acted),
+    `A2g-mech the gate: lifted at 1 cm/s it holds the column — ${held.past} particles past its plane after ${held.t.toFixed(3)} s (0), held by the grid: gate clamps ${hold.clamps} (0); lifted at 4.53 m/s: particles past the plane ABOVE the edge, max over 0.12 s: ${above} (0); past it at 0.03 / 0.06 / 0.12 s: ${pastAt(0.03)} / ${pastAt(0.06)} / ${open.out.at(-1).past} (must grow from > 0); gate clamps ${open.clamps}; A2g-kin: SOLID gate faces vs the schedule speed·(s − ½)·Δt — hold ${hold.kin.mismatch} mismatching over ${hold.kin.steps} steps (${hold.kin.firstSolid} SOLID at step 1), open ${open.kin.mismatch} over ${open.kin.steps} (${open.kin.firstSolid}) (0 each, SOLID > 0 at step 1)${STAGE ? `; hold: ${actedText(hold.acted)}; open: ${actedText(open.acted)}` : ''}`)
 }
 if (run('A2g')) {
   const WIN = [1, ETSIN600_FRONT.T.at(-1)], ETSIN_SLOPE = 1.339
   // run past the window by the largest shift the scorer tries (+0.5), so no shifted sample is clamped to the run's end
   const rg = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: WIN[1] + 0.55, gate: 4.53 })
-  const sg = columnScore(rg, ETSIN600_FRONT, [], WIN, WIN)
-  check(sg.rmsZ <= 0.10 && Math.abs(sg.bestShift) <= 0.06 && sg.slope >= 0.9 * ETSIN_SLOPE && sg.slope <= 1.74 && rg.kin.steps > 0 && rg.kin.firstSolid > 0 && rg.kin.mismatch === 0,
-    `A2g gated release (4.53 m/s, t = 0 at the gate's first motion) vs Lobovský ETSIN H = 0.6 m, ${sg.points} points T ∈ [1, ${WIN[1]}] before their wall (${rg.particles} particles): no-shift RMS Z error ${(100 * sg.rmsZ).toFixed(2)} % (≤ 10 %, validity); best shift s = ${sg.bestShift >= 0 ? '+' : ''}${sg.bestShift.toFixed(2)} → ${(100 * sg.bestRms).toFixed(2)} % (|s| ≤ 0.06, the discriminating quantity; s > 0 = the solver late); dZ/dT ${sg.slope.toFixed(3)} (${(0.9 * ETSIN_SLOPE).toFixed(3)}–1.74; ETSIN ${ETSIN_SLOPE}); gate clamps ${rg.gateClamps}; A2g-kin: the release was gated — ${rg.kin.firstSolid} SOLID gate faces at step 1, ${rg.kin.mismatch} mismatching the schedule over ${rg.kin.steps} steps (0)`)
+  const sg = columnScore(rg, ETSIN600_FRONT, [], WIN, WIN), a2gActed = acted(rg.sim)
+  check(sg.rmsZ <= 0.10 && Math.abs(sg.bestShift) <= 0.06 && sg.slope >= 0.9 * ETSIN_SLOPE && sg.slope <= 1.74 && rg.kin.steps > 0 && rg.kin.firstSolid > 0 && rg.kin.mismatch === 0 && nvOk(a2gActed),
+    `A2g gated release (4.53 m/s, t = 0 at the gate's first motion) vs Lobovský ETSIN H = 0.6 m, ${sg.points} points T ∈ [1, ${WIN[1]}] before their wall (${rg.particles} particles): no-shift RMS Z error ${(100 * sg.rmsZ).toFixed(2)} % (≤ 10 %, validity); best shift s = ${sg.bestShift >= 0 ? '+' : ''}${sg.bestShift.toFixed(2)} → ${(100 * sg.bestRms).toFixed(2)} % (|s| ≤ 0.06, the discriminating quantity; s > 0 = the solver late); dZ/dT ${sg.slope.toFixed(3)} (${(0.9 * ETSIN_SLOPE).toFixed(3)}–1.74; ETSIN ${ETSIN_SLOPE}); gate clamps ${rg.gateClamps}; A2g-kin: the release was gated — ${rg.kin.firstSolid} SOLID gate faces at step 1, ${rg.kin.mismatch} mismatching the schedule over ${rg.kin.steps} steps (0)${nvTxt(a2gActed)}${STAGE || WATER ? `; ${waterText(WATER, rg.sim)}` : ''}`)
+  if (STAGE) {
+    // header (iii): the stage-off twin must FAIL the non-vacuity assert; its numbers give the stage's effect on this water
+    const tw = column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd: WIN[1] + 0.55, gate: 4.53, extra: { wallShear: undefined } })
+    const st = columnScore(tw, ETSIN600_FRONT, [], WIN, WIN), twActed = stageActed([tw.sim])
+    const sgn = x => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`
+    check(!twActed.ok, `ctl:A2g.stage-off-twin (must FAIL non-vacuity; header (iii)) — the same run with the option absent (the "option ignored" defect): the stage's log holds ${twActed.cells} cell-applications over ${twActed.steps} steps, Σ|booked| ${twActed.booked.toExponential(3)} N·s → non-vacuity ${twActed.ok ? 'PASSES (the assert cannot see a stage that never ran)' : 'fails, as required'}. The twin's A2g numbers: no-shift RMS ${(100 * st.rmsZ).toFixed(2)} %, s = ${sgn(st.bestShift)} → ${(100 * st.bestRms).toFixed(2)} %, dZ/dT ${st.slope.toFixed(3)}, A2g-kin ${tw.kin.mismatch} mismatching over ${tw.kin.steps} steps — the wall shear's effect on this water: no-shift RMS ${(100 * (sg.rmsZ - st.rmsZ)) >= 0 ? '+' : ''}${(100 * (sg.rmsZ - st.rmsZ)).toFixed(2)} points, s ${sgn(sg.bestShift - st.bestShift)}, dZ/dT ${(sg.slope - st.slope) >= 0 ? '+' : ''}${(sg.slope - st.slope).toFixed(3)}`)
+  }
   const raw = columnScore({ ...rg, Z: rg.Zraw }, ETSIN600_FRONT, [], WIN, WIN)
   const zWin = { T: ETSIN600_FRONT.T.filter((t, i) => ETSIN600_FRONT.Z[i] >= 1.67), Z: ETSIN600_FRONT.Z.filter(z => z >= 1.67) }
   const z167 = columnScore(rg, zWin, [], WIN, [0, 9]), early = columnScore(rg, ETSIN600, [], WIN, [0, 0.999])
@@ -240,19 +294,19 @@ if (run('V1')) {
     const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4 }))
     const nvp = p.n * L.dx ** 3 / 8, out = []
     for (let s = 1; s * (1 / 120) <= seconds + 1e-9; s++) { sim.step(p, 1 / 120); if (s % 120 === 0) out.push(sim.phiVolume() / nvp) }
-    return { out, clamps: sim.diag.wallClamps, relabels: sim.diag.enclosedRelabels }
+    return { out, clamps: sim.diag.wallClamps, relabels: sim.diag.enclosedRelabels, acted: acted(sim) }
   }
   const v1 = volumeSeries(new GridLayout({ nx: 16, ny: 40, nz: 8, dx: DX }), block([0, 0, 0], [7, 35, 7], mulberry32(5)), 6)
   const w = Math.max(...v1.out.map(v => Math.abs(v - 1)))
-  check(w <= 0.02, `V1 violent confined column (8×36 cells in 16×40×8): φ-volume/N·V_p every second ${v1.out.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * w).toFixed(2)} % (≤ 2 %); wall push-backs ${v1.clamps}; unresolved-cell relabels ${v1.relabels}`)
+  check(w <= 0.02 && nvOk(v1.acted), `V1 violent confined column (8×36 cells in 16×40×8): φ-volume/N·V_p every second ${v1.out.map(v => v.toFixed(4)).join(' ')} — max |Δ| ${(100 * w).toFixed(2)} % (≤ 2 %); wall push-backs ${v1.clamps}; unresolved-cell relabels ${v1.relabels}${nvTxt(v1.acted)}`)
   if (process.argv.includes('--g2')) {
     const L = new GridLayout({ nx: 64, ny: 64, nz: 8, dx: DX }), a = block([0, 0, 0], [15, 31, 7], mulberry32(21)), b = block([48, 0, 0], [63, 31, 7], mulberry32(22))
     const p = makeParticles(a.n + b.n)
     p.pos.set(a.pos, 0); p.pos.set(b.pos, 3 * a.n); p.mass.set(a.mass, 0); p.mass.set(b.mass, a.n)
     const g2 = volumeSeries(L, p, 30)
-    check(Math.abs(g2.out.at(-1) - 1) <= 0.02, `G2 again with the ghost-fluid surface, double dam break 30 s: φ-volume/N·V_p ${g2.out.at(-1).toFixed(4)} (≤ 2 %)`)
+    check(Math.abs(g2.out.at(-1) - 1) <= 0.02 && nvOk(g2.acted), `G2 again with the ghost-fluid surface, double dam break 30 s: φ-volume/N·V_p ${g2.out.at(-1).toFixed(4)} (≤ 2 %)${nvTxt(g2.acted)}`)
   }
 }
 
-console.log(`\ns3.4 reference gate: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
+console.log(`\ns3.4 reference gate${STAGE || WATER ? ` (wall shear ${STAGE ?? 'off'}; column water ${WATER ? `${WATER.tC} °C` : 'default'})` : ''}: ${fails === 0 ? 'PASS' : `FAIL (${fails})`}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
 process.exit(fails === 0 ? 0 : 1)
