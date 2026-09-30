@@ -31,13 +31,16 @@ export async function b1cDense(page, scene, seed = 2) {
   const t0 = (await page.evaluate(() => window.__fluidBench.status())).simTime
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 120 }))
   const subs = async () => (await page.evaluate(() => window.__fluidBench.status())).substepsTotal   // the engine's CPU counter: no GPU readback per frame
+  // the first 1/120 frame: the switch must advance simTime by exactly one 1/120 step (reported)
+  await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH + 1); await waitStepped(page, F_SWITCH + 1)
+  const tCheck = (await page.evaluate(() => window.__fluidBench.status())).simTime - t0
+  // frames before t0 are stepped, not sampled (a full sample is ~15 MB)
+  await page.evaluate(f => window.__fluidBench.setStepLimit(f), F0 - 1); await waitStepped(page, F0 - 1)
   let subPrev = await subs(), prev = null, set = null, mats = null, excluded = 0, frames = 0
   const M = { n: 0, ok: 0, reOk: 0, ctrlOk: 0, maxRel: 0 }, T = { num: 0, den: 0, denCtrl: 0, n: 0 }, K = { s: 0, law: 0 }
-  let tCheck = null
-  for (let f = F_SWITCH + 1; f <= F1; f++) {
+  for (let f = F0; f <= F1; f++) {
     const s = await sampleAtFrame(page, f)
     const sub = await subs(), nSub = sub - subPrev; subPrev = sub
-    if (f === F_SWITCH + 1) tCheck = (await page.evaluate(() => window.__fluidBench.status())).simTime - t0
     if (!s.drift || !s.slipIn || !s.uV) throw new Error('B1c dense window: the sample carries no drift state')
     if (!mats) mats = Object.fromEntries(s.materials.map(m => [m.name, m]))
     const RO = mats['Olive Oil'].rho, RW = mats.Water.rho, MUW = mats.Water.mu, RH = mats.Mercury.rho, oilId = mats['Olive Oil'].id, wId = mats.Water.id
