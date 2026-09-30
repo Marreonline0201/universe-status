@@ -20,6 +20,16 @@
 // the plan's operating step (U 0.1 / 0.5 / 2 m/s at 1/60 s, 16 and 32 cells/λ): the ratio, flagged OUTSIDE 2× → "find out
 // why" (the roadmap's instruction: an investigation item, not a physics verdict — the proxy is a different 2-D code);
 // the HUD number "effective viscosity ≈ N × water" (ν_water 1.0e-6 m²/s at 20 °C) per row.
+// Revision 1 (2026-09-29 22:45, after the first run, before its re-run): the closed, fully liquid box violates the GPU
+// PoissonSolver's contract (every liquid region must touch AIR — PoissonSolver.ts header; the CPU reference pins the
+// mean, the GPU solver does not). The density projection's ψ solve — its right-hand side, the density error, is not
+// mean-free in a closed box — ran to its cap hundreds of times and its displacements wrecked the mode in some rows
+// (collapse to A ≈ 0 in 0.08 s; a sign reversal at 1.3 s); with ψ off every such row decayed cleanly (scratch
+// tg_series). The density projection moves positions to restore density — it is not a momentum operator — so T1 runs
+// with it OFF and measures the bulk damping of the transfer, advection and pressure-projection chain (the pressure
+// solve's right-hand side, a divergence, sums to zero in a closed box: consistent). T1-decay now also requires
+// A(t) > 0 throughout (the first version missed the sign reversal), and --record refuses a table with failed rows.
+// GPU closed-domain support (the mean of b removed, as the CPU reference does) is a separate solver item.
 import path from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -52,21 +62,25 @@ try {
   report.adapter = init.info
   const run = (t, p = {}) => page.evaluate(([t, p]) => window.__flipTest.run(t, p), [t, p])
   for (const lambdaCells of LAMBDAS) for (const U of US) for (const hz of DTS) {
-    const r = await run('taylorGreen', { lambdaCells, U, dt: 1 / hz })
+    const r = await run('taylorGreen', { lambdaCells, U, dt: 1 / hz, densityProjection: false })   // revision 1 (header)
     const x3 = X3E[`${U}|${hz}|${lambdaCells}`]
-    const row = { lambdaCells, U, hz, nuNum: r.nuNum, nuEnd: r.nuEnd, aEnd: r.As.at(-1) / r.As[0], capHits: r.capHits, psiCapHits: r.psiCapHits, breakdowns: r.breakdowns, x3: x3 ?? null, particles: r.particles }
+    const row = { lambdaCells, U, hz, nuNum: r.nuNum, nuEnd: r.nuEnd, aEnd: r.As.at(-1) / r.As[0], aMin: Math.min(...r.As) / r.As[0], capHits: r.capHits, psiCapHits: r.psiCapHits, breakdowns: r.breakdowns, x3: x3 ?? null, particles: r.particles }
     report.rows.push(row)
     console.log(`  λ ${String(lambdaCells).padStart(2)} cells  U ${String(U).padEnd(3)} m/s  Δt 1/${hz}: ν_num ${r.nuNum.toExponential(2)} m²/s (end-point ${r.nuEnd.toExponential(2)}; ≈ ${Math.round(r.nuNum / NU_WATER)} × water); A(2 s)/A0 ${row.aEnd.toFixed(4)}; p caps ${r.capHits}, ψ caps ${r.psiCapHits}, breakdowns ${r.breakdowns}${x3 ? `; X3 2-D proxy ${x3.toExponential(1)} (× ${(r.nuNum / x3).toFixed(2)}${r.nuNum / x3 > 2 || r.nuNum / x3 < 0.5 ? ' — OUTSIDE 2×: find out why' : ''})` : ''}`)
   }
   const rows = report.rows
   gate.check(rows.every(r => r.breakdowns === 0), `T1-clean: 0 solver breakdowns in all ${rows.length} runs (cap hits: p ${rows.reduce((s, r) => s + r.capHits, 0)}, ψ ${rows.reduce((s, r) => s + r.psiCapHits, 0)})`)
-  const grow = rows.filter(r => !(r.nuNum > 0 && r.aEnd < 1))
-  gate.check(grow.length === 0, `T1-decay: every mode decays (ν_num > 0, A(end) < A0)${grow.length ? ` — ${grow.length} do not: ${grow.map(r => `λ${r.lambdaCells}/U${r.U}/1/${r.hz}`).join(', ')}` : ''}`)
+  const grow = rows.filter(r => !(r.nuNum > 0 && r.aEnd < 1 && r.aMin > 0))
+  gate.check(grow.length === 0, `T1-decay: every mode decays (ν_num > 0, A(end) < A0, A(t) > 0 throughout — no sign reversal)${grow.length ? ` — ${grow.length} do not: ${grow.map(r => `λ${r.lambdaCells}/U${r.U}/1/${r.hz}`).join(', ')}` : ''}`)
   const key = r => `${r.lambdaCells}|${r.U}|${r.hz}`
   if (RECORD) {
-    mkdirSync(path.dirname(BASELINE), { recursive: true })
-    writeFileSync(BASELINE, JSON.stringify({ recorded: new Date().toISOString(), prov: report.prov, rows: rows.map(r => ({ key: key(r), nuNum: r.nuNum })) }, null, 1))
-    console.log(`  recorded the baseline → ${path.relative(repoRoot, BASELINE)}`)
+    // revision 1: a baseline is only written from a table whose every row passed T1-decay and T1-clean
+    if (grow.length || !rows.every(r => r.breakdowns === 0)) console.log('  NOT recording: the table has rows that failed T1-decay or T1-clean — a baseline must be valid')
+    else {
+      mkdirSync(path.dirname(BASELINE), { recursive: true })
+      writeFileSync(BASELINE, JSON.stringify({ recorded: new Date().toISOString(), prov: report.prov, rows: rows.map(r => ({ key: key(r), nuNum: r.nuNum })) }, null, 1))
+      console.log(`  recorded the baseline → ${path.relative(repoRoot, BASELINE)}`)
+    }
   }
   if (!existsSync(BASELINE)) gate.check(false, 'T1-store: no stored baseline (run once with --record, and commit it)')
   else {
