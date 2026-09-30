@@ -159,6 +159,10 @@ report.adapter = adapter
 try {
   const st0 = await status(page)
   gate.check(st0.solver === 'flip' && st0.tank?.resizable === true, `R the FLUID TEST page runs the resizable incompressible solver (solver ${st0.solver}, tank ${JSON.stringify(st0.tank?.cells)}, resizable ${st0.tank?.resizable})`)
+  // The page OPENS with an empty tank since 2026-09-30 (owner preference). Load FLUID TEST's default water block — the
+  // scene (a)'s UI resize and T-a ran on when this gate was certified (INT-3 at 2af40fdb); with an empty tank the stage
+  // never encodes (FlipBackend.advance returns early at 0 particles), so T-a would fail for a reason that is not INT-1.
+  await page.evaluate(() => window.__fluidBench.action('defaultScene', 41))
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
 
   // (a) numbers

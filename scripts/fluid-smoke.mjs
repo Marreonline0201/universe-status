@@ -36,19 +36,22 @@ try {
 
   const s0 = await st()
   const n0 = s0.count
-  check(n0 >= 9500 && n0 <= 10500, `default scene ≈10k particles at rest packing (got ${n0})`)
+  // owner preference 2026-09-30: the page OPENS with an empty tank (it used to open with a ≈10k water block), so the
+  // owner's first action is to add liquid — +10K here — before the frames/pixels checks, which need something moving
+  check(n0 === 0, `the page opens with an empty tank (0 particles, got ${n0})`)
+  await btn('+10K').click(); await page.waitForTimeout(400)
+  const n10 = (await st()).count
+  check(n10 - n0 >= 9000, `+10K pours ≈10k particles (${n0}→${n10})`)
+
+  const sA = await st()
   await page.waitForTimeout(500)
   const s1 = await st()
-  check(s1.framesStepped > s0.framesStepped && s1.rafFrames > s0.rafFrames, `frames advance (${s0.framesStepped}→${s1.framesStepped} stepped)`)
+  check(s1.framesStepped > sA.framesStepped && s1.rafFrames > sA.rafFrames, `frames advance (${sA.framesStepped}→${s1.framesStepped} stepped)`)
 
   const canvas = page.locator('canvas').first()
   const hash = async () => crypto.createHash('sha1').update(await canvas.screenshot({ type: 'png' })).digest('hex')
   const h1 = await hash(); await page.waitForTimeout(400); const h2 = await hash()
   check(h1 !== h2, 'canvas pixels change while the sim runs (not a frozen frame)')
-
-  await btn('+10K').click(); await page.waitForTimeout(400)
-  const n10 = (await st()).count
-  check(n10 - n0 >= 9000, `+10K pours ≈10k particles (${n0}→${n10})`)
 
   await btn('DROP BALL').click(); await page.waitForTimeout(200)
   check(await btn('REMOVE BALL').count() === 1, 'DROP BALL toggles to REMOVE BALL')

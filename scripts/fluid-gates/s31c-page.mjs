@@ -148,6 +148,9 @@ report.adapter = adapter
 try {
   const st0 = await status(page)
   gate.check(st0.solver === 'flip', `R the FLUID TEST page runs the incompressible solver (status.solver = ${st0.solver})`)
+  // The page OPENS with an empty tank since 2026-09-30 (owner preference). Load FLUID TEST's default water block, the
+  // scene that stepped before P1's load when this gate was certified (INT-3 at 2af40fdb) — S-P1's header premise.
+  await page.evaluate(() => window.__fluidBench.action('defaultScene', 31))
   await page.evaluate(g => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, gravityMs2: g }), G_STANDARD)
   // S-typo (INT-5) — pre-registered 2026-09-30 before its first run: a misspelt configure option is refused, not ignored
   const typo = await page.evaluate(() => { try { window.__fluidBench.configure({ wallshear: false }); return 'no error' } catch (e) { return String(e.message) } })

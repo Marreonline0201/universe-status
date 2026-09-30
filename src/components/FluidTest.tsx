@@ -173,7 +173,7 @@ export function FluidTest() {
       setRtFactor(s.rtFactor)
       setStokes(s.stokes ?? null)
       setFpsWarning(s.fps < 30 && s.count > 100)
-    }, { initialScene: 'default-water', tankHandles: true })
+    }, { initialScene: 'empty', tankHandles: true })   // owner 2026-09-30: the page OPENS with an empty tank (RESET empties it too)
     engineRef.current = engine
     void engine.init().then(ok => {
       if (cancelled) return
