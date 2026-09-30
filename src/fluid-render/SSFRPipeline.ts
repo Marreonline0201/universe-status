@@ -475,7 +475,11 @@ export class SSFRPipeline {
   }
 
   /** Render one frame into `outputView`. The passes run at the internal size; the composite draws the whole target and
-   *  upsamples, so pass the target's size when it differs from the internal size (the canvas at a DPR above 1). */
+   *  upsamples, so pass the target's size when it differs from the internal size (the canvas at a DPR above 1).
+   *  particleCount 0 (an empty tank) renders the room alone: encodeFrame splats nothing (`draw`), the depth and thickness
+   *  passes only clear, and the composite passes the background through — the path the bench probe takes with
+   *  hideParticles. (Until 2026-09-30 it returned here and the page fell back to three.js, which took the backdrop's
+   *  sRGB values as linear and tone-mapped them: an empty tank looked lighter than its swatch; bg-palette note (c).) */
   render(
     encoder: GPUCommandEncoder,
     particleBuffer: GPUBuffer,
@@ -488,7 +492,6 @@ export class SSFRPipeline {
     ball?: { center: [number, number, number]; radius: number; active: boolean },
     outputSize?: [number, number],
   ) {
-    if (particleCount === 0) return
     this.encodeFrame(encoder, this.main, {
       particleBuffer, count: particleCount, view: viewMatrix, proj: projMatrix, invProj: invProjMatrix, invView: invViewMatrix, ball, outputSize,
     }, outputView, null, this.matBuf)

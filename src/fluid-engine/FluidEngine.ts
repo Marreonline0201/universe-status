@@ -628,9 +628,12 @@ export class FluidEngine {
     this.controls?.update()
     this.tankHandles?.update()
 
-    // SSFR render, or the Points fallback.
+    // SSFR render, or the Points fallback. An empty tank goes through SSFR too — the room alone (SSFRPipeline.render), the
+    // backdrop at its swatch's colour; the three.js fallback tone-maps the backdrop's sRGB values as if linear (bg-palette
+    // note 2026-09-30 (c)). So renderPath reads 'ssfr' with 0 particles, and the first frame after an empty tank fills
+    // schedules no Points readback (the readback above is keyed on the previous frame's SSFR health).
     let ssfrOk = false
-    if (this.ssfrPipeline && count > 0 && !this.forceSsfrFailure) {
+    if (this.ssfrPipeline && !this.forceSsfrFailure) {
       try {
         camera.updateMatrixWorld()
         const ctx = renderer.backend.context as GPUCanvasContext
