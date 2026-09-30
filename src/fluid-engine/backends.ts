@@ -4,7 +4,7 @@
 // world units (tank-normalised [0,1]³ of the 64³ grid, velocities per τ), so the renderer and every consumer are
 // unchanged; each backend converts to its own solver units here and nowhere else.
 import { MpmGpuSimulator, type GpuParticle } from '../gpu-sim/MpmGpuSimulator'
-import { FlipGpuSimulator, PRESENT_STRIDE_BYTES, type FlipParticleInit } from '../gpu-sim/flip/FlipGpuSimulator'
+import { FlipGpuSimulator, PRESENT_STRIDE_BYTES, type FlipParticleInit, type FlipWallShear } from '../gpu-sim/flip/FlipGpuSimulator'
 import { SOLID_REFERENCE, type LiquidKey } from '../composition/materialData'
 import type { SolverMethod } from '../composition/CompositionTable'
 import { DOMAIN_L_M, GRID_RES, TAU_S, accelToCode, accelToUnitPerTau2, mpmSubsteps, unitVelToMs } from './units'
@@ -27,6 +27,12 @@ export interface ParticleSample { positions: Float32Array; velocities: Float32Ar
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
+
+/** FRICTION (vault FRICTION-spec §3.3): the floor's wall shear as the live simulator runs it — 'off' (not set), 'on' (set
+ *  and running), 'guarded' (set, but not running: FlipGpuSimulator.wallShearRuns, the predicate budgetState reports). */
+export type WallShearStatus = 'on' | 'off' | 'guarded'
+/** The bench toggle (configure({ wallShear })): the stage with the page's law, or off. */
+export type WallShearToggle = 'keulegan1938' | false
 
 /** readViscosityProbe: μ = w/(2V) of the last viscous solve over cells with V ≥ 0.999 (inactive: no cells). */
 export interface ViscosityProbe { active: boolean; fullCells: number; muMin: number; muMax: number; distinct: number[] }
@@ -76,6 +82,11 @@ export interface SimBackend {
   /** S3.6e: the unified pressure–viscosity solve for a ball in a thick liquid — whether it runs, and its last solve's
    *  iterations (null: this backend has none). */
   stokesStatus?(): StokesStatus | null
+  /** FRICTION: the floor's wall shear as the live simulator runs it (absent: this backend has no stage — MPM). */
+  wallShearStatus?(): WallShearStatus
+  /** Bench (review 2026-09-30 INT-5): the floor's wall shear on with the page's law, or off — held across a tank resize
+   *  (absent: this backend has no stage — MPM). */
+  setWallShear?(v: WallShearToggle): void
   /** Tank resize (TANK-RESIZE spec): grid cells per axis (dx fixed); the particles inside the new walls are kept, shifted
    *  by `shiftM` metres first (a −x / −z face moved); the ball is kept when it still fits; `compositions` lists what the
    *  tank still holds. Absent: a fixed tank. */
@@ -236,6 +247,15 @@ export class FlipBackend implements SimBackend {
   /** Where the drift's counter-flux J is formed ('face' = the default; 'cell' = the bench control, s31c-page / B1c):
    *  kept here and set on every applyImmiscible, so a resize's new solver keeps it. */
   private immDriftForm: DriftForm = 'face'
+  /** FRICTION (vault FRICTION-spec §3.3): the floor's wall shear every new simulator of this page gets (create, resize).
+   *  null = OFF: the page runs the solver without the stage — never set, so nothing is encoded, allocated or read back.
+   *  The enable commit sets { wall: 'y-', law: 'keulegan1938' } after the stage's certification (review 2026-09-30,
+   *  plan §10 and §15). */
+  static readonly WALL_SHEAR_DEFAULT: FlipWallShear | null = null
+  /** The floor's wall shear this page runs (null: off): WALL_SHEAR_DEFAULT until the bench toggle (setWallShear) sets it
+   *  — one field is both the stage's config and the toggle's state. Kept here and set on every new simulator (create,
+   *  resize), like immDriftForm, so a tank resize keeps the stage (review 2026-09-30 INT-1). */
+  private wallShearCfg: FlipWallShear | null = FlipBackend.WALL_SHEAR_DEFAULT && { ...FlipBackend.WALL_SHEAR_DEFAULT }
   /** Bench (PERF-1 baseline): a pending one-frame profile request (profileNextStep). */
   private profileReq: { resolve: (p: StepProfile) => void; reject: (e: unknown) => void } | null = null
   /** The plain frames' CPU encode (ms, substeps), the last 32 — the profile's uninstrumented encode (review 2026-09-29). */
@@ -288,6 +308,7 @@ export class FlipBackend implements SimBackend {
     const b = new FlipBackend(device, await FlipBackend.makeSim(device, cells))
     b.cells = [...cells] as Vec3
     b.packing = cells.every(c => c === GRID_RES) ? FLIP_PACKING : flipPacking(cells)
+    b.applyWallShear()
     return b
   }
   get maxParticles(): number { return this.sim.maxParticles }
@@ -323,6 +344,7 @@ export class FlipBackend implements SimBackend {
     this.packing = flipPacking(cells)
     FlipBackend.configureSim(next)
     next.viscositySolver!.setMuTable(this.muTable)
+    this.applyWallShear()   // the held stage on the new simulator (review INT-1), its log starting empty
     next.gravity = [0, -this.gMs2, 0]
     // the tank's liquids and viscous extremes from the particles that stayed (a liquid cut away entirely has left)
     this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
@@ -386,6 +408,8 @@ export class FlipBackend implements SimBackend {
     this.maxNu = 0; this.minMu = Infinity; this.compCount.fill(0)
     this.track(ps)
     this.sim.setParticles(this.toInit(ps)); this.vLag = 0; this.present()
+    // the stage's log is per scene (review M4): a load starts it empty, so a scene's readout counts its own frames only
+    if (this.sim.wallShear !== null) this.sim.resetWallShearStats()
     if (this.sim.stokesSolver) { this.sim.stokesSolver.resetWarm(); this.sim.stokesSolver.cap = FlipBackend.STOKES_CAP_MAX; this.stokesLast = { iterations: 0, converged: true }; this.stokesMaxIt = 0; this.stokesRecent = [] }
   }
   addParticles(ps: readonly SpawnParticle[]) {
@@ -452,6 +476,21 @@ export class FlipBackend implements SimBackend {
   }
   private snapshotOn = false
   setSnapshotDensity(on: boolean) { this.snapshotOn = on; this.sim.snapshotDensity = on }
+  /** Set the held wall shear on a new simulator (create, resize — never in the static configureSim): nothing while it is
+   *  off, since a new simulator has no stage. */
+  private applyWallShear() { if (this.wallShearCfg) this.sim.setWallShear({ ...this.wallShearCfg }) }
+  /** Bench (review 2026-09-30 INT-5; FluidEngine configure({ wallShear })): the floor's wall shear with the page's law
+   *  ('keulegan1938') or off (false); anything else throws. The live simulator takes it first, so its refusal leaves the
+   *  held state unchanged; held, a resize keeps it. Switched on from off, its log starts empty. */
+  setWallShear(v: WallShearToggle) {
+    if (v !== 'keulegan1938' && v !== false) throw new Error(`wallShear: '${String(v)}' is not 'keulegan1938' or false`)
+    const cfg: FlipWallShear | null = v === false ? null : { wall: 'y-', law: v }
+    this.sim.setWallShear(cfg)
+    this.wallShearCfg = cfg
+  }
+  /** The floor's wall shear as the live simulator runs it: 'off' (not set), 'on', or 'guarded' (set, not running —
+   *  wallShearRuns, the predicate budgetState() reports as wallShear). */
+  wallShearStatus(): WallShearStatus { const s = this.sim; return s.wallShear === null ? 'off' : s.wallShearRuns ? 'on' : 'guarded' }
   /** Liquid pairs with a sourced interfacial tension among these liquids (the drift's slots need at least one). */
   private static pairCount(keys: readonly LiquidKey[]): number {
     return keys.reduce((n, a, i) => n + keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null).length, 0)
@@ -663,6 +702,9 @@ export class FlipBackend implements SimBackend {
     const d = await this.sim.readDiagnostics()
     const vf = await this.sim.viscositySolver!.readFaults()
     const im = this.sim.immiscibleActive ? await this.sim.immiscibleSolver!.readStats() : null
+    // the stage's log (review M4: since it was set or this scene loaded), read back only while the stage is set — off,
+    // nothing is read back and the readout has exactly the keys it had before the stage existed
+    const sim = this.sim, ws = sim.wallShear !== null ? await sim.readWallShearStats() : null
     return {
       immiscibleDrift: im ? 1 : 0, immDispersed: im?.dispersed ?? 0, immTooLarge: im?.tooLarge ?? 0, immMaxSlip: im?.maxSlip ?? 0, immMeanDrop: im?.meanDrop ?? 0,
       viscousSolves: vf.solves, viscousCapHits: vf.capHits, viscousBreakdowns: vf.breakdowns, viscousMaxIterations: vf.maxIterations, viscousCap: this.sim.viscositySolver!.cap,
@@ -671,6 +713,8 @@ export class FlipBackend implements SimBackend {
       breakdowns: d.breakdowns + d.psiBreakdowns, densityNeighbourFaces: d.densityNeighbourFaces, densityDefaultFaces: d.densityDefaultFaces,
       vLag: this.vLag, cflExceeded: this.cflExceeded, substeps: this.substepsTotal,
       viscousSolve: this.sim.viscosityActive ? 1 : 0, maxNu: this.maxNu,
+      ...(ws ? { wallShearRuns: sim.wallShearRuns ? 1 : 0, wallShearApplications: ws.applications, wallShearCells: ws.cells,
+        wallShearBooked: ws.booked, wallShearLaminar: ws.laminar, wallShearTauMax: ws.tauMax } : {}),
     }
   }
   destroy() { this.sim.destroy(); for (const s of [...this.speedSlots, ...this.ballSlots, ...this.viscSlots, ...this.stokesSlots]) s.buf.destroy() }

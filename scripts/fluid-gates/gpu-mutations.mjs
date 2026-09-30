@@ -10,12 +10,20 @@
 // Known control failures (revision 2026-09-30, FRICTION follow-up, the lead): a set may list the checks its CLEAN
 // control is known to fail (MAY_FAIL), by label — a check line's text after its ✓/✗ up to the first ':' — matched
 // EXACTLY. Reason: s38-gpu's W1c z validity fails on the clean tree — the stage-off control sheet's own drift exceeds
-// the pre-registered 0.2 % on the CPU reference too (the solver is exactly x/z-symmetric and tolerance-independent,
-// per-seed maxima 0.06–0.55 %: FR/impl/A/w1c_drift_study.out, FR = the FRICTION spec's scratch root), so W1c.z is VOID
-// and s38-gpu exits non-zero. For a listed set the control is usable only if its failing labels EQUAL the list —
-// nothing else fails and every listed label fails exactly once (a listed check that passes, is missing or repeats
-// makes the list stale: the control is rejected); a mutant is CAUGHT only through a failing check OUTSIDE the list;
-// INVALID is unchanged. VOID lines carry neither ✓ nor ✗: neither pass nor fail. Sets without a list: as before.
+// the pre-registered 0.2 % on the CPU reference too (the solver is x/z-symmetric to f64 rounding and tolerance-
+// independent, per-seed maxima 0.06–0.55 %: FR/impl/A/w1c_drift_study.out, FR = the FRICTION spec's scratch root), so
+// W1c.z is VOID and s38-gpu exits non-zero. For a listed set the control is usable only if its failing labels EQUAL the
+// list — nothing else fails and every listed label fails exactly once (a listed check that passes, is missing or
+// repeats makes the list stale: the control is rejected); a mutant is CAUGHT only through a failing check OUTSIDE the
+// list; INVALID is unchanged. VOID lines carry neither ✓ nor ✗: neither pass nor fail. Sets without a list: as before.
+// Attribution (revision 2026-09-30, review wf_fbc58c55-116 MH-1/MH-2): a MUTANT run of a listed set whose listed checks
+// are stale in that sense — the mutant changed the state of a check the usable control failed exactly once — scores
+// NOT-ATTRIBUTABLE: a check the control never certified may then fail (s38-gpu's z loss is VOID in the control and is
+// marked only when the z validity passes). It is never CAUGHT, is printed with its reason and is not counted as caught,
+// so the exit stays non-zero. judge() keeps its classification in `verdict` (unchanged) and returns the tallied result
+// in `score` (INVALID first, then NOT-ATTRIBUTABLE, else the verdict; without a list, score = verdict). The listed
+// lines' values are NOT compared (MH-2; golden pinning is deferred: a pinned value would be re-recorded at every
+// stage-off solver change) — they are printed on the CONTROL line and on every mutant line, so a change is visible.
 //
 //   node scripts/gate-server.mjs HEAD   (in another shell)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s31a     (S3.1a transfer kernels, gate s31a-gpu.mjs)
@@ -30,8 +38,12 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=perf1    (PERF-1 L0 dispatch budget, gate perf1-gpu.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=opt2a    (OPT-2a in-scatter / deep colour, gate opt2a-render.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=wallShear (FRICTION: the floor's wall shear, gate s38-gpu.mjs, full: ~2 min)
-// A mutant is [file, find, replace, why]; find and replace may be arrays of equal length — several edits in one file,
-// applied in order (a call moved from one method to another), each find unique in the file.
+// A mutant is [file, find, replace, why]: find and replace are two strings, or two arrays of equal length ≥ 1 — several
+// edits in one file, applied in order (a call moved from one method to another); every find a non-empty string, every
+// replacement a string different from its find (an empty one deletes). editsOf refuses any other shape (review MH-4);
+// the edits are dry-run in order — each find must occur exactly once in the text as it stands after the edits before
+// it — by --check, by the pre-run abort loop and by the run itself, which writes the dry run's text; replacements are
+// inserted verbatim (a function replacer: no $-patterns, review MH-5).
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -210,6 +222,22 @@ SETS.wallShear = [
   // W1a-K per particle: its cells at 90°/270° (and the 45° ones in part) lose their whole Δv_z; s38-gpu's W1a-K info
   // line prints that z signal, the largest |Δv_z,ref|/|U_c| — measured 4.50e-3 (2026-09-30), 15 000× the 3e-7 bound
   [`${SH}/wallShearApply.wgsl`, '  vel[q] = vec4<f32>(v.x + d.x, v.y, v.z + d.y, v.w);', '  vel[q] = vec4<f32>(v.x + d.x, v.y, v.z, v.w);', 'Δv_z dropped (z ignored in the update)'],
+  // review wf_fbc58c55-116 fix round (2026-09-30), each pre-registered in s38-gpu's header before its first run and
+  // keeping every binding of its kernel statically used:
+  // M3 — a sim with the viscosity solver binds the stage's own table (every μ = the default, water 20 °C) instead of
+  // the solver's: caught only by W1a-K on the viscosity solver's μ table (derived miss 4.46e-5 at the dense mercury
+  // cell, ≥ 4.43e-5 on the GPU = 148× the 3e-7 bound; FR/fixround/Y/m3_miss.out)
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', "      const ownMu = this.viscositySolver ? null : buf('wallShearMu', 4 * 256)\n      const mu = this.viscositySolver ? this.viscositySolver.bufs.muTable : ownMu!\n", "      const ownMu = buf('wallShearMu', 4 * 256)\n      const mu = ownMu\n", 'the stage always binds its own table'],
+  // GATE-F7 — a skipped cell keeps the previous application's Δv: caught by W1a-K.skip (its pair gets the stale Δv)
+  [`${SH}/wallShearCell.wgsl`, '        atomicMax(&wgTauMax, bitcast<u32>(abs(tau)));\n      }\n    }\n    cellOut[c] = out;\n', '        atomicMax(&wgTauMax, bitcast<u32>(abs(tau)));\n        cellOut[c] = out;\n      }\n    }\n', 'cellOut written only for acted cells'],
+  // M2 — the old ternary's ': 2' (an unknown law runs constantTest, τ = 0): caught by W0c on the GPU
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', '    const law = WALL_SHEAR_LAW_ID.get(w.law)\n', '    const law = WALL_SHEAR_LAW_ID.get(w.law) ?? 2\n', 'unknown law maps to constantTest'],
+  // M1 — a muDefault accepted on a solver sim (where it is never read): caught by W0c on the GPU
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'if (w.muDefault !== undefined && this.viscositySolver) throw', 'if (false && w.muDefault !== undefined && this.viscositySolver) throw', 'muDefault accepted on a solver sim'],
+  // M4 — resetDiagnostics leaves the stage log: caught by W1g.reset
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', '    this.resetWallShearStats()\n', '', 'stage log not reset by resetDiagnostics'],
+  // INT-7 — the stage runs while the immiscible drift runs: caught by W0b's drift arm (0 differing words, an empty log)
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', 'get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) && !this.immActive }', 'get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) }', 'drift guard removed'],
 ]
 // OPT-2a (2026-09-30; spec §4.6): the composite's in-scatter and deep-water terms. Each find string is one line of the
 // shader, unique in the file; every edit keeps each binding statically used. Sizes at the centre rays (spec table):
@@ -233,15 +261,47 @@ SETS.opt2a = [
 ]
 // the gate script each set runs (default: <set>-gpu.mjs)
 const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs' }
-// a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order
-const editsOf = (find, repl) => (Array.isArray(find) ? find.map((f, i) => [f, repl[i]]) : [[find, repl]])
+// a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order. Any other shape throws
+// (header; review MH-4: a short replace array wrote the text 'undefined', a string replace against an array find
+// paired single characters, an array replace against a string find wrote 'x,y')
+const editsOf = (find, repl) => {
+  const shape = x => (Array.isArray(x) ? `an array of ${x.length}` : typeof x)
+  const pairs = typeof find === 'string' && typeof repl === 'string' ? [[find, repl]]
+    : Array.isArray(find) && Array.isArray(repl) && find.length >= 1 && find.length === repl.length ? find.map((f, i) => [f, repl[i]]) : null
+  if (!pairs) throw new Error(`malformed mutant: find is ${shape(find)}, replace is ${shape(repl)} (two strings, or two arrays of equal length ≥ 1)`)
+  for (const [f, r] of pairs) {
+    if (typeof f !== 'string' || f === '' || typeof r !== 'string' || r === f)
+      throw new Error(`malformed edit: find ${typeof f === 'string' ? JSON.stringify(f.slice(0, 50)) : typeof f} → replace ${typeof r === 'string' ? JSON.stringify(r.slice(0, 50)) : typeof r} (a non-empty find string and a replacement string that differs from it)`)
+  }
+  return pairs
+}
+/** A mutant's edits applied in order to `src` (LF), each find counted in the text as it stands after the edits before
+ *  it (review MH-4: an earlier edit may remove, duplicate or precede a later find): `problems` names every edit whose
+ *  find does not occur exactly once there; `text` is the mutated file the run writes. Replacements are inserted
+ *  verbatim — a function replacer, so '$&', '$$', '$`' and "$'" are never expanded (review MH-5). Throws on a malformed
+ *  mutant (editsOf). */
+function dryRun(src, find, repl) {
+  const problems = []
+  let text = src
+  editsOf(find, repl).forEach(([fs, rs], i) => {
+    const n = text.split(fs).length - 1
+    if (n !== 1) { problems.push(`edit ${i + 1}: find occurs ${n}× in the text as it stands (${JSON.stringify(fs.slice(0, 50))})`); return }
+    text = text.replace(fs, () => rs)
+  })
+  return { text, problems }
+}
 // the two hygiene checks every GPU gate prints last (anchored: physics checks may be named "… on the GPU: …")
 const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ errors)/
 // the checks a set's CLEAN control is known to fail, by exact label (header: known control failures)
 const MAY_FAIL = { wallShear: ['W1c validity, sheet along z'] }
 const labelOf = l => l.slice(2).split(':')[0].trim()
+/** A check line's value: its text after the label (after the first ':'). */
+const valueOf = l => { const i = l.indexOf(':'); return i < 0 ? '' : l.slice(i + 1).trim() }
 /** The verdict of one gate run from its stdout, stderr and exit status. `mayFail` absent: the rule every set had before
- *  2026-09-30 (usable = passed). Present: see the header — `usable` for a control, CAUGHT only outside the list. */
+ *  2026-09-30 (usable = passed). Present: see the header — `usable` for a control, CAUGHT only outside the list.
+ *  `verdict` is that classification; `score` is what the harness prints and tallies (header, attribution): INVALID,
+ *  else NOT-ATTRIBUTABLE for a listed set whose listed checks are stale, else the verdict. `listed`: the listed lines'
+ *  marks and values as printed (never compared). */
 function judge(out, stderr, status, mayFail) {
   const checks = out.split('\n').filter(l => l.startsWith('✓') || l.startsWith('✗'))
   const hygiene = checks.filter(l => HYGIENE.test(l))
@@ -251,38 +311,43 @@ function judge(out, stderr, status, mayFail) {
   // closing handles AFTER the verdict is printed, which would turn a pass into a non-zero exit
   const passed = /: PASS \(\d+\/\d+\)/.test(out)
   const hygieneOk = hygiene.length >= 2 && hygiene.every(l => l.startsWith('✓'))
-  let verdict, usable = passed, note = ''
+  let verdict, usable = passed, note = '', stale = [], listedText = ''
   if (!mayFail) verdict = passed ? 'SURVIVED' : failed.length && hygieneOk ? 'CAUGHT' : 'INVALID'
   else {
     const outside = physicsFailed.filter(l => !mayFail.includes(labelOf(l)))
     const listed = mayFail.map(label => ({ label, fails: physicsFailed.filter(l => labelOf(l) === label).length, passes: checks.filter(l => l.startsWith('✓') && labelOf(l) === label).length }))
-    const stale = listed.filter(x => x.fails !== 1 || x.passes !== 0)
+    stale = listed.filter(x => x.fails !== 1 || x.passes !== 0)
     const printed = /: (PASS|FAIL) \(\d+\/\d+\)/.test(out)
     usable = printed && hygieneOk && outside.length === 0 && stale.length === 0
     failed = outside.map(l => l.slice(2, 40).trim())
     verdict = !printed || !hygieneOk ? 'INVALID' : outside.length ? 'CAUGHT' : 'SURVIVED'
     if (stale.length) note = `listed check not failed exactly once: ${stale.map(x => `${x.label} (✗ ${x.fails}, ✓ ${x.passes})`).join('; ')}`
+    listedText = mayFail.map(label => {
+      const lines = checks.filter(l => labelOf(l) === label).map(l => `${l[0]} ${JSON.stringify(valueOf(l))}`)
+      return `${mayFail.length > 1 ? `${label}: ` : ''}${lines.join(' ') || 'absent'}`
+    }).join(' | ')
   }
   const err = (stderr || '').split('\n').find(l => /Error/.test(l)) ?? ''
   const why = verdict !== 'INVALID' ? '' : hygiene.filter(l => l.startsWith('✗')).map(l => l.slice(2, 110)).join(' | ')
     || (err ? `crash: ${err.slice(0, 100)}` : `no verdict (exit ${status})`)
-  return { passed, usable, verdict, failed, why, note }
+  const score = verdict === 'INVALID' ? 'INVALID' : stale.length ? 'NOT-ATTRIBUTABLE' : verdict
+  return { passed, usable, verdict, score, failed, why, note, listed: listedText }
 }
-// --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
+// --check: every set's mutants dry-run against the WORKING TREE, then exit (run it before committing a shader edit). A
 // refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2
-// (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them.
+// (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them. A malformed
+// mutant or an edit whose find is not unique in the text as it stands (dryRun) is listed, never skipped.
 if (process.argv.includes('--check')) {
   let bad = 0, n = 0
   for (const k of Object.keys(MAY_FAIL)) if (!SETS[k]) { bad++; console.error(`MAY_FAIL names no set: ${k}`) }
   for (const [gate, list] of Object.entries(SETS)) for (const [f, find, repl, why] of list) {
     n++
     const src = readFileSync(join(REPO, f), 'utf8').replace(/\r\n/g, '\n')
-    for (const [fs] of editsOf(find, repl)) {
-      const c = src.split(fs).length - 1
-      if (c !== 1) { bad++; console.error(`${gate}: find occurs ${c}× in ${f} — ${why}`) }
-    }
+    let problems
+    try { problems = dryRun(src, find, repl).problems } catch (e) { problems = [e.message] }
+    if (problems.length) { bad++; console.error(`${gate}: ${why} (${f}) — ${problems.join('; ')}`) }
   }
-  console.log(`${n} mutants in ${Object.keys(SETS).length} sets: ${bad} without a unique match in the working tree`)
+  console.log(`${n} mutants in ${Object.keys(SETS).length} sets: ${bad} malformed or without a unique in-order match in the working tree`)
   process.exit(bad ? 1 : 0)
 }
 const GATE = (process.argv.find(a => a.startsWith('--gate=')) ?? '--gate=s31a').slice(7)
@@ -295,10 +360,9 @@ const stamp = readFileSync(stampFile, 'utf8')
 if (!/ clean\s*$/.test(stamp) || git('status', '--porcelain', '--', 'src') !== '') { console.error('✗ .gate-tree is not a clean gate tree — start scripts/gate-server.mjs first'); process.exit(2) }
 for (const [f, find, repl, why] of M) {
   const src = readFileSync(join(TREE, f), 'utf8').replace(/\r\n/g, '\n')
-  for (const [fs] of editsOf(find, repl)) {
-    const n = src.split(fs).length - 1
-    if (n !== 1) { console.error(`ABORT (${why}): find string occurs ${n}× in ${f}`); process.exit(2) }
-  }
+  let problems
+  try { problems = dryRun(src, find, repl).problems } catch (e) { problems = [e.message] }
+  if (problems.length) { console.error(`ABORT (${why}): ${f} — ${problems.join('; ')}`); process.exit(2) }
 }
 
 const LIST = MAY_FAIL[GATE]
@@ -312,19 +376,25 @@ function runGate() {
 }
 
 const control = runGate()
-console.log(`CONTROL (clean tree, ${GATE}): ${control.passed ? 'PASS' : 'FAIL'} (exit ${control.code})${control.failed.length ? `, FAIL ${control.failed.join(' | ')}` : ''}${LIST ? ` — known failures [${LIST.join(' | ')}]: control ${control.usable ? 'USABLE (it failed exactly those)' : `UNUSABLE${control.note ? ` (${control.note})` : control.verdict === 'INVALID' ? ` (${control.why})` : ' (a check outside the list failed)'}`}` : ''}`)
-let caught = 0, invalid = 0
+// a listed set's control: usable = it failed exactly the listed labels; their values are printed, not compared (MH-2)
+const usableText = () => `it failed exactly the listed labels — values not compared: ${control.listed}`
+console.log(`CONTROL (clean tree, ${GATE}): ${control.passed ? 'PASS' : 'FAIL'} (exit ${control.code})${control.failed.length ? `, FAIL ${control.failed.join(' | ')}` : ''}${LIST ? ` — known failures [${LIST.join(' | ')}]: control ${control.usable ? `USABLE (${usableText()})` : `UNUSABLE${control.note ? ` (${control.note})` : control.verdict === 'INVALID' ? ` (${control.why})` : ' (a check outside the list failed)'}`}` : ''}`)
+let caught = 0, invalid = 0, unattributed = 0
 if (control.usable) {
   for (const [f, find, repl, why] of M) {
     const path = join(TREE, f)
     const orig = readFileSync(path, 'utf8')
     try {
       writeFileSync(stampFile, stamp.replace(' clean', ' MUTATED'))
-      writeFileSync(path, editsOf(find, repl).reduce((s, [fs, rs]) => s.replace(fs, rs), orig.replace(/\r\n/g, '\n')))
+      // the text the abort loop's dry run validated (the same file, the same edits in order)
+      const { text, problems } = dryRun(orig.replace(/\r\n/g, '\n'), find, repl)
+      if (problems.length) throw new Error(`dry run (${why}): ${problems.join('; ')}`)
+      writeFileSync(path, text)
       const r = runGate()
-      if (r.verdict === 'CAUGHT') caught++
-      if (r.verdict === 'INVALID') invalid++
-      console.log(`${r.verdict.padEnd(8)} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || '-'}${r.why ? ` — ${r.why}` : ''}${r.note ? ` [${r.note}]` : ''}`)
+      if (r.score === 'CAUGHT') caught++
+      if (r.score === 'INVALID') invalid++
+      if (r.score === 'NOT-ATTRIBUTABLE') unattributed++
+      console.log(`${r.score.padEnd(8)} ${why.padEnd(46)} failed: ${r.failed.slice(0, 4).join(' | ') || '-'}${r.score === 'NOT-ATTRIBUTABLE' ? ` (raw ${r.verdict}; not counted)` : ''}${r.why ? ` — ${r.why}` : ''}${r.note ? ` [${r.note}]` : ''}${LIST ? ` {listed: ${r.listed}}` : ''}`)
     } finally {
       git('checkout', '--', f)
       writeFileSync(stampFile, stamp)
@@ -332,5 +402,5 @@ if (control.usable) {
   }
 }
 const clean = git('status', '--porcelain', '--', 'src') === ''
-console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught${invalid ? `, ${invalid} INVALID (a crash or WebGPU error is not a catch: rewrite the mutant so its kernel keeps every binding in use)` : ''}; control ${LIST ? (control.usable ? 'usable (failed exactly its known failures)' : 'UNUSABLE (results invalid)') : control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
+console.log(`\nmutations (${GATE}): ${caught}/${M.length} caught${unattributed ? `, ${unattributed} NOT-ATTRIBUTABLE (a listed check's state differed from the control's: never counted as caught)` : ''}${invalid ? `, ${invalid} INVALID (a crash or WebGPU error is not a catch: rewrite the mutant so its kernel keeps every binding in use)` : ''}; control ${LIST ? (control.usable ? `usable (${usableText()})` : 'UNUSABLE (results invalid)') : control.passed ? 'passed' : 'FAILED (results invalid)'}; tree restored clean: ${clean}`)
 process.exit(control.usable && caught === M.length && clean ? 0 : 1)

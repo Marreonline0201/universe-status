@@ -1054,6 +1054,14 @@ export class FluidEngine {
         return { matrixWorld: [...this.camera.matrixWorld.elements], projectionMatrixInverse: [...this.camera.projectionMatrixInverse.elements], rect: { left: r.left, top: r.top, width: r.width, height: r.height } }
       },
       configure: (opts) => {
+        // bench (review 2026-09-30 INT-5): the floor's wall shear on ('keulegan1938') or off (false) — the twin-run
+        // toggle, held by the backend across a tank resize. First, so that every refusal (a solver without the stage —
+        // MPM —, a value the backend does not take) comes before any other option is applied.
+        if (opts.wallShear !== undefined) {
+          const s = this.sim
+          if (!s?.setWallShear) throw new Error('wallShear: this solver has no wall-shear stage')
+          s.setWallShear(opts.wallShear)
+        }
         if (opts.clock) this.configureClock(opts.clock, opts.frameDt ?? MACRO_DT_S)
         if (opts.gravityMs2 !== undefined) this.setGravity(opts.gravityMs2)
         if (opts.resetClockStats) { this.droppedTime = 0; this.presentIntervals = []; this.frameAdvances = []; this.rtSamples = [] }
@@ -1112,6 +1120,8 @@ export class FluidEngine {
           gpuErrors: this.gpuErrors,
           gravityMs2: this.gravityMs2,
           stokes: this.sim?.stokesStatus?.() ?? null,
+          // the floor's wall shear as the live simulator runs it: 'on' | 'off' | 'guarded' (null: a solver without it)
+          wallShear: this.sim?.wallShearStatus?.() ?? null,
           tank: this.tank,
           presentIntervalP50: iv.length ? iv[Math.floor(iv.length * 0.5)] : null,
           presentIntervalP95: iv.length ? iv[Math.floor(iv.length * 0.95)] : null,

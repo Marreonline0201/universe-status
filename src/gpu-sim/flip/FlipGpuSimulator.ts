@@ -31,9 +31,10 @@
 //         ρ_f = ρ_ref·ppc·m̂_f/Σw and writes a_f = Δt/(ρ_f·dx²) (voxel or ghost surface); project reads the same a_f.
 //         Particles must carry m = ρ_material·dx³/ppc                                            (gate s35-gpu.mjs)
 //   FRICTION the floor's wall shear (setWallShear; off by default: nothing is encoded or allocated), first in
-//         encodeSubstepBody and skipped while the viscous path runs: wallShearScatter (floor-row particles into their
-//         floor cells: m̂, n, m̂·v_x, m̂·v_z, μ·m̂) → wallShearCell (Keulegan 1938 eq. 32 / the laminar film, Δv = −U_c·a/
-//         (1 + a)) → wallShearApply (v_x, v_z += Δv); flipRef.applyWallShear       (gate s38-gpu.mjs; spec FRICTION §3.3)
+//         encodeSubstepBody and skipped while the viscous path or the immiscible drift runs (wallShearRuns):
+//         wallShearScatter (floor-row particles into their floor cells: m̂, n, m̂·v_x, m̂·v_z, μ·m̂) → wallShearCell
+//         (Keulegan 1938 eq. 32 / the laminar film, Δv = −U_c·a/(1 + a)) → wallShearApply (v_x, v_z += Δv);
+//         flipRef.applyWallShear                                                  (gate s38-gpu.mjs; spec FRICTION §3.3)
 //
 // State is SI in window-local metres (S3N-5), particles are structure-of-arrays (S3N-9):
 //   pos  vec4 (x, y, z m, 0)          vel vec4 (v m/s, m̂ = mass / (ρ_ref·dx³))
@@ -172,7 +173,13 @@ export const LO_SCALE = 4096
  *  WALL_SHEAR_RE_CROSS; 'darcyTest' τ = ρ_c·(f/8)·U² and 'constantTest' τ = tau exist for the gates only. μ per particle
  *  is its composition's entry of the viscosity solver's table (the page uploads it whatever viscosityActive is); a sim
  *  without that solver keeps its own: `muTable` (Pa·s per composition id) over `muDefault` (default water at 20 °C,
- *  NIST), which is also the μ of an id past the table. */
+ *  NIST), which is also the μ of an id past the table.
+ *  setWallShear refuses (review wf_fbc58c55-116 M1/M2, 2026-09-30): a law outside WALL_SHEAR_LAW_ID (an absent one
+ *  too); darcyTest without a finite f, constantTest without a finite tau (no sign rule: f < 0 and τ < 0 are the gates'
+ *  sign-flip controls); `muTable` or `muDefault` on a sim with the viscosity solver; without it, a `muDefault` or a
+ *  `muTable` entry that is not finite and > 0. The kernels cannot refuse (a shader cannot throw): on a sim with the
+ *  solver, an id whose μ was never uploaded reads that table's 0 — ν_c = 0, so τ = 0 — yet its cell is still counted
+ *  as acted and laminar (branch 1). Non-vacuity must therefore read `booked` > 0, as every s38-gpu stage-on check does. */
 export interface FlipWallShear {
   wall: 'y-'
   law: 'keulegan1938' | 'darcyTest' | 'constantTest'
@@ -187,6 +194,10 @@ export const WALL_SHEAR_NEWTON = 6
 /** Bytes of the stage's uniform (wallShearCommon.wgsl WallShearParams); i32 words per floor cell of its accumulator
  *  (hi: mass, momentum x, momentum z, μ·m̂, count; the four remainders); u32 words of its log. */
 const WS_PARAMS_BYTES = 64, WS_WORDS = 9, WS_STATS_WORDS = 8
+/** wallShearCell.wgsl's law ids (LAW_KEULEGAN, LAW_DARCY, LAW_CONSTANT). A Map, so that an unknown name — 'constructor'
+ *  or 'toString' too, which a plain object would answer from its prototype — finds nothing and setWallShear refuses it
+ *  (review M2: the old ternary ran any unknown name as constantTest with τ = 0). */
+const WALL_SHEAR_LAW_ID: ReadonlyMap<string, number> = new Map([['keulegan1938', 0], ['darcyTest', 1], ['constantTest', 2]])
 
 export interface FlipParticleInit {
   /** Window-local metres. */
@@ -666,22 +677,35 @@ export class FlipGpuSimulator {
 
   /** The stage as set (null: off). */
   get wallShear(): FlipWallShear | null { return this.ws ? { ...this.ws.cfg } : null }
-  /** The stage runs while set and not guarded off: never while the viscous path runs — the predicate budgetState()
-   *  reports as `viscous`; the page sets viscosityActive = maxν ≥ VISCOUS_RUN_NU, the CPU's anyViscousLiquid rule —
-   *  whose liquids' walls are already no-slip (spec §3.2). */
-  get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) }
+  /** The stage runs while set and not guarded off; budgetState() reports this predicate, so the dispatch budget follows.
+   *  Guarded off:
+   *  - while the viscous path runs (the predicate budgetState() reports as `viscous`): its walls are no-slip. The page
+   *    sets viscosityActive = maxν ≥ VISCOUS_RUN_NU, in parity with the CPU's anyViscousLiquid rule; a sim without the
+   *    solver, or with viscosityActive false, runs the stage on any liquid;
+   *  - while the immiscible drift runs (immiscibleActive; review INT-7, prereg R-D 2026-09-30): the drift's forcing
+   *    excludes the wall stress (spec §3.5), so the stage stays off until an immiscible floor gate exists (open item 4).
+   *  Side walls, the lid and solids stay free-slip. */
+  get wallShearRuns(): boolean { return this.ws !== null && !(this.viscosityActive && !!this.viscositySolver) && !this.immActive }
 
   /** Set, change or (null) clear the floor's wall shear. Off by default, and off nothing is encoded or allocated, so the
-   *  solver is the one without it. The log (readWallShearStats) starts empty at the first set and survives a change. */
+   *  solver is the one without it. Every refusal (FlipWallShear) throws before anything is allocated or changed. The log
+   *  (readWallShearStats) starts empty at the first set and survives a change; resetWallShearStats and resetDiagnostics
+   *  clear it. */
   setWallShear(w: FlipWallShear | null): void {
     if (!w) {
       if (this.ws) { for (const b of [this.ws.acc, this.ws.cell, this.ws.stats, this.ws.params, this.ws.ownMu]) b?.destroy(); this.ws = null }
       return
     }
     if (w.wall !== 'y-') throw new Error(`FlipGpuSimulator: wall shear on ${w.wall} is not sourced (the floor 'y-' only)`)
+    const law = WALL_SHEAR_LAW_ID.get(w.law)
+    if (law === undefined) throw new Error(`FlipGpuSimulator: unknown wall-shear law ${JSON.stringify(w.law)} (${[...WALL_SHEAR_LAW_ID.keys()].join(', ')})`)
     if (w.law === 'darcyTest' && !Number.isFinite(w.f)) throw new Error('FlipGpuSimulator: the darcyTest law needs f')
     if (w.law === 'constantTest' && !Number.isFinite(w.tau)) throw new Error('FlipGpuSimulator: the constantTest law needs tau')
     if (w.muTable && this.viscositySolver) throw new Error("FlipGpuSimulator: the wall shear reads the viscosity solver's μ table — set μ there (setMuTable)")
+    if (w.muDefault !== undefined && this.viscositySolver) throw new Error("FlipGpuSimulator: the wall shear reads the viscosity solver's μ table, where an id never uploaded reads 0 — muDefault is not used there; set μ with setMuTable")
+    const muOk = (x: number) => Number.isFinite(x) && x > 0
+    if (w.muDefault !== undefined && !muOk(w.muDefault)) throw new Error(`FlipGpuSimulator: wall-shear muDefault ${w.muDefault} Pa·s is not finite and > 0`)
+    if (w.muTable) for (let i = 0; i < w.muTable.length; i++) if (!muOk(w.muTable[i])) throw new Error(`FlipGpuSimulator: wall-shear muTable[${i}] = ${w.muTable[i]} Pa·s is not finite and > 0`)
     const d = this.device, L = this.layout, cells = L.nx * L.nz, muDefault = w.muDefault ?? 1.001596e-3
     if (!this.ws) {
       const S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST, R = GPUBufferUsage.COPY_SRC
@@ -712,7 +736,7 @@ export class FlipGpuSimulator {
     // WallShearParams: the law and its constants, the accumulator's fixed-point scales (mass and μ·m̂ at MASS_SCALE,
     // momentum at MOM_SCALE, spec §3.3), kA = dx²/massUnit
     const b = new ArrayBuffer(WS_PARAMS_BYTES), u = new Uint32Array(b), f = new Float32Array(b)
-    u[0] = w.law === 'keulegan1938' ? 0 : w.law === 'darcyTest' ? 1 : 2; u[1] = WALL_SHEAR_NEWTON
+    u[0] = law; u[1] = WALL_SHEAR_NEWTON
     f[2] = w.f ?? 0; f[3] = w.tau ?? 0; f[4] = KEULEGAN_AS; f[5] = KEULEGAN_B; f[6] = WALL_SHEAR_RE_CROSS; f[7] = muDefault
     f[8] = MASS_SCALE; f[9] = 1 / MASS_SCALE
     f[10] = MOM_SCALE; f[11] = 1 / MOM_SCALE
@@ -738,13 +762,17 @@ export class FlipGpuSimulator {
     if (this.count > 0) this.dispatch(encoder, 'wallShearApply', ws.bg.apply, this.count, 64)
   }
 
-  /** The stage's log since it was set or last reset: applications, cells acted on, of those the cells with Δv ≠ 0
-   *  (a non-zero booked impulse), laminar-branch cells, the largest |τ| (Pa). */
+  /** The stage's log since it was set or last reset (resetWallShearStats, resetDiagnostics): applications, cells acted
+   *  on, of those the cells with Δv ≠ 0 (a non-zero booked impulse), laminar-branch cells, the largest |τ| (Pa). The
+   *  counters are u32, so they count modulo 2³² (review M4): cells and booked wrap after 2³²/4096 ≈ 1.05 M applications
+   *  of a fully wetted 64×64 floor — 2.4 h at 2 substeps per frame and 60 frames/s — and after 38 min on an 88² floor at
+   *  4 substeps. Take a window's count as the delta (b − a) >>> 0, or reset per scene. */
   async readWallShearStats(): Promise<{ applications: number; cells: number; booked: number; laminar: number; tauMax: number }> {
     if (!this.ws) throw new Error('FlipGpuSimulator: the wall shear is not set')
     const b = await this.readBuffer(this.ws.stats, 4 * WS_STATS_WORDS), u = new Uint32Array(b), f = new Float32Array(b)
     return { applications: u[0], cells: u[1], booked: u[2], laminar: u[3], tauMax: f[4] }
   }
+  /** Clear the stage's log (resetDiagnostics calls it; a no-op while the stage is off). */
   resetWallShearStats(): void { if (this.ws) this.device.queue.writeBuffer(this.ws.stats, 0, new Uint32Array(WS_STATS_WORDS)) }
   /** Per floor cell (i + nx·k), the last application: Δv_x, Δv_z (m/s), τ (Pa), branch (0 not acted on, 1 laminar,
    *  2 eq. 32, 3 a test law). */
@@ -1136,10 +1164,13 @@ export class FlipGpuSimulator {
     if (data.valid) q.writeBuffer(this.validBuf[which], 0, data.valid)
   }
 
+  /** Zero the diagnostic counters, both solvers' sticky faults and the wall-shear stage's log (review M4: the page's
+   *  per-scene reset and the stage log's must be one). */
   resetDiagnostics(): void {
     this.device.queue.writeBuffer(this.diagBuf, 0, new Uint32Array(DIAG_WORDS))
     if (this.solver) this.device.queue.writeBuffer(this.solver.buffers.faults, 0, new Uint32Array(4))
     if (this.psiSolver) this.device.queue.writeBuffer(this.psiSolver.buffers.faults, 0, new Uint32Array(4))
+    this.resetWallShearStats()
   }
 
   async readDiagnostics(): Promise<FlipDiagnostics> {

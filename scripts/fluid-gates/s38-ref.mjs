@@ -6,9 +6,11 @@
 // and the guard in step()).
 //
 //   node scripts/fluid-gates/s38-ref.mjs                    (every section)
-//   node scripts/fluid-gates/s38-ref.mjs --only=W1b,W1aK     (sections W0a, W0b, W1a, W1aK, W1b, W1c, W1d, comma-separated;
-//                                                            s38-mutations.mjs runs the sections of the checks each
-//                                                            mutant must fail)
+//   node scripts/fluid-gates/s38-ref.mjs --only=W1b,W1aK     (sections W0a, W0b, W0c, W1a, W1aK, W1b, W1c, W1d,
+//                                                            comma-separated; s38-mutations.mjs runs the sections of
+//                                                            the checks each mutant must fail)
+//   node scripts/fluid-gates/s38-ref.mjs --only=W0a --w0a-pinned   (W0a plus its recorded one-time comparison against
+//                                                            7b248dc4 — see W0a; any other argument is refused)
 //
 // Criteria fixed 2026-09-30, written here before this file's first run. Every oracle is computed HERE: the Keulegan
 // constants a_s = 5.5, b = 2.5 (eq. 13–14) and the branch crossing Re_c are this file's own literals and bisection (never
@@ -21,20 +23,36 @@
 // every in-file control run in the same run. The controls that are defects of flipRef itself (the spec's W3 CPU table) run in
 // s38-mutations.mjs: one find/replace per run on a copy of src, this gate run against the copy (FLUID_REF_SRC).
 // Every stage-on check asserts non-vacuity from the stage's own log (spec §4: Σ|booked| > 0 and cells acted on > 0;
-// s34-ref.mjs:124 "an unknown name would run nothing and print PASS").
+// s34-ref.mjs:143 "an unknown name would run nothing and print PASS").
 // Solver options: s34-ref's (the ghost-fluid solver with the density projection, pressure 1e-6 / ψ 1e-5 unless a scene
 // says otherwise; s34scenes' column() uses 1e-5 / 1e-4). The scene builders are imported from lib/s34scenes.mjs, never
 // copied (spec §3.6: a copy of the harness would drift from A2g's own).
 //
-// W0a  off = the pre-stage solver [spec §4 W0a; §3.2 "bit-identical to HEAD"; the x11 gate-option pattern "two scenes,
-//      0 differing words"]. The solver at 7b248dc4 — the stage's parent (the pre-stage solver) — is extracted with
-//      `git archive 7b248dc4 src` into a temp dir and loaded beside the tree's. With the option ABSENT, after each scene
-//      every 64-bit word of the particle state (pos, vel, c, mass) equals 7b248dc4's: 0 differing words. Scenes: (column)
-//      the A2 gated column — s34scenes column(): a = H = 0.6 m, 12 cells of 5 cm, the 72-cell run-out, the gate lifted at
-//      4.53 m/s — for A2g's own run (T ≤ 1.5767 + 0.55); (pool) a still pool at rest, 16 × 3 × 16 cells of 3.63/64 m
-//      (the P1 CPU pool, FR/spec/regress_test_p.mjs: 16 × 8 × 16 grid, mulberry32(11), tolerances 1e-5 / 1e-4), 1 s at
-//      Δt = 1/120. In-file control (must FAIL): the same two scenes with the option ON (keulegan1938) differ from
-//      7b248dc4 in ≥ 1 word each.
+// W0a  off = the tree with the stage never entered [spec §4 W0a; §3.2 "bit-identical to HEAD"; the x11 gate-option
+//      pattern "two scenes, 0 differing words"]. REDESIGNED 2026-09-30 (review wf_fbc58c55-116 GATE-F2; pre-registered
+//      2026-09-30 before its first run): the check had compared the tree with 7b248dc4's solver, so any later arithmetic
+//      change on the column or pool path turned it red with the stage untouched — and s38-mutations then scored a
+//      default-on stage SURVIVED (the stale pin made the whole label unusable). Same-tree checks now, per scene, with the
+//      option ABSENT: (W0a.<scene>.entered) a subclass counting applyWallShear's entries records 0, and the stage's log is
+//      empty; (W0a.<scene>) every 64-bit word of the particle state (pos, vel, c, mass) equals that of the same tree
+//      with its single call statement `this.applyWallShear(p, dt)` (flipRef.ts step()) replaced by a no-op: 0 differing
+//      words. The strip copy is the tree under test (the src root FLUID_REF_SRC names, default src/) copied whole to a
+//      temp dir — flipRef imports ../composition, which imports ../fluid-engine — and the statement must occur exactly
+//      once in its flipRef.ts, else the gate aborts (no verdict, never a pass). The counting subclass runs the stage when
+//      entered, as the tree does, so its run IS the tree's run. Scenes: (column) the A2 gated column — s34scenes column():
+//      a = H = 0.6 m, 12 cells of 5 cm, the 72-cell run-out, the gate lifted at 4.53 m/s — for A2g's own run
+//      (T ≤ 1.5767 + 0.55); (pool) a still pool at rest, 16 × 3 × 16 cells of 3.63/64 m (the P1 CPU pool,
+//      FR/spec/regress_test_p.mjs: 16 × 8 × 16 grid, mulberry32(11), tolerances 1e-5 / 1e-4), 1 s at Δt = 1/120.
+//      In-file control ctl:W0a.<scene> (must FAIL W0a): the option ON (keulegan1938) differs from the stripped copy in
+//      ≥ 1 word AND acts (its log: cells acted on > 0 and Σ|booked| > 0) — the old control required only a difference,
+//      which an unrelated edit alone supplies. The 7b248dc4 comparison (git archive 7b248dc4 src, option absent, 0
+//      differing words and an empty log) is the recorded one-time certification of 227ad9bb (FR/cert/s38-ref_227ad9bb.out:
+//      0 words, both scenes); it runs only with --w0a-pinned, as W0apin.<scene>, named by no mutant. Proof, pre-registered:
+//      copy A — the tree with P2G's `this.mom[a][slot] += w * m * val` reassociated to `w * (m * val)`, an arithmetic
+//      change unrelated to the stage (the review's copy A: 132,052 / 87,356 differing words vs 7b248dc4) — FAILS
+//      W0apin.column and W0apin.pool and PASSES W0a.<scene>.entered, W0a.<scene> and ctl:W0a.<scene>; copy A plus the
+//      default-on mutant (s38-mutations 'stage runs when the option is absent') FAILS W0a.<scene>.entered and W0a.<scene>
+//      in both scenes.
 // W0b  the viscous guard [spec §4 W0b; §3.2 "The guard"]. With the option ON: 0 differing words against the same run
 //      with the option off, and the stage's log EMPTY (the stage never ran). Scene: s34scenes column() a = 4 cells of
 //      5 cm, n² = 1, a 12-cell run-out, instant release (the floor liquid moves), 20 steps of A2's Δt = 3.673 ms.
@@ -46,6 +64,36 @@
 //      either one alone passes (auto) and (off); (force) is what sees the first clause. In-file control (must FAIL):
 //      (off) with the ν rule removed — a subclass whose anyViscousLiquid() returns false: the stage runs, the state
 //      differs. The whole guard removed from flipRef (the spec's control) runs in s38-mutations.
+//      (drift) ADDED 2026-09-30 (fix round, prereg R-D, review INT-7; pre-registered 2026-09-30 before its first run):
+//      until an immiscible floor gate exists (FRICTION open item 4: the drift's forcing excludes the wall stress, §3.5)
+//      the stage does not run in a step where the immiscible drift is active — flipRef immiscibleDriftActive: options.
+//      immiscible set and two of the particles' materials forming a pair whose σ is > 0, the only case in which driftFlux
+//      can give a particle slip (otherwise every drift is exactly 0). Scene, fixed positions and no rng draws: the W0b
+//      column's block (4 × 4 × 8 cells of 5 cm, 8 ppc) at the sub-cell centres, water at 20 °C (ρ 998.2072, μ NIST)
+//      except sub-cell 7 of each floor cell (y = 0.75·dx) — mercury at 20 °C (HG_RHO_20C, μ(20 °C)), one drop per floor
+//      cell — every particle carrying its μ (p.mu); immiscible { props of both, σ from interfacialTension.ts: water–
+//      mercury 0.375 N/m }; instant release, 20 steps of A2's Δt. Pass W0b.drift: the option ON vs off, both with the
+//      drift, 0 differing words, and the stage's log empty (the stage never ran); the drift's most dispersed particles in
+//      a step are printed (reported). Sensitivity control ctl:W0b.drift (must FAIL W0b.drift's criterion): the same scene
+//      with the drift off (immiscible absent) and the option ON acts — its log: cells acted on > 0 and Σ|booked| > 0.
+//      The clause removed from flipRef runs in s38-mutations ('drift guard removed', named W0b.drift).
+// W0c  the refusals [review wf_fbc58c55-116 M1 (CPU-F1) and M2 (CPU-F3); prereg R-M; pre-registered 2026-09-30 before
+//      its first run]. Each case must throw its OWN refusal — an Error whose message is that refusal's (a throw of any
+//      other kind, or no throw, fails the case) — and each line's must-run twins must run. (ctor) the constructor with
+//      the stage on refuses viscosityDefault NaN, 0, −1e-3 and ∞; it constructs with the class default and with 1e-3,
+//      and with the option absent even at NaN (stage-off construction untouched). (particle) applyWallShear on one water
+//      floor cell of 4 row-0 particles at fixed positions (1, 0, 0.3) m/s refuses its particle 2 at μ NaN, 0, −1e-3 and
+//      ∞, naming particle 2 (per particle: a μ = 0 particle in a water cell leaves ν_c > 0, so only this check sees
+//      it); with every μ water's it runs and acts. (guard) step() on the same set plus one particle in row 2 refuses
+//      that particle at μ NaN and ∞ through anyViscousLiquid (the prereg's rule: a non-finite μ; the binning never sees
+//      row 2); with every μ water's the step runs. (tau) keuleganTau(3, 0.01, ν, 998.2072) refuses ν NaN, 0, −1e-6 and
+//      ∞, and ρ NaN and 0 (ν water's); its Newton loop ending unconverged (the converged flag) is refused at U = ∞ and at
+//      h = ∞; the water call runs. (law) the constructor refuses the laws 'Keulegan1938' and 'darcytest' and an absent
+//      law (not in WALL_SHEAR_LAW_NAMES), darcyTest without f or with f NaN, constantTest without tau or with tau ∞, and
+//      a parameter the law does not take (keulegan1938 with f, darcyTest with tau, constantTest with f); it constructs
+//      keulegan1938, darcyTest f = 0.02 and f = −0.02, constantTest τ = 10 and τ = −10 Pa (no sign rule: −0.02 and −10
+//      are the certified sign-flip controls). Controls (must FAIL; s38-mutations, each named W0c): μ refusal removed
+//      (binning), μ refusal removed (guard), ν refusal removed (keuleganTau), law refusal removed.
 // W1a  the operator, Darcy test law [spec §4 W1a; FR/revise/revise_numbers.py §4]. dx = 0.05 m, ppc 8, a 5 × 4 floor
 //      (6 interior, 14 wall-adjacent cells), each cell holding n_c = 3 row-0 particles at jittered positions (h_c = 3dx/8
 //      = 18.75 mm), water ρ = 998.2072; U0 = 3 m/s along x (set x) and, separately, along z (set z); darcyTest f = 0.02
@@ -78,6 +126,16 @@
 //      (Newton stop 1e-14; 1e-16 measured) and > 4 decades below the smallest defect's miss (6.1e-5, ρ_ref for ρ_c).
 //      Controls (must FAIL; s38-mutations): h_c := dx, floor row y < dx/2, rows 0–1 binning, Δv on rows 0–1, kx2, 3-D
 //      |U|, v_p *= f, ρ_ref for ρ_c, sign flipped, τ×2, constant ν (the μ cell).
+//      W1aK.default ADDED 2026-09-30 (review GATE-F1; pre-registered 2026-09-30 before its first run): the set above
+//      gives every particle p.mu, so it exercises only that half of μ_c's source; every dam-break and pool run takes the
+//      other, viscosityDefault (makeParticles allocates no p.mu; p.mu is all-or-none — the stage tests the array). Two
+//      more applications, each on a clone of the set's pre-state with p.mu REMOVED, on a fresh solver: (a)
+//      viscosityDefault absent — the oracle's μ is this file's NIST 20 °C water (materialData LIQUIDS.water.viscosity(20),
+//      as W20), never the solver's viscosityDefault; (b) viscosityDefault from lib/s34solver waterOpts(waterAt(
+//      materialData, 25)) — the oracle's μ is LIQUIDS.water.viscosity(25). The oracle is the one above with that μ for
+//      every particle. Pass, each arm: assert (1) at 1e-9·|U_c| and assert (4) at 1e-9 relative, cells acted on > 0.
+//      Controls (must FAIL; s38-mutations, named W1aK.default): the fallback read as viscosityThreshold (a ν, 94× low)
+//      fails both arms; the fallback as the literal 1.001596e-3 fails arm (b).
 // W1b  the law [spec §4 W1b; revise_numbers.py §2–3; FR/gatedesign/w1b_extra_point.out]: keuleganTau(U, h, ν, ρ) alone,
 //      water at 20 °C (ρ = 998.2072, μ = 1.001596e-3: NIST, materialData.ts:88), ν = μ/ρ. (resid) on the turbulent
 //      branch by this file's rule (Re_h ≥ Re_c) of the grid U ∈ [1e-3, 5] m/s (41 geometric) × h ∈ [1 mm, 0.0567 m] (21
@@ -95,7 +153,12 @@
 //      fails, the branches differing there by 0.654e-6 — and the two sides differ by ≤ 1e-5 relative (smooth branches:
 //      (1 + 1.654e-6) − (1 − 1e-6) = 2.65e-6, d ln τ_turb/d ln U = 2U⁺/(U⁺ + b) = 1.654 at the crossing). Controls
 //      (must FAIL; s38-mutations): the h⁺ < 11.5 switch, kx2, max() in place of the rule, the laminar branch dropped,
-//      b = 5.75 with ln, ν := μ.
+//      b = 5.75 with ln, ν := μ. Refusals (2026-09-30, fix round; pre-registered 2026-09-30 before its first run): since
+//      keuleganTau refuses (throws) a Newton loop that ends unconverged, a law whose Newton runs where its start lies
+//      below the monotone range (the laminar branch removed: Re_h < 2.77) refuses those VALID inputs; W1b counts such a
+//      refusal as that point's failure — its τ and u* are NaN, which fails every W1b criterion — instead of crashing the
+//      gate, and the line appends the refusals' count and first message. No criterion changes; with no refusal every
+//      line prints as before.
 // W1c  the sheet [spec §4 W1c; FR/spec/sheet_test_p.mjs/.out]: a one-cell sheet — s34scenes block() over the first row
 //      of a 400 × 8 × 4 tank of 5 cm cells (20 m), 8 ppc, mulberry32(7) — at u0 = 2 m/s along x, and the same sheet
 //      along z (4 × 8 × 400); s34-ref's solver at tolerances 1e-5 / 1e-4, gravity −y, Δt = 3.673 ms, the full step,
@@ -139,28 +202,37 @@
 //      prints its loss line VOID — uncertified, counted neither pass nor fail (the gate still fails on the validity
 //      line). W1c.z is VOID. W1c.x passes as pre-registered (mulberry32(7)), and that pass belongs to one realization:
 //      4 of 8 x seeds exceed the same bound. The lead's pre-registered study (D1–D3, FR/impl/A/w1c_drift_study.out; the
-//      control in W1c's scene): the solver is x/z-symmetric — each seed-7 set run transposed on the other grid
-//      reproduces its native drift to ≤ 6e-10 pp (x7 −0.1666 %, z7 +0.2796 %) — and tolerance-independent (at the
+//      control in W1c's scene): the solver is x/z-symmetric to f64 rounding, not bit-exact — each seed-7 set run
+//      transposed on the other grid reproduces its native drift (x7 −0.1666 %, z7 +0.2796 %): the max drift to 2.2e-14
+//      pp, the t = 1 s Lagrangian drift to 5.8e-10 pp, the window-mean series to ≤ 4.4e-9 pp at every step (corrected
+//      2026-09-30, review REC-F2: the "≤ 6e-10 pp" printed here was the largest of five checkpoints, and the twins'
+//      particle states differ from step 1) — and tolerance-independent (at the
 //      class defaults 1e-9 / 1e-9: z7 +0.2796 %, x7 −0.1668 %). Seeds 1–8: max |drift| 0.057–0.552 % (x) and
 //      0.196–0.488 % (z), > 0.2 % in 11 of 16; the Lagrangian drift at t = 1 s is positive in 13 of 16 (mean ≈ +0.18 %;
 //      x +0.08 %, 5/8; z +0.28 %, 8/8) — a realization spread plus a common positive gain, whose candidate (untested) is
 //      the spec's open item 7.3, the thin-film momentum gain. The spec's "restored" 0.2 % rested on one realization
 //      read at four checkpoints (z only at t = 1 s).
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { loadTsModules, REPO } from './lib/loadTs.mjs'
 import { s34Scenes, mulberry32, G, DX, RHO } from './lib/s34scenes.mjs'
 import { ETSIN600_FRONT } from './lib/s34metrics.mjs'
+import { waterAt, waterOpts } from './lib/s34solver.mjs'
 
-const SECTIONS = ['W0a', 'W0b', 'W1a', 'W1aK', 'W1b', 'W1c', 'W1d']
-const ONLY = process.argv.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
+const SECTIONS = ['W0a', 'W0b', 'W0c', 'W1a', 'W1aK', 'W1b', 'W1c', 'W1d']
+const ARGS = process.argv.slice(2)
+// a misspelt argument would silently skip what it names: every argument is --only=… or --w0a-pinned
+for (const a of ARGS) if (!a.startsWith('--only=') && a !== '--w0a-pinned') throw new Error(`unknown argument "${a}" (accepted: --only=<sections>, --w0a-pinned)`)
+const ONLY = ARGS.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
 // an unknown name would run nothing and print PASS (s34-ref.mjs review 2026-09-29): refuse it
 for (const s of ONLY ?? []) if (!SECTIONS.includes(s)) throw new Error(`--only: unknown section "${s}" (${SECTIONS.join(', ')})`)
 const run = name => !ONLY || ONLY.includes(name)
+const PINNED = ARGS.includes('--w0a-pinned')
+if (PINNED && !run('W0a')) throw new Error('--w0a-pinned: the pinned comparison is part of W0a, which this run does not include')
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
-const { gridLayout, flipRef, mat } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts` })
+const { gridLayout, flipRef, mat, it } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, it: `${SRC}/composition/interfacialTension.ts` })
 const { GridLayout, FaceType } = gridLayout
 const { FlipRef, makeParticles, keuleganTau, CellLabel } = flipRef
 const TREE = { FlipRef, GridLayout, FaceType, makeParticles }
@@ -214,36 +286,65 @@ const RE_C = (() => {
 /** The spec's law (§2.4): the film 3μU/h below Re_c, ρu*² (eq. 32) above. */
 const tauOracle = (U, h, nu, rho) => (!(U > 0) ? 0 : U * h / nu < RE_C ? 3 * rho * nu * U / h : rho * ustarBisect(U, h, nu) ** 2)
 
-// ── W0a: off = the pre-stage solver ──────────────────────────────────────────────────────────────────────────────────
+// ── W0a: off = the tree with the stage never entered ─────────────────────────────────────────────────────────────────
 if (run('W0a')) {
-  const HEAD_SHA = '7b248dc4'   // the stage's parent: its src IS the pre-stage solver (pinned; the stage is not in it)
-  const dir = mkdtempSync(join(tmpdir(), 's38-head-'))
-  let head
+  const modulesAt = async root => {
+    const r = root.replaceAll('\\', '/'), m = await loadTsModules({ gridLayout: `${r}/sim-ref/gridLayout.ts`, flipRef: `${r}/sim-ref/flipRef.ts` })
+    return { FlipRef: m.flipRef.FlipRef, GridLayout: m.gridLayout.GridLayout, FaceType: m.gridLayout.FaceType, makeParticles: m.flipRef.makeParticles }
+  }
+  // the strip copy: the tree under test copied whole (flipRef imports ../composition, which imports ../fluid-engine), its
+  // one call statement of the stage replaced by a no-op — exactly one occurrence, or the gate aborts (no verdict)
+  const CALL = 'this.applyWallShear(p, dt)'
+  const stripDir = mkdtempSync(join(tmpdir(), 's38-strip-'))
+  let STRIP
   try {
-    const a = spawnSync('git', ['archive', '--format=tar', '-o', join(dir, 'head.tar'), HEAD_SHA, 'src'], { cwd: REPO, encoding: 'utf8' })
-    if (a.status !== 0) throw new Error(`W0a: git archive ${HEAD_SHA} src failed (${a.status}): ${a.stderr}`)
-    const t = spawnSync('tar', ['-xf', 'head.tar'], { cwd: dir, encoding: 'utf8' })
-    if (t.status !== 0) throw new Error(`W0a: tar -xf failed (${t.status}): ${t.stderr ?? t.error}`)
-    const root = join(dir, 'src').replaceAll('\\', '/')
-    head = await loadTsModules({ gridLayout: `${root}/sim-ref/gridLayout.ts`, flipRef: `${root}/sim-ref/flipRef.ts` })
-  } finally { rmSync(dir, { recursive: true, force: true }) }
-  const HEAD = { FlipRef: head.flipRef.FlipRef, GridLayout: head.gridLayout.GridLayout, FaceType: head.gridLayout.FaceType, makeParticles: head.flipRef.makeParticles }
+    cpSync(resolve(REPO, SRC), join(stripDir, 'src'), { recursive: true })
+    const f = join(stripDir, 'src', 'sim-ref', 'flipRef.ts'), text = readFileSync(f, 'utf8'), n = text.split(CALL).length - 1
+    if (n !== 1) throw new Error(`W0a: the stage's call statement "${CALL}" occurs ${n}× in ${SRC}/sim-ref/flipRef.ts (exactly 1 required) — no strip copy, no verdict`)
+    writeFileSync(f, text.replace(CALL, () => '{ /* W0a: stripped */ }'))
+    STRIP = await modulesAt(join(stripDir, 'src'))
+  } finally { rmSync(stripDir, { recursive: true, force: true }) }
+  // --w0a-pinned: the recorded one-time certification of 227ad9bb against 7b248dc4, the stage's parent (the pre-stage solver)
+  const HEAD_SHA = '7b248dc4'
+  let HEAD = null
+  if (PINNED) {
+    const dir = mkdtempSync(join(tmpdir(), 's38-head-'))
+    try {
+      const a = spawnSync('git', ['archive', '--format=tar', '-o', join(dir, 'head.tar'), HEAD_SHA, 'src'], { cwd: REPO, encoding: 'utf8' })
+      if (a.status !== 0) throw new Error(`W0a: git archive ${HEAD_SHA} src failed (${a.status}): ${a.stderr}`)
+      const t = spawnSync('tar', ['-xf', 'head.tar'], { cwd: dir, encoding: 'utf8' })
+      if (t.status !== 0) throw new Error(`W0a: tar -xf failed (${t.status}): ${t.stderr ?? t.error}`)
+      HEAD = await modulesAt(join(dir, 'src'))
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+  /** The tree's solver counting applyWallShear's entries. Entered, it runs the stage as the tree does — so its run IS the
+   *  tree's run — except that with the option absent it only counts (the tree would fail on the missing option). */
+  class Entered extends FlipRef {
+    entries = 0
+    applyWallShear(p, dt) { this.entries++; if (this.wallShear) super.applyWallShear(p, dt) }
+  }
   const tauEnd = ETSIN600_FRONT.T.at(-1) + 0.55   // A2g's own run (s34-ref A2g)
-  const column = (M, extra) => { const r = scenes(M).column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd, gate: 4.53, extra }); return { p: r.p, steps: r.ts.length, log: r.sim.wallShearLog ?? null } }
+  const column = (M, extra) => { const r = scenes(M).column({ aCells: 12, n2: 1, h: 0.05, nx: 72, tauEnd, gate: 4.53, extra }); return { p: r.p, steps: r.ts.length, sim: r.sim } }
   const pool = (M, extra) => {
     const L = new M.GridLayout({ nx: 16, ny: 8, nz: 16, dx: DX })
     const sim = new M.FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...extra }))
     const p = scenes(M).block([0, 0, 0], [15, 2, 15], mulberry32(11))
     let steps = 0
     for (let s = 1; s * (1 / 120) <= 1 + 1e-9; s++) { sim.step(p, 1 / 120); steps++ }
-    return { p, steps, log: sim.wallShearLog ?? null }
+    return { p, steps, sim }
   }
   for (const [name, desc, scene] of [['column', 'the A2 gated column (12 cells of 5 cm, gate 4.53 m/s, A2g\'s run)', column], ['pool', 'the still pool (16 × 3 × 16 cells of 3.63/64 m, 1 s at 1/120)', pool]]) {
-    const ref = snap(scene(HEAD, {}).p)
-    const off = scene(TREE, {}), dOff = diffWords(snap(off.p), ref)
-    check(dOff === 0 && off.log.length === 0, `W0a.${name}`, `off = the pre-stage solver: ${desc}, ${off.steps} steps, ${off.p.n} particles, option absent vs ${HEAD_SHA}: ${dOff} differing words of the particle state (0); stage log entries ${off.log.length} (0)`)
-    const on = scene(TREE, { wallShear: SHEAR_ON }), dOn = diffWords(snap(on.p), ref), acted = on.log.reduce((s, e) => s + e.cells, 0)
-    control(dOn > 0, `W0a.${name}`, `the option ON (keulegan1938) must differ from ${HEAD_SHA}: ${dOn} differing words (> 0 required); cells acted on over the run ${acted}`)
+    const ref = snap(scene(STRIP, {}).p)
+    const off = scene({ ...TREE, FlipRef: Entered }, {}), offLog = off.sim.wallShearLog, dOff = diffWords(snap(off.p), ref)
+    check(off.sim.entries === 0 && offLog.length === 0, `W0a.${name}.entered`, `the stage never entered, option absent: ${desc}, ${off.steps} steps, ${off.p.n} particles: applyWallShear entries ${off.sim.entries} (0); stage log entries ${offLog.length} (0)`)
+    check(dOff === 0, `W0a.${name}`, `off = the same tree with its call statement ${CALL} stripped (a no-op): ${desc}, option absent: ${dOff} differing words of the particle state (0)`)
+    const on = scene(TREE, { wallShear: SHEAR_ON }), dOn = diffWords(snap(on.p), ref), onLog = on.sim.wallShearLog
+    const acted = onLog.reduce((s, e) => s + e.cells, 0), booked = onLog.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0)
+    control(dOn > 0 && acted > 0 && booked > 0, `W0a.${name}`, `the option ON (keulegan1938) must differ from the stripped copy AND act: ${dOn} differing words (> 0); cells acted on over the run ${acted} (> 0), Σ|booked| ${e2(booked)} N·s (> 0)`)
+    if (HEAD) {
+      const dPin = diffWords(snap(off.p), snap(scene(HEAD, {}).p))
+      check(dPin === 0 && offLog.length === 0, `W0apin.${name}`, `(--w0a-pinned: the recorded certification of 227ad9bb) off = the pre-stage solver: ${desc}, option absent vs ${HEAD_SHA}: ${dPin} differing words of the particle state (0); stage log entries ${offLog.length} (0)`)
+    }
   }
 }
 
@@ -267,6 +368,102 @@ if (run('W0b')) {
   const [, , extra, rho] = arms[1]
   const ctl = colRun(NoNuRule, { ...extra, wallShear: SHEAR_ON }, rho), d = diffWords(ctl.p, offRuns.off.p), acted = ctl.log.reduce((s, e) => s + e.cells, 0)
   control(d > 0 && acted > 0, 'W0b.off', `the ν rule removed (anyViscousLiquid → false) on the (off) arm must let the stage run: ${d} differing words, cells acted on ${acted} (> 0 each required)`)
+  // (drift) the stage guarded off while the immiscible drift is active (fix round 2026-09-30, R-D)
+  const WAT = { rho: RHO, mu: mat.LIQUIDS.water.viscosity(20) }, MERC = { rho: mat.HG_RHO_20C, mu: mat.LIQUIDS.mercury.viscosity(20) }
+  const KEYS = ['water', 'mercury'], SIGMA = it.interfacialTension('water', 'mercury')
+  const IMM = { props: { 0: WAT, 1: MERC }, sigma: (x, y) => it.interfacialTension(KEYS[x], KEYS[y]) }
+  const driftRun = extra => {
+    const h = 0.05, L = new GridLayout({ nx: 12, ny: 12, nz: 8, dx: h })
+    const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...extra }))
+    const p = scenes().block([0, 0, 0], [3, 3, 7], () => 0.5, 8, h)   // the W0b column's block at the sub-cell centres: no rng draws
+    p.mu = new Float64Array(p.n)
+    for (let q = 0; q < p.n; q++) {
+      const hg = q % 8 === 7 && p.pos[3 * q + 1] < h   // sub-cell 7 of each floor cell: one mercury drop per floor cell
+      const liq = hg ? MERC : WAT
+      p.material[q] = hg ? 1 : 0; p.mass[q] = liq.rho * h ** 3 / 8; p.mu[q] = liq.mu
+    }
+    let dispersed = 0
+    for (let s = 0; s < 20; s++) { sim.step(p, DT_A2); dispersed = Math.max(dispersed, sim.lastDrift.dispersed) }
+    return { p: snap(p), n: p.n, log: sim.wallShearLog, dispersed }
+  }
+  const dOn = driftRun({ immiscible: IMM, wallShear: SHEAR_ON }), dOff = driftRun({ immiscible: IMM }), dd = diffWords(dOn.p, dOff.p)
+  check(dd === 0 && dOn.log.length === 0, 'W0b.drift', `the drift guard: water + mercury (σ ${SIGMA} N/m; ν ${e2(WAT.mu / WAT.rho)} and ${e2(MERC.mu / MERC.rho)} m²/s, both < VISCOUS_RUN_NU), the immiscible drift active (at most ${dOff.dispersed} dispersed particles in a step): option ON vs off, 20 steps, ${dOn.n} particles: ${dd} differing words (0); stage log entries ${dOn.log.length} (0: the stage never ran)`)
+  const dCtl = driftRun({ wallShear: SHEAR_ON })
+  const cActed = dCtl.log.reduce((s, e) => s + e.cells, 0), cBooked = dCtl.log.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0)
+  control(cActed > 0 && cBooked > 0, 'W0b.drift', `sensitivity: the same scene with the drift off (immiscible absent) and the option ON must act: cells acted on ${cActed}, Σ|booked| ${e2(cBooked)} N·s (> 0 each)`)
+}
+
+// ── W0c: the refusals ────────────────────────────────────────────────────────────────────────────────────────────────
+if (run('W0c')) {
+  const said = e => String(e?.message ?? e).split('\n')[0].slice(0, 100)
+  /** 'refused' when fn throws an Error whose message matches `re` (its own refusal); otherwise what happened. */
+  const refuses = (fn, re) => { try { fn() } catch (e) { return e instanceof Error && re.test(e.message) ? 'refused' : `threw another error (${said(e)})` } return 'ran' }
+  const runs = fn => { try { fn(); return 'ran' } catch (e) { return `threw (${said(e)})` } }
+  const line = (label, what, cases) => check(cases.every(([, got, want]) => got === want), label, `${what}: ${cases.map(([c, got, want]) => `${c} ${got}${got === want ? '' : ` ✗ (${want} required)`}`).join('; ')}`)
+  const h = 0.05, VP = h ** 3 / 8, L1 = new GridLayout({ nx: 2, ny: 4, nz: 2, dx: h }), WMU = mat.LIQUIDS.water.viscosity(20)
+  // (ctor)
+  const make = extra => () => new FlipRef(L1, opts({ wallShear: SHEAR_ON, ...extra }))
+  line('W0c.ctor', 'the constructor with the stage on refuses viscosityDefault not finite and > 0', [
+    ...[NaN, 0, -1e-3, Infinity].map(v => [`viscosityDefault ${v}`, refuses(make({ viscosityDefault: v }), /^FlipRef: wall shear needs viscosityDefault finite and > 0/), 'refused']),
+    ['the class default', runs(make({})), 'ran'],
+    ['viscosityDefault 1e-3', runs(make({ viscosityDefault: 1e-3 })), 'ran'],
+    ['option absent with viscosityDefault NaN (stage-off construction untouched)', runs(() => new FlipRef(L1, opts({ viscosityDefault: NaN }))), 'ran'],
+  ])
+  // one water floor cell (0, 0): 4 row-0 particles at the sub-cell centres, (1, 0, 0.3) m/s; particle 4 in row 2 at rest
+  const cellSet = (q, mu) => {
+    const p = makeParticles(5)
+    p.mu = new Float64Array(5).fill(WMU)
+    ;[[0.25, 0.25, 0.25], [0.75, 0.25, 0.25], [0.25, 0.25, 0.75], [0.75, 0.25, 0.75], [0.5, 2.5, 0.5]].forEach((x, r) => {
+      p.pos.set(x.map(v => v * h), 3 * r); p.mass[r] = RHO * VP
+      if (r < 4) p.vel.set([1, 0, 0.3], 3 * r)
+    })
+    if (q !== null) p.mu[q] = mu
+    return p
+  }
+  // (particle)
+  const apply = (q, mu) => () => {
+    const sim = new FlipRef(L1, opts({ wallShear: SHEAR_ON }))
+    sim.applyWallShear(cellSet(q, mu), 1 / 240)
+    if (!(sim.wallShearLog.at(-1).cells > 0)) throw new Error('the stage did not act')
+  }
+  line('W0c.particle', 'applyWallShear refuses a floor-row particle whose μ is not finite and > 0, naming it (one water cell of 4)', [
+    ...[NaN, 0, -1e-3, Infinity].map(v => [`particle 2 μ ${v}`, refuses(apply(2, v), /^FlipRef\.applyWallShear: particle 2 on the floor row has μ/), 'refused']),
+    ['every μ water\'s (acts)', runs(apply(null)), 'ran'],
+  ])
+  // (guard)
+  const stepOnce = (q, mu) => () => new FlipRef(L1, opts({ wallShear: SHEAR_ON })).step(cellSet(q, mu), 1 / 240)
+  line('W0c.guard', 'step() refuses a particle whose μ is not finite through anyViscousLiquid (particle 4, in row 2: the binning never sees it)', [
+    ...[NaN, Infinity].map(v => [`particle 4 μ ${v}`, refuses(stepOnce(4, v), /^FlipRef\.anyViscousLiquid: particle 4 has μ/), 'refused']),
+    ['every μ water\'s', runs(stepOnce(null)), 'ran'],
+  ])
+  // (tau)
+  const RW = 998.2072, NUW = 1.001596e-3 / RW, kt = (U, hh, nu, rho) => () => keuleganTau(U, hh, nu, rho)
+  line('W0c.tau', 'keuleganTau(3, 0.01, ν, ρ) refuses ν and ρ not finite and > 0, and a Newton loop that ends unconverged', [
+    ...[NaN, 0, -1e-6, Infinity].map(v => [`ν ${v}`, refuses(kt(3, 0.01, v, RW), /^keuleganTau: ν = /), 'refused']),
+    ...[NaN, 0].map(v => [`ρ ${v}`, refuses(kt(3, 0.01, NUW, v), /^keuleganTau: ρ = /), 'refused']),
+    ['U ∞', refuses(kt(Infinity, 0.01, NUW, RW), /^keuleganTau: Newton on eq\. 32 did not converge/), 'refused'],
+    ['h ∞', refuses(kt(3, Infinity, NUW, RW), /^keuleganTau: Newton on eq\. 32 did not converge/), 'refused'],
+    ['water (ν 1.0034e-6, ρ 998.2072)', runs(kt(3, 0.01, NUW, RW)), 'ran'],
+  ])
+  // (law)
+  const withLaw = ws => () => new FlipRef(L1, opts({ wallShear: ws }))
+  line('W0c.law', 'the constructor refuses a law outside WALL_SHEAR_LAW_NAMES, a missing or non-finite parameter, and a parameter the law does not take; no sign rule', [
+    ["law 'Keulegan1938'", refuses(withLaw({ wall: 'y-', law: 'Keulegan1938' }), /is not one of/), 'refused'],
+    ["law 'darcytest' (f 0.02)", refuses(withLaw({ wall: 'y-', law: 'darcytest', f: 0.02 }), /is not one of/), 'refused'],
+    ['no law', refuses(withLaw({ wall: 'y-' }), /is not one of/), 'refused'],
+    ['darcyTest without f', refuses(withLaw({ wall: 'y-', law: 'darcyTest' }), /darcyTest needs a finite f/), 'refused'],
+    ['darcyTest f NaN', refuses(withLaw({ wall: 'y-', law: 'darcyTest', f: NaN }), /darcyTest needs a finite f/), 'refused'],
+    ['constantTest without tau', refuses(withLaw({ wall: 'y-', law: 'constantTest' }), /constantTest needs a finite tau/), 'refused'],
+    ['constantTest tau ∞', refuses(withLaw({ wall: 'y-', law: 'constantTest', tau: Infinity }), /constantTest needs a finite tau/), 'refused'],
+    ['keulegan1938 with f', refuses(withLaw({ wall: 'y-', law: 'keulegan1938', f: 0.02 }), /keulegan1938 takes no parameter "f"/), 'refused'],
+    ['darcyTest with tau', refuses(withLaw({ wall: 'y-', law: 'darcyTest', f: 0.02, tau: 10 }), /darcyTest takes no parameter "tau"/), 'refused'],
+    ['constantTest with f', refuses(withLaw({ wall: 'y-', law: 'constantTest', tau: 10, f: 0.02 }), /constantTest takes no parameter "f"/), 'refused'],
+    ['keulegan1938', runs(withLaw(SHEAR_ON)), 'ran'],
+    ['darcyTest f 0.02', runs(withLaw({ wall: 'y-', law: 'darcyTest', f: 0.02 })), 'ran'],
+    ['darcyTest f −0.02 (the sign-flip control)', runs(withLaw({ wall: 'y-', law: 'darcyTest', f: -0.02 })), 'ran'],
+    ['constantTest τ 10', runs(withLaw({ wall: 'y-', law: 'constantTest', tau: 10 })), 'ran'],
+    ['constantTest τ −10 (the sign-flip control)', runs(withLaw({ wall: 'y-', law: 'constantTest', tau: -10 })), 'ran'],
+  ])
 }
 
 // ── W1a: the operator, Darcy test law ────────────────────────────────────────────────────────────────────────────────
@@ -323,25 +520,31 @@ if (run('W1aK')) {
     for (let a = 0; a < 3; a++) p.c[a].set([2 * rng() - 1, 2 * rng() - 1, 2 * rng() - 1], 3 * q)
   })
   const pre = snap(p), preMu = Float64Array.from(p.mu)
+  /** The oracle, from a particle state s (pos, vel, mass) and each particle's μ: the floor row ⌊y/dx⌋ = 0 binned into
+   *  (⌊x/dx⌋, ⌊z/dx⌋), every wetted cell's M_c, n_c, U_c and Δv_c (the header's rule), and Σ M_c·Δv_c. */
+  const oracleOf = (s, muOf) => {
+    const cells = new Map()
+    for (let q = 0; q < s.mass.length; q++) {
+      if (Math.floor(s.pos[3 * q + 1] / h) !== 0) continue
+      const key = Math.floor(s.pos[3 * q] / h) + NX * Math.floor(s.pos[3 * q + 2] / h)
+      const e = cells.get(key) ?? { M: 0, n: 0, Px: 0, Pz: 0, Mmu: 0, KE0: 0, KE1: 0 }
+      const m = s.mass[q]
+      e.M += m; e.n++; e.Px += m * s.vel[3 * q]; e.Pz += m * s.vel[3 * q + 2]; e.Mmu += m * muOf(q); e.KE0 += 0.5 * m * (s.vel[3 * q] ** 2 + s.vel[3 * q + 2] ** 2)
+      cells.set(key, e)
+    }
+    let oBx = 0, oBz = 0, aMax = 0, lam = 0, turb = 0
+    for (const e of cells.values()) {
+      const Vc = e.n * VP, hc = Math.min(h, Vc / (h * h)), rho = e.M / Vc, Ux = e.Px / e.M, Uz = e.Pz / e.M, U = Math.hypot(Ux, Uz)
+      const mu = e.Mmu / e.M, nu = mu / rho, Re = U * hc / nu
+      const tau = Re < RE_C ? 3 * mu * U / hc : rho * ustarBisect(U, hc, nu) ** 2
+      const a = dt * tau * h * h / (e.M * U)
+      Object.assign(e, { U, dvx: -Ux * a / (1 + a), dvz: -Uz * a / (1 + a) })
+      oBx += e.M * e.dvx; oBz += e.M * e.dvz; aMax = Math.max(aMax, a); if (Re < RE_C) lam++; else turb++
+    }
+    return { cells, oBx, oBz, aMax, lam, turb }
+  }
   // the oracle, from the pre-state
-  const cells = new Map()
-  for (let q = 0; q < p.n; q++) {
-    if (Math.floor(p.pos[3 * q + 1] / h) !== 0) continue
-    const key = Math.floor(p.pos[3 * q] / h) + NX * Math.floor(p.pos[3 * q + 2] / h)
-    const e = cells.get(key) ?? { M: 0, n: 0, Px: 0, Pz: 0, Mmu: 0, KE0: 0, KE1: 0 }
-    const m = p.mass[q]
-    e.M += m; e.n++; e.Px += m * p.vel[3 * q]; e.Pz += m * p.vel[3 * q + 2]; e.Mmu += m * preMu[q]; e.KE0 += 0.5 * m * (p.vel[3 * q] ** 2 + p.vel[3 * q + 2] ** 2)
-    cells.set(key, e)
-  }
-  let oBx = 0, oBz = 0, aMax = 0, lam = 0, turb = 0
-  for (const e of cells.values()) {
-    const Vc = e.n * VP, hc = Math.min(h, Vc / (h * h)), rho = e.M / Vc, Ux = e.Px / e.M, Uz = e.Pz / e.M, U = Math.hypot(Ux, Uz)
-    const mu = e.Mmu / e.M, nu = mu / rho, Re = U * hc / nu
-    const tau = Re < RE_C ? 3 * mu * U / hc : rho * ustarBisect(U, hc, nu) ** 2
-    const a = dt * tau * h * h / (e.M * U)
-    Object.assign(e, { U, dvx: -Ux * a / (1 + a), dvz: -Uz * a / (1 + a) })
-    oBx += e.M * e.dvx; oBz += e.M * e.dvz; aMax = Math.max(aMax, a); if (Re < RE_C) lam++; else turb++
-  }
+  const { cells, oBx, oBz, aMax, lam, turb } = oracleOf(pre, q => preMu[q])
   info('W1aK.set', `${p.n} particles, ${cells.size} wetted floor cells (${turb} on the turbulent branch, ${lam} laminar by this file's Re_c ${RE_C.toFixed(7)}), a_max ${e2(aMax)}; cell 13 ${HG.name} (ρ ${HG.rho}, μ ${HG.mu}), cell 2 ${W20.name} + ${W60.name} (μ ${W20.mu} / ${W60.mu})`)
   // the stage, once, through its real entry point
   sim.applyWallShear(p, dt)
@@ -370,13 +573,43 @@ if (run('W1aK')) {
   check(bookErr <= 1e-9, 'W1aK.4', `the log's booked impulse (${e2(log.impX)}, ${e2(log.impZ)}) N·s vs Σ M_c·Δv_c (${e2(oBx)}, ${e2(oBz)}): relative ${e2(bookErr)} (≤ 1e-9)`)
   check(log.cells > 0, 'W1aK.5', `cells acted on ${log.cells} (> 0; the oracle's wetted cells ${cells.size}), laminar-branch cells ${log.laminar}`)
   check(cells.size > 0 && grew === 0, 'W1aK.6', `energy: floor cells whose tangential kinetic energy grew across the stage ${grew} of ${cells.size} checked (0, > 0 checked; 1e-12 relative)`)
+  // W1aK.default (GATE-F1): the same pre-state with p.mu removed — μ_c from viscosityDefault, the μ of every dam-break run
+  const W25 = waterAt(mat, 25)
+  const arms = [
+    ['a', `viscosityDefault absent (the class default); the oracle's μ ${W20.name}, ${W20.mu} Pa·s (never the solver's)`, {}, W20.mu],
+    ['b', `viscosityDefault from waterOpts(waterAt(materialData, 25)); the oracle's μ water 25 °C, ${mat.LIQUIDS.water.viscosity(25)} Pa·s`, { viscosityDefault: waterOpts(W25).viscosityDefault }, mat.LIQUIDS.water.viscosity(25)],
+  ]
+  for (const [arm, desc, extra, muArm] of arms) {
+    const p2 = makeParticles(pre.mass.length)   // a clone of the pre-state without p.mu
+    p2.pos.set(pre.pos); p2.vel.set(pre.vel); p2.mass.set(pre.mass)
+    for (let a = 0; a < 3; a++) p2.c[a].set(pre.c[a])
+    const sim2 = new FlipRef(L, opts({ wallShear: SHEAR_ON, ...extra }))
+    const o = oracleOf(pre, () => muArm)
+    sim2.applyWallShear(p2, dt)
+    const lg = sim2.wallShearLog.at(-1)
+    let worst2 = 0, n0 = 0
+    for (let q = 0; q < p2.n; q++) {
+      if (Math.floor(pre.pos[3 * q + 1] / h) !== 0) continue
+      n0++
+      const e = o.cells.get(Math.floor(pre.pos[3 * q] / h) + NX * Math.floor(pre.pos[3 * q + 2] / h))
+      const ex = Math.abs((p2.vel[3 * q] - pre.vel[3 * q]) - e.dvx) / e.U, ez = Math.abs((p2.vel[3 * q + 2] - pre.vel[3 * q + 2]) - e.dvz) / e.U
+      worst2 = Math.max(worst2, Number.isFinite(ex) ? ex : Infinity, Number.isFinite(ez) ? ez : Infinity)
+    }
+    const book2 = Math.hypot(lg.impX - o.oBx, lg.impZ - o.oBz) / Math.hypot(o.oBx, o.oBz)
+    check(worst2 <= 1e-9 && book2 <= 1e-9 && lg.cells > 0, `W1aK.default.${arm}`, `μ_c from viscosityDefault (p.mu absent), ${desc}: (1) ${n0} row-0 particles, worst |Δv − Δv_c|/|U_c| ${e2(worst2)} (≤ 1e-9); (4) booked (${e2(lg.impX)}, ${e2(lg.impZ)}) vs Σ M_c·Δv_c (${e2(o.oBx)}, ${e2(o.oBz)}) N·s, relative ${e2(book2)} (≤ 1e-9); cells acted on ${lg.cells} (> 0)`)
+  }
 }
 
 // ── W1b: the law ─────────────────────────────────────────────────────────────────────────────────────────────────────
 if (run('W1b')) {
   const rho = 998.2072, mu = 1.001596e-3, nu = mu / rho
-  const tauOf = (U, hh) => keuleganTau(U, hh, nu, rho)
+  // a refusal of these valid inputs (keuleganTau throws) is that point's failure, never a crash of the gate (header): its
+  // τ and u* are NaN, which fails every criterion below; a line with refusals names them (without one it prints as before)
+  const refusals = []
+  const tauOf = (U, hh) => { try { return keuleganTau(U, hh, nu, rho) } catch (e) { refusals.push(`(${U}, ${hh}): ${String(e?.message ?? e).slice(0, 110)}`); return { tau: NaN, ustar: NaN, laminar: false } } }
+  const refusedSince = k => (refusals.length > k ? `; keuleganTau REFUSED ${refusals.length - k} of these valid inputs (first ${refusals[k]})` : '')
   // (resid)
+  const r0 = refusals.length
   let nTurb = 0, worst = 0
   for (let a = 0; a <= 40; a++) for (let b = 0; b <= 20; b++) {
     const U = 1e-3 * (5 / 1e-3) ** (a / 40), hh = 1e-3 * (0.0567 / 1e-3) ** (b / 20)
@@ -384,20 +617,24 @@ if (run('W1b')) {
     const us = tauOf(U, hh).ustar, r = Math.abs(U - us * (AS - BK + BK * Math.log(hh * us / nu))) / U
     nTurb++; worst = Math.max(worst, Number.isFinite(r) ? r : Infinity)
   }
-  check(nTurb > 0 && worst <= 1e-12, 'W1b.resid', `eq. 32 residual on the turbulent branch (Re_h ≥ ${RE_C.toFixed(4)}, this file's) of the grid U [1e-3, 5] m/s × h [1 mm, 0.0567 m], 41 × 21: ${nTurb} points, worst |U − u*(3.0 + 2.5·ln(h·u*/ν))|/U ${e2(worst)} (≤ 1e-12)`)
+  check(nTurb > 0 && worst <= 1e-12, 'W1b.resid', `eq. 32 residual on the turbulent branch (Re_h ≥ ${RE_C.toFixed(4)}, this file's) of the grid U [1e-3, 5] m/s × h [1 mm, 0.0567 m], 41 × 21: ${nTurb} points, worst |U − u*(3.0 + 2.5·ln(h·u*/ν))|/U ${e2(worst)} (≤ 1e-12)${refusedSince(r0)}`)
   // (ref)
+  const r1 = refusals.length
   const refs = [[3.25, 0.01, 0.152471658971, 1e-12, 23.20592848, 1e-8], [4.17, 0.0567, 0.1616324490019, 1e-13, 26.07821158, 1e-8]]
   const refOut = refs.map(([U, hh, us, uu, tau, tu]) => { const r = tauOf(U, hh); return { ok: Math.abs(r.ustar - us) <= 0.5 * uu && Math.abs(r.tau - tau) <= 0.5 * tu && !r.laminar, s: `u*(${U}, ${hh}) ${r.ustar.toPrecision(16)} (printed ${us}), τ ${r.tau.toPrecision(13)} Pa (printed ${tau})` } })
-  check(refOut.every(o => o.ok), 'W1b.ref', `turbulent references, each within half a unit of its last printed digit: ${refOut.map(o => o.s).join('; ')}`)
+  check(refOut.every(o => o.ok), 'W1b.ref', `turbulent references, each within half a unit of its last printed digit: ${refOut.map(o => o.s).join('; ')}${refusedSince(r1)}`)
   // (lam)
+  const r2 = refusals.length
   const lams = [[1e-3, 1e-3, 3.004788e-3], [0.03, 0.01, 9.014364e-3]]
   const lamOut = lams.map(([U, hh, tau]) => { const r = tauOf(U, hh); return { ok: Math.abs(r.tau - tau) <= 5e-10, s: `τ(${U}, ${hh}) ${r.tau.toPrecision(10)} Pa (printed ${tau}; Re_h ${(U * hh / nu).toFixed(1)})` } })
-  check(lamOut.every(o => o.ok), 'W1b.lam', `laminar references within 5e-10 Pa: ${lamOut.map(o => o.s).join('; ')}`)
+  check(lamOut.every(o => o.ok), 'W1b.lam', `laminar references within 5e-10 Pa: ${lamOut.map(o => o.s).join('; ')}${refusedSince(r2)}`)
   const HS = [1e-3, 2e-3, 6.25e-3, DX / 8, 1e-2, 2.5e-2, 5e-2, 0.0567]
   // (zero)
+  const r3 = refusals.length
   const zeros = HS.map(hh => tauOf(0, hh).tau)
-  check(zeros.every(t => t === 0), 'W1b.zero', `τ(0, h) at the ${HS.length} scan depths: ${[...new Set(zeros)].join(', ')} (0)`)
+  check(zeros.every(t => t === 0), 'W1b.zero', `τ(0, h) at the ${HS.length} scan depths: ${[...new Set(zeros)].join(', ')} (0)${refusedSince(r3)}`)
   // (scan)
+  const r4 = refusals.length
   let drops = 0, lowWorst = 0, crossWorst = 0, jumpWorst = 0, nonFinite = 0
   for (const hh of HS) {
     let prev = -Infinity
@@ -414,7 +651,7 @@ if (run('W1b')) {
     jumpWorst = Math.max(jumpWorst, Math.abs(tp / tm - 1))
   }
   const scanOk = drops === 0 && nonFinite === 0 && lowWorst <= 1e-12 && crossWorst <= 1e-9 && jumpWorst <= 1e-5
-  check(scanOk, 'W1b.scan', `U 1e-7 → 5 m/s, 4001 geometric points at h ${HS.map(x => (1000 * x).toPrecision(3)).join('/')} mm: decreases ${drops} (0), non-finite ${nonFinite} (0); |τ/τ_lam − 1| at U = 1e-7 ${e2(lowWorst)} (≤ 1e-12); at Re_h = Re_c(1 ∓ 1e-6) worst |τ/τ_branch − 1| ${e2(crossWorst)} (≤ 1e-9), jump |τ₊/τ₋ − 1| ${e2(jumpWorst)} (≤ 1e-5)`)
+  check(scanOk, 'W1b.scan', `U 1e-7 → 5 m/s, 4001 geometric points at h ${HS.map(x => (1000 * x).toPrecision(3)).join('/')} mm: decreases ${drops} (0), non-finite ${nonFinite} (0); |τ/τ_lam − 1| at U = 1e-7 ${e2(lowWorst)} (≤ 1e-12); at Re_h = Re_c(1 ∓ 1e-6) worst |τ/τ_branch − 1| ${e2(crossWorst)} (≤ 1e-9), jump |τ₊/τ₋ − 1| ${e2(jumpWorst)} (≤ 1e-5)${refusedSince(r4)}`)
 }
 
 // ── W1c: the sheet ───────────────────────────────────────────────────────────────────────────────────────────────────

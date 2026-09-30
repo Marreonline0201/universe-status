@@ -3,12 +3,16 @@
 // the stage-level tests run through the stage's own encode function, FlipGpuSimulator.encodeWallShear (the one
 // encodeSubstepBody calls first), against the analytic answer (W1a) and the f64 reference on identical f32 inputs
 // (W1a-K: flipRef.applyWallShear; W1b: flipRef.keuleganTau); W1c runs the real step() with substeps = 2; W0b is the
-// viscous guard's GPU part; A2 is ghost.ts's instant column with the stage on. Metrics only —
+// viscous guard's GPU part; A2 is ghost.ts's instant column with the stage on. Added 2026-09-30 by the review
+// wf_fbc58c55-116's fix round: W1a-K on the viscosity solver's μ table (the page's binding, M3), W1a-K.skip (GATE-F7),
+// W0c's refusals (M1/M2), W1g.reset (M4) and W0b's drift arm (INT-7). Metrics only —
 // scripts/fluid-gates/s38-gpu.mjs applies the pre-registered bounds.
 import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
 import { FlipRef, makeParticles, keuleganTau, WALL_SHEAR_RE_CROSS, type RefParticles } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator, type FlipParticleInit, type FlipWallShear } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { LIQUIDS } from '../../composition/materialData'
+import { interfacialTension } from '../../composition/interfacialTension'
+import { INCOMPRESSIBLE_NU_NUM } from '../../composition/liquidGate'
 import { DX, L_REF, TAU, mulberry32, submit, solverConfig, capFor } from './util'
 import { column } from './ghost'
 
@@ -74,8 +78,13 @@ export async function wallShearW1a(device: GPUDevice, o: { f?: number } = {}) {
  *  wall-adjacent cells, a μ table [water, mercury, ethanol] at 20 °C with an ethanol cell and a water/ethanol cell (ν_c
  *  = μ_c/ρ_c exercised), and the dense cell: 8 mercury particles at 11 m/s along x, Σm̂·v ≈ 149 > 128 — a momentum
  *  word at 2^24 would overflow there (spec §3.3), so the momentum word's scale is observable. The reference is
- *  flipRef.applyWallShear (f64) on the same f32 inputs. */
-export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}) {
+ *  flipRef.applyWallShear (f64) on the same f32 inputs.
+ *  Appended 2026-09-30 (review GATE-F7; after the pre-registered set, no rng draw): the zero-mean cell 40, whose two
+ *  floor-row particles make the unacted-cell check non-vacuous (unactedChecked).
+ *  `table` (review M3, 2026-09-30): 'own' (default) — a sim without the viscosity solver, the stage's own μ table;
+ *  'solver' — the page's binding: a sim WITH the viscosity solver (viscosityActive false; the stage is encoded directly),
+ *  μ uploaded to the solver's table (setMuTable) and none given to the stage. Same set, same reference. */
+export async function wallShearW1aK(device: GPUDevice, o: { seed?: number; table?: 'own' | 'solver' } = {}) {
   const rng = mulberry32(o.seed ?? 38)
   const h = DX, dt = 1 / 240, nx = 10, ny = 6, nz = 10, massUnit = 1000 * h ** 3
   const LQ = [liquid('water'), liquid('mercury'), liquid('ethanol')]
@@ -105,6 +114,14 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
         c: Array.from({ length: 9 }, () => 4 * (2 * r() - 1)), id: 0 })
     }
   }
+  // GATE-F7 (appended 2026-09-30, no rng draw): floor cell (i, k) = (0, 4), cell 40 — empty in the set above (0 floor-row
+  // particles, no row-1/2 particles) — gets two water particles at fixed positions with tangential velocities (+0.7,
+  // +0.2) m/s and their exact f32 negation; v_y and c are +0 (no −0 word). Their m̂·v terms cancel exactly, in the f64
+  // sums and in the fixed-point words (round() is odd), so U_c = 0 on both sides: the cell is not acted on and its two
+  // particles must come back bit-identical. The other cells' sums are integer adds of other particles: unchanged.
+  const ZERO_MEAN = 40, vz = [0.7, 0.2].map(Math.fround)
+  pts.push({ pos: [0.3 * h, 0.4 * h, 4.3 * h], vel: [vz[0], 0, vz[1]], c: Array(9).fill(0), id: 0 },
+    { pos: [0.7 * h, 0.6 * h, 4.7 * h], vel: [-vz[0], 0, -vz[1]], c: Array(9).fill(0), id: 0 })
   // identical inputs: f32 positions, velocities and c; masses m̂·massUnit so that the GPU's m̂ = f32(m/massUnit) is m̂
   const p: RefParticles = makeParticles(pts.length)
   p.mu = new Float64Array(pts.length)
@@ -127,11 +144,20 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
   const floorRow = (q: number) => Math.floor(p.pos[3 * q + 1] / h) === 0
   const cellOf = (q: number) => Math.min(nx - 1, Math.max(0, Math.floor(p.pos[3 * q] / h))) + nx * Math.min(nz - 1, Math.max(0, Math.floor(p.pos[3 * q + 2] / h)))
 
-  const gpu = new FlipGpuSimulator(device, { nx, ny, nz, dx: h, maxParticles: pts.length, lRef: L_REF, tauS: TAU })
+  const solver = o.table === 'solver'
+  const gpu = solver
+    ? await FlipGpuSimulator.create(device, { nx, ny, nz, dx: h, maxParticles: pts.length, lRef: L_REF, tauS: TAU, density: WATER.rho, projection: true, freeSurface: 'ghost', viscosity: true })
+    : new FlipGpuSimulator(device, { nx, ny, nz, dx: h, maxParticles: pts.length, lRef: L_REF, tauS: TAU })
   try {
     gpu.dt = dt
     gpu.setParticles(init)
-    gpu.setWallShear({ wall: 'y-', law: 'keulegan1938', muTable })
+    if (solver) {
+      // the page's binding: μ in the viscosity solver's table (the page uploads it whatever viscosityActive is), the
+      // viscous path off, no μ given to the stage (setWallShear refuses one on this sim)
+      gpu.viscositySolver!.setMuTable(muTable)
+      gpu.viscosityActive = false
+      gpu.setWallShear({ wall: 'y-', law: 'keulegan1938' })
+    } else gpu.setWallShear({ wall: 'y-', law: 'keulegan1938', muTable })
     gpu.writeParams()
     await submit(device, e => gpu.encodeWallShear(e))
     const vel = new Float32Array(await gpu.readBuffer(gpu.velBuf, 16 * pts.length))
@@ -140,15 +166,15 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
     const stats = await gpu.readWallShearStats()
     const vb = bits(vel), vib = bits(vIn), ab = bits(aff), cib = bits(cIn)
     // (1) floor-row particles: |v_GPU − v_ref| per tangential component / |U_c|; (2) rows ≥ 1: v and c bit-identical;
-    // (3) every particle's v_y, m̂ and c bit-identical
-    let worst = 0, worstAt = -1, floorN = 0, offRowChanged = 0, vyOrCChanged = 0, unactedMoved = 0
+    // (3) every particle's v_y, m̂ and c bit-identical; (4) floor-row particles of unacted cells: v bit-identical
+    let worst = 0, worstAt = -1, floorN = 0, offRowChanged = 0, vyOrCChanged = 0, unactedMoved = 0, unactedChecked = 0
     let bookX = 0, bookZ = 0, gBookX = 0, gBookZ = 0, spreadMax = 0, xSignal = 0, zSignal = 0
     for (let q = 0; q < pts.length; q++) {
       if (vb[4 * q + 1] !== vib[4 * q + 1] || vb[4 * q + 3] !== vib[4 * q + 3]) vyOrCChanged++
       for (let w = 0; w < 12; w++) if (ab[12 * q + w] !== cib[12 * q + w]) { vyOrCChanged++; break }
       if (!floorRow(q)) { if (vb[4 * q] !== vib[4 * q] || vb[4 * q + 2] !== vib[4 * q + 2]) offRowChanged++; continue }
       const e = field.get(cellOf(q))
-      if (!e) { if (vb[4 * q] !== vib[4 * q] || vb[4 * q + 2] !== vib[4 * q + 2]) unactedMoved++; continue }
+      if (!e) { unactedChecked++; if (vb[4 * q] !== vib[4 * q] || vb[4 * q + 2] !== vib[4 * q + 2]) unactedMoved++; continue }
       floorN++
       const Uc = Math.hypot(e.Ux, e.Uz)
       const err = Math.max(Math.abs(vel[4 * q] - p.vel[3 * q]), Math.abs(vel[4 * q + 2] - p.vel[3 * q + 2])) / Uc
@@ -171,13 +197,45 @@ export async function wallShearW1aK(device: GPUDevice, o: { seed?: number } = {}
     for (let q = 0; q < pts.length; q++) if (floorRow(q) && cellOf(q) === DENSE) denseSum += (p.mass[q] / massUnit) * Math.abs(vBefore[3 * q])
     const muCell = field.get(MIXED), etCell = field.get(ETHANOL)
     return {
-      particles: pts.length, floorRowChecked: floorN, worst, worstAt, worstCell: worstAt >= 0 ? cellOf(worstAt) : -1,
-      offRowChanged, vyOrCChanged, unactedMoved,
+      table: solver ? 'solver' : 'own', particles: pts.length, floorRowChecked: floorN, worst, worstAt, worstCell: worstAt >= 0 ? cellOf(worstAt) : -1,
+      offRowChanged, vyOrCChanged, unactedMoved, unactedChecked, zeroMeanActed: field.has(ZERO_MEAN),
       cellsRef: cpu.wallShearLog[0].cells, cellsGpu: stats.cells, applications: stats.applications, bookedNonZero: stats.booked,
       laminarRef: cpu.wallShearLog[0].laminar, laminarGpu: stats.laminar,
       pre: { spreadMax, aMax, laminar, turbulent, capped, denseSum, denseN: field.get(DENSE)?.n ?? 0, muMixed: muCell ? { mu: muCell.nu * muCell.rho, n: muCell.n } : null, muEthanol: etCell ? etCell.nu * etCell.rho : null },
       booked: { ref: [bookX, bookZ], gpu: [gBookX, gBookZ] }, tauRel, signal: { x: xSignal, z: zSignal },
     }
+  } finally { gpu.destroy() }
+}
+
+/** W1a-K.skip (review GATE-F7; pre-registered 2026-09-30 before its first run): a cell the stage skips must leave its
+ *  particles bit-identical even when its per-cell record still holds an earlier application's Δv. A pair of water
+ *  particles in floor cell (0, 0) of a 4×4×4 lab-dx tank, Δt = 1/240 s, Keulegan: at (+v, +v), v = (0.7, 0, 0.2) m/s,
+ *  one application acts on the cell and books a Δv; the pair rewritten to (+v, −v) — the exact f32 negation, v_y and c
+ *  +0 — cancels in the fixed-point sums (U_c = 0), so a second application must skip the cell: 0 cells acted in it and
+ *  the pair's pos, vel and c words bit-identical across it. */
+export async function wallShearW1aKSkip(device: GPUDevice) {
+  const h = DX, dt = 1 / 240, massUnit = 1000 * h ** 3, mhat = Math.fround(WATER.rho / 8000)
+  const v = [0.7, 0.2].map(Math.fround), plus: Vec3 = [v[0], 0, v[1]], minus: Vec3 = [-v[0], 0, -v[1]]
+  const pos: Vec3[] = [[0.3 * h, 0.4 * h, 0.3 * h], [0.7 * h, 0.6 * h, 0.7 * h]].map(x => x.map(Math.fround) as Vec3)
+  const pair = (second: Vec3): FlipParticleInit[] => pos.map((x, i) => ({ pos: x, vel: i === 0 ? plus : second, mass: mhat * massUnit, composition: 0, phase: 1, temperatureC: 20 }))
+  const gpu = new FlipGpuSimulator(device, { nx: 4, ny: 4, nz: 4, dx: h, maxParticles: 2, lRef: L_REF, tauS: TAU })
+  const words = async () => Promise.all(([[gpu.posBuf, 16], [gpu.velBuf, 16], [gpu.affBuf, 48]] as const).map(async ([b, n]) => new Uint32Array(await gpu.readBuffer(b, 2 * n))))
+  try {
+    gpu.dt = dt
+    gpu.setParticles(pair(plus))
+    gpu.setWallShear({ wall: 'y-', law: 'keulegan1938', muTable: new Float32Array([WATER.mu]) })
+    gpu.writeParams()
+    await submit(device, e => gpu.encodeWallShear(e))
+    const first = await gpu.readWallShearStats()
+    const rec = await gpu.readWallShearCells()
+    gpu.setParticles(pair(minus))
+    const before = await words()
+    await submit(device, e => gpu.encodeWallShear(e))
+    const after = await words(), second = await gpu.readWallShearStats()
+    let differing = 0, total = 0
+    before.forEach((a, i) => { total += a.length; for (let q = 0; q < a.length; q++) if (a[q] !== after[i][q]) differing++ })
+    return { first: { applications: first.applications, cells: first.cells, booked: first.booked, dv: [rec[0], rec[1]], tau: rec[2] },
+      second: { applications: second.applications - first.applications, cells: second.cells - first.cells, booked: second.booked - first.booked }, differing, total }
   } finally { gpu.destroy() }
 }
 
@@ -305,6 +363,108 @@ export async function wallShearW0b(device: GPUDevice, o: { viscous: boolean; fra
   let differing = 0, total = 0
   on.words.forEach((a, i) => { total += a.length; for (let q = 0; q < a.length; q++) if (a[q] !== off.words[i][q]) differing++ })
   return { viscous: o.viscous, frames, particles: init.length, nu: OIL.mu / OIL.rho, differing, total, stats: on.stats, budget: on.budget }
+}
+
+/** W0b's drift arm on the GPU (review INT-7, prereg R-D; pre-registered 2026-09-30 before its first run): the stage is
+ *  guarded off while the immiscible drift runs. Water over mercury at 20 °C (both ν < VISCOUS_RUN_NU: the page's case),
+ *  σ from the page's interfacialTension, the drift solver configured as the page configures it; a sim WITHOUT the
+ *  viscosity solver, so the viscous guard cannot be what keeps the stage off; 2 mercury rows under 2 water rows over an
+ *  8 × 8-cell floor patch, moving at (0.5, 0, 0.2) m/s; the same scene stepped with the stage set (keulegan1938, its
+ *  own μ table) and never set, compared word for word. `drift` true: the guard must keep the stage off — 0 differing
+ *  words, an empty log, budgetState immiscible true and wallShear false. `drift` false (the same scene, the drift
+ *  configured but off) is the sensitivity control: the stage must act. */
+export async function wallShearW0bDrift(device: GPUDevice, o: { drift: boolean; frames?: number }) {
+  const KEYS = ['water', 'mercury'] as const, LQ = KEYS.map(k => liquid(k)), frames = o.frames ?? 20, rng = mulberry32(84), init: FlipParticleInit[] = []
+  for (let k = 0; k < 8; k++) for (let j = 0; j < 4; j++) for (let i = 0; i < 8; i++) for (let s = 0; s < 8; s++) {
+    const id = j < 2 ? 1 : 0
+    init.push({ pos: [(i + ((s & 1) + rng()) / 2) * DX, (j + (((s >> 1) & 1) + rng()) / 2) * DX, (k + (((s >> 2) & 1) + rng()) / 2) * DX].map(Math.fround) as Vec3,
+      vel: [0.5, 0, 0.2], mass: LQ[id].rho * DX ** 3 / 8, composition: id, phase: 1, temperatureC: 20 })
+  }
+  const run = async (stage: boolean) => {
+    const gpu = await FlipGpuSimulator.create(device, {
+      nx: 16, ny: 12, nz: 16, dx: DX, gravity: [0, -G, 0], maxParticles: init.length, lRef: L_REF, tauS: TAU, density: WATER.rho,
+      projection: true, freeSurface: 'ghost', densityProjection: true, variableDensity: true, solverMethod: solverConfig.method, immiscible: true,
+    })
+    try {
+      gpu.dt = 1 / 120
+      gpu.setParticles(init)
+      gpu.immiscibleSolver!.configure({ materials: LQ.map((l, k) => ({ compositions: [k], rho: l.rho, mu: l.mu })), sigma: (a, b) => interfacialTension(KEYS[a], KEYS[b]), nuNum: INCOMPRESSIBLE_NU_NUM })
+      gpu.immiscibleActive = o.drift
+      if (stage) gpu.setWallShear({ wall: 'y-', law: 'keulegan1938', muTable: new Float32Array(LQ.map(l => l.mu)) })
+      for (let s = 0; s < frames; s++) await submit(device, e => gpu.step(e, 1))
+      const words = await Promise.all(([[gpu.posBuf, 16], [gpu.velBuf, 16], [gpu.affBuf, 48]] as const).map(async ([b, n]) => new Uint32Array(await gpu.readBuffer(b, n * init.length))))
+      const budget = gpu.budgetState(1)
+      return { words, stats: stage ? await gpu.readWallShearStats() : null, budget: { immiscible: budget.immiscible, viscous: budget.viscous, wallShear: budget.wallShear } }
+    } finally { gpu.destroy() }
+  }
+  const on = await run(true), off = await run(false)
+  let differing = 0, total = 0
+  on.words.forEach((a, i) => { total += a.length; for (let q = 0; q < a.length; q++) if (a[q] !== off.words[i][q]) differing++ })
+  return { drift: o.drift, frames, particles: init.length, sigma: interfacialTension('water', 'mercury'), nu: LQ.map(l => l.mu / l.rho), differing, total, stats: on.stats, budget: on.budget }
+}
+
+/** W0c on the GPU (review M1/M2; pre-registered 2026-09-30 before its first run): setWallShear's refusals. On a sim
+ *  without the viscosity solver it must throw on the laws 'Keulegan1938' and 'darcytest' and an absent law, darcyTest
+ *  without f, constantTest without tau, a muDefault of NaN, 0 or −1, and a muTable entry of NaN or 0; on a sim with the
+ *  solver on any muDefault — each refused call leaving the stage unset. It must accept the gates' sign-flip controls
+ *  f = −0.02 and τ = −10 Pa (no sign rule) and, on the solver sim, the page's configuration (keulegan1938, no μ). */
+export async function wallShearRefusals(device: GPUDevice) {
+  const plain = new FlipGpuSimulator(device, { nx: 4, ny: 4, nz: 4, dx: DX, maxParticles: 1, lRef: L_REF, tauS: TAU })
+  let withSolver: FlipGpuSimulator | null = null
+  try {
+    withSolver = await FlipGpuSimulator.create(device, { nx: 8, ny: 8, nz: 8, dx: DX, maxParticles: 1, lRef: L_REF, tauS: TAU, density: WATER.rho, projection: true, freeSurface: 'ghost', viscosity: true })
+    const bad = (law: string) => law as FlipWallShear['law']
+    const Y = { wall: 'y-' as const }
+    const cases: { name: string; sim: FlipGpuSimulator; w: FlipWallShear; refuse: boolean }[] = [
+      { name: "law 'Keulegan1938'", sim: plain, w: { ...Y, law: bad('Keulegan1938') }, refuse: true },
+      { name: "law 'darcytest' (f 0.02)", sim: plain, w: { ...Y, law: bad('darcytest'), f: 0.02 }, refuse: true },
+      { name: 'law absent', sim: plain, w: { ...Y } as FlipWallShear, refuse: true },
+      { name: 'darcyTest without f', sim: plain, w: { ...Y, law: 'darcyTest' }, refuse: true },
+      { name: 'constantTest without tau', sim: plain, w: { ...Y, law: 'constantTest' }, refuse: true },
+      { name: 'muDefault NaN', sim: plain, w: { ...Y, law: 'keulegan1938', muDefault: NaN }, refuse: true },
+      { name: 'muDefault 0', sim: plain, w: { ...Y, law: 'keulegan1938', muDefault: 0 }, refuse: true },
+      { name: 'muDefault −1', sim: plain, w: { ...Y, law: 'keulegan1938', muDefault: -1 }, refuse: true },
+      { name: 'muTable entry NaN', sim: plain, w: { ...Y, law: 'keulegan1938', muTable: new Float32Array([WATER.mu, NaN]) }, refuse: true },
+      { name: 'muTable entry 0', sim: plain, w: { ...Y, law: 'keulegan1938', muTable: new Float32Array([WATER.mu, 0]) }, refuse: true },
+      { name: 'muDefault (water) on the solver sim', sim: withSolver, w: { ...Y, law: 'keulegan1938', muDefault: WATER.mu }, refuse: true },
+      { name: 'darcyTest f = −0.02 (sign-flip control)', sim: plain, w: { ...Y, law: 'darcyTest', f: -0.02 }, refuse: false },
+      { name: 'constantTest τ = −10 Pa (sign-flip control)', sim: plain, w: { ...Y, law: 'constantTest', tau: -10 }, refuse: false },
+      { name: 'keulegan1938, no μ, on the solver sim (the page)', sim: withSolver, w: { ...Y, law: 'keulegan1938' }, refuse: false },
+    ]
+    const results = cases.map(c => {
+      let threw = false, message = ''
+      try { c.sim.setWallShear(c.w) } catch (e) { threw = true; message = e instanceof Error ? e.message : String(e) }
+      const set = c.sim.wallShear !== null
+      c.sim.setWallShear(null)
+      return { name: c.name, refuse: c.refuse, threw, set, ok: c.refuse ? threw && !set : !threw && set, message: message.slice(0, 200) }
+    })
+    return { cases: results.length, refused: results.filter(r => r.refuse && r.ok).length, mustRefuse: results.filter(r => r.refuse).length,
+      accepted: results.filter(r => !r.refuse && r.ok).length, mustAccept: results.filter(r => !r.refuse).length, results }
+  } finally { plain.destroy(); withSolver?.destroy() }
+}
+
+/** W1g.reset (review M4; pre-registered 2026-09-30 before its first run): resetDiagnostics clears the stage log. Four
+ *  floor cells of a 4×4×4 lab-dx tank, four water particles each at (0.5, 0, 0.2) m/s, Keulegan, Δt = 1/240 s: three
+ *  applications (the log shows 3 and cells > 0), resetDiagnostics() (every word of the log 0), one more application
+ *  (applications 1 and the cells of one application). */
+export async function wallShearReset(device: GPUDevice) {
+  const h = DX, massUnit = 1000 * h ** 3, mhat = Math.fround(WATER.rho / 8000), init: FlipParticleInit[] = []
+  for (let k = 0; k < 2; k++) for (let i = 0; i < 2; i++) for (let s = 0; s < 4; s++)
+    init.push({ pos: [(i + 0.2 + 0.2 * s) * h, (0.2 + 0.2 * s) * h, (k + 0.8 - 0.2 * s) * h].map(Math.fround) as Vec3, vel: [0.5, 0, 0.2], mass: mhat * massUnit, composition: 0, phase: 1, temperatureC: 20 })
+  const gpu = new FlipGpuSimulator(device, { nx: 4, ny: 4, nz: 4, dx: h, maxParticles: init.length, lRef: L_REF, tauS: TAU })
+  try {
+    gpu.dt = 1 / 240
+    gpu.setParticles(init)
+    gpu.setWallShear({ wall: 'y-', law: 'keulegan1938', muTable: new Float32Array([WATER.mu]) })
+    gpu.writeParams()
+    await submit(device, e => { for (let s = 0; s < 3; s++) gpu.encodeWallShear(e) })
+    const before = await gpu.readWallShearStats()
+    gpu.resetDiagnostics()
+    const reset = await gpu.readWallShearStats()
+    await submit(device, e => gpu.encodeWallShear(e))
+    const after = await gpu.readWallShearStats()
+    return { particles: init.length, floorCells: 4, before, reset, after }
+  } finally { gpu.destroy() }
 }
 
 /** A2 on the GPU with the stage on (spec §4 W1g): ghost.ts's instant column itself — FlipGpuSimulator.create is wrapped

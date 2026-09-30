@@ -40,7 +40,7 @@ async function runWith(label, edits) {
   await cp(join(REPO, 'src'), join(root, 'src'), { recursive: true })
   if (edits) {
     let src = pristine
-    for (const [find, repl] of edits) src = src.replace(find, repl)
+    for (const [find, repl] of edits) src = src.replace(find, () => repl)
     await writeFile(join(dir, 'flipRef.ts'), src)
   }
   const r = spawnSync(process.execPath, [join(REPO, 'scripts/fluid-gates/s34-ref.mjs'), '--only=A2gmech'], {

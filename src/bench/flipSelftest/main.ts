@@ -23,7 +23,7 @@ import { immKernels, immRest, immLayered, immCost, immB1 } from './immiscible'
 import { s37Kernels, s37Physics } from './s37'
 import { taylorGreen } from './obs1'
 import { budgetKernels } from './budget'
-import { wallShearW1a, wallShearW1aK, wallShearW1b, wallShearW1c, wallShearW0b, wallShearA2 } from './wallShear'
+import { wallShearW1a, wallShearW1aK, wallShearW1aKSkip, wallShearW1b, wallShearW1c, wallShearW0b, wallShearW0bDrift, wallShearRefusals, wallShearReset, wallShearA2 } from './wallShear'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -340,7 +340,11 @@ try {
     else if (test === 'immKernels') out = await immKernels(device, params as { kind?: string; seed?: number })
     else if (test === 'budgetKernels') out = await budgetKernels(device, params as { shapes?: [number, number, number][]; substeps?: number[] })
     else if (test === 'wallShearW1a') out = await wallShearW1a(device, params as { f?: number })
-    else if (test === 'wallShearW1aK') out = await wallShearW1aK(device, params as { seed?: number })
+    else if (test === 'wallShearW1aK') out = await wallShearW1aK(device, params as { seed?: number; table?: 'own' | 'solver' })
+    else if (test === 'wallShearW1aKSkip') out = await wallShearW1aKSkip(device)
+    else if (test === 'wallShearRefusals') out = await wallShearRefusals(device)
+    else if (test === 'wallShearReset') out = await wallShearReset(device)
+    else if (test === 'wallShearW0bDrift') out = await wallShearW0bDrift(device, params as { drift: boolean; frames?: number })
     else if (test === 'wallShearW1b') out = await wallShearW1b(device)
     else if (test === 'wallShearW1c') out = await wallShearW1c(device, params as { axis: 0 | 2; f: number | null; seconds?: number; substeps?: number })
     else if (test === 'wallShearW0b') out = await wallShearW0b(device, params as { viscous: boolean; frames?: number })

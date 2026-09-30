@@ -34,7 +34,9 @@ const WS_LO: u32 = 5u;
 
 // The stage log (u32 words, cumulative until the host resets it): encodes of the stage (applications), cells acted
 // on (a floor-row particle and |U_c| > 0), of those the cells with Δv ≠ 0 (a non-zero booked impulse), cells on the
-// laminar branch, and the largest |τ| (f32 bits: non-negative floats order like u32).
+// laminar branch, and the largest |τ| (f32 bits: non-negative floats order like u32). The counts are modulo 2³² since
+// the last set or reset (FlipGpuSimulator.readWallShearStats): cells and booked wrap after ≈ 1.05 M applications of a
+// fully wetted 64×64 floor (2.4 h at 2 substeps, 60 frames/s); the host takes deltas as (b − a) >>> 0 or resets per scene.
 const WS_ST_APPLIED: u32 = 0u;
 const WS_ST_CELLS: u32 = 1u;
 const WS_ST_BOOKED: u32 = 2u;

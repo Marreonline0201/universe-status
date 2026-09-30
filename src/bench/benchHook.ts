@@ -78,6 +78,25 @@ export interface OpticsOptions {
   scatterX?: number[]
 }
 
+/** configure()'s options: clock / physics configuration and bench toggles for tests (FluidEngine.benchTarget applies
+ *  them). Every key is optional; a key outside this set throws (BENCH_CONFIGURE_KEYS). */
+export interface BenchConfigureOptions {
+  clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean
+  forceSsfrFailure?: boolean; disableImmiscible?: boolean; immExcludeLiquids?: string[]; immDriftForm?: 'face' | 'cell'
+  snapshotDensity?: boolean; splatShape?: 'sphere' | 'aniso'
+  /** FRICTION bench toggle (review 2026-09-30 INT-5): the floor's wall shear with the page's law, or off — held by the
+   *  solver across a tank resize; a solver without the stage (MPM) throws. */
+  wallShear?: 'keulegan1938' | false
+}
+/** Every key configure() takes. The literal is checked against BenchConfigureOptions at compile time (it must name each
+ *  key, and only those), so the list and the type cannot drift. configure() throws on any other key before it applies
+ *  one (review 2026-09-30 INT-5: a misspelt option must not silently configure nothing; the census of every configure
+ *  call in scripts/ and src/ found only these keys). */
+export const BENCH_CONFIGURE_KEYS: readonly string[] = Object.keys({
+  clock: 1, frameDt: 1, gravityMs2: 1, resetClockStats: 1, resetDiagnostics: 1, forceSsfrFailure: 1, disableImmiscible: 1,
+  immExcludeLiquids: 1, immDriftForm: 1, snapshotDensity: 1, splatShape: 1, wallShear: 1,
+} satisfies Record<keyof BenchConfigureOptions, 1>)
+
 /** What a page must provide for the hook. Optional members enable the matching hook calls. */
 export interface BenchTarget {
   framesStepped(): number
@@ -92,8 +111,8 @@ export interface BenchTarget {
   loadScenario?(json: string): { warning: string | null }
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
   action?(name: string): void | Promise<unknown>
-  /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
-  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean; forceSsfrFailure?: boolean; disableImmiscible?: boolean; immExcludeLiquids?: string[]; immDriftForm?: 'face' | 'cell'; snapshotDensity?: boolean; splatShape?: 'sphere' | 'aniso' }): void
+  /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s², bench toggles). */
+  configure?(opts: BenchConfigureOptions): void
   /** GPU diagnostics counters (e.g. wall safety-clamp hits) + the particle-substeps denominator. */
   diagnostics?(): Promise<Record<string, unknown>>
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
@@ -139,8 +158,11 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
     /** Freeze the sim after this many stepped frames (Infinity = run freely). */
     setStepLimit(frames: number) { target.setStepLimit(frames) },
 
-    configure(opts: Parameters<NonNullable<BenchTarget['configure']>>[0]) {
+    configure(opts: BenchConfigureOptions) {
       if (!target.configure) throw new Error(`${meta.page} cannot be configured`)
+      // an unknown key throws before any key is applied (nothing half-configured)
+      const unknown = Object.keys(opts ?? {}).filter(k => !BENCH_CONFIGURE_KEYS.includes(k))
+      if (unknown.length) throw new Error(`configure: unknown option ${unknown.join(', ')} (known: ${BENCH_CONFIGURE_KEYS.join(', ')})`)
       target.configure(opts)
     },
 

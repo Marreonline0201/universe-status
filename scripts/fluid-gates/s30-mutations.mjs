@@ -49,7 +49,7 @@ async function runWith(label, file, edits) {
   await cp(join(REPO, 'src'), join(root, 'src'), { recursive: true })
   if (file) {
     let src = pristine[file]
-    for (const [find, repl] of edits) src = src.replace(find, repl)
+    for (const [find, repl] of edits) src = src.replace(find, () => repl)
     await writeFile(join(dir, file), src)
   }
   const r = spawnSync(process.execPath, [join(REPO, 'scripts/fluid-gates/s30-ref.mjs')], {

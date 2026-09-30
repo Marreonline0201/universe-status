@@ -3,7 +3,9 @@
 // — transfers only, voxel, voxel + variable density, ghost + density, the split viscous path, the weak and the
 // monolithic ball (with and without the split viscous path), the Stokes path, the drift in both forms, an empty tank,
 // three extrapolation layers, JPCG, the floor's wall shear (with particles, in an empty tank, and set but guarded off
-// by the split viscous path) — at 64³, 48³ and 24×16×12, n = 1…4, encoded through a counting wrapper and NEVER
+// by the split viscous path or by the drift — the latter added 2026-09-30, review INT-7 / prereg R-D, pre-registered
+// 2026-09-30 before its first run: 0 stage dispatches, its counts those of 'drift, face form', criteria unchanged)
+// — at 64³, 48³ and 24×16×12, n = 1…4, encoded through a counting wrapper and NEVER
 // submitted, against dispatchBudget.frameDispatches(sim.budgetState(n)) per pass label, tolerance 0 (vault
 // fluid/realism-2026-09 PERF-1 spec L0). Metrics only — scripts/fluid-gates/perf1-gpu.mjs applies the rule.
 import type { Vec3 } from '../../sim-ref/gridLayout'
@@ -70,6 +72,7 @@ const COMBOS: Combo[] = [
   { name: 'wall shear', opts: GHOST, setup: shear },
   { name: 'wall shear, empty tank', opts: GHOST, particles: false, setup: shear },
   { name: 'wall shear set, guarded off by the split viscous path', opts: { ...GHOST, viscosity: true }, setup: g => { viscous(g, 16); shear(g) } },
+  { name: 'wall shear set, guarded off by the drift', opts: { ...GHOST, immiscible: true }, setup: g => { drift(g, 'face'); shear(g) } },
 ]
 
 /** A 2-particle-per-axis block over a quarter of the floor (materials 0 and 1 alternating by cell), f32 positions. */

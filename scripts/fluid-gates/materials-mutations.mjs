@@ -72,7 +72,7 @@ async function runWith(label, file, find, replace) {
   await cp(join(REPO, 'src/composition'), join(dir, 'src/composition'), { recursive: true })
   await mkdir(join(dir, 'src/fluid-engine'), { recursive: true })
   for (const f of ['units.ts', 'spawn.ts']) await cp(join(REPO, 'src/fluid-engine', f), join(dir, 'src/fluid-engine', f))
-  if (file) await writeFile(join(dir, 'src/composition', file), pristine[file].replace(find, replace))
+  if (file) await writeFile(join(dir, 'src/composition', file), pristine[file].replace(find, () => replace))
   const r = spawnSync(process.execPath, [join(REPO, 'scripts/fluid-gates/materials.mjs'), '--json'], {
     cwd: REPO, env: { ...process.env, FLUID_GATE_SRC: join(dir, 'src/composition').replaceAll('\\', '/') }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
   })

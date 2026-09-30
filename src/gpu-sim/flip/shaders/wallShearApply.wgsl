@@ -1,6 +1,7 @@
 // wallShearApply.wgsl — the floor's wall shear, pass 3 of 3 (FRICTION spec §3.3; flipRef.applyWallShear's update):
 // every floor-row particle (⌊y/dx⌋ = 0, binned as wallShearScatter.wgsl does) gets its cell's Δv on its tangential
-// components, v_x += Δv_x, v_z += Δv_z — the normal component, the mass and the APIC matrix untouched.
+// components, v_x += Δv_x, v_z += Δv_z — the normal component, the mass and the APIC matrix untouched. Row 0 is
+// ⌊y/dx⌋ = 0 whatever a particle's height inside it (FRICTION spec §1.2, the detached-liquid disclosure).
 
 @group(0) @binding(2) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> vel: array<vec4<f32>>;

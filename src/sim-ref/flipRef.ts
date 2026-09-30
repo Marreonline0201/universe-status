@@ -175,12 +175,25 @@ export interface FlipRefOptions {
    *  fluid/realism-2026-09/FRICTION-spec.md). 'keulegan1938': Keulegan 1938 eq. 32 — a smooth bed under an infinitely
    *  wide channel — ū/u* = 3.0 + 2.5·ln(R·u* / ν) (a_s = 5.5, b = 2.5, κ = 0.40; R the liquid depth over the floor cell,
    *  capped at dx), τ = ρ_c·u*² against the cell's tangential mean; below Re_h = ūR/ν = WALL_SHEAR_RE_CROSS (428.26) the
-   *  developed laminar film τ = 3μ_c·ū/R instead (the branches meet there: τ continuous, non-decreasing, τ(0) = 0).
+   *  developed laminar film τ = 3μ_c·ū/R instead (the branches meet there: τ continuous, non-decreasing, τ(0) = 0; the
+   *  film assumes a stress-free surface at h_c — spec §2.4 note).
    *  'darcyTest' τ = ρ_c·(f/8)·ū² and 'constantTest' τ = tau exist for the gates only. Absent: off, the solver
-   *  bit-identical to one without it. Skipped while the viscous solve runs or any particle's ν ≥ viscosityThreshold (the
-   *  page's rule): those liquids' walls are already no-slip. Side walls, the lid and solids stay free-slip. */
-  wallShear?: { wall: 'y-'; law: 'keulegan1938' | 'darcyTest' | 'constantTest'; f?: number; tau?: number }
+   *  bit-identical to one without it. Refused (the constructor throws; review 2026-09-30, M1/M2): a law outside
+   *  WALL_SHEAR_LAW_NAMES, darcyTest without a finite f, constantTest without a finite tau, a parameter the law does not
+   *  take, and viscosityDefault not finite and > 0 — no sign rule: f < 0 and tau < 0 are the gates' sign-flip controls.
+   *  Skipped while the viscous solve runs (its walls are no-slip), and while any particle's ν ≥ viscosityThreshold
+   *  (default VISCOUS_RUN_NU). The second clause keeps parity with the page, where such a liquid runs the no-slip viscous
+   *  solve; here, with viscosity 'off' or the projection off, such a run's floor gets neither the solve nor the stage
+   *  (free-slip). Also skipped while the immiscible drift is active (immiscibleDriftActive; 2026-09-30, until an
+   *  immiscible floor gate exists — FRICTION open item 4: the drift's forcing excludes the wall stress, spec §3.5).
+   *  Side walls, the lid and solids stay free-slip. */
+  wallShear?: { wall: 'y-'; law: WallShearLaw; f?: number; tau?: number }
 }
+
+/** The wall-shear laws (FlipRefOptions.wallShear.law): the production law and the gates' two test laws. Any other name is
+ *  refused (FlipRef's constructor; review 2026-09-30, M2 — a misspelt law had run Keulegan on the CPU). */
+export const WALL_SHEAR_LAW_NAMES = ['keulegan1938', 'darcyTest', 'constantTest'] as const
+export type WallShearLaw = typeof WALL_SHEAR_LAW_NAMES[number]
 
 /** Keulegan 1938's smooth-wall constants (eq. 13–14 via Nikuradse; eq. 32 integrates them over the section): a_s, b. */
 export const KEULEGAN_AS = 5.5, KEULEGAN_B = 2.5
@@ -200,20 +213,27 @@ export const WALL_SHEAR_RE_CROSS = (() => {
 
 /** The floor's wall shear τ (Pa) for a tangential mean speed U (m/s) over a liquid depth h (m) of density ρ and
  *  kinematic viscosity ν (μ = ρν): Keulegan 1938 eq. 32 by Newton on g(u*) = u*·(a_s − b + b·ln(h·u* / ν)) − U from
- *  u* = U/25 — g' = a_s + b·ln(h·u* / ν) > 0 while h·u* / ν > e^(−a_s/b) = e^(−2.2), and g is convex (g'' = b/u*), so an
- *  iterate that would leave that range is halved instead; on this branch the root has h⁺ ≥ 35.8 — stopping at
- *  |Δu*| ≤ 1e-14·u*; the laminar film 3ρνU/h below WALL_SHEAR_RE_CROSS. */
+ *  u* = U/25 — g' = a_s + b·ln(h·u* / ν) > 0 while h·u* / ν > e^(−a_s/b) = e^(−2.2), and g is convex (g'' = b/u*); an
+ *  iterate that would leave that range is halved instead — a damped Newton step that valid input never takes (on this
+ *  branch the start has h⁺ = Re_h/25 ≥ 17.1 and the root h⁺ ≥ 35.8; the review measured 0 halvings and ≤ 5 iterations
+ *  over 25,510 points) — stopping at |Δu*| ≤ 1e-14·u*; a loop that ends without meeting that test throws (a converged
+ *  flag), and so do ν or ρ not finite and > 0 (review 2026-09-30, M1: NaN or zero ν had returned τ ≈ 9e-60 Pa, a no-op
+ *  logged as acting); the laminar film 3ρνU/h below WALL_SHEAR_RE_CROSS. */
 export function keuleganTau(U: number, h: number, nu: number, rho: number): { tau: number; ustar: number; laminar: boolean } {
+  if (!(Number.isFinite(nu) && nu > 0)) throw new Error(`keuleganTau: ν = ${nu} m²/s (must be finite and > 0)`)
+  if (!(Number.isFinite(rho) && rho > 0)) throw new Error(`keuleganTau: ρ = ${rho} kg/m³ (must be finite and > 0)`)
   if (!(U > 0) || !(h > 0)) return { tau: 0, ustar: 0, laminar: true }
   if (U * h / nu < WALL_SHEAR_RE_CROSS) { const tau = 3 * rho * nu * U / h; return { tau, ustar: Math.sqrt(tau / rho), laminar: true } }
   let us = U / 25
+  let converged = false
   for (let it = 0; it < 100; it++) {
     const L = KEULEGAN_AS - KEULEGAN_B + KEULEGAN_B * Math.log(h * us / nu), g = us * L - U, dg = L + KEULEGAN_B
     let next = us - g / dg
     if (!(next > 0) || !(h * next / nu > Math.exp(-(KEULEGAN_AS) / KEULEGAN_B))) next = 0.5 * us
-    if (Math.abs(next - us) <= 1e-14 * us) { us = next; break }
+    if (Math.abs(next - us) <= 1e-14 * us) { us = next; converged = true; break }
     us = next
   }
+  if (!converged) throw new Error(`keuleganTau: Newton on eq. 32 did not converge in 100 iterations (U ${U} m/s, h ${h} m, ν ${nu} m²/s)`)
   return { tau: rho * us * us, ustar: us, laminar: false }
 }
 
@@ -454,6 +474,17 @@ export class FlipRef {
     this.viscosity = opts.viscosity ?? 'off'
     this.viscosityThreshold = opts.viscosityThreshold ?? VISCOUS_RUN_NU
     this.viscosityDefault = opts.viscosityDefault ?? 1.001596e-3
+    // the wall shear's refusals (review 2026-09-30, M1 and M2); stage-off construction is untouched: the law by name, its
+    // one parameter finite (no sign rule: f < 0 and tau < 0 are the gates' sign-flip controls), no parameter the law
+    // does not take, and the μ of every particle without its own finite and > 0 (NaN or zero made the stage a no-op)
+    if (this.wallShear) {
+      const W = this.wallShear
+      if (!(WALL_SHEAR_LAW_NAMES as readonly string[]).includes(W.law)) throw new Error(`FlipRef: wall shear law "${W.law}" is not one of ${WALL_SHEAR_LAW_NAMES.join(', ')}`)
+      const takes = W.law === 'darcyTest' ? 'f' : W.law === 'constantTest' ? 'tau' : null
+      for (const [k, v] of Object.entries(W)) if (k !== 'wall' && k !== 'law' && k !== takes && v !== undefined) throw new Error(`FlipRef: wall shear law ${W.law} takes no parameter "${k}"`)
+      if (takes !== null && !Number.isFinite(W[takes])) throw new Error(`FlipRef: wall shear law ${W.law} needs a finite ${takes} (got ${W[takes]})`)
+      if (!(Number.isFinite(this.viscosityDefault) && this.viscosityDefault > 0)) throw new Error(`FlipRef: wall shear needs viscosityDefault finite and > 0 (got ${this.viscosityDefault} Pa·s): the μ of every particle without its own`)
+    }
     this.viscousWalls = opts.viscousWalls ?? 'no-slip'
     this.viscosityMean = opts.viscosityMean ?? 'harmonic'   // gate S3.6c: arithmetic errs 10–17 % in the soft layer's shear
     this.viscosityTolerance = opts.viscosityTolerance ?? 1e-10
@@ -528,8 +559,9 @@ export class FlipRef {
     // S3.7 (Batty et al. 2007 §3.2): body forces on every velocity before the pressure solve — V* = Vⁿ + Δt·g
     if (this.monolithic()) for (let a = 0; a < 3; a++) this.sphere!.velocity[a] += dt * this.gravity[a]
     if (this.densityProjection) this.densityCorrect(p)
-    // the floor's wall shear on the particles (off unless options.wallShear; never while a liquid's walls are no-slip)
-    if (this.wallShear && !(this.projection && this.viscosityRuns(p)) && !this.anyViscousLiquid(p)) this.applyWallShear(p, dt)
+    // the floor's wall shear on the particles (off unless options.wallShear; never while a liquid's walls are no-slip, nor
+    // while the immiscible drift is active)
+    if (this.wallShear && !(this.projection && this.viscosityRuns(p)) && !this.anyViscousLiquid(p) && !this.immiscibleDriftActive(p)) this.applyWallShear(p, dt)
     this.p2g(p)
     this.gridUpdate(dt)
     if (this.projection) {
@@ -925,12 +957,36 @@ export class FlipRef {
 
   /** The page's rule without the solve's on/off switch (backends.ts: viscosityActive = maxν ≥ VISCOUS_RUN_NU): any
    *  particle's ν = μ/ρ ≥ viscosityThreshold. The wall shear never runs then — a CPU run with viscosity 'off' must not
-   *  give it to a liquid the page never would. */
+   *  give it to a liquid the page never would. A particle whose μ is not finite is refused (throws; review 2026-09-30,
+   *  M1): a NaN μ fails every comparison, so it had passed this rule as "not viscous". Every particle is checked. */
   anyViscousLiquid(p: RefParticles): boolean {
     const vp = this.layout.dx ** 3 / this.ppc
+    let viscous = false
     for (let q = 0; q < p.n; q++) {
       const mu = p.mu ? p.mu[q] : this.viscosityDefault
-      if (mu / (p.mass[q] / vp) >= this.viscosityThreshold) return true
+      if (!Number.isFinite(mu)) throw new Error(`FlipRef.anyViscousLiquid: particle ${q} has μ = ${mu} Pa·s (not finite): the ν rule cannot classify it`)
+      if (mu / (p.mass[q] / vp) >= this.viscosityThreshold) viscous = true
+    }
+    return viscous
+  }
+
+  /** The immiscible drift is active in this step — the wall shear's third guard clause (2026-09-30, until an immiscible
+   *  floor gate exists: FRICTION open item 4, the drift's forcing excludes the wall stress, spec §3.5): options.immiscible
+   *  is set (step() runs driftFlux) and two of the step's particle materials form a pair whose σ (options.immiscible's
+   *  sigma, either order) is > 0. That is exactly when driftFlux can give a particle slip: with fewer than two materials
+   *  it returns with every slip 0 (its K < 2 return), and a particle whose pair with its cell's majority has no σ > 0 is
+   *  never dispersed (pass 1), so without such a pair J = 0 and every particle's drift is exactly 0. The page's twin:
+   *  backends.ts sets immiscibleActive only when the tank's liquids hold such a pair (pairCount > 0), and the GPU guard
+   *  (FlipGpuSimulator.wallShearRuns) reads that flag. The materials and σ do not change within a step, so the clause
+   *  read at the stage (before P2G) is the drift's own (after G2P). */
+  immiscibleDriftActive(p: RefParticles): boolean {
+    const I = this.immiscible
+    if (!I) return false
+    const mats = [...new Set(Array.from(p.material.subarray(0, p.n)))]
+    for (const a of mats) for (const b of mats) {
+      if (a === b) continue
+      const s = I.sigma(a, b)
+      if (s !== null && s > 0) return true
     }
     return false
   }
@@ -940,9 +996,13 @@ export class FlipRef {
    *  mixtures and variable density get the right depth), h_c = min(V_c/dx², dx), ρ_c = M_c/V_c, the tangential mean
    *  U_c = Σ m·v_t / M_c (x and z) and μ_c = Σ m·μ / M_c, ν_c = μ_c/ρ_c; τ from the law; then the cell mean is updated
    *  semi-implicitly with the coefficient τ/|U_c| lagged at the step's start: a_c = Δt·τ·dx²/(M_c·|U_c|), Δv = −U_c·a_c/
-   *  (1 + a_c) (so U_c′ = U_c/(1 + a_c): never reversed, the cell's tangential energy never raised; exact for the Darcy
-   *  test law; this form avoids U_c·(f − 1)'s cancellation), added to every floor-row particle of the cell — the normal
-   *  component and the APIC matrix untouched. A cell that holds any particle counts as wetted over its whole dx². */
+   *  (1 + a_c) (so U_c′ = U_c/(1 + a_c): never reversed, the cell's tangential energy never raised — for τ ≥ 0, i.e. every
+   *  physical law; the test laws' negative f and tau are the gates' sign-flip controls; exact for the Darcy test law;
+   *  this form avoids U_c·(f − 1)'s cancellation), added to every floor-row particle of the cell — the normal component
+   *  and the APIC matrix untouched. A cell that holds any particle counts as wetted over its whole dx²; a particle's
+   *  height inside row 0 is ignored (spec §1.2 note). A floor-row particle whose μ (p.mu, else viscosityDefault) is not
+   *  finite and > 0 is refused (throws, naming it; review 2026-09-30, M1) — per particle, since one μ = 0 particle in a
+   *  water cell leaves ν_c > 0. */
   applyWallShear(p: RefParticles, dt: number): void {
     const W = this.wallShear!, L = this.layout, h = L.dx, vp = h ** 3 / this.ppc, nx = L.nx, nz = L.nz, NC = nx * nz
     const M = new Float64Array(NC), Nc = new Uint32Array(NC), Px = new Float64Array(NC), Pz = new Float64Array(NC), MU = new Float64Array(NC)
@@ -950,8 +1010,9 @@ export class FlipRef {
     const onFloorRow = (q: number) => Math.floor(p.pos[3 * q + 1] / h) === 0
     for (let q = 0; q < p.n; q++) {
       if (!onFloorRow(q)) continue
-      const c = cellOf(q), m = p.mass[q]
-      M[c] += m; Nc[c]++; Px[c] += m * p.vel[3 * q]; Pz[c] += m * p.vel[3 * q + 2]; MU[c] += m * (p.mu ? p.mu[q] : this.viscosityDefault)
+      const c = cellOf(q), m = p.mass[q], muq = p.mu ? p.mu[q] : this.viscosityDefault
+      if (!(Number.isFinite(muq) && muq > 0)) throw new Error(`FlipRef.applyWallShear: particle ${q} on the floor row has μ = ${muq} Pa·s (must be finite and > 0)`)
+      M[c] += m; Nc[c]++; Px[c] += m * p.vel[3 * q]; Pz[c] += m * p.vel[3 * q + 2]; MU[c] += m * muq
     }
     const dvx = new Float64Array(NC), dvz = new Float64Array(NC)
     let cells = 0, impX = 0, impZ = 0, tauMax = 0, laminar = 0

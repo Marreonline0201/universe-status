@@ -30,7 +30,8 @@ export interface BudgetState {
   /** the drift flux runs (immiscibleActive) and where J is formed */
   immiscible: boolean
   driftForm: 'face' | 'cell'
-  /** FRICTION: the floor's wall shear runs (set, and not guarded off by the viscous path — FlipGpuSimulator.wallShearRuns) */
+  /** FRICTION: the floor's wall shear runs (set, and not guarded off by the viscous path or the immiscible drift —
+   *  FlipGpuSimulator.wallShearRuns) */
   wallShear: boolean
   extrapolationLayers: number
   caps: { pressure: number; psi: number; viscous: number; stokes: number }
