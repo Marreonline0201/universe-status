@@ -40,6 +40,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=wallShear (FRICTION: the floor's wall shear, gate s38-gpu.mjs, full: ~2 min)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=pageResize (FRICTION enable: the stage across a tank resize, gate tank-page.mjs)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=pageScene  (FRICTION enable: the per-scene stage log, gate s31c-page.mjs, ~8 min a run)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=snapshot   (B1c fork: the bench state snapshot / restore, gate snapshot-page.mjs)
 // The page sets mutate FlipBackend (src/fluid-engine/backends.ts) and run a PAGE gate, whose hygiene lines read
 // 'R GPU: n uncaptured WebGPU errors …' and 'R console: n errors' (2026-09-30, the enable): HYGIENE takes that optional
 // 'R ' too, so a page catch is judged like any other (without it every page catch would score INVALID). No script of
@@ -286,8 +287,31 @@ SETS.pageResize = [
 SETS.pageScene = [
   ['src/fluid-engine/backends.ts', '    if (this.sim.wallShear !== null) this.sim.resetWallShearStats()\n', '', 'per-scene log reset removed'],
 ]
+// B1c FORK (2026-09-30; spec rev 3 §9, the restore hook's own gate): the state snapshot / restore facility's defects, each
+// run through snapshot-page.mjs. Catchers derived from the code and pre-registered with the gate, before its first run:
+// - 'restore skips pressure x' (stateSnapshot.restore never copies the pressure x back): G-R1 — its t0 line (the x words
+//   at F0 after the restore are pass A's F0+12 ones, not the snapshot's) and, through the warm start, its frame line
+//   (G-R2 (a) shows that an x left live changes the words within 12 frames); also G-R2 (b) and (c), whose t0 purity
+//   requires every item but the omitted one back at F0 (x is not).
+// - 'restore skips slipState': G-R1 (t0: the slipState words differ at F0; frames: the kernel reads the old s and d);
+//   also G-R2 (a) and (c) (t0 purity).
+// - 'snapshot copies vel from pos' (the saved vel holds the pos words): G-R1 (t0: the restored vel words are pos words;
+//   frames: P2G scatters those as velocities); also G-R2 (a) and (b) (t0 purity: vel differs beside the omitted item).
+// - 'the drain returns before the slots are idle' (it returns without waiting: neither the queue nor the slots): G-R3 —
+//   every window frame's drain is entered in the animation-frame callback right after the engine's stepped the frame,
+//   with no task between (snapshot-page stepFrame), so that frame's speed and viscous slots are still in flight at the
+//   drain's entry and, unwaited, at its exit; G-R3 requires every drain to exit with no slot in flight. Deterministic
+//   by that construction, not a race. (A drain that waits for the queue but not the slots is not in the set: Dawn
+//   completes a buffer's map before a later-registered work-done of the same or a later serial and the wire delivers
+//   them in order, so after the queue wait these slots are idle — expected equivalent here, not measured.)
+SETS.snapshot = [
+  ['src/gpu-sim/flip/stateSnapshot.ts', 'const todo = this.saved.filter(s => !skip.has(s.name))', "const todo = this.saved.filter(s => !skip.has(s.name) && s.name !== 'pressureX')", 'restore skips pressure x'],
+  ['src/gpu-sim/flip/stateSnapshot.ts', 'const todo = this.saved.filter(s => !skip.has(s.name))', "const todo = this.saved.filter(s => !skip.has(s.name) && s.name !== 'slipState')", 'restore skips slipState'],
+  ['src/gpu-sim/flip/stateSnapshot.ts', 'for (const s of saved) e.copyBufferToBuffer(s.live, 0, s.copy, 0, s.bytes)', "for (const s of saved) e.copyBufferToBuffer(s.name === 'vel' ? saved[0].live : s.live, 0, s.copy, 0, s.bytes)", 'snapshot copies vel from pos'],
+  ['src/fluid-engine/backends.ts', '      await this.device.queue.onSubmittedWorkDone()\n      const busy = this.slotsBusy()\n      if (FlipBackend.slotsIdle(busy)) return', '      const busy = this.slotsBusy()\n      if (true) return', 'drain returns before the slots are idle'],
+]
 // the gate script each set runs (default: <set>-gpu.mjs)
-const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs', pageResize: 'tank-page.mjs', pageScene: 's31c-page.mjs' }
+const SCRIPT = { opt2a: 'opt2a-render.mjs', wallShear: 's38-gpu.mjs', pageResize: 'tank-page.mjs', pageScene: 's31c-page.mjs', snapshot: 'snapshot-page.mjs' }
 // a mutant's edits: one [find, replace], or the pairs of its find/replace arrays, in order. Any other shape throws
 // (header; review MH-4: a short replace array wrote the text 'undefined', a string replace against an array find
 // paired single characters, an array replace against a string find wrote 'x,y')

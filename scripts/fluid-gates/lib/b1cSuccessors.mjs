@@ -34,42 +34,78 @@ const F_SWITCH = 231, F0 = F_SWITCH + 36, F1 = F_SWITCH + 156, MIN_USABLE = 100 
 const dragFactor = Re => (Re >= 1000 ? 0.44 * Re / 24 : Re <= 0 ? 1 : 1 + 0.15 * Re ** 0.687)
 const oneMinusExpNeg = h => (h < 0.1 ? h * (1 - h * (0.5 - h * (1 / 6 - h * (1 / 24 - h / 120)))) : 1 - Math.exp(-h))
 const cellOf = (pos, i) => { const c = [0, 1, 2].map(a => Math.min(63, Math.max(0, Math.floor(pos[3 * i + a] * L / DX)))); return c[0] + 64 * (c[1] + 64 * c[2]) }
+const subs = async page => (await page.evaluate(() => window.__fluidBench.status())).substepsTotal   // the engine's CPU counter: no GPU readback per frame
 
-/** One dense-window run of the B1 scene; returns the B1c-M / B1c-T sums and the reported model ÷ law. */
-export async function b1cDense(page, scene, seed = 2) {
+/** The dense window's constants (header) — the values b1cDense runs on — for the scripts that start from its t0 (the
+ *  B1c same-state fork, spec rev 3: snapshot-page.mjs and the study). */
+export const B1C = Object.freeze({ L, DX, BAND_Y, DT, F_SWITCH, F0, F1, MIN_USABLE })
+/** The cell (x + 64·(y + 64·z)) of particle i of a sample's positions (world units), as the frozen set bins it. */
+export const b1cCellOf = cellOf
+
+/** b1cDense's schedule up to and including its F0 sample (split out 2026-09-30 for the same-state fork; b1cDense runs
+ *  it first, the same page calls in the same order): the B1 scene loaded with `seed` on the lockstep 1/60 s clock to
+ *  3.85 s (frame 231), then 1/240 s frames with the density snapshot on, to t0 = 4.0 s (frame 267 = F0), sampled there.
+ *  The page is left frozen at F0. Returns the F0 sample `s`, the first 1/240 s frame's sim-time step (clockStepS), the
+ *  engine's substep total at F0 (`sub`) and F0's own substeps (`nSub`). Throws when the sample carries no drift state. */
+export async function b1cToF0(page, scene, seed = 2) {
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, immExcludeLiquids: [], disableImmiscible: false }))
   await loadScenario(page, scene, seed)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH); await waitStepped(page, F_SWITCH)
   const t0 = (await page.evaluate(() => window.__fluidBench.status())).simTime
   await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 240, snapshotDensity: true }))
-  const subs = async () => (await page.evaluate(() => window.__fluidBench.status())).substepsTotal   // the engine's CPU counter: no GPU readback per frame
   // the first 1/240 frame: the switch must advance simTime by exactly one 1/240 step (reported)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH + 1); await waitStepped(page, F_SWITCH + 1)
   const tCheck = (await page.evaluate(() => window.__fluidBench.status())).simTime - t0
   // frames before t0 are stepped, not sampled (a full sample is ~15 MB)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F0 - 1); await waitStepped(page, F0 - 1)
-  let subPrev = await subs(), prev = null, set = null, mats = null, excluded = 0, frames = 0
+  const subPrev = await subs(page)
+  const s = await sampleAtFrame(page, F0)
+  const sub = await subs(page)
+  if (!s.drift || !s.slipIn || !s.uV) throw new Error('B1c dense window: the sample carries no drift state')
+  return { s, clockStepS: tCheck, sub, nSub: sub - subPrev }
+}
+
+/** b1cDense's frozen set from the F0 sample `s` (header): the olive-oil drops dispersed (d > 0), dilute (their cell's
+ *  particle-count α < 0.3, water present), kernel α_Hg ≤ 1e-4 and below y = 7.36 cm, in index order; `row[j]` is set[j]'s
+ *  row at t0 (0: y < dx, 1: above). Chosen once, at t0; the set never changes. */
+export function b1cFrozenSet(s) {
+  const mats = Object.fromEntries(s.materials.map(m => [m.name, m]))
+  const RO = mats['Olive Oil'].rho, RW = mats.Water.rho, RH = mats.Mercury.rho, oilId = mats['Olive Oil'].id, wId = mats.Water.id
+  const nAll = new Uint16Array(64 ** 3), nOil = new Uint16Array(64 ** 3), nW = new Uint16Array(64 ** 3)
+  for (let i = 0; i < s.n; i++) { const c = cellOf(s.pos, i); nAll[c]++; if (s.comp[i] === oilId) nOil[c]++; else if (s.comp[i] === wId) nW[c]++ }
+  const set = [], row = []
+  for (let i = 0; i < s.n; i++) {
+    if (s.comp[i] !== oilId || !(s.drift[4 * i + 3] > 0) || !(s.pos[3 * i + 1] * L < BAND_Y)) continue
+    const c = cellOf(s.pos, i)
+    if (!(nOil[c] / Math.max(1, nAll[c]) < 0.3) || nW[c] === 0) continue
+    const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4]
+    if (!(rm > 0) || !((rm - (1 - aD) * RW - aD * RO) / (RH - RO) <= 1e-4)) continue
+    set.push(i)
+    row.push(s.pos[3 * i + 1] * L < DX ? 0 : 1)
+  }
+  return { set, row }
+}
+
+/** One dense-window run of the B1 scene; returns the B1c-M / B1c-T sums and the reported model ÷ law. */
+export async function b1cDense(page, scene, seed = 2) {
+  const h = await b1cToF0(page, scene, seed)   // the schedule to t0 and the F0 sample
+  const tCheck = h.clockStepS
+  let subPrev = h.sub, prev = null, set = null, mats = null, excluded = 0, frames = 0
   const per = new Map()   // per drop: row at t0, mercury exposure in the window, its B1c-T sums (the reported strata)
   const M = { n: 0, ok: 0, reOk: 0, ctrlOk: 0, maxRel: 0 }, T = { num: 0, den: 0, denCtrl: 0, n: 0 }, K = { s: 0, law: 0 }, B = { maxMismatch: 0 }
   for (let f = F0; f <= F1; f++) {
-    const s = await sampleAtFrame(page, f)
-    const sub = await subs(), nSub = sub - subPrev; subPrev = sub
-    if (!s.drift || !s.slipIn || !s.uV) throw new Error('B1c dense window: the sample carries no drift state')
+    let s = h.s, nSub = h.nSub
+    if (f > F0) {
+      s = await sampleAtFrame(page, f)
+      const sub = await subs(page); nSub = sub - subPrev; subPrev = sub
+      if (!s.drift || !s.slipIn || !s.uV) throw new Error('B1c dense window: the sample carries no drift state')
+    }
     if (!mats) mats = Object.fromEntries(s.materials.map(m => [m.name, m]))
-    const RO = mats['Olive Oil'].rho, RW = mats.Water.rho, MUW = mats.Water.mu, RH = mats.Mercury.rho, oilId = mats['Olive Oil'].id, wId = mats.Water.id
+    const RO = mats['Olive Oil'].rho, RW = mats.Water.rho, MUW = mats.Water.mu, RH = mats.Mercury.rho
     if (f === F0) {
-      const nAll = new Uint16Array(64 ** 3), nOil = new Uint16Array(64 ** 3), nW = new Uint16Array(64 ** 3)
-      for (let i = 0; i < s.n; i++) { const c = cellOf(s.pos, i); nAll[c]++; if (s.comp[i] === oilId) nOil[c]++; else if (s.comp[i] === wId) nW[c]++ }
-      set = []
-      for (let i = 0; i < s.n; i++) {
-        if (s.comp[i] !== oilId || !(s.drift[4 * i + 3] > 0) || !(s.pos[3 * i + 1] * L < BAND_Y)) continue
-        const c = cellOf(s.pos, i)
-        if (!(nOil[c] / Math.max(1, nAll[c]) < 0.3) || nW[c] === 0) continue
-        const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4]
-        if (!(rm > 0) || !((rm - (1 - aD) * RW - aD * RO) / (RH - RO) <= 1e-4)) continue
-        set.push(i)
-        per.set(i, { row: s.pos[3 * i + 1] * L < DX ? 0 : 1, exposed: false, num: 0, den: 0, dp: 0, a: 0, dtv: 0, dtj: 0, n: 0 })
-      }
+      const fz = b1cFrozenSet(s)
+      set = fz.set
+      fz.set.forEach((i, j) => per.set(i, { row: fz.row[j], exposed: false, num: 0, den: 0, dp: 0, a: 0, dtv: 0, dtj: 0, n: 0 }))
     } else if (set && prev && f > F0) {
       frames++
       // reported stratum (added after the first run, B1c-T unchanged): mercury exposure at ANY frame of the window —
