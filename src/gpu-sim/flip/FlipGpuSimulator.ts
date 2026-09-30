@@ -258,6 +258,18 @@ export class FlipGpuSimulator {
   readonly immiscibleEnabled: boolean
   /** Per-particle drift (vec4, m/s), read by g2pMac; a 16-byte placeholder without immiscibility. */
   readonly driftBuf: GPUBuffer
+  /** Bench (the B1c displacement budget; B1c verification 2026-09-29, hook H6's snapshot form): when on, every
+   *  substep's positions right after the density correction (before G2P and advection) are copied here — vec4, m, the
+   *  solver's own units — so the correction's displacement of each particle is known exactly; the last substep's copy
+   *  survives the frame. Off: no buffer, no copy (production pays nothing). */
+  private snapBuf: GPUBuffer | null = null
+  get snapshotDensity(): boolean { return this.snapBuf !== null }
+  set snapshotDensity(on: boolean) {
+    if (on && !this.snapBuf) this.snapBuf = this.device.createBuffer({ label: 'flip.densitySnapshot', size: 16 * this.maxParticles, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC })
+    else if (!on && this.snapBuf) { this.snapBuf.destroy(); this.snapBuf = null }
+  }
+  /** The snapshot buffer (null when off). */
+  get densitySnapshotBuffer(): GPUBuffer | null { return this.snapBuf }
   /** The velocity's extrapolation kernel over the immiscible face accelerations: [A→B, B→A]. */
   private accExtrapolate: [GPUBindGroup, GPUBindGroup] | null = null
   private sphereBg: Partial<Record<'sphereAdvance' | 'sphereFaces' | 'sphereCells' | 'sphereExtendMark' | 'sphereExtendCommit' | 'sphereCoef'
@@ -878,6 +890,7 @@ export class FlipGpuSimulator {
     for (let s = 0; s < substeps; s++) {
       this.encodeSphereStart(encoder)
       if (this.densityProjection) this.encodeDensityCorrection(encoder)
+      if (this.snapBuf && this.count > 0) encoder.copyBufferToBuffer(this.posBuf, 0, this.snapBuf, 0, 16 * this.count)
       this.encodeSubstepBody(encoder)
     }
     this.encodePresent(encoder)
@@ -984,6 +997,7 @@ export class FlipGpuSimulator {
   destroy(): void {
     for (const b of [this.posBuf, this.velBuf, this.affBuf, this.auxBuf, this.enthalpyBuf, this.presentationBuffer, this.faceTypeBuf,
       this.massBuf, this.momBuf, this.massLoBuf, this.momLoBuf, this.weightBuf, ...this.uBuf, ...this.validBuf, this.diagBuf, this.paramsBuf, this.driftBuf]) b.destroy()
+    this.snapBuf?.destroy()
     this.solver?.destroy()
     this.viscositySolver?.destroy()
     this.stokesSolver?.destroy()

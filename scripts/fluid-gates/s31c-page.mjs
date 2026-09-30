@@ -90,6 +90,12 @@
 //      repeated (up to 5 attempts for the 3 valid runs) — missing data is VOID, never a physics FAIL; failing to collect
 //      3 valid runs fails the separate protocol check B1c-validity. B1c-M (and its μ_w control) stays gated, over the
 //      valid runs. Nothing else changes.
+//    REVISION 23:55 (reported only; the commit that adds it, before its first run): the dense window turns on the
+//      bench density snapshot (configure snapshotDensity) and reports the displacement budget per stratum —
+//      D_dp (the density correction's own displacement ÷ the drift displacement), D_a (the midpoint term + clamps),
+//      Λ_native (= 1 + D_dp + D_a, from the solver's own positions) and U = Σδ_dp/ΣΔt·J (+1: the correction exactly
+//      undoes −J) — the measurement the B1c verification asked for before any attribution (lib/b1cSuccessors header).
+//      Nothing gated changes.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the
@@ -310,6 +316,7 @@ try {
     gate.check(dense.length > 0 && dense.every(d => d.M.n > 0 && d.M.ctrlFrac < 0.999),   // a control on no data proves nothing (review 2026-09-29)
       `B1c-M control (μ_w in place of μ_m): ${dense.map(d => `${fmtPct(d.M.ctrlFrac)} %`).join(', ')} — must fall BELOW 99.9 %`)
     console.log(`INFO B1c model ÷ its own instantaneous law over the dense window: ${dense.map(d => fmt3(d.modelOverLaw)).join(', ')}; sets ${dense.map(d => d.set).join(', ')}; the clock switch advanced ${dense.map(d => (1000 * d.clockStepS).toFixed(3)).join(', ')} ms per frame (4.167 expected at 1/240 s)`)
+    console.log(`INFO B1c displacement budget (reported, the density snapshot): ${dense.map((d, k) => `run ${k + 1}: ${['all', 'never', 'exposed', 'row0', 'row1'].map(st => { const b = d.budget?.[st]; return b ? `${st} D_dp ${fmt3(b.Ddp)} D_a ${fmt3(b.Da)} Λ_native ${fmt3(b.lambdaNative)} U ${fmt3(b.U)} (ΣΔtJ/ΣΔtu_V ${fmt3(b.dtJoverDtUV)}; ${b.drops} drops)` : `${st} —` }).join('; ')}; max |Δy − (δ_dp + a)| ${d.budget ? d.budget.maxMismatch.toExponential(1) : '—'} m`).join(' | ')}`)
     console.log(`INFO B1c-T by stratum (reported): ${dense.map((d, k) => `run ${k + 1}: never-exposed ${fmt3(d.strata.never.lambda)} (${d.strata.never.drops}), exposed ${fmt3(d.strata.exposed.lambda)} (${d.strata.exposed.drops}), row 0 ${fmt3(d.strata.row0.lambda)} (${d.strata.row0.drops}), row 1 ${fmt3(d.strata.row1.lambda)} (${d.strata.row1.drops})`).join('; ')}`)
     console.log(`INFO ${ctl.nDilute > 0 && !slipOk(ctl) ? '(would pass)' : '(would fail)'} B1c-control (reported since the 23:16 revision): with the drift switched off the would-be-dispersed dilute oil with no mercury within a cell (${ctl.nDilute} particles) slips at × ${ctl.ratio.toFixed(3)} of its law — ${slipOk(ctl) ? 'INSIDE' : 'outside'} the band (must be outside: the observable sees the drift, not the plume); its 8-s fraction ${pct(ctl.measured)} % [reported]`)
     const spread = Math.max(...runs.map(r => r.ratio)) - Math.min(...runs.map(r => r.ratio))

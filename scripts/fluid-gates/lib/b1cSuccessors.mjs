@@ -21,6 +21,12 @@
 //   successor gates that identity once a hook logs δ_dp and u(x_mid) per particle (H6). Control, reported: the drops'
 //   own slip s_y in the denominator (J omitted).
 // Reported: the model ÷ its own instantaneous law over the window (s_y vs the law with the kernel's inputs).
+// Reported (the displacement budget, 2026-09-29 night; hook H6's snapshot form): with configure({ snapshotDensity })
+//   each sample carries the solver's positions right after the substep's density correction (posDp) and at the sample
+//   (posRaw), vec4 metres. Per drop-substep Δy = δ_dp + a, δ_dp = posDp − posRaw(prev) (the correction's own move),
+//   a = posRaw − posDp (G2P + RK2 advection with the drift, + clamps). Per stratum: D_dp = Σδ_dp / ΣΔt·u_V,y, the
+//   remainder D_a = Σ(a − Δt·v_y − Δt·u_V,y) / ΣΔt·u_V,y (the midpoint term + clamps), Λ_native = 1 + D_dp + D_a, and
+//   U = Σδ_dp / ΣΔt·J_y (J = s − u_V): +1 would mean the correction exactly undoes the counter-drift −J.
 import { loadScenario, waitStepped, sampleAtFrame, DOMAIN_L_M, unitVelToMs } from '../../lib/fluid-page.mjs'
 
 const L = DOMAIN_L_M, DX = L / 64, BAND_Y = 0.0736, DT = 1 / 240
@@ -35,7 +41,7 @@ export async function b1cDense(page, scene, seed = 2) {
   await loadScenario(page, scene, seed)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH); await waitStepped(page, F_SWITCH)
   const t0 = (await page.evaluate(() => window.__fluidBench.status())).simTime
-  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 240 }))
+  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 240, snapshotDensity: true }))
   const subs = async () => (await page.evaluate(() => window.__fluidBench.status())).substepsTotal   // the engine's CPU counter: no GPU readback per frame
   // the first 1/240 frame: the switch must advance simTime by exactly one 1/240 step (reported)
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F_SWITCH + 1); await waitStepped(page, F_SWITCH + 1)
@@ -44,7 +50,7 @@ export async function b1cDense(page, scene, seed = 2) {
   await page.evaluate(f => window.__fluidBench.setStepLimit(f), F0 - 1); await waitStepped(page, F0 - 1)
   let subPrev = await subs(), prev = null, set = null, mats = null, excluded = 0, frames = 0
   const per = new Map()   // per drop: row at t0, mercury exposure in the window, its B1c-T sums (the reported strata)
-  const M = { n: 0, ok: 0, reOk: 0, ctrlOk: 0, maxRel: 0 }, T = { num: 0, den: 0, denCtrl: 0, n: 0 }, K = { s: 0, law: 0 }
+  const M = { n: 0, ok: 0, reOk: 0, ctrlOk: 0, maxRel: 0 }, T = { num: 0, den: 0, denCtrl: 0, n: 0 }, K = { s: 0, law: 0 }, B = { maxMismatch: 0 }
   for (let f = F0; f <= F1; f++) {
     const s = await sampleAtFrame(page, f)
     const sub = await subs(), nSub = sub - subPrev; subPrev = sub
@@ -62,7 +68,7 @@ export async function b1cDense(page, scene, seed = 2) {
         const aD = s.slipIn[8 * i + 3], rm = s.slipIn[8 * i + 4]
         if (!(rm > 0) || !((rm - (1 - aD) * RW - aD * RO) / (RH - RO) <= 1e-4)) continue
         set.push(i)
-        per.set(i, { row: s.pos[3 * i + 1] * L < DX ? 0 : 1, exposed: false, num: 0, den: 0 })
+        per.set(i, { row: s.pos[3 * i + 1] * L < DX ? 0 : 1, exposed: false, num: 0, den: 0, dp: 0, a: 0, dtv: 0, dtj: 0, n: 0 })
       }
     } else if (set && prev && f > F0) {
       frames++
@@ -78,6 +84,12 @@ export async function b1cDense(page, scene, seed = 2) {
         const dy = (s.pos[3 * i + 1] - prev.pos[3 * i + 1]) * L, vy = unitVelToMs(s.vel[3 * i + 1])
         T.num += dy - DT * vy; T.den += DT * s.uV[4 * i + 1]; T.denCtrl += DT * (s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0); T.n++
         const pi = per.get(i); pi.num += dy - DT * vy; pi.den += DT * s.uV[4 * i + 1]
+        if (s.posDp && prev.posRaw) {   // the displacement budget (header)
+          const dDp = s.posDp[4 * i + 1] - prev.posRaw[4 * i + 1], adv = s.posRaw[4 * i + 1] - s.posDp[4 * i + 1]
+          const sy = s.drift[4 * i + 3] > 0 ? s.drift[4 * i + 1] : 0
+          pi.dp += dDp; pi.a += adv; pi.dtv += DT * vy; pi.dtj += DT * (sy - s.uV[4 * i + 1]); pi.n++
+          B.maxMismatch = Math.max(B.maxMismatch, Math.abs(dy - (dDp + adv)))
+        }
         // B1c-M (a dispersed drop-substep: the kernel logged its inputs)
         const g = k => s.slipIn[8 * i + k], rm = g(4), muM = g(5), ReLog = g(6), rc = g(7)
         if (!(rm > 0) || !(muM > 0) || !(rc > 0)) continue
@@ -109,7 +121,7 @@ export async function b1cDense(page, scene, seed = 2) {
     }
     prev = s
   }
-  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60 }))
+  await page.evaluate(() => window.__fluidBench.configure({ clock: 'lockstep', frameDt: 1 / 60, snapshotDensity: false }))
   return {
     set: set?.length ?? 0, frames, excluded, usable: frames - excluded, valid: frames - excluded >= MIN_USABLE, minUsable: MIN_USABLE, clockStepS: tCheck,
     M: { n: M.n, frac: M.ok / Math.max(1, M.n), reFrac: M.reOk / Math.max(1, M.n), ctrlFrac: M.ctrlOk / Math.max(1, M.n), maxRel: M.maxRel },
@@ -120,5 +132,14 @@ export async function b1cDense(page, scene, seed = 2) {
       return [k, { drops: ds.length, lambda: den !== 0 ? num / den : NaN }]
     })),
     modelOverLaw: K.law !== 0 ? K.s / K.law : NaN,
+    // the displacement budget per stratum (header): D_dp, D_a, Λ_native, U; maxMismatch = max |Δy(presentation) − (δ_dp + a)| (m)
+    budget: {
+      maxMismatch: B.maxMismatch,
+      ...Object.fromEntries([['all', () => true], ['never', d => !d.exposed], ['exposed', d => d.exposed], ['row0', d => d.row === 0], ['row1', d => d.row === 1]].map(([k, f]) => {
+        const ds = [...per.values()].filter(f), sum = key => ds.reduce((q, d) => q + d[key], 0)
+        const dp = sum('dp'), a = sum('a'), dtv = sum('dtv'), dtj = sum('dtj'), den = sum('den'), n = sum('n')
+        return [k, { drops: ds.length, substeps: n, Ddp: den !== 0 ? dp / den : NaN, Da: den !== 0 ? (a - dtv - den) / den : NaN, lambdaNative: den !== 0 ? (dp + a - dtv) / den : NaN, U: dtj !== 0 ? dp / dtj : NaN, dtJoverDtUV: den !== 0 ? dtj / den : NaN }]
+      })),
+    },
   }
 }

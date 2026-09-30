@@ -52,6 +52,10 @@ export interface ParticleSample {
   slipInputs?: Float32Array
   /** The drift velocity each particle is advected with, u_V = (dispersed ? s : 0) − J (xyz m/s, 4 floats per particle). */
   uV?: Float32Array
+  /** With configure({ snapshotDensity: true }): the solver's positions right after the last substep's density
+   *  correction, and at the sample (vec4 per particle, metres — the solver's units, not the world units of positions). */
+  posDp?: Float32Array
+  posRaw?: Float32Array
 }
 
 /** What a page must provide for the hook. Optional members enable the matching hook calls. */
@@ -69,7 +73,7 @@ export interface BenchTarget {
   /** Page-level user actions (e.g. 'reset', 'batch10k', 'dropBall', 'removeBall'). */
   action?(name: string): void | Promise<unknown>
   /** Clock/physics configuration for tests (lockstep clock, frame interval, gravity in m/s²). */
-  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean; forceSsfrFailure?: boolean; disableImmiscible?: boolean; immExcludeLiquids?: string[]; splatShape?: 'sphere' | 'aniso' }): void
+  configure?(opts: { clock?: 'realtime' | 'lockstep'; frameDt?: number; gravityMs2?: number; resetClockStats?: boolean; resetDiagnostics?: boolean; forceSsfrFailure?: boolean; disableImmiscible?: boolean; immExcludeLiquids?: string[]; snapshotDensity?: boolean; splatShape?: 'sphere' | 'aniso' }): void
   /** GPU diagnostics counters (e.g. wall safety-clamp hits) + the particle-substeps denominator. */
   diagnostics?(): Promise<Record<string, unknown>>
   /** Extra status fields (sim time, real-time factor, …) merged into status(). */
@@ -193,6 +197,8 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
         ...(s.drift ? { drift: toBase64(s.drift) } : {}),
         ...(s.slipInputs ? { slipIn: toBase64(s.slipInputs) } : {}),
         ...(s.uV ? { uV: toBase64(s.uV) } : {}),
+        ...(s.posDp ? { posDp: toBase64(s.posDp) } : {}),
+        ...(s.posRaw ? { posRaw: toBase64(s.posRaw) } : {}),
         materials: target.compositions(),
       }
     },

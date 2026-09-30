@@ -22,7 +22,7 @@ export interface SpawnParticle { pos: Vec3; vel: Vec3; compositionId: number; te
 
 /** `drift` (FLIP with the immiscible drift active): per particle the slip (m/s, xyz) and the drop diameter d (m, 0: not
  *  dispersed) of the last substep — the gates' check of the page's creaming (s31c-page B1). */
-export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array; slipInputs?: Float32Array; uV?: Float32Array }
+export interface ParticleSample { positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array; drift?: Float32Array; slipInputs?: Float32Array; uV?: Float32Array; posDp?: Float32Array; posRaw?: Float32Array }
 
 /** The drop-ball obstacle, world units (velocity per τ). Mutated in place by a backend that integrates it. */
 export interface BallState { active: boolean; radius: number; center: Vec3; velocity: Vec3 }
@@ -67,6 +67,9 @@ export interface SimBackend {
   readDiagnostics(): Promise<BackendDiagnostics | null>
   /** Bench (PERF-1 baseline): profile the next frame's simulation step (bench/stepProfiler.ts). */
   profileNextStep?(): Promise<StepProfile>
+  /** Bench (the B1c displacement budget): snapshot the positions after each substep's density correction; samples
+   *  then carry posDp (that snapshot) and posRaw (the solver's positions at the sample), both vec4 in metres. */
+  setSnapshotDensity?(on: boolean): void
   /** Test hook: the μ the incompressible viscous solve used at its last run, over the cells it counted full. */
   readViscosityProbe?(): Promise<ViscosityProbe>
   /** S3.6e: the unified pressure–viscosity solve for a ball in a thick liquid — whether it runs, and its last solve's
@@ -310,6 +313,7 @@ export class FlipBackend implements SimBackend {
     })
     const next = await FlipBackend.makeSim(this.device, cells, Math.max(FlipBackend.capacityFor(cells), kept.length))
     this.sim = next
+    next.snapshotDensity = this.snapshotOn   // a bench snapshot survives a resize
     old.destroy()
     this.cells = [...cells] as Vec3
     this.packing = flipPacking(cells)
@@ -435,6 +439,8 @@ export class FlipBackend implements SimBackend {
     sim.immiscibleActive = true
   }
   setImmiscibleDisabled(v: boolean) { this.immDisabled = v; this.applyImmiscible() }
+  private snapshotOn = false
+  setSnapshotDensity(on: boolean) { this.snapshotOn = on; this.sim.snapshotDensity = on }
   /** Liquid pairs with a sourced interfacial tension among these liquids (the drift's slots need at least one). */
   private static pairCount(keys: readonly LiquidKey[]): number {
     return keys.reduce((n, a, i) => n + keys.slice(i + 1).filter(b => interfacialTension(a, b) !== null).length, 0)
@@ -621,6 +627,11 @@ export class FlipBackend implements SimBackend {
         s.drift = new Float32Array(await sim.readBuffer(sim.immiscibleSolver!.bufs.slipState, 16 * n))
         s.slipInputs = new Float32Array(await sim.readBuffer(sim.immiscibleSolver!.bufs.slipInputs, 32 * n))
         s.uV = new Float32Array(await sim.readBuffer(sim.driftBuf, 16 * n))
+      }
+      const snap = sim.densitySnapshotBuffer
+      if (snap) {
+        s.posDp = new Float32Array(await sim.readBuffer(snap, 16 * n))
+        s.posRaw = new Float32Array(await sim.readBuffer(sim.posBuf, 16 * n))
       }
       return s
     } catch { return null }

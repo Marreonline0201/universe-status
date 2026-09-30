@@ -1052,6 +1052,12 @@ export class FluidEngine {
           if (!s?.setImmiscibleExcluded) throw new Error('immExcludeLiquids: this solver has no drift slots')
           s.setImmiscibleExcluded(opts.immExcludeLiquids)
         }
+        // bench (the B1c displacement budget): snapshot the positions after each substep's density correction
+        if (opts.snapshotDensity !== undefined) {
+          const s = this.sim as { setSnapshotDensity?: (on: boolean) => void } | null
+          if (!s?.setSnapshotDensity) throw new Error('snapshotDensity: this solver has no density correction')
+          s.setSnapshotDensity(opts.snapshotDensity)
+        }
       },
       viscosity: async () => (await this.sim?.readViscosityProbe?.()) ?? null,
       diagnostics: async () => {
