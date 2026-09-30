@@ -14,6 +14,7 @@ import { VISCOUS_RUN_NU, INCOMPRESSIBLE_NU_NUM } from '../composition/liquidGate
 import { interfacialTension } from '../composition/interfacialTension'
 import { IMMISCIBLE_MAX_SLOTS, type DriftForm } from '../gpu-sim/flip/ImmiscibleSolver'
 import { StepProfiler, type StepProfile } from '../bench/stepProfiler'
+import { frameDispatches, budgetMismatch, type BudgetState } from '../gpu-sim/flip/dispatchBudget'
 
 export type SolverKind = 'mpm' | 'flip'
 
@@ -559,7 +560,8 @@ export class FlipBackend implements SimBackend {
     this.profileReq = null
     let prof: StepProfiler | null = null, encodeMs = 0
     if (req) { try { prof = new StepProfiler(this.device) } catch (err) { req.reject(err) } }
-    if (prof) encodeMs = prof.record(e, w => this.sim.step(w, n))
+    let budgetState: BudgetState | null = null
+    if (prof) { encodeMs = prof.record(e, w => this.sim.step(w, n)); budgetState = this.sim.budgetState(n) }
     else {
       const t0 = performance.now()
       this.sim.step(e, n)
@@ -577,7 +579,12 @@ export class FlipBackend implements SimBackend {
     const sslot = sk && this.sim.stokesRuns ? this.stokesSlots.find(s => !s.busy) : undefined
     if (sslot) e.copyBufferToBuffer(sk!.bufs.st, 0, sslot.buf, 0, 64)
     q.submit([e.finish()])
-    if (prof && req) prof.finish(n, encodeMs, this.encodeRecent).then(req.resolve, req.reject)
+    if (prof && req) prof.finish(n, encodeMs, this.encodeRecent).then(p => {
+      // PERF-1 L0: the frame's counted dispatches per label against the budget of the state it was encoded in
+      const b = frameDispatches(budgetState!)
+      p.budget = { total: [...b.values()].reduce((q, v) => q + v, 0), mismatches: budgetMismatch(Object.fromEntries(p.byLabel.map(r => [r.pass, r.dispatches])), b), state: budgetState! }
+      req.resolve(p)
+    }, req.reject)
     if (sslot) {
       sslot.busy = true
       sslot.buf.mapAsync(GPUMapMode.READ).then(() => {

@@ -1,4 +1,5 @@
 /// <reference types="@webgpu/types" />
+import type { BudgetState } from '../gpu-sim/flip/dispatchBudget'
 // PERF-1's baseline (vault fluid/realism-2026-09/EXTENDED-ROADMAP.md §5.34; S3N-23 "a per-kernel dispatch budget"):
 // profile ONE frame's simulation step on the real page. The command encoder handed to the simulator is wrapped — as
 // bench/flipSelftest/perf.ts profileStep does for the self-test scene — so that every compute pass carries begin/end
@@ -31,6 +32,9 @@ export interface StepProfile {
   byLabel: { pass: string; us: number; passes: number; dispatches: number }[]
   /** passes beyond the query set's capacity (untimed, still counted) */
   untimedPasses: number
+  /** PERF-1 L0: the frame's dispatches per label against dispatchBudget.frameDispatches(state) — `mismatches` empty and
+   *  no untimed pass (those carry no label) is the per-frame count gate (perf-profile.mjs); set by the page's backend */
+  budget?: { total: number; mismatches: { label: string; counted: number; budget: number }[]; state: BudgetState }
 }
 
 type AnyFn = (...a: unknown[]) => unknown

@@ -22,6 +22,7 @@ import { solveCost, profileStep } from './perf'
 import { immKernels, immRest, immLayered, immCost, immB1 } from './immiscible'
 import { s37Kernels, s37Physics } from './s37'
 import { taylorGreen } from './obs1'
+import { budgetKernels } from './budget'
 
 const log = document.getElementById('log') as HTMLPreElement
 const say = (s: string) => { log.textContent += s + '\n'; console.log('[flip]', s) }
@@ -336,6 +337,7 @@ try {
     else if (test === 'tankBudget') out = await tankBudget(device, params as { dims?: [number, number, number][]; steps?: number; depthCells?: number; raised?: boolean })
     else if (test === 'stokesPhysics') out = await stokesPhysics(device, params as { test: 'A1S' | 'A5S'; Rc?: number; tol?: number; seed?: number })
     else if (test === 'immKernels') out = await immKernels(device, params as { kind?: string; seed?: number })
+    else if (test === 'budgetKernels') out = await budgetKernels(device, params as { shapes?: [number, number, number][]; substeps?: number[] })
     else if (test === 's37Kernels') out = await s37Kernels(device, params as { seed?: number; tol?: number })
     else if (test === 's37Physics') out = await s37Physics(device, params as { test: 'A1' | 'A3' | 'A4' | 'F0' | 'T0'; Rc?: number; s?: number; tol?: number; seed?: number })
     else if (test === 'immB1') out = await immB1(device, params as { seconds?: number })

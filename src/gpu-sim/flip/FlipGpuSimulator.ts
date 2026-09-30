@@ -72,6 +72,7 @@ import sphereGravityWGSL from './shaders/sphereGravity.wgsl?raw'
 import sphereRankWGSL from './shaders/sphereRank.wgsl?raw'
 import sphereMonoUpdateWGSL from './shaders/sphereMonoUpdate.wgsl?raw'
 import psiCoefWGSL from './shaders/psiCoef.wgsl?raw'
+import type { BudgetState } from './dispatchBudget'
 import fillLiquidFacesWGSL from './shaders/fillLiquidFaces.wgsl?raw'
 import { PoissonSolver, type SolveConfig, type SolverMethod } from './poisson/PoissonSolver'
 import { ViscositySolver } from './ViscositySolver'
@@ -837,6 +838,19 @@ export class FlipGpuSimulator {
     this.psiSolver?.writeUnitCoefficients(1)
   }
   get hasSphere(): boolean { return this.sphereActive }
+  /** PERF-1 L0: the state the frame's dispatch count depends on (dispatchBudget.frameDispatches), read after step()
+   *  encoded the frame (syncStokes ran there): the flags, the caps the solves were encoded with, the solvers' shapes. */
+  budgetState(substeps: number): BudgetState {
+    return {
+      substeps, particles: this.count > 0, projection: this.projection, densityProjection: this.densityProjection,
+      ghost: this.freeSurface === 'ghost', variableDensity: this.variableDensity, sphere: this.sphereActive, monolithic: this.sphereMono,
+      viscous: this.viscosityActive && !!this.viscositySolver, stokes: this.stokesRuns, immiscible: this.immActive,
+      driftForm: this.immiscibleSolver?.driftForm ?? 'face', extrapolationLayers: this.extrapolationLayers,
+      caps: { pressure: this.solveCfg?.cap ?? this.pressureCap, psi: this.psiCfg?.cap ?? this.psiCap, viscous: this.viscositySolver?.cap ?? 0, stokes: this.stokesSolver?.cap ?? 0 },
+      pressure: this.solver ? { ...this.solver.dispatches } : { prepare: 0, init: 0, perIteration: 0, finalize: 0, rankInit: 0, rankPerIteration: 0 },
+      psi: this.psiSolver ? { ...this.psiSolver.dispatches } : null,
+    }
+  }
   /** The ball's state as the GPU last left it (tests; the page copies sphereBuf into its own staging ring). */
   async readSphere(): Promise<FlipSphereState> {
     const w = new Float32Array(await this.readBuffer(this.sphereBuf, 4 * SPHERE_WORDS))

@@ -18,6 +18,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s36      (S3.6 viscosity kernels, gate s36-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35i     (S3.5-i immiscible drift kernels, gate s35i-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s37      (S3.7 monolithic ball kernels, gate s37-gpu.mjs --quick)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=perf1    (PERF-1 L0 dispatch budget, gate perf1-gpu.mjs)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -162,6 +163,12 @@ SETS.s37 = [
   [`${SH}/sphereGravity.wgsl`, 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * P.gravity[a]; }', 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += 2.0 * P.dt * P.gravity[a]; }', 'gravity applied twice'],
   [`${SH}/sphereMonoUpdate.wgsl`, 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / M; }', 'for (var a = 0u; a < 3u; a++) { sphere[SPH_V + a] += P.dt * F[a] / rhoS; }', 'ball update divides by ρ_s, not M'],
   [`${SH}/sphereVolume.wgsl`, 'if (S > 0.0) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'if (S > 0.5) { atomicAdd(&forceAcc[3], i32(round(S * SOLID_SCALE))); }', 'V_J from the mostly-solid faces only'],
+]
+// PERF-1 L0 (2026-09-30): the dispatch budget's positive controls (spec L0 D1, D2) — an encode that gains one dispatch,
+// and a formula that loses the monolithic ball's rank term; each must fail perf1-gpu's per-label equality
+SETS.perf1 = [
+  ['src/gpu-sim/flip/FlipGpuSimulator.ts', "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", 'D1: one extra dispatch (fillLiquidFaces twice)'],
+  ['src/gpu-sim/flip/dispatchBudget.ts', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? sh.rankInit + cap * sh.rankPerIteration : 0)', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? 0 : 0)', "D2: the rank term dropped from the budget"],
 ]
 // --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
 // refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2

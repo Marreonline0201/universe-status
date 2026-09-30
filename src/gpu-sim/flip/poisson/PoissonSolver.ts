@@ -215,8 +215,10 @@ export class PoissonSolver {
     /** S3.7: Ĵ_a = √(Δt/(M·dx³))·J_a per padded level-0 cell (vec4, xyz), written by the caller when a solve has `rank`. */
     rankJ: GPUBuffer
   }
-  /** dispatches encoded: prepare pass; a solve = init + cap * perIteration + finalize */
-  readonly dispatches: { prepare: number; init: number; perIteration: number; finalize: number; vcycle: number }
+  /** dispatches encoded: prepare pass; a solve = init + cap * perIteration + finalize, and with `rank` (S3.7) rankInit
+   *  more before the loop (cg_jdot_x + cg_jreduce, and the d update's cg_jreduce) and rankPerIteration more per iteration
+   *  (the d update's cg_jreduce) — PERF-1's dispatch budget (dispatchBudget.ts) reads these, never encodeSolve's return */
+  readonly dispatches: { prepare: number; init: number; perIteration: number; finalize: number; vcycle: number; rankInit: number; rankPerIteration: number }
 
   private pipelines = new Map<string, GPUComputePipeline>()
   private layouts = new Map<string, GPUBindGroupLayout>()
@@ -274,8 +276,8 @@ export class PoissonSolver {
 
     const vc = this.method === 'mgpcg' ? 6 * this.tail + 1 : 0
     this.dispatches = this.method === 'mgpcg'
-      ? { prepare: 1 + 2 * (nl - 1), init: 2 + vc + 2, perIteration: 4 + vc + 2, finalize: 1, vcycle: vc }
-      : { prepare: 1, init: 3, perIteration: 5, finalize: 1, vcycle: 0 }
+      ? { prepare: 1 + 2 * (nl - 1), init: 2 + vc + 2, perIteration: 4 + vc + 2, finalize: 1, vcycle: vc, rankInit: 3, rankPerIteration: 1 }
+      : { prepare: 1, init: 3, perIteration: 5, finalize: 1, vcycle: 0, rankInit: 3, rankPerIteration: 1 }
   }
 
   static async create(device: GPUDevice, d: PoissonSolverDesc): Promise<PoissonSolver> {
