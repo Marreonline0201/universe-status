@@ -19,6 +19,7 @@
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s35i     (S3.5-i immiscible drift kernels, gate s35i-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=s37      (S3.7 monolithic ball kernels, gate s37-gpu.mjs --quick)
 //   node scripts/fluid-gates/gpu-mutations.mjs --gate=perf1    (PERF-1 L0 dispatch budget, gate perf1-gpu.mjs)
+//   node scripts/fluid-gates/gpu-mutations.mjs --gate=opt2a    (OPT-2a in-scatter / deep colour, gate opt2a-render.mjs)
 import { spawnSync, execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
@@ -170,6 +171,28 @@ SETS.perf1 = [
   ['src/gpu-sim/flip/FlipGpuSimulator.ts', "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", "    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n    this.dispatch(encoder, 'fillLiquidFaces', bg.fillLiquidFaces, 3 * this.layout.size, 256)\n", 'D1: one extra dispatch (fillLiquidFaces twice)'],
   ['src/gpu-sim/flip/dispatchBudget.ts', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? sh.rankInit + cap * sh.rankPerIteration : 0)', 'sh.init + cap * sh.perIteration + sh.finalize + (rank ? 0 : 0)', "D2: the rank term dropped from the budget"],
 ]
+// OPT-2a (2026-09-30; spec §4.6): the composite's in-scatter and deep-water terms. Each find string is one line of the
+// shader, unique in the file; every edit keeps each binding statically used. Sizes at the centre rays (spec table):
+// 1–9 and 12 are V18b's (0.5 % per pixel), 10–11 V17-code's (1e-5·|B|), 13–14 V9's (1e-4·L0)
+const CO = 'src/fluid-render/shaders/ssfr_composite.wgsl'
+SETS.opt2a = [
+  [CO, 'L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr + (1.0 - F) * Lss;', 'L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * (Lrefr + Lss);', '1: in-scatter inside T'],
+  [CO, 'L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr + (1.0 - F) * Lss;', 'L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr + Lss;', '2: no (1 − F_v) on L_ss'],
+  [CO, 'let Ew = Esun * (1.0 - fresnelDielectric(cs, 1.0, ior)) * cs / muS;', 'let Ew = Esun * cs / muS;', '3: E_w without (1 − F_s)'],
+  [CO, 'let Ew = Esun * (1.0 - fresnelDielectric(cs, 1.0, ior)) * cs / muS;', 'let Ew = Esun * (1.0 - fresnelDielectric(cs, 1.0, ior)) * cs;', '4: E_w without /μs'],
+  [CO, 'let x = pathM * (1.0 + max(cosT, 1e-4) / muS);', 'let x = pathM;', '5: x = pathM (k dropped)'],
+  [CO, 'return Ew * pOverB * pathM * S * (eta * eta);', 'return Ew * pOverB * pathM * S;', '6: n² law dropped'],
+  [CO, 'let pOverB = (1.0 + VSF_C * cp * cp) / (4.0 * PI * (1.0 + VSF_C / 3.0));', 'let pOverB = (1.0 + 0.0 * cp) / (4.0 * PI);', '7: isotropic phase function'],
+  [CO, 'let Lss = sunInscatter(N, tDir, cosT, pathM, ior, m0.w) * params.flags.y;', 'let Lss = sunInscatter(N, -V, cosT, pathM, ior, m0.w) * params.flags.y;', '8: ψ from the air ray'],
+  [CO, 'let sunDir = scene.sun.xyz;', 'let sunDir = scene.sun.zyx;', '9: sun x↔z swapped'],
+  [CO, 'L = F * Lrefl + m1.xyz * scene.irradiance.rgb;', 'L = F * Lrefl + (1.0 - F) * m1.xyz * scene.irradiance.rgb;', '10: deep term with (1 − F)'],
+  [CO, 'L = F * Lrefl + m1.xyz * scene.irradiance.rgb;', 'L = F * Lrefl + max(m1.xyz, vec3<f32>(0.0)) * scene.irradiance.rgb;', '11: deep R_rs clamped at 0'],
+  [CO, 'let S = lutFetch(scatRowP1 - 1.0, sqrt(clamp(x / params.lutLmaxM, 0.0, 1.0)));', 'let S = lutFetch(scatRowP1, sqrt(clamp(x / params.lutLmaxM, 0.0, 1.0)));', '12: scatter row read at scatRow + 1'],
+  [CO, 'let Esun = scene.irradiance.w;', 'let Esun = scene.sunRadiance.r * 2.0 * PI * (1.0 - cos(scene.sun.w));', '13: E_sun without the sun-on flag'],
+  [CO, 'if (params.flags.x > 0.5 && m1.w > 0.5) {', 'if (m1.w > 0.5) {', '14: deep branch forced'],
+]
+// the gate script each set runs (default: <set>-gpu.mjs)
+const SCRIPT = { opt2a: 'opt2a-render.mjs' }
 // --check: every set's find strings against the WORKING TREE, then exit (run it before committing a shader edit). A
 // refactor of a kernel line silently disables the mutants keyed on its text — s31a's RK2 mutant was dead from f7e8a4b2
 // (the drift added to the advection line) and s35i's ρ_c mutant from 1b054a00 until this check found them.
@@ -201,7 +224,7 @@ const HYGIENE = /^[✓✗] (GPU: \d+ uncaptured WebGPU errors|console: \d+ error
 function runGate() {
   // the gate script and the CPU reference it imports come from the clean tree too (the working copy may be mid-edit)
   // s32 / s34: the --quick subsets (kernel parity + D0, C4/WALL, S34a) — every mutant targets a kernel parity covers
-  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${GATE}-gpu.mjs`), ...(['s32', 's34', 's35', 's36', 's35i', 's37'].includes(GATE) ? ['--quick'] : [])], {
+  const r = spawnSync(process.execPath, [join(TREE, `scripts/fluid-gates/${SCRIPT[GATE] ?? `${GATE}-gpu.mjs`}`), ...(['s32', 's34', 's35', 's36', 's35i', 's37'].includes(GATE) ? ['--quick'] : [])], {
     cwd: TREE, env: { ...process.env, FLUID_BASE: 'http://localhost:5175' }, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 1_800_000,
   })
   const out = r.stdout || ''

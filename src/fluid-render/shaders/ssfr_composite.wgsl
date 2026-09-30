@@ -12,6 +12,13 @@
 //            of the material's measured a(λ) (optics/materials.ts);
 //     ℓ      thickness (metres of liquid along the straight view ray, ssfr_thickness.wgsl) × cosθi / cosθt —
 //            the refracted path through a flat layer (r6 §4: the straight chord overestimates it, 1.43× at 57°).
+//   in-scatter:  + (1 − F)·L_ss(0−)/n², the sun's single scattering by the water along the refracted view path (OPT-2a;
+//                OOWB "The Single-Scattering Approximation" Eq. 6 integrated over the layer): L_ss(0−) =
+//                β(ψ)·E_w·[1 − e^{−c·ℓ·k}]/(c·k), k = 1 + μv/μs, E_w = E_sun·(1 − F(θs))·cosθs/μs; exact as ELASTIC,
+//                SCALAR single scattering (≈ 0.2 % multiple scattering at 0.35 m) — Raman (≈ 12–21 % of the term) and
+//                polarisation (≈ 0.4 %) are not modelled; the n² radiance law on exit (OOWB "The Level Sea Surface").
+//                Spectrally exact through one LUT row: E_w·(β/b)(ψ)·ℓ·S_rgb(ℓ·k) (optics/materials.ts scatterRowRgb).
+//   deep (probe only in the lab): C = F·L_refl + R_rs·E_d(0+), QAA_v5 for optically deep water; no second (1 − F).
 //   conductor:   C = R(θ)·L_refl, R from the measured complex index, integrated over the spectrum; nothing is
 //                transmitted.
 // Output: alpha = 1 (no blending over a clear colour), clipped to [0,1] per channel, sRGB-encoded (CSS Color 4).
@@ -33,10 +40,12 @@ struct CompositeParams {
     lutN: f32,
     lutLmaxM: f32,
     outputSize: vec2<f32>,   // size of the target this pass draws (the canvas: CSS size × device pixel ratio)
-    _pad: vec2<f32>,
+    flags: vec2<f32>,        // x: deep (1 = the QAA deep term; probes only, the page writes 0); y: in-scatter factor
+                             // (the page writes 1; probes: 0 off, 1 physical — other values are positive controls only)
 };
 
-// Per composition: [kind (0 dielectric, 1 conductor), refractive index, LUT row (−1 none), 0] + [reserved].
+// Per composition: [kind (0 dielectric, 1 conductor), refractive index, LUT row (−1 none), scatter row + 1 (0 none)] +
+// [R_rs rgb (1/sr, linear sRGB, signed), hasDeep] (optics/materials.ts opticsRenderData).
 struct Materials {
     data: array<vec4<f32>, 512>,
 };
@@ -144,6 +153,28 @@ fn transmittance(row: f32, pathM: f32) -> vec3<f32> {
     return lutFetch(row, sqrt(clamp(pathM / params.lutLmaxM, 0.0, 1.0)));
 }
 
+// (1 − δ)/(1 + δ), δ = 0.039: the pure-water phase shape β(ψ) ∝ 1 + VSF_C·cos²ψ (Zhang, Hu & He 2009 p. 5705; betasw_ZHH2009.m)
+const VSF_C: f32 = 0.92492782;
+
+// The sun's single scattering along the refracted view path (OOWB single-scattering approximation, Eq. 6 integrated over
+// the layer; elastic, scalar — Raman and polarisation not modelled). Returns the basic radiance L_ss(0−)/n² (the n-squared
+// law); the caller applies (1 − F_v). The layer is flat relative to the local N (as pathM assumes); no shadowing.
+fn sunInscatter(N: vec3<f32>, tDir: vec3<f32>, cosT: f32, pathM: f32, ior: f32, scatRowP1: f32) -> vec3<f32> {
+    let Esun = scene.irradiance.w;
+    let sunDir = scene.sun.xyz;                                             // unit vector toward the sun (world)
+    let cs = dot(N, sunDir);
+    if (scatRowP1 < 0.5 || Esun <= 0.0 || cs <= 0.0) { return vec3<f32>(0.0); }
+    let eta = 1.0 / ior;
+    let muS = sqrt(max(0.0, 1.0 - eta * eta * (1.0 - cs * cs)));          // cosine of the sun's angle in water, from N
+    let sunW = normalize(eta * (-sunDir) + (eta * cs - muS) * N);          // the sun beam's direction of travel in water
+    let Ew = Esun * (1.0 - fresnelDielectric(cs, 1.0, ior)) * cs / muS;   // irradiance normal to the refracted beam
+    let cp = dot(sunW, -tDir);                                              // cos ψ: sun beam vs light heading to the eye
+    let pOverB = (1.0 + VSF_C * cp * cp) / (4.0 * PI * (1.0 + VSF_C / 3.0)); // β(ψ)/b, 1/sr
+    let x = pathM * (1.0 + max(cosT, 1e-4) / muS);                          // ℓ·k
+    let S = lutFetch(scatRowP1 - 1.0, sqrt(clamp(x / params.lutLmaxM, 0.0, 1.0)));
+    return Ew * pOverB * pathM * S * (eta * eta);
+}
+
 struct Shaded {
     encoded: vec4<f32>,   // what goes to the canvas
     linear: vec4<f32>,    // the same colour before the clip and the sRGB encode (bench probe target)
@@ -213,10 +244,20 @@ fn shade(fragXY: vec2<f32>) -> Shaded {
         L = lutFetch(row, cosI) * Lrefl;
     } else {
         let F = fresnelDielectric(cosI, 1.0, ior);
-        let thickness = textureLoad(thicknessTex, pix, 0).r;
-        let pathM = thickness * cosI / max(cosT, 1e-4);
-        let Lrefr = traceScene(P, tDir, coneT).radiance;
-        L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr;
+        let m1 = materials.data[2u * compId + 1u];
+        if (params.flags.x > 0.5 && m1.w > 0.5) {
+            // optically deep (probe only in the lab): the QAA water-leaving radiance added to the reflection — no second
+            // (1 − F), QAA's 0.52 contains both crossings; the refracted floor term and the in-scatter are both dropped
+            // (R_rs already contains the whole column)
+            L = F * Lrefl + m1.xyz * scene.irradiance.rgb;
+        } else {
+            let thickness = textureLoad(thicknessTex, pix, 0).r;
+            let pathM = thickness * cosI / max(cosT, 1e-4);
+            let Lrefr = traceScene(P, tDir, coneT).radiance;
+            let Lss = sunInscatter(N, tDir, cosT, pathM, ior, m0.w) * params.flags.y;
+            // with the term off (Lss = ±0) the first two products are the pre-OPT-2a line, unchanged (x + 0 = x)
+            L = F * Lrefl + (1.0 - F) * transmittance(row, pathM) * Lrefr + (1.0 - F) * Lss;
+        }
     }
     return Shaded(vec4<f32>(srgbEncode(clamp(L, vec3<f32>(0.0), vec3<f32>(1.0))), 1.0), vec4<f32>(L, 1.0));
 }

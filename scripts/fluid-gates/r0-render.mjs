@@ -27,7 +27,8 @@
 // M  mercury: normal-incidence reflectance per channel = Inagaki n, k integrated over D65 (± 2/255 against a uniform
 //    white sky); zero transmission: a black vs a red floor under the pool gives bit-identical mercury pixels.
 // S  sun: the sun's image reflected in still water carries flux F·π (the disc radiance π/Ω☉ integrated over its
-//    image) ± 5 %; the number of lit pixels against a 4.65 mrad disc is reported (rim pixels are partly lit).
+//    image) ± 5 %; the number of lit pixels against a 4.65 mrad disc is reported (rim pixels are partly lit). Run with
+//    the OPT-2a in-scatter off (inScatter: 0): with it on every liquid pixel is lit and the count means nothing.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openFluidPage, makeGate, writeReport, loadScenario, sample, waitStepped } from '../lib/fluid-page.mjs'
@@ -287,7 +288,7 @@ try {
     const P = [0.5, 0.2, 0.5], D = 1.2
     const cam = { eye: [P[0] - D * sun[0], P[1] + D * sun[1], P[2] - D * sun[2]], target: P, fovDeg: 8 }
     const SW = 400, SH = 400
-    const r = await probe({ width: SW, height: SH, camera: cam, slab: { surfaceY: 0.2, compId: WATER }, env: { mode: 'uniform', sky: black, floor: black }, sun: true, hideParticles: true, targets: ['linear'] })
+    const r = await probe({ width: SW, height: SH, camera: cam, slab: { surfaceY: 0.2, compId: WATER }, env: { mode: 'uniform', sky: black, floor: black }, sun: true, inScatter: 0, hideParticles: true, targets: ['linear'] })
     let flux = 0, lit = 0
     for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
       const L = r.t.linear[(y * SW + x) * 4]

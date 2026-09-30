@@ -6,6 +6,10 @@
 // generator, and setStepLimit(n) freezes the simulation after exactly n stepped frames
 // (rendering continues), so a sample is taken at a known frame and two runs are comparable.
 import type { ProbeOptions, ProbeResultWithCamera } from '../fluid-render/SSFRPipeline'
+import { OPTICAL_MODELS, LUT_LMAX_M, LUT_N, waterAbsorptionPerM, haleQuerryAbsorptionPerM, waterScatteringPerM, scatterRowRgb,
+  deepRrsRgb, lutRowIndex, opticsRecordFor, type OpticalModel } from '../fluid-render/optics/materials'
+import { zhangPureWater, KB, KELVIN, ZHANG_SHIPPED } from '../fluid-render/optics/waterScattering'
+import { QAA_V5, qaaRrs } from '../fluid-render/optics/qaa'
 
 /** mulberry32 — small, fast, well-distributed 32-bit PRNG. */
 export function mulberry32(seed: number): () => number {
@@ -56,6 +60,22 @@ export interface ParticleSample {
    *  correction, and at the sample (vec4 per particle, metres — the solver's units, not the world units of positions). */
   posDp?: Float32Array
   posRaw?: Float32Array
+}
+
+/** Inputs of the optics() readout (OPT-2a spec §3.6). Every field absent = the page's shipped precompute; a set field is a
+ *  deliberate deviation (the OPT-2a-c positive controls call the renderer's own functions with wrong inputs). */
+export interface OpticsOptions {
+  /** wavelength of the scalar R_rs readout, nm (default 450: a tabulated Pope & Fry row, no interpolation) */
+  lambdaNm?: number
+  /** a(λ): the shipped splice (Pope & Fry 1997, Hale & Querry 1973 outside 380–727.5 nm), Hale & Querry alone, or flat, 1/m */
+  absorption?: 'water' | 'hale-querry' | { flatPerM: number }
+  /** the pure-water scattering's depolarisation ratio δ and temperature, °C (default: ZHANG_SHIPPED) */
+  delta?: number
+  tempC?: number
+  /** QAA g-set [g0, g1] (default QAA_v5 Table 1) */
+  g?: [number, number]
+  /** x (metres) at which to sample the scatter row S_rgb(x) (default: 0 … LUT_LMAX_M, the tank's paths among them) */
+  scatterX?: number[]
 }
 
 /** What a page must provide for the hook. Optional members enable the matching hook calls. */
@@ -168,6 +188,35 @@ export function installBenchHook(target: BenchTarget, meta: { page: string }) {
       const data: Record<string, string> = {}
       for (const [k, v] of Object.entries(r.data)) if (v) data[k] = toBase64(new Uint8Array(v))
       return { ...r, data }
+    },
+
+    /** OPT-2a (spec §3.6): the renderer's OWN optics precompute — optics/materials.ts, waterScattering.ts and qaa.ts, the
+     *  modules the pipeline ships — for the OPT-2a-c CPU half and the render gates' material overrides (a gate cannot
+     *  import materials.ts in Node: it loads its data with Vite ?raw). With no options every value is the page's: rrsRgb
+     *  is the water record's cached R_rs, the one written to the GPU. Options are deliberate deviations (controls). */
+    optics(opts: OpticsOptions = {}) {
+      const lambdaNm = opts.lambdaNm ?? 450
+      const tempC = opts.tempC ?? ZHANG_SHIPPED.tempC, delta = opts.delta ?? ZHANG_SHIPPED.delta
+      const ab = opts.absorption ?? 'water'
+      const absorptionPerM = ab === 'water' ? waterAbsorptionPerM : ab === 'hale-querry' ? haleQuerryAbsorptionPerM : ((flat: number) => () => flat)(ab.flatPerM)
+      const shippedScatter = opts.tempC === undefined && opts.delta === undefined
+      const scatteringPerM = shippedScatter ? waterScatteringPerM : (l: number) => zhangPureWater(l, tempC, delta).bPerM
+      const coeffs = opts.g ? { ...QAA_V5, g0: opts.g[0], g1: opts.g[1] } : QAA_V5
+      const shipped = ab === 'water' && shippedScatter && !opts.g
+      const model: OpticalModel = shipped ? OPTICAL_MODELS.water
+        : { ...OPTICAL_MODELS.water, absorptionPerM, scatteringPerM, backscatterPerM: (l: number) => scatteringPerM(l) / 2 }
+      const a = model.absorptionPerM!(lambdaNm), b = model.scatteringPerM!(lambdaNm), bb = model.backscatterPerM!(lambdaNm)
+      const xs = opts.scatterX ?? [0, 1e-3, 0.35, 1.0, 3.63, 13.92, 25, LUT_LMAX_M]
+      return {
+        shipped, lambdaNm, a, b, bb, u: bb / (a + bb),
+        rrs: qaaRrs(a, bb, coeffs),
+        rrsRgb: shipped ? opticsRecordFor('water', NaN).rrs : deepRrsRgb(model, coeffs),
+        scatterRow: { x: xs, rgb: xs.map(x => scatterRowRgb(model, x)) },
+        scatterRowIndex: lutRowIndex('water', 'scatter'),
+        bRgb: scatterRowRgb(model, 0),
+        lut: { n: LUT_N, lmaxM: LUT_LMAX_M },
+        constants: { g0: coeffs.g0, g1: coeffs.g1, t: coeffs.t, gamma: coeffs.gamma, delta, tempC, salinity: ZHANG_SHIPPED.salinity, kB: KB, kelvinOffset: KELVIN },
+      }
     },
 
     status() {

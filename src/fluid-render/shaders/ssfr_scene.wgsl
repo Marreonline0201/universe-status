@@ -28,6 +28,8 @@ struct Scene {
     marker: vec4<f32>,       // test marker disc on the floor (room mode): x, z, radius (world units), w = on
     markerColor: vec4<f32>,  // rgb linear radiance of the marker
     tank: vec4<f32>,         // xyz: the tank's extent in world units (the default tank is [0,1]³; TANK-RESIZE)
+    irradiance: vec4<f32>,   // rgb: E_d(0+), the downwelling plane irradiance just above the surface (renderer units,
+                             // E_sun = π; the QAA deep term's input); w: E_sun·[sun on] (the in-scatter's) — OPT-2a
 };
 
 struct SceneHit {

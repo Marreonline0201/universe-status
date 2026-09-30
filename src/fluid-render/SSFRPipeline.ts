@@ -86,7 +86,7 @@ const GRID_LINE_ENC: Rgb = [0.50, 0.51, 0.24]   // darker olive grid lines (scal
 const EDGE_ENC: Rgb = [0.0, 0.6, 1.0]           // tank box edges (not scaled)
 
 // ── Bench probe (scripts/fluid-gates/*.mjs through window.__fluidBench.probe) ──────────────────────────────
-export type ProbeTarget = 'color' | 'linear' | 'bg' | 'thickness' | 'depth' | 'compId'
+export type ProbeTarget = 'color' | 'linear' | 'bg' | 'thickness' | 'depth' | 'compId' | 'bgDepth'
 export interface ProbeEnvironment { mode: 'room' | 'uniform'; sky?: Rgb; floor?: Rgb }
 export interface ProbeOverrides {
   /** Analytic still layer filling y ∈ [0, surfaceY] (world units) of composition compId, instead of the particles. */
@@ -97,8 +97,15 @@ export interface ProbeOverrides {
   particleVolume?: number
   splatRadiusFactor?: number
   splatShape?: SplatShape
-  /** Replace one composition's optics record: kind 0 dielectric / 1 conductor, IOR, LUT row (−1 none). */
-  material?: { compId: number; kind: 0 | 1; ior: number; lutRow: number }
+  /** Replace one composition's optics record: kind 0 dielectric / 1 conductor, IOR, LUT row (−1 none); OPT-2a: the scatter
+   *  row (−1 or absent = none, written as 0), R_rs (1/sr) and hasDeep (absent = 0) — a record without them is today's. */
+  material?: { compId: number; kind: 0 | 1; ior: number; lutRow: number; scatRow?: number; rrs?: Rgb; hasDeep?: boolean }
+  /** OPT-2a: the QAA deep term (composite flags.x; the page never sets it). */
+  deep?: boolean
+  /** OPT-2a: the sun in-scatter factor (composite flags.y; the page's value is 1 — 0 off; others are positive controls). */
+  inScatter?: number
+  /** Background brightness for this probe (the page's slider otherwise; clamped as the slider is). */
+  brightness?: number
   /** Hide the drop-ball for this probe. */
   noBall?: boolean
   /** Draw no particles (the room alone, or the slab alone). */
@@ -230,7 +237,7 @@ export class SSFRPipeline {
   private slabUBO: GPUBuffer | null = null
 
   private quadIndexBuf!: GPUBuffer
-  private matBuf!: GPUBuffer          // per-composition optics records (CompositionTable.getRenderData())
+  private matBuf!: GPUBuffer          // per-composition optics records (optics/materials.ts opticsRenderData)
   private probeMatBuf!: GPUBuffer     // the same, with a probe's override applied
   private matData = new Float32Array(256 * 8)
   private lutBuf!: GPUBuffer          // optics LUT rows (optics/materials.ts buildOpticsLut)
@@ -300,7 +307,7 @@ export class SSFRPipeline {
     const ubo = (size: number) => d.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.cameraUBO = ubo(224)      // 3 mat4 + screenSize + radius + count + chordToMetres + pad
     this.bgCamUBO = ubo(208)       // 3 mat4 + screenSize + pad
-    this.sceneUBO = ubo(208)       // 13 vec4 (Scene in ssfr_scene.wgsl)
+    this.sceneUBO = ubo(224)       // 14 vec4 (Scene in ssfr_scene.wgsl; OPT-2a appended irradiance)
     this.blurHUBO = ubo(32)
     this.blurVUBO = ubo(32)
     this.compositeUBO = ubo(288)   // 4 mat4 + screenSize + lutN + lutLmax + outputSize + pad
@@ -456,7 +463,8 @@ export class SSFRPipeline {
     this.main = this.createTargets(w, h, 0)
   }
 
-  /** Upload per-composition optics records (CompositionTable.getRenderData(): 256 × 8 floats). */
+  /** Upload per-composition optics records (optics/materials.ts opticsRenderData: 256 × 8 floats — slot 3 is the scatter
+   *  row + 1, so the legacy CompositionTable.getRenderData, which writes metalness there, must never feed this). */
   updateMaterialProps(data: Float32Array) {
     this.matData.set(data.subarray(0, this.matData.length))
     this.device.queue.writeBuffer(this.matBuf, 0, data.buffer, data.byteOffset, data.byteLength)
@@ -517,14 +525,16 @@ export class SSFRPipeline {
     comp.set(f.view, 0); comp.set(f.invView, 16); comp.set(f.proj, 32); comp.set(f.invProj, 48)
     comp[64] = t.w; comp[65] = t.h; comp[66] = LUT_N; comp[67] = LUT_LMAX_M
     comp[68] = f.outputSize?.[0] ?? t.w; comp[69] = f.outputSize?.[1] ?? t.h
+    // OPT-2a flags, written explicitly every frame (comp is a fresh zeroed array): x deep (probes only), y the in-scatter
+    comp[70] = f.overrides?.deep ? 1 : 0; comp[71] = f.overrides?.inScatter ?? 1
     q.writeBuffer(this.compositeUBO, 0, comp)
   }
 
   /** The Scene uniform (ssfr_scene.wgsl): one sun, the room's decoded colours, the ball, probe test settings. */
   private sceneData(f: FrameInputs): Float32Array<ArrayBuffer> {
     const o = f.overrides ?? {}
-    const s = new Float32Array(52)
-    const bb = this.bgBrightness
+    const s = new Float32Array(56)
+    const bb = o.brightness !== undefined ? clampBrightness(o.brightness) : this.bgBrightness
     const dec = (c: Rgb, k = 1): Rgb => [srgbDecode(c[0] * k), srgbDecode(c[1] * k), srgbDecode(c[2] * k)]
     const sunOn = o.sun ?? true
     s.set([...SUN_DIRECTION, SUN_ANGULAR_RADIUS_RAD], 0)
@@ -541,6 +551,12 @@ export class SSFRPipeline {
     }
     if (o.marker) { s.set([o.marker.x, o.marker.z, o.marker.radius, 1], 40); s.set(o.marker.color, 44) }
     s.set(this.tankExtent, 48)
+    // OPT-2a: E_d(0+), the downwelling plane irradiance just above the surface, in float64 (2π(1 − cos θ☉) in f32 is 0.23 %
+    // low): the sky's π·L (the uniform test sky, or the room's decoded backdrop — its edges and the ball ignored) plus the
+    // sun's E_sun·μ☉ when on; w = E_sun·[sun on], E_sun = SUN_RADIANCE·Ω☉ = π
+    const Esun = SUN_RADIANCE * SUN_SOLID_ANGLE_SR, mu = SUN_DIRECTION[1], sunE = sunOn ? Esun * mu : 0
+    const sky: Rgb = o.env?.mode === 'uniform' ? (o.env.sky ?? [0, 0, 0]) : dec([BG_BASE.r, BG_BASE.g, BG_BASE.b], bb)
+    s.set([Math.PI * sky[0] + sunE, Math.PI * sky[1] + sunE, Math.PI * sky[2] + sunE, sunOn ? Esun : 0], 52)
     return s
   }
 
@@ -674,7 +690,8 @@ export class SSFRPipeline {
     let matBuf = this.matBuf
     if (req.material) {
       const m = new Float32Array(this.matData)
-      m.set([req.material.kind, req.material.ior, req.material.lutRow, 0, 0, 0, 0, 0], req.material.compId * 8)
+      const mr = req.material, rrs = mr.rrs ?? [0, 0, 0]
+      m.set([mr.kind, mr.ior, mr.lutRow, mr.scatRow !== undefined && mr.scatRow >= 0 ? mr.scatRow + 1 : 0, rrs[0], rrs[1], rrs[2], mr.hasDeep ? 1 : 0], mr.compId * 8)
       d.queue.writeBuffer(this.probeMatBuf, 0, m)
       matBuf = this.probeMatBuf
     }
@@ -682,7 +699,7 @@ export class SSFRPipeline {
     const sources: Record<ProbeTarget, { tex: GPUTexture; bpp: number }> = {
       color: { tex: color, bpp: 4 }, linear: { tex: linear, bpp: 16 }, bg: { tex: t.bg, bpp: 4 },
       thickness: { tex: t.thickness, bpp: this.thicknessFormat === 'r32float' ? 4 : 2 },
-      depth: { tex: t.depth, bpp: 4 }, compId: { tex: t.compId, bpp: 4 },
+      depth: { tex: t.depth, bpp: 4 }, compId: { tex: t.compId, bpp: 4 }, bgDepth: { tex: t.bgDepth, bpp: 4 },
     }
     const encoder = d.createCommandEncoder()
     this.encodeFrame(encoder, t, {
