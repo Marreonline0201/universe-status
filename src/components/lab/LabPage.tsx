@@ -13,7 +13,7 @@ import { RunConsole } from './RunConsole'
 import { FluidControls, type FluidController } from '../fluid/FluidControls'
 import { solverFromUrl } from '../../fluid-engine/backends'
 import { packingFor } from '../../fluid-engine/spawn'
-import { readBgBrightness, writeBgBrightness } from '../../fluid-render/bgBrightness'
+import { clampBrightnessFor, readBgBrightness, readBgPreset, writeBgBrightness, writeBgPreset } from '../../fluid-render/bgBrightness'
 import type { LabFluidEngine } from '../../lab/LabFluidEngine'
 import type { NamedComposition } from '../../composition/CompositionTable'
 import type { FluidNotice } from '../../fluid-engine/FluidEngine'
@@ -57,7 +57,8 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
   const [gravityVal, setGravityVal] = useState(G_STANDARD)   // m/s²
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [ballActive, setBallActive] = useState(false)
-  const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
+  const [bgPresetVal, setBgPresetVal] = useState(readBgPreset)
+  const [bgBrightVal, setBgBrightVal] = useState(() => clampBrightnessFor(readBgPreset(), readBgBrightness()))
   const [notice, setNotice] = useState<FluidNotice | null>(null)   // latest gate refusal / warning
   // Material menu at the spawn temperature. `compositions` is re-read from the engine whenever its table changes
   // (scenario load, reset), so it is the dependency that re-evaluates the menu for a new table.
@@ -170,6 +171,11 @@ export function LabPage({ office, focusRequestId, initialExperimentId = null }: 
     setTemperature: (t) => { engine.setTemperature(t); setTemperatureVal(t) },
     bgBrightness: bgBrightVal,
     setBgBrightness: (b) => { engine.setBgBrightness(b); setBgBrightVal(b); writeBgBrightness(b) },
+    bgPreset: bgPresetVal,
+    setBgPreset: (id) => {
+      engine.setBgPreset(id); setBgPresetVal(id); writeBgPreset(id)
+      const b = clampBrightnessFor(id, bgBrightVal); setBgBrightVal(b); writeBgBrightness(b)   // the new preset's brightness cap
+    },
     reset: () => { engine.reset(); setCompositions(engine.getCompositions()); setBallActive(engine.ballActive); setGravityVal(engine.gravity) },
     menu, notice,
   } : null

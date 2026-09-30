@@ -10,7 +10,7 @@ import { FlipBackend, MpmBackend, solverFromUrl, type BallState, type SimBackend
 import { FluidScene } from '../fluid-render/FluidScene'
 import { SSFRPipeline, type ProbeOptions, type ProbeResultWithCamera } from '../fluid-render/SSFRPipeline'
 import { opticsRenderData } from '../fluid-render/optics/materials'
-import { BG_BASE, clampBrightness, readBgBrightness } from '../fluid-render/bgBrightness'
+import { bgPreset, clampBrightnessFor, readBgBrightness, readBgPreset } from '../fluid-render/bgBrightness'
 import { CompositionTable, type NamedComposition } from '../composition/CompositionTable'
 import type { MenuEntry } from '../composition/liquidGate'
 import type { ElementName } from '../composition/PropertyCalculator'
@@ -103,7 +103,8 @@ export class FluidEngine {
   private tankHandles: TankHandles | null = null
   private raycaster = new THREE.Raycaster()
   private gravityMs2 = G_STANDARD   // downward gravity magnitude, m/s²
-  private currentBgBrightness = readBgBrightness()
+  private currentBgPreset = readBgPreset()
+  private currentBgBrightness = clampBrightnessFor(this.currentBgPreset, readBgBrightness())
   private animId = 0
   private fpsAccum = 0
   private fpsFrames = 0
@@ -168,9 +169,9 @@ export class FluidEngine {
     if (!navigator.gpu) return false
 
     const scene = new THREE.Scene()
-    // Base olive × the persisted brightness preference (fallback/no-particle paint path).
+    // The persisted background preset × its brightness (fallback/no-particle paint path).
     const bb = this.currentBgBrightness
-    scene.background = new THREE.Color(BG_BASE.r * bb, BG_BASE.g * bb, BG_BASE.b * bb)
+    scene.background = this.bgColor()
     const camera = new THREE.PerspectiveCamera(50, this.container.clientWidth / this.container.clientHeight, 0.1, 50)
     camera.position.set(2.0, 1.5, 2.0)
     camera.lookAt(0.5, 0.5, 0.5)
@@ -281,6 +282,7 @@ export class FluidEngine {
       await ssfr.init(device, this.container.clientWidth, this.container.clientHeight)
       if (this.destroyed) return false
       ssfr.setBgBrightness(bb) // persisted background brightness
+      ssfr.setBgPreset(this.currentBgPreset) // persisted background colour
       ssfrPipeline = ssfr
     } catch (e) {
       console.warn('[fluid] SSFR init failed, using Points fallback:', e)
@@ -766,13 +768,26 @@ export class FluidEngine {
   }
 
   get bgBrightness(): number { return this.currentBgBrightness }
-  /** Scale the olive background's brightness (hue fixed) — hits both paint paths:
+  get bgPresetId(): string { return this.currentBgPreset }
+  /** The background preset's colour × its brightness, for the Three fallback scene.background. */
+  private bgColor(): THREE.Color {
+    const c = bgPreset(this.currentBgPreset).base, v = this.currentBgBrightness
+    return new THREE.Color(c.r * v, c.g * v, c.b * v)
+  }
+  /** Scale the background's brightness (its colour fixed) — hits both paint paths:
       the SSFR bg/composite passes and the Three fallback scene.background. */
   setBgBrightness(b: number) {
-    this.currentBgBrightness = clampBrightness(b)
-    const v = this.currentBgBrightness
-    if (this.scene) this.scene.background = new THREE.Color(BG_BASE.r * v, BG_BASE.g * v, BG_BASE.b * v)
-    this.ssfrPipeline?.setBgBrightness(v)
+    this.currentBgBrightness = clampBrightnessFor(this.currentBgPreset, b)
+    if (this.scene) this.scene.background = this.bgColor()
+    this.ssfrPipeline?.setBgBrightness(this.currentBgBrightness)
+  }
+  /** Pick the background colour (bgBrightness.ts BG_PRESETS; an unknown id is the olive default) — both paint paths. */
+  setBgPreset(id: string) {
+    this.currentBgPreset = bgPreset(id).id
+    this.currentBgBrightness = clampBrightnessFor(this.currentBgPreset, this.currentBgBrightness)   // the new preset's cap
+    if (this.scene) this.scene.background = this.bgColor()
+    this.ssfrPipeline?.setBgPreset(this.currentBgPreset)
+    this.ssfrPipeline?.setBgBrightness(this.currentBgBrightness)
   }
 
   /** +N button: pour ≈`count` particles of the selected material as a block at rest packing,

@@ -19,7 +19,7 @@ import thicknessShaderSrc from './shaders/ssfr_thickness.wgsl?raw'
 import blurShaderSrc from './shaders/ssfr_blur.wgsl?raw'
 import compositeShaderSrc from './shaders/ssfr_composite.wgsl?raw'
 import slabShaderSrc from './shaders/ssfr_slab.wgsl?raw'
-import { BG_BASE, clampBrightness } from './bgBrightness'
+import { bgPreset, clampBrightness, clampBrightnessFor, DEFAULT_BG_PRESET } from './bgBrightness'
 import { srgbDecode, type Rgb } from './optics/colorimetry'
 import { buildOpticsLut, LUT_LMAX_M, LUT_N } from './optics/materials'
 import { AnisoKernel } from './AnisoKernel'
@@ -82,7 +82,6 @@ export const SUN_DIRECTION: readonly [number, number, number] = (() => {
 })()
 
 /** Authored (sRGB-encoded) colours of the room, decoded to linear light when the scene uniforms are built. */
-const GRID_LINE_ENC: Rgb = [0.50, 0.51, 0.24]   // darker olive grid lines (scaled by the brightness slider)
 const EDGE_ENC: Rgb = [0.0, 0.6, 1.0]           // tank box edges (not scaled)
 
 // ── Bench probe (scripts/fluid-gates/*.mjs through window.__fluidBench.probe) ──────────────────────────────
@@ -106,6 +105,8 @@ export interface ProbeOverrides {
   inScatter?: number
   /** Background brightness for this probe (the page's slider otherwise; clamped as the slider is). */
   brightness?: number
+  /** Background colour preset for this probe (bgBrightness.ts BG_PRESETS id; the page's choice otherwise). */
+  bgPreset?: string
   /** Hide the drop-ball for this probe. */
   noBall?: boolean
   /** Draw no particles (the room alone, or the slab alone). */
@@ -199,10 +200,13 @@ export class SSFRPipeline {
   private canvasFormat!: GPUTextureFormat
   private thicknessFormat: GPUTextureFormat = 'r16float'
   private main!: Targets
-  // Owner-adjustable background brightness (1 = base olive), applied to the room's backdrop and grid.
+  // Owner-adjustable background: a colour preset (bgBrightness.ts BG_PRESETS; olive by default) and its brightness
+  // (1 = the preset as authored), applied to the room's backdrop, its grid lines and the sky the water is lit by.
   private bgBrightness = 1
+  private bgPresetId = DEFAULT_BG_PRESET
 
   setBgBrightness(b: number) { this.bgBrightness = clampBrightness(b) }
+  setBgPreset(id: string) { this.bgPresetId = bgPreset(id).id }
 
   // Pipelines
   private bgPipeline!: GPURenderPipeline
@@ -534,13 +538,14 @@ export class SSFRPipeline {
   private sceneData(f: FrameInputs): Float32Array<ArrayBuffer> {
     const o = f.overrides ?? {}
     const s = new Float32Array(56)
-    const bb = o.brightness !== undefined ? clampBrightness(o.brightness) : this.bgBrightness
+    const bg = bgPreset(o.bgPreset ?? this.bgPresetId), base: Rgb = [bg.base.r, bg.base.g, bg.base.b]
+    const bb = clampBrightnessFor(bg.id, o.brightness ?? this.bgBrightness)
     const dec = (c: Rgb, k = 1): Rgb => [srgbDecode(c[0] * k), srgbDecode(c[1] * k), srgbDecode(c[2] * k)]
     const sunOn = o.sun ?? true
     s.set([...SUN_DIRECTION, SUN_ANGULAR_RADIUS_RAD], 0)
     s.set([SUN_RADIANCE, SUN_RADIANCE, SUN_RADIANCE, sunOn ? 1 : 0], 4)
-    s.set(dec([BG_BASE.r, BG_BASE.g, BG_BASE.b], bb), 8)
-    s.set(dec(GRID_LINE_ENC, bb), 12)
+    s.set(dec(base, bb), 8)
+    s.set(dec([bg.grid[0], bg.grid[1], bg.grid[2]], bb), 12)
     s.set(dec(EDGE_ENC), 16)
     const ball = o.noBall ? undefined : f.ball
     if (ball?.active) { s.set([...ball.center, ball.radius], 20); s[24] = 1 }
@@ -555,7 +560,7 @@ export class SSFRPipeline {
     // low): the sky's π·L (the uniform test sky, or the room's decoded backdrop — its edges and the ball ignored) plus the
     // sun's E_sun·μ☉ when on; w = E_sun·[sun on], E_sun = SUN_RADIANCE·Ω☉ = π
     const Esun = SUN_RADIANCE * SUN_SOLID_ANGLE_SR, mu = SUN_DIRECTION[1], sunE = sunOn ? Esun * mu : 0
-    const sky: Rgb = o.env?.mode === 'uniform' ? (o.env.sky ?? [0, 0, 0]) : dec([BG_BASE.r, BG_BASE.g, BG_BASE.b], bb)
+    const sky: Rgb = o.env?.mode === 'uniform' ? (o.env.sky ?? [0, 0, 0]) : dec(base, bb)
     s.set([Math.PI * sky[0] + sunE, Math.PI * sky[1] + sunE, Math.PI * sky[2] + sunE, sunOn ? Esun : 0], 52)
     return s
   }

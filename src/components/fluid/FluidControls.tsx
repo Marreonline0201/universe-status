@@ -9,6 +9,7 @@ import type { NamedComposition } from '../../composition/CompositionTable'
 import type { MenuEntry } from '../../composition/liquidGate'
 import type { FluidNotice } from '../../fluid-engine/FluidEngine'
 import { G_STANDARD } from '../../fluid-engine/units'
+import { BG_PRESETS, bgBrightnessMaxFor } from '../../fluid-render/bgBrightness'
 
 /** The control surface both pages implement. Setters follow FluidTest's model:
  *  setGravity/setTemperature update the page's slider state (the live sim update
@@ -28,9 +29,12 @@ export interface FluidController {
   setGravity: (g: number) => void
   temperature: number
   setTemperature: (t: number) => void
-  /** Background brightness: scales the fixed olive hue (1 = base #b1b366). Persisted, shared by both pages. */
+  /** Background brightness: scales the chosen background colour (1 = the colour as authored). Persisted, shared by both pages. */
   bgBrightness: number
   setBgBrightness: (b: number) => void
+  /** Background colour: a bgBrightness.ts BG_PRESETS id (olive by default). Persisted, shared by both pages. */
+  bgPreset: string
+  setBgPreset: (id: string) => void
   reset: () => void
   /** Material menu from the material gates at the spawn temperature: 'show' spawnable, 'refused' listed but
    *  disabled with its physical reason (hidden entries are already removed). */
@@ -55,7 +59,7 @@ const num = (v: number, digits: number, unit: string) => (Number.isFinite(v) ? `
 
 export function FluidControls({ controller }: { controller: FluidController }) {
   const [showInfo, setShowInfo] = useState(true)
-  const { compositions, selectedComposition, gpuReady, ballActive, gravity, temperature, bgBrightness } = controller
+  const { compositions, selectedComposition, gpuReady, ballActive, gravity, temperature, bgBrightness, bgPreset } = controller
   const selectedComp = compositions[selectedComposition]
   const menuById = new Map((controller.menu ?? []).map(m => [m.id, m]))
   const listed = controller.menu ? compositions.filter(c => menuById.has(c.id)) : compositions
@@ -181,10 +185,31 @@ export function FluidControls({ controller }: { controller: FluidController }) {
         <div style={valueStyle}>{gravity.toFixed(2)} m/s²{Math.abs(gravity - G_STANDARD) < 0.005 ? ' (Earth)' : ''}</div>
       </div>
 
-      {/* Background brightness slider — hue stays the owner's olive; only brightness scales */}
+      {/* Background colour — presets chosen so the liquids stay visible (bgBrightness.ts BG_PRESETS; olive is the default) */}
+      <div>
+        <label style={labelStyle}>BACKGROUND</label>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {BG_PRESETS.map(p => {
+            const hex = (v: number) => Math.round(v * 255).toString(16).padStart(2, '0')
+            const on = p.id === bgPreset
+            return (
+              <button key={p.id} onClick={() => controller.setBgPreset(p.id)} title={p.name} aria-label={`Background: ${p.name}`} aria-pressed={on}
+                style={{
+                  width: 22, height: 22, padding: 0, borderRadius: 3, cursor: 'pointer',
+                  background: `#${hex(p.base.r)}${hex(p.base.g)}${hex(p.base.b)}`,
+                  border: on ? '2px solid #00bbff' : '1px solid rgba(180,200,220,0.35)',
+                  boxShadow: on ? '0 0 0 1px rgba(0,0,0,0.6)' : 'none',
+                }} />
+            )
+          })}
+        </div>
+        <div style={valueStyle}>{BG_PRESETS.find(p => p.id === bgPreset)?.name ?? ''}</div>
+      </div>
+
+      {/* Background brightness slider — scales the chosen colour */}
       <div>
         <label style={labelStyle}>BG BRIGHTNESS</label>
-        <input type="range" min={0.2} max={1.5} step={0.01} value={bgBrightness}
+        <input type="range" min={0.2} max={bgBrightnessMaxFor(bgPreset)} step={0.01} value={bgBrightness}
           onChange={(e) => controller.setBgBrightness(Number(e.target.value))} style={sliderStyle} />
         <div style={valueStyle}>×{bgBrightness.toFixed(2)}</div>
       </div>

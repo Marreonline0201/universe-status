@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { FluidEngine, type FluidNotice } from '../fluid-engine/FluidEngine'
 import type { MenuEntry } from '../composition/liquidGate'
 import { G_STANDARD } from '../fluid-engine/units'
-import { readBgBrightness, writeBgBrightness } from '../fluid-render/bgBrightness'
+import { clampBrightnessFor, readBgBrightness, readBgPreset, writeBgBrightness, writeBgPreset } from '../fluid-render/bgBrightness'
 import type { NamedComposition } from '../composition/CompositionTable'
 import { MaterialGenerator } from '../ai/MaterialGenerator'
 import { AutoExperimenter } from '../ai/AutoExperimenter'
@@ -31,7 +31,8 @@ export function FluidTest() {
   const [tank, setTank] = useState<TankInfo | null>(null)
   const [selectedComposition, setSelectedComposition] = useState(0)
   const [gravityVal, setGravityVal] = useState(G_STANDARD)   // m/s²
-  const [bgBrightVal, setBgBrightVal] = useState(readBgBrightness)
+  const [bgPresetVal, setBgPresetVal] = useState(readBgPreset)
+  const [bgBrightVal, setBgBrightVal] = useState(() => clampBrightnessFor(readBgPreset(), readBgBrightness()))
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
@@ -91,6 +92,12 @@ export function FluidTest() {
     writeBgBrightness(bgBrightVal)
     engineRef.current?.setBgBrightness(bgBrightVal)
   }, [bgBrightVal, gpuReady])
+  useEffect(() => {
+    // The background colour preset, on both paint paths; persisted and shared with the Lab page.
+    writeBgPreset(bgPresetVal)
+    engineRef.current?.setBgPreset(bgPresetVal)
+    setBgBrightVal(b => clampBrightnessFor(bgPresetVal, b))   // the new preset's brightness cap
+  }, [bgPresetVal, gpuReady])
 
   // ── AI: Update MaterialGenerator when API key changes ─────────────────────
   useEffect(() => {
@@ -227,6 +234,7 @@ export function FluidTest() {
     gravity: gravityVal, setGravity: setGravityVal,
     temperature: temperatureVal, setTemperature: setTemperatureVal,
     bgBrightness: bgBrightVal, setBgBrightness: setBgBrightVal,
+    bgPreset: bgPresetVal, setBgPreset: setBgPresetVal,
     reset: resetSim,
     menu, notice,
     tank,
