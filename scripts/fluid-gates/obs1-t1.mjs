@@ -20,7 +20,7 @@
 // the plan's operating step (U 0.1 / 0.5 / 2 m/s at 1/60 s, 16 and 32 cells/λ): the ratio, flagged OUTSIDE 2× → "find out
 // why" (the roadmap's instruction: an investigation item, not a physics verdict — the proxy is a different 2-D code);
 // the HUD number "effective viscosity ≈ N × water" (ν_water 1.0e-6 m²/s at 20 °C) per row.
-// Revision 1 (2026-09-29 22:45, after the first run, before its re-run): the closed, fully liquid box violates the GPU
+// Revision 1 (2026-09-29 22:34 — its commit 83726b1d; after the first run, before its re-run): the closed, fully liquid box violates the GPU
 // PoissonSolver's contract (every liquid region must touch AIR — PoissonSolver.ts header; the CPU reference pins the
 // mean, the GPU solver does not). The density projection's ψ solve — its right-hand side, the density error, is not
 // mean-free in a closed box — ran to its cap hundreds of times and its displacements wrecked the mode in some rows
@@ -30,7 +30,7 @@
 // solve's right-hand side, a divergence, sums to zero in a closed box: consistent). T1-decay now also requires
 // A(t) > 0 throughout (the first version missed the sign reversal), and --record refuses a table with failed rows.
 // GPU closed-domain support (the mean of b removed, as the CPU reference does) is a separate solver item.
-// Revision 2 (2026-09-29 23:40, before its first run): T1-meter — roadmap §5.3 1b, X3 §4.1(a): "with the viscous solve
+// Revision 2 (2026-09-29 22:48 — its commit 627d712b; before its first run): T1-meter — roadmap §5.3 1b, X3 §4.1(a): "with the viscous solve
 // forced on at ν = 1e-3 (glycerol-like), recover ν within 5% at U = 0.1 m/s", with free-slip viscous walls (S3N-3's flag;
 // in the lab ViscositySolver.walls = +1 on every axis — Taylor–Green is exact only with stress-free walls). Setup
 // (flip-selftest viscTaylorGreen, the S3.6a scene): a closed, fully liquid L × L × 4-cell box, water's density,
