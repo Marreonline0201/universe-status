@@ -1052,6 +1052,12 @@ export class FluidEngine {
           if (!s?.setImmiscibleExcluded) throw new Error('immExcludeLiquids: this solver has no drift slots')
           s.setImmiscibleExcluded(opts.immExcludeLiquids)
         }
+        // bench (the face counter-flux's same-commit control): where the drift's J is formed
+        if (opts.immDriftForm !== undefined) {
+          const s = this.sim as { setImmiscibleDriftForm?: (f: string) => void } | null
+          if (!s?.setImmiscibleDriftForm) throw new Error('immDriftForm: this solver has no drift flux')
+          s.setImmiscibleDriftForm(opts.immDriftForm)
+        }
         // bench (the B1c displacement budget): snapshot the positions after each substep's density correction
         if (opts.snapshotDensity !== undefined) {
           const s = this.sim as { setSnapshotDensity?: (on: boolean) => void } | null

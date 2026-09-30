@@ -12,7 +12,7 @@ import { FLIP_PACKING, MPM_PACKING, flipPacking, type Packing, type Vec3 } from 
 import { waterDensity } from '../composition/materialData'
 import { VISCOUS_RUN_NU, INCOMPRESSIBLE_NU_NUM } from '../composition/liquidGate'
 import { interfacialTension } from '../composition/interfacialTension'
-import { IMMISCIBLE_MAX_SLOTS } from '../gpu-sim/flip/ImmiscibleSolver'
+import { IMMISCIBLE_MAX_SLOTS, type DriftForm } from '../gpu-sim/flip/ImmiscibleSolver'
 import { StepProfiler, type StepProfile } from '../bench/stepProfiler'
 
 export type SolverKind = 'mpm' | 'flip'
@@ -232,6 +232,9 @@ export class FlipBackend implements SimBackend {
   private immDisabled = false
   /** Bench hook X (the B1c experiments): liquids left out of the drift slots — untracked, see setImmiscibleExcluded. */
   private immExclude = new Set<LiquidKey>()
+  /** Where the drift's counter-flux J is formed ('face' = the default; 'cell' = the bench control, s31c-page / B1c):
+   *  kept here and set on every applyImmiscible, so a resize's new solver keeps it. */
+  private immDriftForm: DriftForm = 'face'
   /** Bench (PERF-1 baseline): a pending one-frame profile request (profileNextStep). */
   private profileReq: { resolve: (p: StepProfile) => void; reject: (e: unknown) => void } | null = null
   /** The plain frames' CPU encode (ms, substeps), the last 32 — the profile's uninstrumented encode (review 2026-09-29). */
@@ -410,6 +413,7 @@ export class FlipBackend implements SimBackend {
    *  per-cell slot properties arrive with HEAT-1, where every particle's ρ and μ vary. */
   private applyImmiscible() {
     const sim = this.sim, imm = sim.immiscibleSolver!
+    imm.driftForm = this.immDriftForm
     if (this.immDisabled) { this.immReason = 'disabled (bench negative control)'; sim.immiscibleActive = false; return }
     const byLiquid = new Map<LiquidKey, number[]>()
     for (let id = 0; id < 256; id++) {
@@ -439,6 +443,12 @@ export class FlipBackend implements SimBackend {
     sim.immiscibleActive = true
   }
   setImmiscibleDisabled(v: boolean) { this.immDisabled = v; this.applyImmiscible() }
+  /** Bench (the face form's same-commit control): where J is formed. Anything but 'face' or 'cell' throws. */
+  setImmiscibleDriftForm(form: string) {
+    if (form !== 'face' && form !== 'cell') throw new Error(`immDriftForm: '${form}' is not 'face' or 'cell'`)
+    this.immDriftForm = form
+    this.sim.immiscibleSolver!.driftForm = form
+  }
   private snapshotOn = false
   setSnapshotDensity(on: boolean) { this.snapshotOn = on; this.sim.snapshotDensity = on }
   /** Liquid pairs with a sourced interfacial tension among these liquids (the drift's slots need at least one). */
@@ -476,7 +486,7 @@ export class FlipBackend implements SimBackend {
     this.applyImmiscible()
   }
   /** Whether the immiscible drift flux runs, and why not when liquids that could separate are in the tank. */
-  get immiscibleDrift(): { active: boolean; reason: string | null; excluded: string[] } { return { active: this.sim.immiscibleActive, reason: this.immReason, excluded: [...this.immExclude] } }
+  get immiscibleDrift(): { active: boolean; reason: string | null; excluded: string[]; form: DriftForm } { return { active: this.sim.immiscibleActive, reason: this.immReason, excluded: [...this.immExclude], form: this.sim.immiscibleSolver!.driftForm } }
   private applyViscosity() {
     const vs = this.sim.viscositySolver!
     this.sim.viscosityActive = this.maxNu >= VISCOUS_RUN_NU

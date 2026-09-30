@@ -5,7 +5,9 @@
 // encodeSnapshot after the grid update (u*), encodeFaceAccel after the final projection (a = g − Du/Dt on the faces,
 // then the caller runs the velocity's extrapolation kernel on accA/accB), and encode after the final extrapolation,
 // before g2pMac, which adds the per-particle drift to the advection. Every entry point binds ≤ 8 storage buffers (the
-// default WebGPU limit this code base keeps).
+// default WebGPU limit this code base keeps). The counter-flux J is formed on the MAC faces ('face', the default) or per
+// cell ('cell', the pre-2026-09-30 kernel kept as the same-commit control of the face form's gate): `driftForm`, a
+// property of this instance — no uniform word, so configure() cannot reset it.
 import commonWGSL from './shaders/common.wgsl?raw'
 import immiscibleWGSL from './shaders/immiscible.wgsl?raw'
 
@@ -23,6 +25,7 @@ export interface ImmiscibleInputs {
   uFinal: GPUBuffer          // the final (extrapolated) face velocity
   faceType: GPUBuffer; faceSolid: GPUBuffer
   drift: GPUBuffer           // per-particle drift, vec4 (read by g2pMac)
+  weight: GPUBuffer          // P2G's Σw per face (faceScatter's gW, i32 at massScale): the face form's denominator
   size: number               // padded slots per grid
   cells: number              // window cells
   maxParticles: number
@@ -53,17 +56,24 @@ const ENTRIES: Entry[] = [
   { name: 'slipParticles', uses: [0, 1, 2, 3, 7, 12, 13, 29, 31] },
   { name: 'driftCells', uses: [0, 1, 7, 13, 15] },
   { name: 'driftParticles', uses: [0, 2, 16, 17, 20] },
+  { name: 'slipFaces', uses: [0, 2, 20, 32] },
+  { name: 'driftFaces', uses: [0, 11, 24, 32, 33, 34] },
+  { name: 'driftParticlesFace', uses: [0, 2, 17, 20, 35] },
 ]
+/** Where J is formed: on the MAC faces (the default) or per cell (the control). */
+export type DriftForm = 'face' | 'cell'
 
 export class ImmiscibleSolver {
   readonly device: GPUDevice
   private readonly inp: ImmiscibleInputs
   private readonly ip: GPUBuffer
-  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipInputs' | 'slipSums' | 'driftCell' | 'uStar' | 'accA' | 'accB' | 'accValidA' | 'accValidB', GPUBuffer>
+  readonly bufs: Record<'alphaSums' | 'cellInf' | 'slipState' | 'slipInputs' | 'slipSums' | 'driftCell' | 'slipFace' | 'driftFace' | 'uStar' | 'accA' | 'accB' | 'accValidA' | 'accValidB', GPUBuffer>
   private readonly pipelines = new Map<string, GPUComputePipeline>()
   private readonly groups = new Map<string, GPUBindGroup>()
   /** Slots in use (0 until configure). */
   K = 0
+  /** Where encode forms J: 'face' (MAC faces, 0 on the walls — flipRef's default) or 'cell' (the control). */
+  driftForm: DriftForm = 'face'
 
   private constructor(inp: ImmiscibleInputs) {
     this.inp = inp
@@ -80,6 +90,8 @@ export class ImmiscibleSolver {
       slipInputs: mk('slipInputs', 32 * inp.maxParticles),   // diagnostics: the slip's inputs per particle (immiscible.wgsl)
       slipSums: mk('slipSums', 4 * (7 * IMMISCIBLE_MAX_SLOTS * inp.size + ST_WORDS)),
       driftCell: mk('driftCell', 16 * inp.size),
+      slipFace: mk('slipFace', 4 * 2 * G),   // S_f, two fixed-point words per face slot
+      driftFace: mk('driftFace', 4 * G),
       uStar: mk('uStar', 4 * G),
       accA: mk('accA', 4 * G), accB: mk('accB', 4 * G), accValidA: mk('accValidA', 4 * G), accValidB: mk('accValidB', 4 * G),
     }
@@ -117,6 +129,9 @@ export class ImmiscibleSolver {
       case 29: return this.accFinal
       case 30: return I.uProj
       case 31: return B.slipInputs
+      case 32: return B.slipFace
+      case 33: return I.weight
+      case 34: case 35: return B.driftFace
     }
     throw new Error(`ImmiscibleSolver: no buffer for binding ${b}`)
   }
@@ -182,17 +197,22 @@ export class ImmiscibleSolver {
   }
 
   /** α, ε, slip and drift for `count` particles (the FlipParams uniform is current; u is the final velocity, the face
-   *  accelerations extrapolated). */
+   *  accelerations extrapolated; in the face form P2G's Σw is this substep's — faceScatter ran and no position moved). */
   encode(encoder: GPUCommandEncoder, count: number) {
     const B = this.bufs, I = this.inp
-    // the per-cell sums are all-zero here (their consumers clear what they read); only the statistics restart
+    // the per-cell and per-face sums are all-zero here (their consumers clear what they read); only the statistics restart
     encoder.clearBuffer(B.slipSums, 4 * 7 * IMMISCIBLE_MAX_SLOTS * I.size, 4 * ST_WORDS)
     const pass = encoder.beginComputePass({ label: 'imm.drift' })
     if (count > 0) this.dispatch(pass, 'alphaScatter', count, 64)
     this.dispatch(pass, 'cellInfo', I.cells, 256)
     if (count > 0) this.dispatch(pass, 'slipParticles', count, 64)
+    // driftCells runs in both forms: it clears the per-cell slip sums slipParticles wrote (its J is the cell form's)
     this.dispatch(pass, 'driftCells', I.cells, 256)
-    if (count > 0) this.dispatch(pass, 'driftParticles', count, 64)
+    if (this.driftForm === 'face') {
+      if (count > 0) this.dispatch(pass, 'slipFaces', count, 64)
+      this.dispatch(pass, 'driftFaces', 3 * I.size, 256)
+      if (count > 0) this.dispatch(pass, 'driftParticlesFace', count, 64)
+    } else if (count > 0) this.dispatch(pass, 'driftParticles', count, 64)
     pass.end()
   }
 

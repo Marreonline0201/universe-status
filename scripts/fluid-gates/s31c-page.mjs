@@ -96,6 +96,13 @@
 //      Λ_native (= 1 + D_dp + D_a, from the solver's own positions) and U = Σδ_dp/ΣΔt·J (+1: the correction exactly
 //      undoes −J) — the measurement the B1c verification asked for before any attribution (lib/b1cSuccessors header).
 //      Nothing gated changes.
+//    REVISION 2026-09-30 01:58 (reported only; before the first run with it): the drift's counter-flux J is formed on the
+//      MAC faces (ImmiscibleSolver driftForm 'face', the default — decisions.md 2026-09-30 01:32; the cell form stays as
+//      the bench control, configure({ immDriftForm: 'cell' })). Stated before the run: B1c-M, B1 order and B1c-validity
+//      unchanged (the slip kernel and the dense-window mechanism are untouched); NO directional prediction for the budget
+//      (D_dp, D_a, Λ, U per stratum): the CPU W5 check found the face form's particle-level remainder no smaller than the
+//      cell form's (0.35 vs 0.31 of the drops' slip flux), and the pool is 3 cells deep, so the wall condition (J·n → 0
+//      at the floor) acts on every drop. Nothing gated changes.
 // B2 iron floats on mercury (added 2026-09-29 with S3.7's monolithic ball, fixed before its first run): a mercury pool
 //    over the whole floor, 0.28 m deep, the page's iron ball (R = 0.05 world units = 0.18 m) released at rest just above
 //    the surface; mean submerged fraction over 6–8 s = ρ_Fe/ρ_Hg (NIST SRD 126 / materialData) ± 5 % (Archimedes; the

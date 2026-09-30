@@ -57,19 +57,22 @@ const SETS = {
     [`${SH}/faceDisplacement.wgsl`, 'let pm = select(0.0, psi[linIdx(c - e)], lm == LABEL_FLUID);', 'let pm = psi[linIdx(c - e)];', 'air psi read from the solver vector'],
     [`${SH}/positionCorrect.wgsl`, 'let f = x / P.dx - faceOffset(a);', 'let f = x / P.dx - vec3<f32>(0.5);', 'displacement sampled at cell centres'],
   ],
+  // four edits below deleted the only use of a binding in their kernel (sphere, cellSolid ×2, faceSolid): the auto layout
+  // dropped it and the run raised ~1500 WebGPU errors — scored INVALID on 2026-09-30 (the old count 12/12 was 8 + 4 crashes);
+  // each now keeps the binding statically used with the same defect
   s31c2: [
     [`${SH}/sphereCoef.wgsl`, 'let am = raw.xyz * vec3<f32>(weight(0u, c), weight(1u, c), weight(2u, c));', 'let am = raw.xyz;', 'fluid-fraction weights not applied'],
     [`${SH}/divergence.wgsl`, 'div += ((1.0 - sh) * uHi + sh * vb) - ((1.0 - sl) * uLo + sl * vb);', 'div += ((1.0 - sh) * uHi) - ((1.0 - sl) * uLo);', "the ball's flux S·V dropped (no −JᵀV)"],
-    [`${SH}/sphereFaceVel.wgsl`, '  u[s] = sphere[SPH_V + a];', '  u[s] = 0.0;', 'faces inside the ball set to 0, not V'],
+    [`${SH}/sphereFaceVel.wgsl`, '  u[s] = sphere[SPH_V + a];', '  u[s] = 0.0 * sphere[SPH_V + a];', 'faces inside the ball set to 0, not V'],
     [`${SH}/sphereForce.wgsl`, 'let f = -S * P.dx * P.dx * (pp - pm);', 'let f = S * P.dx * P.dx * (pp - pm);', 'pressure force sign flipped'],
     [`${SH}/sphereExtendMark.wgsl`, 'cellSolid[li].x < 0.5', 'cellSolid[li].x < 0.95', 'liquid extended only into nearly full cells'],
-    [`${SH}/densityRhs.wgsl`, 'let ft = f + (1.0 - keep) + cellSolid[li].y;', 'let ft = f + (1.0 - keep);', 'ball kernel volume dropped from f̃'],
+    [`${SH}/densityRhs.wgsl`, 'let ft = f + (1.0 - keep) + cellSolid[li].y;', 'let ft = f + (1.0 - keep) + 0.0 * cellSolid[li].y;', 'ball kernel volume dropped from f̃'],
     [`${SH}/sphereCells.wgsl`, 'out.y = kv / 8.0;', 'out.y = kv / 4.0;', 'ball kernel volume normalised wrong'],
     [`${SH}/g2pMac.wgsl`, 'fx = sphereOut(cx, vec3<f32>(sphere[0], sphere[1], sphere[2]), sphere[SPH_R]);', 'fx = cx;', 'no push-out after advection'],
     [`${SH}/sphereIntegrate.wgsl`, 'sphere[SPH_V + a] += P.dt * (P.gravity[a] + F[a] / M);', 'sphere[SPH_V + a] += P.dt * P.gravity[a];', 'fluid force ignored (free fall)'],
     [`${SH}/sphereAdvance.wgsl`, 'if (c < R) { c = R; v = max(v, 0.0); }', 'if (c < R) { v = max(v, 0.0); }', 'ball passes into the floor'],
-    [`${SH}/lsResolve.wgsl`, '      if (cellSolid[lm].x >= 0.5) { continue; }\n', '', 'ball cells counted as empty space'],
-    [`${SH}/psiCoef.wgsl`, 'w[a] = max(0.0, 1.0 - faceSolid[gridBase(a) + slotOf(c)]);', 'w[a] = 1.0;', 'ψ operator without the fluid-fraction weights'],
+    [`${SH}/lsResolve.wgsl`, '      if (cellSolid[lm].x >= 0.5) { continue; }\n', '      if (cellSolid[lm].x >= 1e30) { continue; }\n', 'ball cells counted as empty space'],
+    [`${SH}/psiCoef.wgsl`, 'w[a] = max(0.0, 1.0 - faceSolid[gridBase(a) + slotOf(c)]);', 'w[a] = max(1.0, 1.0 - faceSolid[gridBase(a) + slotOf(c)]);', 'ψ operator without the fluid-fraction weights'],
   ],
   s34: [
     [`${SH}/lsScatter.wgsl`, 'let k = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);', 'let k = (1.0 - d2) * (1.0 - d2);', 'Zhu–Bridson kernel squared, not cubed'],
@@ -135,7 +138,19 @@ SETS.s35i = [
   [`${SH}/immiscible.wgsl`, '    let v = w * LS_SCALE;\n', '    let v = LS_SCALE;\n', 'α counts particles, not kernel weights'],
   [`${SH}/immiscible.wgsl`, 'J += cellInfR[8u * li + 4u + k] * (sum / f32(cnt));', 'J += max(1.0, cellInfR[8u * li + 4u + k]) * (sum / f32(cnt));', 'counter-drift not α-weighted'],
   [`${SH}/immiscible.wgsl`, 'drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);', 'drift[q] = vec4<f32>(own, driftCellR[li].w);', 'no volume-conserving counter-drift'],
-  [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }\n', '', 'advection ignores the drift'],
+  // (deleting the line removed drift's only use in g2pMac: the auto layout dropped the binding and the run raised 16
+  // WebGPU errors — scored INVALID on 2026-09-30; × 0.0 keeps the binding statically used)
+  [`${SH}/g2pMac.wgsl`, '  if (IMMISCIBLE) { uV = drift[q].xyz; }\n', '  if (IMMISCIBLE) { uV = drift[q].xyz * 0.0; }\n', 'advection ignores the drift'],
+  // the face form (2026-09-30; K32 covers driftFaces per face and driftParticlesFace per particle; every edit keeps its
+  // kernel's bindings statically used)
+  [`${SH}/immiscible.wgsl`, 'if (c[a] == 0 || c[a] == P.n[a] || faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }', 'if (faceType[s] == 99u || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }', 'face J not zeroed on the walls'],
+  [`${SH}/immiscible.wgsl`, 'if (c[a] == 0 || c[a] == P.n[a] || faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }', 'if (faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }', 'wall-plane edge faces not zeroed (SOLID only)'],
+  [`${SH}/immiscible.wgsl`, 'let W = f32(weightR[s]) / P.massScale;', 'let W = f32(weightR[s]) / P.momScale;', 'Σw decoded at the momentum scale'],
+  [`${SH}/immiscible.wgsl`, 'let v = w * st[a] * SLIP_SCALE;', 'let v = w * st[(a + 1u) % 3u] * SLIP_SCALE;', 'face sums from the wrong axis\'s slip'],
+  [`${SH}/immiscible.wgsl`, 'let hi = atomicExchange(&slipFace[2u * s], 0);', 'let hi = atomicLoad(&slipFace[2u * s]);', 'face sums never cleared (hi word)'],
+  [`${SH}/immiscible.wgsl`, '      j += wv.x * wv.y * wv.z * driftFaceR[gridBase(a) + slotOf(b + d)];', '      j += wv.x * driftFaceR[gridBase(a) + slotOf(b + d)];', 'J interpolated with the x weight only'],
+  [`${SH}/immiscible.wgsl`, '    u[a] -= j;', '    u[a] -= select(0.0, j, st.w > 0.0);', 'carriers not moved by −J (face form)'],
+  [`${SH}/immiscible.wgsl`, '  var u = select(vec3<f32>(0.0), st.xyz, st.w > 0.0);', '  var u = select(vec3<f32>(0.0), st.xyz, st.w > 1e30);', 'own slip dropped (face form)'],
 ]
 // S3.7: each targets a kernel K35/K36 cover (the jdot-without-unknown-guard mutant is equivalent here: x is 0 at every
 // non-unknown on these inputs — the guard is kept for warm starts across label changes)

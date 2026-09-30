@@ -3,7 +3,8 @@
 // Taivassalo & Kallio 1996 algebraic-slip drift flux; drop size from Hinze 1955 with the measured ε, a scenario may
 // override it). Spec: vault fluid/realism-2026-09/IMMISCIBILITY-spec.md (§3–5 model, §8 sourced inputs).
 //
-//   node scripts/fluid-gates/s35i-ref.mjs [--quick]     (--quick: the drop-equation checks B, S, T and D-a only)
+//   node scripts/fluid-gates/s35i-ref.mjs [--quick]     (--quick: the drop-equation checks B, S, T and D-a, and W)
+//   node scripts/fluid-gates/s35i-ref.mjs --only=W      (the face counter-flux checks alone — s35w-mutations runs this)
 //
 // Inputs (spec §8): σ olive oil–water 0.0245 N/m (Fisher, Mitchell & Parker 1985), mercury–water 0.375 N/m (Henry &
 // Jackson 1938); ethanol–water miscible (σ = null → never separated); ρ, μ from materialData at 20 °C.
@@ -52,9 +53,33 @@
 //     correlation for the creaming front, spec §6 D-c / §8.4) is not frozen: its sources are UNVERIFIED (spec §7).
 // M   a miscible pair never slips: ethanol over water inverted, 3 s — 0 dispersed.
 // V   volume: the D-c oil run keeps φ-volume within ±2 % of N·V_p at every second (the violent-flow tolerance of V1).
+// W   the counter-flux J on the MAC faces (flipRef driftForm 'face', the default since 2026-09-30; decisions.md 01:32 —
+//     derived from MTK (33) at a face and driftFluxFoam's Udm = 0 on walls; the CPU ablation of 01:17 measured its wall
+//     condition load-bearing). Criteria fixed 2026-09-30 01:42 at `089f90df`, before the first run. Scene: D-a's (1 mm
+//     olive-oil drops, every 16th particle of the lower 10 cells of 24, 16×30×8) after 0.25 s; then P2G at the current
+//     positions and ONE driftFlux (frozen fields), so Σw is exact for the drift. Every oracle is computed HERE with its
+//     own trilinear face stencil, independently of flipRef:
+//     W1  J_f = 0 exactly on every wall face — every face in a window wall's plane (own-axis index 0 or n, the ghost
+//         layer's edge faces included) and every SOLID face — and ≥ 1 of them lies in a dispersed drop's stencil.
+//     W2  Σw_f equals flipRef's P2G weight sum and J_f equals the oracle (S_f/Σw_f over the dispersed drops' slips, 0 on
+//         wall faces and where Σw_f < FACE_WEIGHT_MIN) to ≤ 1e-12 absolute on every face (f64 rounding).
+//     W3  every particle's u_V equals (dispersed ? s : 0) − Σ_f w_f·J_f to ≤ 1e-12 m/s.
+//     W4  carriers are not driven into a wall: every non-dispersed particle within dx of a SOLID face moves toward it
+//         at most (d/dx)·max|J_f| (d its distance to the face, the max over its stencil's faces on that axis) + 1e-12.
+//         Positive control, same scene and state: the 'cell' form (J per cell, applied by NGP) must VIOLATE it — the
+//         check fails if the control passes (a check that the old kernel meets tests nothing).
+//     W5  REPORTED: the particle-level remainder of face-level (31), Σ_f |Σ_q w_qf·u_V,q| / Σ_f Σ_q w_qf·|ŝ_q| over the
+//         non-wall faces with Σw ≥ 1 — the sub-kernel part (Σ_q w_qf·(J_f − J(x_q))) the density projection removes.
+//     Revision 2026-09-30 01:50, after the first run (FAIL W4: 35× the bound, W1–W3 exact): the wall planes' edge faces in
+//     the ghost layer are GHOST, not SOLID, in GridLayout.defaultFaceTypes, and W1/W2 had encoded the implementation's
+//     "SOLID only" rule — so J_n did not vanish at a wall next to a corner. The implementation now zeroes every face in a
+//     wall's plane; W1/W2 name the same physical set (J·n = 0 holds on the whole plane); W4, the physical criterion, is
+//     unchanged.
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const QUICK = process.argv.includes('--quick')
+const ONLY = (process.argv.find(a => a.startsWith('--only=')) ?? '').slice(7)
+if (ONLY && ONLY !== 'W') { console.error(`unknown --only=${ONLY} (have: W)`); process.exit(2) }
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
 const { gridLayout, flipRef, mat, two } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, two: `${SRC}/sim-ref/twoLayer.ts` })
 const { GridLayout } = gridLayout, { FlipRef } = flipRef, { G_STD: G, mulberry32, fillMaterials: fill } = two
@@ -136,8 +161,102 @@ function rk4(st, s0, dt0, sub, checkpoints) {
 
 const dist = (u, v) => Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2])
 
+// ── W: the counter-flux on the MAC faces ──────────────────────────────────────────────────────────────────────────
+/** Visit the 8 faces of grid `a` in the trilinear stencil of x (the MAC face offsets: 0 on axis a, ½ on the others). */
+function faceStencil(L, a, x, fn) {
+  const f = x.map((v, b) => v / DX - (a === b ? 0 : 0.5)), b0 = f.map(Math.floor), t = f.map((v, b) => v - b0[b])
+  for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++)
+    fn(L.idx(b0[0] + di, b0[1] + dj, b0[2] + dk), (di ? t[0] : 1 - t[0]) * (dj ? t[1] : 1 - t[1]) * (dk ? t[2] : 1 - t[2]), [b0[0] + di, b0[1] + dj, b0[2] + dk])
+}
+function wScene(form) {
+  const d = 1e-3, nx = 16, nz = 8, L = new GridLayout({ nx, ny: 30, nz, dx: DX })
+  const sim = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: d, driftForm: form }))
+  const { p } = fill(nx, 24, nz, DX, mulberry32(81), () => [W.rho, 0])
+  for (let q = 0; q < p.n; q++) if (q % 16 === 5 && p.pos[3 * q + 1] < 10 * DX) { p.material[q] = 1; p.mass[q] = OIL.rho * VP }
+  return { L, sim, p }
+}
+{
+  const { L, sim, p } = wScene('face')
+  for (let k = 0; k < 30; k++) sim.step(p, DT)
+  sim.p2g(p)
+  const slip0 = p.slip.slice(), drop0 = p.drop.slice()
+  sim.driftFlux(p, DT)
+  const S = L.size, n = p.n, disp = q => p.drop[q] > 0, SOLID = gridLayout.FaceType.SOLID
+  // the oracle: Σw and S_f from every particle with this file's stencil, then the rule
+  const Wo = [0, 1, 2].map(() => new Float64Array(S)), So = [0, 1, 2].map(() => new Float64Array(S)), nearDrop = [0, 1, 2].map(() => new Uint8Array(S))
+  for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => {
+    Wo[a][s2] += w
+    if (disp(q) && w > 0) { So[a][s2] += w * p.slip[3 * q + a]; nearDrop[a][s2] = 1 }
+  })
+  // wall faces: every face in a window wall's plane (own-axis logical index 0 or n — the ghost layer's edge faces too)
+  // and every SOLID face; logical coordinates from this file's own loop over the face range
+  const nn = [L.nx, L.ny, L.nz], wall = [0, 1, 2].map(() => new Uint8Array(S))
+  for (let a = 0; a < 3; a++) {
+    const lo = [-1, -1, -1], hi = [...nn]; lo[a] = 0
+    for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+      const c = [i, j, k], s2 = L.idx(i, j, k)
+      if (c[a] === 0 || c[a] === nn[a] || sim.faceType[a][s2] === SOLID) wall[a][s2] = 1
+    }
+  }
+  const Jo = [0, 1, 2].map(a => So[a].map((v, s2) => (wall[a][s2] || !(Wo[a][s2] >= flipRef.FACE_WEIGHT_MIN) ? 0 : v / Wo[a][s2])))
+  const Jf = sim.driftFaceJ
+  let wallNonzero = 0, wallTouched = 0, edgeTouched = 0, dW = 0, dJ = 0, jMax = 0
+  for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) {
+    if (wall[a][s2]) { if (!Jf || Jf[a][s2] !== 0) wallNonzero++; if (nearDrop[a][s2]) { wallTouched++; if (sim.faceType[a][s2] !== SOLID) edgeTouched++ } }
+    dW = Math.max(dW, Math.abs(Wo[a][s2] - sim.weight[a][s2])); dJ = Math.max(dJ, Jf ? Math.abs(Jo[a][s2] - Jf[a][s2]) : Infinity); jMax = Math.max(jMax, Math.abs(Jo[a][s2]))
+  }
+  const nDisp = [...Array(n).keys()].filter(disp).length
+  check(wallNonzero === 0 && wallTouched > 0, `W1 J_f = 0 on every wall face (${nDisp} dispersed drops after 0.25 s): ${wallNonzero} wall faces with J ≠ 0 (0); ${wallTouched} wall faces in a drop's stencil (≥ 1), ${edgeTouched} of them ghost-layer edge faces`)
+  check(dW <= 1e-12 && dJ <= 1e-12, `W2 face counter-flux = the oracle (S_f/Σw_f, 0 on wall faces and below FACE_WEIGHT_MIN): max |ΔΣw| ${dW.toExponential(2)}, max |ΔJ_f| ${dJ.toExponential(2)} m/s (≤ 1e-12; max |J_f| ${jMax.toExponential(3)} m/s)`)
+  // W3 + W4 on flipRef's drift, W4 also on the control's
+  const uOracle = new Float64Array(3 * n)
+  for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) { let j = 0; faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => { j += w * Jo[a][s2] }); uOracle[3 * q + a] = (disp(q) ? p.slip[3 * q + a] : 0) - j }
+  let dU = 0
+  for (let i = 0; i < 3 * n; i++) dU = Math.max(dU, Math.abs(sim.drift[i] - uOracle[i]))
+  check(dU <= 1e-12, `W3 every particle's u_V = (dispersed ? s : 0) − Σ w_f·J_f: max |Δu_V| ${dU.toExponential(2)} m/s over ${n} particles (≤ 1e-12)`)
+  /** W4's worst ratio: a carrier's wall-ward drift over (d/dx)·max|J_f| of its stencil faces on that axis (≤ 1 passes). */
+  const wallRatio = (drift, Jgrid) => {
+    let worst = 0, carriers = 0
+    for (let q = 0; q < n; q++) {
+      if (disp(q)) continue
+      const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
+      for (let a = 0; a < 3; a++) for (const side of [0, 1]) {
+        const dWall = side ? L.extent[a] - x[a] : x[a]
+        if (!(dWall < DX)) continue
+        const toward = side ? drift[3 * q + a] : -drift[3 * q + a]
+        if (!(toward > 0)) continue
+        let jm = 0
+        faceStencil(L, a, x, (s2, w) => { if (w > 0) jm = Math.max(jm, Math.abs(Jgrid[a][s2])) })
+        carriers++
+        worst = Math.max(worst, toward / ((dWall / DX) * jm + 1e-12))
+      }
+    }
+    return { worst, carriers }
+  }
+  const wf = wallRatio(sim.drift, Jo)
+  // the control from the same state: the cell form (its J lives per cell; the bound uses the face oracle's max, which
+  // is what the wall condition allows)
+  p.slip.set(slip0); p.drop.set(drop0)
+  const ctl = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: 1e-3, driftForm: 'cell' }))
+  ctl.u = sim.u; ctl.faceAccel.forEach((f, a) => f.set(sim.faceAccel[a])); ctl.weight = sim.weight
+  ctl.driftFlux(p, DT)
+  const wc = wallRatio(ctl.drift, Jo)
+  check(wf.worst <= 1 && wc.worst > 1, `W4 carriers next to a wall are not driven into it: worst wall-ward |u_V|/((d/dx)·max|J_f|) ${wf.worst.toFixed(4)} over ${wf.carriers} carrier-axes within dx of a wall (≤ 1); control (cell form, same state) ${wc.worst.toExponential(2)} over ${wc.carriers} (must be > 1)`)
+  // W5 (reported): the particle-level remainder of face-level (31)
+  p.slip.set(slip0); p.drop.set(drop0)
+  const remainder = drift => {
+    const R = [0, 1, 2].map(() => new Float64Array(S)), A = [0, 1, 2].map(() => new Float64Array(S))
+    for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => { R[a][s2] += w * drift[3 * q + a]; if (disp(q)) A[a][s2] += w * Math.abs(p.slip[3 * q + a]) })
+    let remN = 0, remD = 0, faces = 0
+    for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) if (Wo[a][s2] >= 1 && A[a][s2] > 0 && !wall[a][s2]) { remN += Math.abs(R[a][s2]); remD += A[a][s2]; faces++ }
+    return { r: remN / remD, faces }
+  }
+  const rf = remainder(sim.drift), rc = remainder(ctl.drift)
+  info(`W5 particle-level remainder of face-level (31): Σ_f |Σ w·u_V| / Σ_f Σ w·|ŝ| ${rf.r.toFixed(4)} over ${rf.faces} non-wall faces with Σw ≥ 1 and drops; the cell form from the same state ${rc.r.toFixed(4)} (reported; the density projection removes it)`)
+}
+
 // ── B: balance at rest ────────────────────────────────────────────────────────────────────────────────────────────
-for (const [label, heavy, light, key] of [['mercury drops in water over mercury', HG, W, 'mercury|water'], ['water drops in olive oil over water', W, OIL, 'oil|water']]) {
+if (ONLY !== 'W') for (const [label, heavy, light, key] of [['mercury drops in water over mercury', HG, W, 'mercury|water'], ['water drops in olive oil over water', W, OIL, 'oil|water']]) {
   const nx = 8, ny = 20, nz = 8, h1 = 10, h2 = 8, d = 1e-3, L = new GridLayout({ nx, ny, nz, dx: DX })
   // material 0 the light carrier, 1 the heavy liquid (the drops and the layer below)
   const sim = new FlipRef(L, { ...opts({ 0: light, 1: heavy }, () => SIGMA[key], { dropDiameter: d }), densityProjection: false })
@@ -191,7 +310,7 @@ const CASES = [
   { label: 'olive oil 1 mm in water, released sideways at |u_eq|', D: OIL, key: 'oil|water', d: 1e-3, seed: 92, T: [1, 2, 6, 12, 18], order: true, sideways: true },
   { label: 'olive oil 0.2 mm in water', D: OIL, key: 'oil|water', d: 2e-4, seed: 93, order: false },
 ]
-for (const c of CASES) {
+for (const c of (ONLY === 'W' ? [] : CASES)) {
   const sc = frozenScene(c.D, c.key, c.d, c.seed), n = sc.drops.length
   if (!n) { check(false, `S ${c.label}: no dispersed drop after the first step`); continue }
   const Umean = sc.drops.reduce((s, st) => s + st.eq.U, 0) / n, ReMean = sc.drops.reduce((s, st) => s + st.eq.Re, 0) / n
@@ -222,7 +341,7 @@ for (const c of CASES) {
 }
 
 // ── D-a: the moving simulation ────────────────────────────────────────────────────────────────────────────────────
-{
+if (ONLY !== 'W') {
   const d = 1e-3, nx = 16, nz = 8, L = new GridLayout({ nx, ny: 30, nz, dx: DX })
   const sim = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: d }))
   const { p } = fill(nx, 24, nz, DX, mulberry32(81), () => [W.rho, 0])
@@ -261,7 +380,7 @@ function layered(lower, upper, key, seconds, seed, immiscible, sample) {
   return { hist, everDispersed, maxSlip, maxAccel, n: p.n }
 }
 
-if (!QUICK) {
+if (!QUICK && ONLY !== 'W') {
   // D-b: oil over water, gentle
   {
     const r = layered(W, OIL, 'oil|water', 11, 101, true, false)
@@ -292,5 +411,5 @@ if (!QUICK) {
   }
 }
 
-console.log(`\ns3.5-i reference gate${QUICK ? ' (quick)' : ''}: ${fails ? `FAIL (${fails})` : 'PASS'}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
+console.log(`\ns3.5-i reference gate${ONLY ? ` (--only=${ONLY})` : QUICK ? ' (quick)' : ''}: ${fails ? `FAIL (${fails})` : 'PASS'}  (${((Date.now() - t0) / 1000).toFixed(0)} s)`)
 process.exit(fails ? 1 : 0)

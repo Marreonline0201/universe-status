@@ -2,11 +2,12 @@
 // S3.5-i on the GPU (flip-selftest.html): the immiscible drift flux (ImmiscibleSolver, immiscible.wgsl) against the f64
 // reference flipRef.driftFlux on IDENTICAL inputs — the same f32 particle positions, slip history, face velocities and
 // face accelerations on both sides — K30–K33, and the face acceleration itself (K34, flipRef.captureFaceAccel) on the
-// same f32 u* and projected u. Metrics only —
+// same f32 u* and projected u. The drift in both forms: K32 the face form (the default: J on the MAC faces with P2G's
+// stencil and weight sum, 0 on the walls) per face and per particle, K32c the cell form (the control). Metrics only —
 // scripts/fluid-gates/s35i-gpu.mjs applies the tolerances. Every bound below is derived from f32 rounding (u = 2^-24;
 // WGSL: × − + and conversions correctly rounded, ÷ 2.5 ulp, pow via exp2(y·log2 x) ≤ 64 ulp here, exp (3 + 2|x|) ulp).
-import { GridLayout, type Vec3 } from '../../sim-ref/gridLayout'
-import { FlipRef, makeParticles, dragFactor, type RefParticles } from '../../sim-ref/flipRef'
+import { GridLayout, FaceType, type Vec3 } from '../../sim-ref/gridLayout'
+import { FlipRef, makeParticles, dragFactor, FACE_WEIGHT_MIN, type RefParticles } from '../../sim-ref/flipRef'
 import { FlipGpuSimulator } from '../../gpu-sim/flip/FlipGpuSimulator'
 import { INCOMPRESSIBLE_NU_NUM } from '../../composition/liquidGate'
 import { DX, L_REF, TAU, submit, mulberry32, solverConfig, capFor } from './util'
@@ -87,8 +88,9 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   const props: Record<number, { rho: number; mu: number }> = {}
   sc.ids.forEach((id, k) => { props[id] = IMM[sc.names[k]] })
   const nameOf = new Map(sc.ids.map((id, k) => [id, sc.names[k]]))
-  const cpu = new FlipRef(L, { gravity: [0, -G, 0], density: IMM.water.rho, projection: true, freeSurface: 'ghost', variableDensity: true, pressureTolerance: 1e-9,
-    immiscible: { props, sigma: (a, b) => sigmaOf(nameOf.get(a)!, nameOf.get(b)!), dropDiameter: sc.drop, nuNum: INCOMPRESSIBLE_NU_NUM } })
+  const refOpts = (driftForm: 'face' | 'cell') => ({ gravity: [0, -G, 0] as Vec3, density: IMM.water.rho, projection: true, freeSurface: 'ghost' as const, variableDensity: true, pressureTolerance: 1e-9,
+    immiscible: { props, sigma: (a: number, b: number) => sigmaOf(nameOf.get(a)!, nameOf.get(b)!), dropDiameter: sc.drop, nuNum: INCOMPRESSIBLE_NU_NUM, driftForm } })
+  const cpu = new FlipRef(L, refOpts('face'))
   // the reference's drift-flux inputs: u* after the grid update, the projected u and its valid flags (both f32-rounded:
   // K34's identical inputs), a = g − Du/Dt on the faces, then the final extrapolated u
   const r32 = (f: Float64Array[]) => { for (const ax of [0, 1, 2]) for (let s = 0; s < S; s++) f[ax][s] = Math.fround(f[ax][s]) }
@@ -140,13 +142,35 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   device.queue.writeBuffer(imm.accFinal, 0, a3)
   const st4 = new Float32Array(4 * p.n)
   for (let q = 0; q < p.n; q++) st4.set([slip0[3 * q], slip0[3 * q + 1], slip0[3 * q + 2], drop0[q]], 4 * q)
+  // P2G's Σw (the face form's denominator): the GPU's own faceScatter on the same f32 positions the reference's p2g used
+  await submit(device, e => gpu.encodeScatter(e))
+  // the cell form (K32c, the control) from the slip history, then the face form (the default) twice from the same history
+  // — the second run's J proves driftFaces left every face sum at zero — so the drift buffer ends with the face form (K33)
   device.queue.writeBuffer(imm.bufs.slipState, 0, st4)
+  imm.driftForm = 'cell'
   await submit(device, e => imm.encode(e, p.n))
+  const gDriftC = new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n))
+  imm.driftForm = 'face'
+  for (let r = 0; r < 2; r++) {
+    device.queue.writeBuffer(imm.bufs.slipState, 0, st4)
+    await submit(device, e => imm.encode(e, p.n))
+  }
   cpu.driftFlux(p, dt)
   const gSlip = new Float32Array(await gpu.readBuffer(imm.bufs.slipState, 16 * p.n))
   const gDrift = new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n))
+  const gFace = new Float32Array(await gpu.readBuffer(imm.bufs.driftFace, 4 * 3 * S))
   const gInf = new Float32Array(await gpu.readBuffer(imm.bufs.cellInf, 4 * 8 * S))
   const gStats = await imm.readStats()
+  // the reference's cell form from the same inputs (its slip update is the face form's: pass 1 does not depend on J)
+  const slipNew = Float64Array.from(p.slip!), dropNew = Float64Array.from(p.drop!)
+  p.slip!.set(slip0); p.drop!.set(drop0)
+  const cpuC = new FlipRef(L, refOpts('cell'))
+  for (const ax of [0, 1, 2] as const) { cpuC.u[ax].set(cpu.u[ax]); cpuC.faceAccel[ax].set(cpu.faceAccel[ax]) }
+  cpuC.driftFlux(p, dt)
+  const driftC = Float64Array.from(cpuC.drift.subarray(0, 3 * p.n))
+  let slipFormDiff = 0
+  for (let i = 0; i < 3 * p.n; i++) slipFormDiff = Math.max(slipFormDiff, Math.abs(p.slip![i] - slipNew[i]))
+  p.slip!.set(slipNew); p.drop!.set(dropNew)
 
   // ── the reference's per-cell quantities in f64 (for the bounds), from the same fields driftFlux read ──
   const K = sc.ids.length, kOf = new Map(sc.ids.map((id, k) => [id, k]))
@@ -289,7 +313,68 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
     slipRatio, dropRatio, dispMismatch, dispExcused, seriesBranch, expBranch, newton, recompute, worst,
     maxSlip: { cpu: cpu.lastDrift.maxSlip, gpu: gStats.maxSlip }, meanDrop: { cpu: cpu.lastDrift.meanDrop, gpu: gStats.meanDrop } }
 
-  // K32 drift per particle: u_V = own − J, J = Σ_k α_k ū_Ck; cells with an excused particle are skipped
+  // K32 the face form. Per face (driftFaces): S_f = Σ w·s over the dispersed drops (two-word fixed point, ≤ 2^-37 m/s per
+  // add; dec2 in f32 ≤ 2u·Σw|s|), Σw_f from faceScatter's gW (one word at 2^24: ≤ 2^-25 per add), each weight from f32
+  // positions (dw = dT·(pairwise products) + 2u·w, the α bound's), each drop's slip within K31's B_s; J_f = S_f/Σw_f
+  // (÷ 2.5 ulp): |ΔJ_f| ≤ (|ΔS_f| + |J_f|·|ΔΣw_f|)/(Σw_f − |ΔΣw_f|) + 3u·|J_f|. Wall faces (own-axis index 0 or n, SOLID)
+  // and faces with Σw_f < FACE_WEIGHT_MIN must be 0 on both sides exactly. Excused: faces a K31-excused particle reaches
+  // (its slip has no bound) and faces within their Σw bound of FACE_WEIGHT_MIN (the rule may flip either way).
+  // Per particle (driftParticlesFace): J(x_q) = Σ w·J_f — per tap (3·dT + 14u)·|J_f| + w·|ΔJ_f| (accBound's form) —
+  // and u_V = own − J: B = B_s (dispersed) + Σ_a |ΔJ_a| + u·|u_V|; particles reaching an excused face are skipped.
+  const Jref = cpu.driftFaceJ!, Wref = cpu.weight
+  const dS = [0, 1, 2].map(() => new Float64Array(S)), dWb = [0, 1, 2].map(() => new Float64Array(S)), Sabs = [0, 1, 2].map(() => new Float64Array(S))
+  const faceBad = [0, 1, 2].map(() => new Uint8Array(S)), faceB = [0, 1, 2].map(() => new Float64Array(S))
+  const tapsOf = (a: number, x: number[], fn: (s2: number, w: number, dw: number) => void) => {
+    const f = x.map((v, b) => v / DX - (a === b ? 0 : 0.5)), b0 = f.map(Math.floor), t = f.map((v, b) => v - b0[b])
+    for (let m = 0; m < 8; m++) {
+      const d = [m & 1, (m >> 1) & 1, (m >> 2) & 1], wv = d.map((dd, b) => (dd ? t[b] : 1 - t[b])), w = wv[0] * wv[1] * wv[2]
+      fn(L.idx(b0[0] + d[0], b0[1] + d[1], b0[2] + d[2]), w, dT * (wv[1] * wv[2] + wv[0] * wv[2] + wv[0] * wv[1]) + 2 * U * w)
+    }
+  }
+  for (let q = 0; q < p.n; q++) {
+    const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], disp = p.drop![q] > 0
+    for (let a = 0; a < 3; a++) tapsOf(a, x, (s2, w, dw) => {
+      dWb[a][s2] += dw + 2 ** -25
+      if (excusedQ[q]) faceBad[a][s2] = 1
+      if (!disp) return
+      const sa = Math.abs(p.slip![3 * q + a])
+      Sabs[a][s2] += w * sa
+      dS[a][s2] += dw * sa + w * Bs[q] + 3 * U * w * sa + 2 ** -37
+    })
+  }
+  let faceRatio = 0, facesChecked = 0, facesExcused = 0, wallTouched = 0, edgeTouched = 0, faceMax = 0, faceZeroMismatch = 0
+  for (const ax of [0, 1, 2] as const) {
+    const [lo, hi] = L.faceRange(ax)
+    for (let k3 = lo[2]; k3 <= hi[2]; k3++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+      const s2 = L.idx(i, j, k3), own = [i, j, k3][ax], W = Wref[ax][s2], ref = Jref[ax][s2], got = gFace[ax * S + s2]
+      const wall = own === 0 || own === n[ax] || cpu.faceType[ax][s2] === FaceType.SOLID
+      if (wall && Sabs[ax][s2] > 0) { wallTouched++; if (cpu.faceType[ax][s2] !== FaceType.SOLID) edgeTouched++ }
+      if (faceBad[ax][s2] || (!wall && Math.abs(W - FACE_WEIGHT_MIN) <= dWb[ax][s2] + U * W)) { faceBad[ax][s2] = 1; facesExcused++; continue }
+      facesChecked++
+      if (wall || !(W >= FACE_WEIGHT_MIN)) { if (got !== 0 || ref !== 0) faceZeroMismatch++; continue }
+      faceMax = Math.max(faceMax, Math.abs(ref))
+      const B = (dS[ax][s2] + 2 * U * Sabs[ax][s2] + Math.abs(ref) * (dWb[ax][s2] + U * W)) / Math.max(1e-30, W - dWb[ax][s2]) + 3 * U * Math.abs(ref) + 1e-30
+      faceB[ax][s2] = B
+      faceRatio = Math.max(faceRatio, Math.abs(got - ref) / B)
+    }
+  }
+  let driftRatio = 0, driftChecked = 0, driftSkipped = 0, driftMax = 0
+  for (let q = 0; q < p.n; q++) {
+    const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
+    let bad = false, dJ = 0
+    for (let a = 0; a < 3; a++) tapsOf(a, x, (s2, w) => {
+      if (faceBad[a][s2]) bad = true
+      dJ += (3 * dT + 14 * U) * Math.abs(Jref[a][s2]) + w * faceB[a][s2]
+    })
+    if (bad) { driftSkipped++; continue }
+    const ref = [0, 1, 2].map(a => cpu.drift[3 * q + a]), dv = Math.hypot(...ref)
+    const B = (p.drop![q] > 0 ? Bs[q] : 0) + dJ + U * dv + 1e-30
+    const err = Math.hypot(gDrift[4 * q] - ref[0], gDrift[4 * q + 1] - ref[1], gDrift[4 * q + 2] - ref[2])
+    driftRatio = Math.max(driftRatio, err / B); driftChecked++; driftMax = Math.max(driftMax, dv)
+  }
+  const k32 = { faceRatio, facesChecked, facesExcused, faceZeroMismatch, wallTouched, edgeTouched, faceMax, driftRatio, driftChecked, driftSkipped, driftMax, slipFormDiff }
+
+  // K32c the cell form (the control): u_V = own − J, J = Σ_k α_k ū_Ck; cells with an excused particle are skipped
   const cellBad = new Uint8Array(S), cellCnt = new Float64Array(K * S), cellSum = new Float64Array(3 * K * S), cellB = new Float64Array(K * S)
   for (let q = 0; q < p.n; q++) {
     const s2 = cellOf(q)
@@ -300,10 +385,10 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
     for (let a = 0; a < 3; a++) cellSum[3 * (k * S + s2) + a] += p.slip![3 * q + a]
     cellB[k * S + s2] = Math.max(cellB[k * S + s2], Bs[q])
   }
-  let driftRatio = 0, driftChecked = 0, driftSkipped = 0, driftMax = 0
+  let driftRatioC = 0, driftCheckedC = 0, driftSkippedC = 0, driftMaxC = 0
   for (let q = 0; q < p.n; q++) {
     const s2 = cellOf(q)
-    if (cellBad[s2]) { driftSkipped++; continue }
+    if (cellBad[s2]) { driftSkippedC++; continue }
     let dJ = 0, Jn = 0
     for (let k = 0; k < K; k++) {
       const cnt = cellCnt[k * S + s2]
@@ -313,12 +398,12 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
       Jn += alpha(k, s2) * mean
     }
     dJ += K * U * Jn
-    const ref = [0, 1, 2].map(a => cpu.drift[3 * q + a]), dv = Math.hypot(...ref)
+    const ref = [0, 1, 2].map(a => driftC[3 * q + a]), dv = Math.hypot(...ref)
     const B = (dispCpu[q] ? Bs[q] : 0) + dJ + U * dv + 1e-30
-    const err = Math.hypot(gDrift[4 * q] - ref[0], gDrift[4 * q + 1] - ref[1], gDrift[4 * q + 2] - ref[2])
-    driftRatio = Math.max(driftRatio, err / B); driftChecked++; driftMax = Math.max(driftMax, dv)
+    const err = Math.hypot(gDriftC[4 * q] - ref[0], gDriftC[4 * q + 1] - ref[1], gDriftC[4 * q + 2] - ref[2])
+    driftRatioC = Math.max(driftRatioC, err / B); driftCheckedC++; driftMaxC = Math.max(driftMaxC, dv)
   }
-  const k32 = { driftRatio, driftChecked, driftSkipped, driftMax }
+  const k32c = { driftRatio: driftRatioC, driftChecked: driftCheckedC, driftSkipped: driftSkippedC, driftMax: driftMaxC }
 
   // K33 the advection adds the drift (g2pMac, IMMISCIBLE): with u = 0 on every face (all valid), x ← x + Δt·u_V exactly
   // up to f32 rounding: |Δ| ≤ ulp-level ½u·|x| (the add) + u·Δt|u_V| (the product) + ½u·|x + Δt·u_V| — 2u·(|x| + Δt|u_V|)
@@ -339,7 +424,7 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   }
   const k33 = { advRatio, advChecked, advClamped, advMoved }
   gpu.destroy()
-  return { kind, particles: p.n, k30, k31, k32, k33, k34 }
+  return { kind, particles: p.n, k30, k31, k32, k32c, k33, k34 }
 }
 
 // ── physics on the GPU path (s35i-ref scenes) ──

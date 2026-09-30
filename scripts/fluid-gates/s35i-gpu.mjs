@@ -10,7 +10,11 @@
 // material (identical; near ties within the α bounds excused and counted); K31 the slip and drop diameter of every
 // particle (≤ 1 × its bound; the dispersed set identical, drops within their bound of the resolved edge d = dx or of the
 // drag law's Re = 1000 seam excused and counted; the bound's recomputation must reproduce the reference's slip to
-// 1e-12); K32 the drift (≤ 1 × its bound); K33 g2pMac's advection adds Δt·u_V (u = 0 on the grid; ≤ 2u·(|x| + Δt|u_V|));
+// 1e-12); K32 the drift in the face form, the default (2026-09-30 01:56, fixed before the first GPU run; bounds derived in
+// immiscible.ts): J_f per face ≤ 1 × its bound, wall faces and faces below FACE_WEIGHT_MIN exactly 0 on both sides, ≥ 1
+// wall face reached by a drop (the wall rule is exercised), u_V per particle ≤ 1 × its bound, the reference's slip update
+// identical in both forms (≤ 1e-12); the face form runs twice from the same history, so a face sum left uncleared fails;
+// K32c the cell form, the control (≤ 1 × its bound); K33 g2pMac's advection adds Δt·u_V (u = 0 on the grid; ≤ 2u·(|x| + Δt|u_V|));
 // K34 the face acceleration a = g − Du/Dt (faceAccel + the velocity's extrapolation kernel; ≤ 16u·max|a|, derived there).
 // Physics (full gate) on the GPU path: G-rest (s35i-ref B's lattice column at rest, water and honey — the viscous path —
 // over mercury: after one full step a = g within two rows of the interface, ≤ 1e-3 at pressure tolerance 1e-4/s: the
@@ -55,15 +59,17 @@ try {
     { kind: 'hinze', label: 'olive oil, Hinze sizing, drop history' }, { kind: 'mix4', label: 'four liquids, ids 0/3/7/12, Hinze' }]) {
     const r = await run('immKernels', { kind: c.kind })
     report.kernels[c.kind] = r
-    const a = r.k30, b = r.k31, d = r.k32
+    const a = r.k30, b = r.k31, d = r.k32, dc = r.k32c
     gate.check(a.cellsSeen > 0 && a.alphaRatio <= 1 && a.rhoRatio <= 1 && a.epsRatio <= 1 && a.majorityMismatch === 0 && (c.kind === 'oil' || c.kind === 'mercury' || a.epsCells > 0),
       `K30 cells, ${c.label} (${r.particles} particles): α |Δα|/bound ${f(a.alphaRatio)}, ρ_m ${f(a.rhoRatio)}, ε ${f(a.epsRatio)} over ${a.epsCells} cells, majority mismatches ${a.majorityMismatch} of ${a.cellsSeen} cells (${a.majorityExcused} near ties excused)`)
     const branches = c.kind === 'mercury' ? b.seriesBranch > 0 && b.newton > 0 : c.kind === 'hinze' ? b.cpuTooLarge > 0 : true
     gate.check(b.dispersed > 0 && b.slipRatio <= 1 && b.dropRatio <= 1 && b.dispMismatch === 0 && b.recompute === 0 && branches
       && Math.abs(b.gpuDispersed - b.cpuDispersed) <= b.dispExcused,
       `K31 slip, ${c.label}: ${b.dispersed} dispersed compared (GPU ${b.gpuDispersed}, reference ${b.cpuDispersed}; ${b.dispExcused} at the d = dx edge or the Re = 1000 seam excused), |Δs|/bound ${f(b.slipRatio)}, |Δd|/bound ${f(b.dropRatio)}, dispersed-set mismatches ${b.dispMismatch}, too large GPU ${b.gpuTooLarge} / reference ${b.cpuTooLarge}; branches series ${b.seriesBranch} / exp ${b.expBranch}, Newton drag ${b.newton}; bound recomputation off in ${b.recompute}; largest slip GPU ${b.maxSlip.gpu.toExponential(4)} / reference ${b.maxSlip.cpu.toExponential(4)} m/s, mean drop ${(1e3 * b.meanDrop.gpu).toFixed(4)} / ${(1e3 * b.meanDrop.cpu).toFixed(4)} mm`)
-    gate.check(d.driftChecked > 0 && d.driftRatio <= 1,
-      `K32 drift, ${c.label}: |Δu_V|/bound ${f(d.driftRatio)} over ${d.driftChecked} particles (${d.driftSkipped} in cells with an excused particle skipped; largest |u_V| ${d.driftMax.toExponential(3)} m/s)`)
+    gate.check(d.facesChecked > 0 && d.faceRatio <= 1 && d.faceZeroMismatch === 0 && d.wallTouched > 0 && d.driftChecked > 0 && d.driftRatio <= 1 && d.slipFormDiff <= 1e-12,
+      `K32 drift, face form, ${c.label}: J_f |ΔJ|/bound ${f(d.faceRatio)} over ${d.facesChecked} faces (${d.facesExcused} excused; wall/under-weight faces not exactly 0: ${d.faceZeroMismatch}; ${d.wallTouched} wall faces reached by drops, ${d.edgeTouched} ghost-layer edge faces), u_V |Δu_V|/bound ${f(d.driftRatio)} over ${d.driftChecked} particles (${d.driftSkipped} skipped; largest |u_V| ${d.driftMax.toExponential(3)} m/s); reference slip update identical in both forms: ${d.slipFormDiff.toExponential(1)}`)
+    gate.check(dc.driftChecked > 0 && dc.driftRatio <= 1,
+      `K32c drift, cell form (the control), ${c.label}: |Δu_V|/bound ${f(dc.driftRatio)} over ${dc.driftChecked} particles (${dc.driftSkipped} in cells with an excused particle skipped; largest |u_V| ${dc.driftMax.toExponential(3)} m/s)`)
     const g = r.k34
     gate.check(g.accFaces > 0 && g.accSolidFaces > 0 && g.accRatio <= 1,
       `K34 face acceleration a = g − Du/Dt, ${c.label}: |Δa|/(16u·max|a|) ${f(g.accRatio)} over ${g.accFaces} non-zero faces (${g.accSolidFaces} wall faces at g), max |a| ${(g.accMax / 9.80665).toFixed(3)} g`)

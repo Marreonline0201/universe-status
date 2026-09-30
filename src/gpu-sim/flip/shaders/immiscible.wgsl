@@ -10,8 +10,14 @@
 //   alphaScatter   particles → per cell and material slot Σw (trilinear to cell centres), and the cell total
 //   cellInfo       cells → ε = 2·ν_eff·S:S, the majority slot c, ρ_m, α_c, α per slot
 //   slipParticles  particles → slip s and drop diameter d (0 = resolved), cell sums of slip per slot, statistics
-//   driftCells     cells → J = Σ_k α_k·ū_Ck
-//   driftParticles particles → the drift u_V = (dispersed ? s : 0) − J, added to the advection by g2pMac
+//   driftCells     cells → J = Σ_k α_k·ū_Ck (the 'cell' form; it also clears the cell sums, so it runs in both forms)
+//   driftParticles particles → the drift u_V = (dispersed ? s : 0) − J, added to the advection by g2pMac ('cell' form)
+// The 'face' form (the default, flipRef.driftFlux pass 2): J on the MAC faces with P2G's stencil and weight sum —
+//   slipFaces      dispersed particles → S_f = Σ w_qf·s_q,a on the three face grids (two-word fixed point)
+//   driftFaces     faces → J_f = S_f/Σw_f (P2G's Σw: positions have not moved since faceScatter), 0 on every face in a
+//                  window wall's plane (own-axis index 0 or n, the ghost layer's edge faces included), on SOLID faces,
+//                  where Σw_f < wMin and inside the ball; clears S_f
+//   driftParticlesFace particles → u_V = (dispersed ? s : 0) − Σ_f w_f·J_f (the velocity stencil)
 
 struct ImmParams {
   K: u32,               // material slots in use (≤ 4)
@@ -47,6 +53,11 @@ struct ImmParams {
 // per particle, 2 × vec4 (diagnostics: the slip's own inputs at the last substep, zero when not dispersed):
 // (a = g − Du/Dt xyz, α_d = 1 − α_c), (ρ_m, μ_m, Re, ρ_c) — the gates split a slip's excess into its inputs vs its law
 @group(0) @binding(31) var<storage, read_write> slipInputs: array<vec4<f32>>;
+// the face form: S_f (2 words per face slot of the three grids), P2G's Σw (faceScatter's gW, at massScale), J_f
+@group(0) @binding(32) var<storage, read_write> slipFace: array<atomic<i32>>;
+@group(0) @binding(33) var<storage, read> weightR: array<i32>;
+@group(0) @binding(34) var<storage, read_write> driftFace: array<f32>;
+@group(0) @binding(35) var<storage, read> driftFaceR: array<f32>;
 
 const MAXK: u32 = 4u;
 fn slotOfComp(id: u32) -> u32 { if (id >= 256u) { return MAXK; } return IP.slots[id / 4u][id % 4u]; }
@@ -270,4 +281,69 @@ fn driftParticles(@builtin(global_invocation_id) gid: vec3<u32>) {
   let st = slipStateR[q];
   let own = select(vec3<f32>(0.0), st.xyz, st.w > 0.0);
   drift[q] = vec4<f32>(own - driftCellR[li].xyz, 0.0);
+}
+
+// ── the face form ──────────────────────────────────────────────────────────────────────────────────────────────────
+/// MTK (33) at a face with ONE kernel and ONE particle set: the dispersed drops' slips scattered with faceScatter's own
+/// stencil (the same 8 faces and weights per axis), summed in a two-word fixed point (order-independent).
+@compute @workgroup_size(64)
+fn slipFaces(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let q = gid.x;
+  if (q >= P.numParticles) { return; }
+  let st = slipStateR[q];
+  if (!(st.w > 0.0)) { return; }   // not a dispersed drop this substep (slipParticles writes d = 0 then)
+  let x = pos[q].xyz;
+  for (var a = 0u; a < 3u; a++) {
+    let f = x / P.dx - faceOffset(a);
+    let b = vec3<i32>(floor(f));
+    let t = f - floor(f);
+    for (var m = 0u; m < 8u; m++) {
+      let d = vec3<i32>(i32(m & 1u), i32((m >> 1u) & 1u), i32((m >> 2u) & 1u));
+      let wv = select(vec3<f32>(1.0) - t, t, d == vec3<i32>(1));
+      let w = wv.x * wv.y * wv.z;
+      if (w == 0.0) { continue; }
+      let s = 2u * (gridBase(a) + slotOf(b + d));
+      let v = w * st[a] * SLIP_SCALE;
+      atomicAdd(&slipFace[s], fixHi(v)); atomicAdd(&slipFace[s + 1u], fixLo(v));
+    }
+  }
+}
+
+/// J_f = S_f/Σw_f with the wall rule (driftFluxFoam: Udm = 0 on wall patches; J·n = 0 on a wall's whole plane). Every
+/// slot of the three grids is visited once (logicalOfThread ∘ slotOf is a bijection), so S_f is all-zero afterwards.
+@compute @workgroup_size(256)
+fn driftFaces(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let tid = gid.x;
+  if (tid >= 3u * P.size) { return; }
+  let a = tid / P.size;
+  let c = logicalOfThread(tid % P.size);
+  let s = gridBase(a) + slotOf(c);
+  let hi = atomicExchange(&slipFace[2u * s], 0);
+  let lo = atomicExchange(&slipFace[2u * s + 1u], 0);
+  if (!inFaceRange(a, c)) { driftFace[s] = 0.0; return; }
+  let W = f32(weightR[s]) / P.massScale;
+  if (c[a] == 0 || c[a] == P.n[a] || faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }
+  driftFace[s] = dec2(hi, lo, SLIP_SCALE) / W;
+}
+
+@compute @workgroup_size(64)
+fn driftParticlesFace(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let q = gid.x;
+  if (q >= P.numParticles) { return; }
+  let x = pos[q].xyz;
+  let st = slipStateR[q];
+  var u = select(vec3<f32>(0.0), st.xyz, st.w > 0.0);
+  for (var a = 0u; a < 3u; a++) {
+    let f = x / P.dx - faceOffset(a);
+    let b = vec3<i32>(floor(f));
+    let t = f - floor(f);
+    var j = 0.0;
+    for (var m = 0u; m < 8u; m++) {
+      let d = vec3<i32>(i32(m & 1u), i32((m >> 1u) & 1u), i32((m >> 2u) & 1u));
+      let wv = select(vec3<f32>(1.0) - t, t, d == vec3<i32>(1));
+      j += wv.x * wv.y * wv.z * driftFaceR[gridBase(a) + slotOf(b + d)];
+    }
+    u[a] -= j;
+  }
+  drift[q] = vec4<f32>(u, 0.0);
 }

@@ -59,6 +59,10 @@ export interface ImmiscibleOptions {
   /** The scheme's numerical viscosity (m²/s), added to the carrier's in ε = 2·ν_eff·S:S (the implicit-LES assumption,
    *  disclosed); default liquidGate.INCOMPRESSIBLE_NU_NUM (gate D2). */
   nuNum?: number
+  /** Where the counter-flux J = Σ_k α_k·ū_Ck is formed (driftFlux pass 2): 'face' (default) on the MAC faces with P2G's
+   *  stencil and weight sum, 0 on SOLID faces; 'cell' the per-cell mean applied by NGP — the pre-2026-09-30 kernel, kept
+   *  only as the same-commit control of the face form's gate (decisions.md 2026-09-30 01:32). */
+  driftForm?: 'face' | 'cell'
 }
 
 /** Drag factor f = C_D·Re/24 of a sphere (MTK (40), Schiller & Naumann 1933): 1 + 0.15·Re^0.687 below Re 1000, the
@@ -344,6 +348,9 @@ export class FlipRef {
   readonly immiscible: ImmiscibleOptions | null
   /** The drift velocity u_V of each particle from the last driftFlux (m/s, 3 per particle), added in advect. */
   drift = new Float64Array(0)
+  /** The counter-flux J on the three MAC face grids from the last driftFlux in the face form (m/s; null before it or in
+   *  the 'cell' form) — the gates' view of pass 2. */
+  driftFaceJ: [Float64Array, Float64Array, Float64Array] | null = null
   /** Immiscibility: the grid velocity after the grid update (u* = uⁿ + Δt·g, walls applied), and the acceleration each
    *  face received from the projection (and, on the viscous path, the viscous solve): a_f = (u*_f − u_f)/Δt = g − Du/Dt
    *  on the faces the final projection set (m/s²); 0 on SOLID faces, faces no liquid touches and faces inside the ball. */
@@ -556,8 +563,11 @@ export class FlipRef {
    *    Re = d·ρ_c·|s|/μ_m and μ_m the Ishii–Zuber mixture viscosity μ_c(1 − α_d)^(−2.5 μ*) with α_pm = 1 — integrated
    *    exactly over the step with f taken at the step's start (the OpenFOAM-10 Lagrangian parcel scheme). Its fixed point
    *    is (58)'s equilibrium slip u_eq; from rest the drop accelerates at (ρ_p − ρ_m)·a/(ρ_p + ½ρ_c).
-   *  - Drift (MTK (33)): u_V = u_C − Σ_k α_k ū_Ck (dispersed; ū_Ck the cell mean slip of material k), −Σ_k α_k ū_Ck for the
-   *    others — no net volume moves through a cell. Particles advect with u + u_V; their carried velocity is unchanged. */
+   *  - Drift (MTK (33)): u_V = u_C − J (dispersed), −J for the others, J = Σ_k α_k ū_Ck. Face form (default): J on the MAC
+   *    faces, J_f = Σ_{q dispersed} w_qf·s_q,a / Σ_{all q} w_qf with P2G's stencil and weight sum — no net volume moves
+   *    through a face — and J_f = 0 on SOLID faces (driftFluxFoam: Udm = 0 on walls); J(x_q) with the same stencil. Cell
+   *    form (the control): ū_Ck the cell mean slip of material k, applied by NGP. Particles advect with u + u_V; their
+   *    carried velocity is unchanged. */
   driftFlux(p: RefParticles, dt: number): void {
     const I = this.immiscible!, L = this.layout, h = L.dx, S = L.size
     if (!p.slip || p.slip.length !== 3 * p.n) p.slip = new Float64Array(3 * p.n)
@@ -664,24 +674,61 @@ export class FlipRef {
       dropSum += d
       out.maxSlip = Math.max(out.maxSlip, Math.hypot(p.slip[3 * q], p.slip[3 * q + 1], p.slip[3 * q + 2]))
     }
-    // pass 2: the drift, u_V = u_C − Σ_k α_k ū_Ck (MTK (33)); the continuous phase and resolved drops: −Σ_k α_k ū_Ck
-    const Jc = new Map<number, Vec3>()
-    const Jof = (s2: number): Vec3 => {
-      let v = Jc.get(s2)
-      if (v) return v
-      v = [0, 0, 0]
-      for (let k = 0; k < K; k++) {
-        const cnt = slipCnt[k * S + s2]
-        if (!cnt) continue
-        const al = alpha(k, s2)
-        for (let a = 0; a < 3; a++) v[a] += al * slipSum[3 * (k * S + s2) + a] / cnt
+    // pass 2: the drift, u_V = u_C − J (MTK (33)); the continuous phase and resolved drops: −J
+    if ((I.driftForm ?? 'face') === 'cell') {
+      // the control: J = Σ_k α_k ū_Ck per cell (ū_Ck the cell mean slip of material k), applied by NGP
+      const Jc = new Map<number, Vec3>()
+      const Jof = (s2: number): Vec3 => {
+        let v = Jc.get(s2)
+        if (v) return v
+        v = [0, 0, 0]
+        for (let k = 0; k < K; k++) {
+          const cnt = slipCnt[k * S + s2]
+          if (!cnt) continue
+          const al = alpha(k, s2)
+          for (let a = 0; a < 3; a++) v[a] += al * slipSum[3 * (k * S + s2) + a] / cnt
+        }
+        Jc.set(s2, v)
+        return v
       }
-      Jc.set(s2, v)
-      return v
-    }
-    for (let q = 0; q < p.n; q++) {
-      const J = Jof(cellOf(q))
-      for (let a = 0; a < 3; a++) this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - J[a]
+      for (let q = 0; q < p.n; q++) {
+        const J = Jof(cellOf(q))
+        for (let a = 0; a < 3; a++) this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - J[a]
+      }
+      this.driftFaceJ = null
+    } else {
+      // J on the MAC faces: MTK (33) at a face with ONE kernel and ONE particle set — P2G's trilinear stencil, the
+      // numerator over the dispersed particles' slips, the denominator over every particle (this.weight: positions have
+      // not moved since p2g, so it is exact here). PHOENICS computes the slip per cell face (MTK p. 4483); driftFluxFoam
+      // transports α with the face flux of Udm, fixedValue 0 on wall patches (relativeVelocityModel.C). J_f = 0 on every
+      // face in a window wall's plane — own-axis index 0 or n, the ghost layer's edge faces included (they are GHOST, not
+      // SOLID, in defaultFaceTypes, but J·n = 0 holds on the whole plane: without them J_n does not vanish at a wall next
+      // to a corner) — on interior SOLID faces (the gate), where Σw < FACE_WEIGHT_MIN (no particle set to average) and on
+      // faces inside the ball; the other transverse GHOST faces keep their mean (an even extension). J(x_q) with the same
+      // stencil, so J·n falls linearly to 0 at a wall.
+      if (!this.driftFaceJ) this.driftFaceJ = [new Float64Array(S), new Float64Array(S), new Float64Array(S)]
+      for (const a of AXES) {
+        const Jf = this.driftFaceJ[a], W = this.weight[a], t = this.faceType[a], sf = this.solidFraction[a], nA = n3[a]
+        Jf.fill(0)
+        for (let q = 0; q < p.n; q++) {
+          if (!dispersed[q]) continue
+          const st = stencil(L, a, p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]), sa = p.slip[3 * q + a]
+          for (let m = 0; m < 8; m++) if (st.w[m] !== 0) Jf[L.idx(st.i[m], st.j[m], st.k[m])] += st.w[m] * sa
+        }
+        const [lo, hi] = L.faceRange(a)
+        for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+          const s2 = L.idx(i, j, k), own = a === 0 ? i : a === 1 ? j : k
+          Jf[s2] = own === 0 || own === nA || t[s2] === FaceType.SOLID || !(W[s2] >= FACE_WEIGHT_MIN) || sf[s2] >= 1 ? 0 : Jf[s2] / W[s2]
+        }
+      }
+      for (let q = 0; q < p.n; q++) {
+        for (const a of AXES) {
+          const st = stencil(L, a, p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]), Jf = this.driftFaceJ[a]
+          let j = 0
+          for (let m = 0; m < 8; m++) j += st.w[m] * Jf[L.idx(st.i[m], st.j[m], st.k[m])]
+          this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - j
+        }
+      }
     }
     out.meanDrop = out.dispersed ? dropSum / out.dispersed : 0
     this.lastDrift = out
