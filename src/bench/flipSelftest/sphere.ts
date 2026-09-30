@@ -208,6 +208,25 @@ export async function sphereKernels(device: GPUDevice, o: { n?: Vec3; ring?: Vec
   }
   const eps25 = 2e-6 + eps21
   out.k25 = { rows: dRows, ballRows, fRatio: fDiff / eps25, bRatio: bDiff / eps25 }
+
+  // K25w the ψ operator's face weights (psiCoef, added 2026-09-30: the S3.1c-2 mutant "ψ operator without the
+  // fluid-fraction weights" had only ever been "caught" by crashing, and survived once it ran): w_a = max(0, 1 − S_f) on
+  // each window cell's −x, −y, −z face. Bitwise against the kernel's own f32 formula from the GPU's faceSolid (one
+  // correctly rounded subtraction on both sides), and against the reference operator's weight 1 − S_f
+  // (flipRef.liquidSystem) within K21's bound + one rounding; ≥ 1 partly solid face (else the check has no teeth).
+  await submit(device, e => gpu.encodePsiCoef(e))
+  const pwG = new Float32Array(await gpu.readBuffer(gpu.psiSolver!.buffers.faceCoef, 16 * pc))
+  let wMismatch = 0, wRefDiff = 0, cutFaces = 0
+  for (let k = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++) {
+    const s = L.idx(i, j, k), li = lin(L, i, j, k)
+    for (const ax of [0, 1, 2] as const) {
+      const fs = fsG[ax * S + s], got = pwG[4 * li + ax]
+      if (got !== Math.max(0, Math.fround(1 - fs))) wMismatch++
+      wRefDiff = Math.max(wRefDiff, Math.abs(got - Math.max(0, 1 - cpu.solidFraction[ax][s])))
+      if (fs > 0 && fs < 1) cutFaces++
+    }
+  }
+  out.k25w = { wMismatch, refRatio: wRefDiff / (eps21 + 2 ** -24), cutFaces }
   const d = await gpu.readDiagnostics()
   out.diag = { unsetDivergenceFaces: d.unsetDivergenceFaces, unsetDivergenceFacesRef: cpu.diag.unsetDivergenceFaces }
   gpu.destroy()

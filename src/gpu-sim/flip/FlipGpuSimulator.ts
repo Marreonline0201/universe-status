@@ -774,8 +774,12 @@ export class FlipGpuSimulator {
     const cells = this.layout.nx * this.layout.ny * this.layout.nz
     this.dispatch(encoder, 'sphereAdvance', this.sphereBg.sphereAdvance!, 1, 1)
     this.encodeSphereFractions(encoder)
-    if (this.sphereBg.psiCoef) this.dispatch(encoder, 'psiCoef', this.sphereBg.psiCoef, cells, 256)
+    this.encodePsiCoef(encoder, cells)
     if (this.sphereMono) this.encodeSphereGravity(encoder)
+  }
+  /** The ψ operator's face weights w = 1 − S_f from the current solid fractions (psiCoef.wgsl; the self-test's K25w). */
+  encodePsiCoef(encoder: GPUCommandEncoder, cells = this.layout.nx * this.layout.ny * this.layout.nz): void {
+    if (this.sphereBg.psiCoef) this.dispatch(encoder, 'psiCoef', this.sphereBg.psiCoef, cells, 256)
   }
   /** S3.7: V_J of the ball where it is now, then V* = V + Δt·g (before the substep's pressure solves). */
   encodeSphereGravity(encoder: GPUCommandEncoder): void {

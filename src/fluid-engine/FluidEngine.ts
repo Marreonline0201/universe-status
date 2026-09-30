@@ -1077,6 +1077,8 @@ export class FluidEngine {
         return {
           clock: this.clockMode,
           solver: this.options.solver,
+          // the drift flux as the backend runs it (active, why not, bench exclusions, the form of J) — studies prove their arm
+          immiscible: (this.sim as { immiscibleDrift?: { active: boolean; reason: string | null; excluded: string[]; form: string } } | null)?.immiscibleDrift ?? null,
           ball: this.ball.active ? { center: [...this.ball.center], velocity: [...this.ball.velocity], radius: this.ball.radius } : null,
           simTime: this.simTime,
           substepsTotal: this.substepsTotal,

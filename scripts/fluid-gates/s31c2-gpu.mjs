@@ -12,6 +12,10 @@
 // K24 projection with unweighted coefficients (≤ 1 × bound), faces with S ≥ 1 carrying exactly V, the force J·p and V_J
 //     vs the reference on the same pressure (≤ 1 × the fixed-point bound).
 // K25 the density right-hand side with the ball's kernel volume (≤ 1 × bound).
+// K25w the ψ operator's face weights w = max(0, 1 − S_f) (psiCoef): bitwise against the kernel's own f32 formula from
+//     the GPU's faceSolid, ≤ 1 × (K21's bound + one rounding) against the reference operator's 1 − S_f, ≥ 1 partly solid
+//     face. Added 2026-09-30 before its first run: the mutant "ψ operator without the fluid-fraction weights" had only
+//     been scored caught by crashing, and survived every check once it ran (gpu-mutations INVALID rule, 089f90df).
 // Physics at the page's production settings (MGPCG cap 18, tolerances 1e-2 / 1e-3, variable density), the s31c2-ref
 // scenes and criteria:
 // AR / ST fixed sphere in a still pool, 2 s: F_y / ρgV_J ±1 %, / ρg(4/3)πR³ ±3 %, |F_x|, |F_z| ≤ 1 % F_y; RMS speed
@@ -69,6 +73,8 @@ try {
       `K24 project + sphereFaceVel + sphereForce ${c.label}: bulk |Δu|/bound ${f(r.k24.bulkRatio)}; ${r.k24.fullCount} faces with S ≥ 1 carry V (max |Δ| ${r.k24.fullDiff}); F = (${r.k24.force.map(v => v.toFixed(2)).join(', ')}) N vs (${r.k24.forceRef.map(v => v.toFixed(2)).join(', ')}), |ΔF|/bound ${f(r.k24.forceRatio)}; V_J |Δ|/bound ${f(r.k24.volumeRatio)} (≤ 1)`)
     gate.check(r.k25.fRatio <= 1 && r.k25.bRatio <= 1 && r.k25.ballRows > 0,
       `K25 densityRhs with the ball ${c.label}: |Δf̃|/bound ${f(r.k25.fRatio)}, |Δb|/bound ${f(r.k25.bRatio)} over ${r.k25.rows} rows, ${r.k25.ballRows} touched by the ball (≤ 1)`)
+    gate.check(r.k25w.cutFaces > 0 && r.k25w.wMismatch === 0 && r.k25w.refRatio <= 1,
+      `K25w psiCoef ${c.label}: ${r.k25w.wMismatch} weights off the kernel's f32 formula (0); |Δw| vs the reference operator / bound ${f(r.k25w.refRatio)} (≤ 1); ${r.k25w.cutFaces} partly solid faces (≥ 1)`)
   }
 
   const caps = s => s.capHits <= 0.01 * s.solves && (s.psiCapHits ?? 0) <= 0.01 * (s.psiSolves ?? s.solves) && (s.breakdowns ?? 0) === 0
