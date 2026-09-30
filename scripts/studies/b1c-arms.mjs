@@ -8,6 +8,12 @@
 // Hook X self-checks run first (memo §2.0): the switch leaves slip memory bit-identical, an excluded liquid has 0 slip
 // and 0 inputs, α_Hg ≤ 1e-6 for oil with mercury excluded, [] restores tracking, a typo throws — any failure aborts.
 //
+// ERRATUM 2026-09-30 (review wf_c8d4ee53-cb7 #13; the lines above and below are the pre-registered text, unchanged): these
+// arms were registered and run under the drift's CELL form, the only form then. Since 2dc02d21 the page default is the
+// FACE form, where an untracked liquid is still in J_f's denominator Σw and moves with −J(x) from the faces — a different
+// arm. So this script now pins the form (--form, default cell = the registration), records the page's
+// status().immiscible with every run and refuses a run whose form differs; --form=face arms are NEW arms (register
+// them before any result is read) and are never compared with the 2026-09-29 records.
 // Scene: s31c-page's B1 exactly (water pool 3.63 × 0.17 × 3.63 m, an olive-oil block and a mercury block released
 // above it), seed 2, lockstep 1/60 s, g = 9.80665. Arms (bench hook X = configure({immExcludeLiquids})):
 //   E3     the baseline (drift on for all three liquids)
@@ -62,6 +68,9 @@ const ARMS = {
 }
 const argv = process.argv.slice(2), opt = k => argv.find(a => a.startsWith(`--${k}=`))?.slice(k.length + 3)
 const arms = opt('arms')?.split(',') ?? Object.keys(ARMS), RUNS = Number(opt('runs') ?? 3)
+// the drift form every arm runs under: the registration's (cell) unless asked; --form=face arms are new arms (header erratum)
+const FORM = opt('form') ?? 'cell'
+if (FORM !== 'cell' && FORM !== 'face') throw new Error(`b1c-arms: --form must be cell or face, not ${FORM}`)
 for (const a of arms) if (!ARMS[a]) throw new Error(`unknown arm ${a} (${Object.keys(ARMS).join(', ')})`)
 
 const power = powerState()
@@ -110,8 +119,10 @@ function ratioCI(items, seed = 7) {
 
 async function runArm(page, arm, run) {
   const cfg = ARMS[arm]
-  await page.evaluate(() => window.__fluidBench.configure({ immExcludeLiquids: [], disableImmiscible: false }))
+  await page.evaluate(f => window.__fluidBench.configure({ immExcludeLiquids: [], disableImmiscible: false, immDriftForm: f }), FORM)
   await loadScenario(page, SCENE, 2)
+  const immStatus = (await page.evaluate(() => window.__fluidBench.status())).immiscible
+  if (!immStatus || immStatus.form !== FORM) throw new Error(`b1c-arms: the page runs the drift in form ${immStatus?.form}, not the requested ${FORM} — refusing the run`)
   // E6-0: after the load (the scene's own material table now holds mercury), before the first step — i.e. from t = 0
   if (cfg.from0) await page.evaluate(k => window.__fluidBench.configure({ immExcludeLiquids: k }), cfg.from0)
   if (cfg.from0Disable) await page.evaluate(() => window.__fluidBench.configure({ disableImmiscible: true }))
@@ -122,7 +133,7 @@ async function runArm(page, arm, run) {
     const ids = laws(s8).ids, hgY = [], wY = []
     for (let i = 0; i < s8.n; i++) { if (s8.comp[i] === ids.hg) hgY.push(s8.pos[3 * i + 1] * L); else if (s8.comp[i] === ids.w) wY.push(s8.pos[3 * i + 1] * L) }
     await page.evaluate(() => window.__fluidBench.configure({ immExcludeLiquids: [], disableImmiscible: false }))
-    return { arm, run, filmOnly: true, film: { hgComMm: 1000 * hgY.reduce((q, v) => q + v, 0) / hgY.length, waterMedianCm: 100 * med(wY), clampsPerSubstep: dg.clampHits / Math.max(1, dg.substeps), pushBacksPerSubstep: dg.densityPushBacks / Math.max(1, dg.substeps), vLag: dg.vLag } }
+    return { arm, run, immStatus, filmOnly: true, film: { hgComMm: 1000 * hgY.reduce((q, v) => q + v, 0) / hgY.length, waterMedianCm: 100 * med(wY), clampsPerSubstep: dg.clampHits / Math.max(1, dg.substeps), pushBacksPerSubstep: dg.densityPushBacks / Math.max(1, dg.substeps), vLag: dg.vLag } }
   }
   let s = await sampleAtFrame(page, F0)
   const Lw = laws(s), { ids } = Lw
@@ -210,6 +221,7 @@ async function runArm(page, arm, run) {
   // continuity: design change 4's set and ratio (y < own 8-s median, dilute, two-liquid at 4 and 4.5 s, dispersed at 4)
   const dc4 = oils.filter(o => o.y < wMed8 && o.d > 0 && o.a < 0.3 && cohort.has(o.c) && o.hg0 <= 1e-4 && o.hg45 <= 1e-4)
   out.dc4 = { n: dc4.length, ratio: dc4.length ? (dc4.reduce((q, o) => q + (o.y45 - o.y) - riseOf(o.c) , 0) / dc4.length / T) / (dc4.reduce((q, o) => q + Lw.uSlip(o.d, o.a), 0) / dc4.length) : NaN }
+  out.immStatus = immStatus
   return out
 }
 

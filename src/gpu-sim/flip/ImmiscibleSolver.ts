@@ -26,6 +26,7 @@ export interface ImmiscibleInputs {
   faceType: GPUBuffer; faceSolid: GPUBuffer
   drift: GPUBuffer           // per-particle drift, vec4 (read by g2pMac)
   weight: GPUBuffer          // P2G's Σw per face (faceScatter's gW, i32 at massScale): the face form's denominator
+  sphere: GPUBuffer          // the ball (common.wgsl SPH_* layout): the face form's J·n ramp at its surface
   size: number               // padded slots per grid
   cells: number              // window cells
   maxParticles: number
@@ -58,7 +59,7 @@ const ENTRIES: Entry[] = [
   { name: 'driftParticles', uses: [0, 2, 16, 17, 20] },
   { name: 'slipFaces', uses: [0, 2, 20, 32] },
   { name: 'driftFaces', uses: [0, 11, 24, 32, 33, 34] },
-  { name: 'driftParticlesFace', uses: [0, 2, 17, 20, 35] },
+  { name: 'driftParticlesFace', uses: [0, 2, 17, 20, 35, 36] },
 ]
 /** Where J is formed: on the MAC faces (the default) or per cell (the control). */
 export type DriftForm = 'face' | 'cell'
@@ -132,6 +133,7 @@ export class ImmiscibleSolver {
       case 32: return B.slipFace
       case 33: return I.weight
       case 34: case 35: return B.driftFace
+      case 36: return I.sphere
     }
     throw new Error(`ImmiscibleSolver: no buffer for binding ${b}`)
   }

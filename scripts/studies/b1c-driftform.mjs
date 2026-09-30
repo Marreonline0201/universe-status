@@ -18,6 +18,9 @@
 //   NOT REPRODUCED  the cell arm's mean D_dp(never) < +0.25 → the old anomaly does not reproduce here; the face result
 //                   is not attributable to the form (something else changed between 0370b2f5 and 2dc02d21).
 //   PARTIAL         anything else.
+// Erratum 2026-09-30 (review wf_c8d4ee53-cb7 #12, #17; the registered text above is left as it was): `0370b2f5` measured
+// B1c-T Λ 0.79–0.81 (0.811 / 0.788 / 0.800); 0.69–0.79 is `45a84adc`'s (same physics). −0.55 and −0.099 are run 1 of
+// −0.547 / −0.571 / −0.573 (mean −0.564) and −0.099 / −0.093 / −0.063 (mean −0.085). The reading rule is unchanged.
 import path from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

@@ -464,8 +464,13 @@ export class FlipBackend implements SimBackend {
     return new Promise((resolve, reject) => { this.profileReq = { resolve, reject } })
   }
   /** Bench hook X (the B1c experiments — E5′ oil excluded, E6 mercury excluded): leave these liquids out of the drift
-   *  slots. An untracked liquid gets no slip and no part in α, ρ_m, μ_m or J (immiscible.wgsl alphaScatter and
-   *  slipParticles skip it and zero its slipState), yet still moves with −J of its cell (driftParticles). configure()
+   *  slots. An untracked liquid gets no slip and no part in α, ρ_m or μ_m, and is never a J source (immiscible.wgsl
+   *  alphaScatter and slipParticles skip it and zero its slipState). What else depends on the drift form: in the face
+   *  form (the default since 2dc02d21) its P2G weight is still in J_f's denominator Σ_all w (faceScatter's gW, J_f =
+   *  Σ_disp w·s / Σ_all w — deliberate: a tracked-only Σw would bring back a net volume flux through every face it
+   *  shares, the sink Design D removed) and it moves with −J(x) interpolated from the faces (driftParticlesFace); in the
+   *  cell form (the control) it has no part in J and moves with −J of its cell (driftParticles). The 2026-09-29 B1c arms
+   *  were run under the cell form (review 2026-09-30 #5/#13; scripts/studies/b1c-arms.mjs pins the form). configure()
    *  rewrites only the slot table, never slipState, so the tracked liquids' drift memory is untouched by a switch —
    *  while at least one immiscible pair stays tracked: an exclusion that would leave none (e.g. oil in a water + oil
    *  tank) throws, because the drift would switch off and the off switch clears every particle's slip state (review

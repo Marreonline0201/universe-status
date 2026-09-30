@@ -151,8 +151,14 @@ SETS.s35i = [
   [`${SH}/immiscible.wgsl`, 'let v = w * st[a] * SLIP_SCALE;', 'let v = w * st[(a + 1u) % 3u] * SLIP_SCALE;', 'face sums from the wrong axis\'s slip'],
   [`${SH}/immiscible.wgsl`, 'let hi = atomicExchange(&slipFace[2u * s], 0);', 'let hi = atomicLoad(&slipFace[2u * s]);', 'face sums never cleared (hi word)'],
   [`${SH}/immiscible.wgsl`, '      j += wv.x * wv.y * wv.z * driftFaceR[gridBase(a) + slotOf(b + d)];', '      j += wv.x * driftFaceR[gridBase(a) + slotOf(b + d)];', 'J interpolated with the x weight only'],
-  [`${SH}/immiscible.wgsl`, '    u[a] -= j;', '    u[a] -= select(0.0, j, st.w > 0.0);', 'carriers not moved by −J (face form)'],
+  [`${SH}/immiscible.wgsl`, '  u -= jv;', '  u -= select(vec3<f32>(0.0), jv, st.w > 0.0);', 'carriers not moved by −J (face form)'],
   [`${SH}/immiscible.wgsl`, '  var u = select(vec3<f32>(0.0), st.xyz, st.w > 0.0);', '  var u = select(vec3<f32>(0.0), st.xyz, st.w > 1e30);', 'own slip dropped (face form)'],
+  // review 2026-09-30 (wf_c8d4ee53-cb7): the ball clause and the ball's J·n ramp (K32's ball scene), and the face kernels'
+  // order (K32 now also checks run 1, from face buffers that are zero: a stale-read order gives J_f = 0 or u_V = own there)
+  [`${SH}/immiscible.wgsl`, 'if (c[a] == 0 || c[a] == P.n[a] || faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1.0) { driftFace[s] = 0.0; return; }', 'if (c[a] == 0 || c[a] == P.n[a] || faceType[s] == SOLID || !(W >= P.wMin) || faceSolid[s] >= 1e30) { driftFace[s] = 0.0; return; }', 'J not zeroed inside the ball'],
+  [`${SH}/immiscible.wgsl`, '      jv -= (1.0 - max(0.0, phi) / P.dx) * dot(jv, n) * n;', '      jv -= 0.0 * dot(jv, n) * n;', "the ball's J·n ramp dropped"],
+  ['src/gpu-sim/flip/ImmiscibleSolver.ts', "      if (count > 0) this.dispatch(pass, 'slipFaces', count, 64)\n      this.dispatch(pass, 'driftFaces', 3 * I.size, 256)\n", "      this.dispatch(pass, 'driftFaces', 3 * I.size, 256)\n      if (count > 0) this.dispatch(pass, 'slipFaces', count, 64)\n", 'driftFaces before slipFaces (reads last encode\'s sums)'],
+  ['src/gpu-sim/flip/ImmiscibleSolver.ts', "      this.dispatch(pass, 'driftFaces', 3 * I.size, 256)\n      if (count > 0) this.dispatch(pass, 'driftParticlesFace', count, 64)\n", "      if (count > 0) this.dispatch(pass, 'driftParticlesFace', count, 64)\n      this.dispatch(pass, 'driftFaces', 3 * I.size, 256)\n", 'driftParticlesFace before driftFaces (last encode\'s J)'],
 ]
 // S3.7: each targets a kernel K35/K36 cover (the jdot-without-unknown-guard mutant is equivalent here: x is 0 at every
 // non-unknown on these inputs — the guard is kept for warm starts across label changes)

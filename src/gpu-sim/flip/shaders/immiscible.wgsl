@@ -17,7 +17,9 @@
 //   driftFaces     faces → J_f = S_f/Σw_f (P2G's Σw: positions have not moved since faceScatter), 0 on every face in a
 //                  window wall's plane (own-axis index 0 or n, the ghost layer's edge faces included), on SOLID faces,
 //                  where Σw_f < wMin and inside the ball; clears S_f
-//   driftParticlesFace particles → u_V = (dispersed ? s : 0) − Σ_f w_f·J_f (the velocity stencil)
+//   driftParticlesFace particles → u_V = (dispersed ? s : 0) − J(x), J(x) = Σ_f w_f·J_f (the velocity stencil) with its
+//                  normal component ramped to 0 at the ball's surface within dx of it (flipRef.driftFlux; review
+//                  2026-09-30 #1: faces the surface cuts keep J_f, so J·n was unconstrained there)
 
 struct ImmParams {
   K: u32,               // material slots in use (≤ 4)
@@ -58,6 +60,7 @@ struct ImmParams {
 @group(0) @binding(33) var<storage, read> weightR: array<i32>;
 @group(0) @binding(34) var<storage, read_write> driftFace: array<f32>;
 @group(0) @binding(35) var<storage, read> driftFaceR: array<f32>;
+@group(0) @binding(36) var<storage, read> sphere: array<f32>;                  // the ball (common.wgsl SPH_* layout)
 
 const MAXK: u32 = 4u;
 fn slotOfComp(id: u32) -> u32 { if (id >= 256u) { return MAXK; } return IP.slots[id / 4u][id % 4u]; }
@@ -333,6 +336,7 @@ fn driftParticlesFace(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = pos[q].xyz;
   let st = slipStateR[q];
   var u = select(vec3<f32>(0.0), st.xyz, st.w > 0.0);
+  var jv = vec3<f32>(0.0);
   for (var a = 0u; a < 3u; a++) {
     let f = x / P.dx - faceOffset(a);
     let b = vec3<i32>(floor(f));
@@ -343,7 +347,19 @@ fn driftParticlesFace(@builtin(global_invocation_id) gid: vec3<u32>) {
       let wv = select(vec3<f32>(1.0) - t, t, d == vec3<i32>(1));
       j += wv.x * wv.y * wv.z * driftFaceR[gridBase(a) + slotOf(b + d)];
     }
-    u[a] -= j;
+    jv[a] = j;
   }
+  // the ball's wall condition at the particle: J_n ← min(1, φ/dx)·J_n within dx of the surface (φ = |x − c| − R), the
+  // profile J·n has at a window wall; J is relative, so no ball-velocity term; the tangential part is kept
+  if (sphere[SPH_ACTIVE] > 0.5) {
+    let r = x - vec3<f32>(sphere[0], sphere[1], sphere[2]);
+    let rl = length(r);
+    let phi = rl - sphere[SPH_R];
+    if (phi < P.dx && rl > 0.0) {
+      let n = r / rl;
+      jv -= (1.0 - max(0.0, phi) / P.dx) * dot(jv, n) * n;
+    }
+  }
+  u -= jv;
   drift[q] = vec4<f32>(u, 0.0);
 }

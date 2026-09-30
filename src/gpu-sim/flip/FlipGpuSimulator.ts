@@ -493,7 +493,7 @@ export class FlipGpuSimulator {
     if (this.immiscibleEnabled) {
       const imm = await ImmiscibleSolver.create({
         device, params: this.paramsBuf, pos: this.posBuf, aux: this.auxBuf, uProj: uA, validProj: this.validBuf[0], uFinal: this.uBuf[this.finalVelocityBuffer],
-        faceType: this.faceTypeBuf, faceSolid: this.faceSolidBuf, drift: this.driftBuf, weight: this.weightBuf, size: L.size,
+        faceType: this.faceTypeBuf, faceSolid: this.faceSolidBuf, drift: this.driftBuf, weight: this.weightBuf, sphere: this.sphereBuf, size: L.size,
         cells: L.nx * L.ny * L.nz, maxParticles: this.maxParticles, layers: this.extrapolationLayers,
       })
       this.immiscibleSolver = imm

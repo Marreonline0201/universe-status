@@ -60,8 +60,10 @@ export interface ImmiscibleOptions {
    *  disclosed); default liquidGate.INCOMPRESSIBLE_NU_NUM (gate D2). */
   nuNum?: number
   /** Where the counter-flux J = Σ_k α_k·ū_Ck is formed (driftFlux pass 2): 'face' (default) on the MAC faces with P2G's
-   *  stencil and weight sum, 0 on SOLID faces; 'cell' the per-cell mean applied by NGP — the pre-2026-09-30 kernel, kept
-   *  only as the same-commit control of the face form's gate (decisions.md 2026-09-30 01:32). */
+   *  stencil and weight sum — J_f = 0 on every face in a wall's plane (window walls, the gate's closed rows, their
+   *  ghost-layer edges), where Σw < FACE_WEIGHT_MIN and inside the ball, and J·n ramped to 0 at the ball's surface at the
+   *  particle; 'cell' the per-cell mean applied by NGP — the pre-2026-09-30 kernel, kept as the control of the face form's
+   *  gates (W4, K32c) until a forked same-state study replaces it (decisions.md 2026-09-30 01:32, review 04:30). */
   driftForm?: 'face' | 'cell'
 }
 
@@ -565,9 +567,9 @@ export class FlipRef {
    *    is (58)'s equilibrium slip u_eq; from rest the drop accelerates at (ρ_p − ρ_m)·a/(ρ_p + ½ρ_c).
    *  - Drift (MTK (33)): u_V = u_C − J (dispersed), −J for the others, J = Σ_k α_k ū_Ck. Face form (default): J on the MAC
    *    faces, J_f = Σ_{q dispersed} w_qf·s_q,a / Σ_{all q} w_qf with P2G's stencil and weight sum — no net volume moves
-   *    through a face — and J_f = 0 on SOLID faces (driftFluxFoam: Udm = 0 on walls); J(x_q) with the same stencil. Cell
-   *    form (the control): ū_Ck the cell mean slip of material k, applied by NGP. Particles advect with u + u_V; their
-   *    carried velocity is unchanged. */
+   *    through a face — and J_f = 0 on every face in a wall's plane (driftFluxFoam: Udm = 0 on walls); J(x_q) with the
+   *    same stencil, its normal component ramped to 0 at the ball's surface. Cell form (the control): ū_Ck the cell mean
+   *    slip of material k, applied by NGP. Particles advect with u + u_V; their carried velocity is unchanged. */
   driftFlux(p: RefParticles, dt: number): void {
     const I = this.immiscible!, L = this.layout, h = L.dx, S = L.size
     if (!p.slip || p.slip.length !== 3 * p.n) p.slip = new Float64Array(3 * p.n)
@@ -701,12 +703,15 @@ export class FlipRef {
       // numerator over the dispersed particles' slips, the denominator over every particle (this.weight: positions have
       // not moved since p2g, so it is exact here). PHOENICS computes the slip per cell face (MTK p. 4483); driftFluxFoam
       // transports α with the face flux of Udm, fixedValue 0 on wall patches (relativeVelocityModel.C). J_f = 0 on every
-      // face in a window wall's plane — own-axis index 0 or n, the ghost layer's edge faces included (they are GHOST, not
-      // SOLID, in defaultFaceTypes, but J·n = 0 holds on the whole plane: without them J_n does not vanish at a wall next
-      // to a corner) — on interior SOLID faces (the gate), where Σw < FACE_WEIGHT_MIN (no particle set to average) and on
-      // faces inside the ball; the other transverse GHOST faces keep their mean (an even extension). J(x_q) with the same
-      // stencil, so J·n falls linearly to 0 at a wall.
+      // face in a wall's plane: a window wall's (own-axis index 0 or n, the ghost layer's edge faces included — they are
+      // GHOST, not SOLID, in defaultFaceTypes, but J·n = 0 holds on the whole plane: without them J_n does not vanish at a
+      // wall next to a corner), and an interior SOLID plane's (the gate's closed rows), its ghost-layer edge faces again
+      // included: a GHOST face whose in-plane mirror (transverse indices clamped into range) is SOLID (review 2026-09-30
+      // #4: the gate plane had kept J there, the corner gap the window walls had). Also 0 where Σw < FACE_WEIGHT_MIN (no
+      // particle set to average) and on faces inside the ball; the other transverse GHOST faces keep their mean (an even
+      // extension). J(x_q) with the same stencil, so J·n falls linearly to 0 at a wall.
       if (!this.driftFaceJ) this.driftFaceJ = [new Float64Array(S), new Float64Array(S), new Float64Array(S)]
+      const clampIn = (v: number, n: number) => (v < 0 ? 0 : v >= n ? n - 1 : v)
       for (const a of AXES) {
         const Jf = this.driftFaceJ[a], W = this.weight[a], t = this.faceType[a], sf = this.solidFraction[a], nA = n3[a]
         Jf.fill(0)
@@ -718,16 +723,37 @@ export class FlipRef {
         const [lo, hi] = L.faceRange(a)
         for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
           const s2 = L.idx(i, j, k), own = a === 0 ? i : a === 1 ? j : k
-          Jf[s2] = own === 0 || own === nA || t[s2] === FaceType.SOLID || !(W[s2] >= FACE_WEIGHT_MIN) || sf[s2] >= 1 ? 0 : Jf[s2] / W[s2]
+          // mirrorSolid implies the own-axis 0/n and SOLID tests today (every wall face is SOLID and an in-range face mirrors
+          // to itself — their literal mutants are equivalent, proven in s35w-mutations' header); they stay explicit as the
+          // GPU's form of the rule (it has no gate) and against a future wall type that is not SOLID
+          const mirrorSolid = t[L.idx(a === 0 ? i : clampIn(i, L.nx), a === 1 ? j : clampIn(j, L.ny), a === 2 ? k : clampIn(k, L.nz))] === FaceType.SOLID
+          Jf[s2] = own === 0 || own === nA || t[s2] === FaceType.SOLID || mirrorSolid || !(W[s2] >= FACE_WEIGHT_MIN) || sf[s2] >= 1 ? 0 : Jf[s2] / W[s2]
         }
       }
+      // J(x_q), then the ball's wall condition at the particle (review 2026-09-30 #1): J_f = 0 only on faces wholly inside
+      // the ball (S_f ≥ 1, 0.5–0.68 dx below its surface), so the faces the surface cuts keep their J and J·n is
+      // unconstrained at the surface — −J moved carriers into the ball. Within dx of the surface the normal component is
+      // ramped J_n ← min(1, φ/dx)·J_n (φ = |x − c| − R): the profile J·n has at a window wall, where the wall-plane faces
+      // carry 0 and the trilinear stencil falls linearly to them. J is relative, so no ball-velocity term. J_f is untouched
+      // (W1–W3 and the face-level balance still hold on it); the tangential part is kept, as at a wall.
+      const B = this.sphere, Jv: Vec3 = [0, 0, 0]
       for (let q = 0; q < p.n; q++) {
         for (const a of AXES) {
           const st = stencil(L, a, p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]), Jf = this.driftFaceJ[a]
           let j = 0
           for (let m = 0; m < 8; m++) j += st.w[m] * Jf[L.idx(st.i[m], st.j[m], st.k[m])]
-          this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - j
+          Jv[a] = j
         }
+        if (B) {
+          const dx = p.pos[3 * q] - B.center[0], dy = p.pos[3 * q + 1] - B.center[1], dz = p.pos[3 * q + 2] - B.center[2]
+          const r = Math.hypot(dx, dy, dz), phi = r - B.radius
+          if (phi < h && r > 0) {
+            const nx = dx / r, ny = dy / r, nz = dz / r, jn = Jv[0] * nx + Jv[1] * ny + Jv[2] * nz
+            const cut = (1 - Math.max(0, phi) / h) * jn
+            Jv[0] -= cut * nx; Jv[1] -= cut * ny; Jv[2] -= cut * nz
+          }
+        }
+        for (const a of AXES) this.drift[3 * q + a] = (dispersed[q] ? p.slip[3 * q + a] : 0) - Jv[a]
       }
     }
     out.meanDrop = out.dispersed ? dropSum / out.dispersed : 0

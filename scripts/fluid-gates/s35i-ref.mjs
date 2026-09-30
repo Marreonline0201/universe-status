@@ -55,26 +55,68 @@
 // V   volume: the D-c oil run keeps φ-volume within ±2 % of N·V_p at every second (the violent-flow tolerance of V1).
 // W   the counter-flux J on the MAC faces (flipRef driftForm 'face', the default since 2026-09-30; decisions.md 01:32 —
 //     derived from MTK (33) at a face and driftFluxFoam's Udm = 0 on walls; the CPU ablation of 01:17 measured its wall
-//     condition load-bearing). Criteria fixed 2026-09-30 01:42 at `089f90df`, before the first run. Scene: D-a's (1 mm
-//     olive-oil drops, every 16th particle of the lower 10 cells of 24, 16×30×8) after 0.25 s; then P2G at the current
-//     positions and ONE driftFlux (frozen fields), so Σw is exact for the drift. Every oracle is computed HERE with its
-//     own trilinear face stencil, independently of flipRef:
-//     W1  J_f = 0 exactly on every wall face — every face in a window wall's plane (own-axis index 0 or n, the ghost
-//         layer's edge faces included) and every SOLID face — and ≥ 1 of them lies in a dispersed drop's stencil.
+//     condition load-bearing). Criteria fixed 2026-09-30 01:42 at `089f90df`, before the first run (revised 01:50 and
+//     04:42, below). Scene: D-a's (1 mm olive-oil drops, every 16th particle of the lower 10 cells of 24, 16×30×8) after
+//     0.25 s, plus W2's two clusters; then P2G at the current positions and ONE driftFlux (frozen fields), so Σw is exact
+//     for the drift. Every oracle is computed HERE — its own trilinear face stencil, its own Σw threshold WMIN = 1e-3,
+//     its own ball geometry; from the simulation it reads only state (positions, slips, drop flags, face types), never
+//     a quantity or constant under test (until 04:42 the threshold was flipRef.FACE_WEIGHT_MIN — see that revision):
+//     W1  J_f = 0 exactly on every face of the zero set — every face in a window wall's plane (own-axis index 0 or n,
+//         the ghost layer's edge faces included), every SOLID face, every GHOST face whose in-plane mirror (transverse
+//         indices clamped into range) is SOLID, and every face with the ball's S_f ≥ 1 — and ≥ 1 of them lies in a
+//         dispersed drop's stencil.
 //     W2  Σw_f equals flipRef's P2G weight sum and J_f equals the oracle (S_f/Σw_f over the dispersed drops' slips, 0 on
-//         wall faces and where Σw_f < FACE_WEIGHT_MIN) to ≤ 1e-12 absolute on every face (f64 rounding).
-//     W3  every particle's u_V equals (dispersed ? s : 0) − Σ_f w_f·J_f to ≤ 1e-12 m/s.
-//     W4  carriers are not driven into a wall: every non-dispersed particle within dx of a SOLID face moves toward it
-//         at most (d/dx)·max|J_f| (d its distance to the face, the max over its stencil's faces on that axis) + 1e-12.
-//         Positive control, same scene and state: the 'cell' form (J per cell, applied by NGP) must VIOLATE it — the
-//         check fails if the control passes (a check that the old kernel meets tests nothing).
+//         the zero set and where Σw_f < WMIN) to ≤ 1e-12 absolute on every face (f64 rounding); and the threshold is
+//         exercised — ≥ 1 face off the zero set with S_f ≠ 0 and Σw_f in [WMIN/4, WMIN), ≥ 1 in [WMIN, 4·WMIN): two
+//         isolated clusters added after the run, each 3 water carriers low in a cell of row 27 and a 1 mm oil drop at
+//         y = (27.5 + δ)·dx, δ = 1e-3 and 4e-3, off the stencil planes (x = i + 0.63, z = k + 0.57 cells), released
+//         sideways at 0.01 m/s, more than 2 cells from every wall — only the drop reaches the row-28 x- and z-faces.
+//     W3  every particle's u_V equals (dispersed ? s : 0) − J(x_q), J(x_q) = Σ_f w_f·J_f, its normal component ramped to
+//         0 within dx of the ball (J −= (1 − max(0, φ)/dx)·(J·n̂)·n̂, φ = |x − c| − R), to ≤ 1e-12 m/s.
+//     W4  carriers move normal to a window wall at most as the wall allows (two-sided): every non-dispersed particle
+//         within dx of a wall has |u_V·n| ≤ (d/dx)·max|J_f| + 1e-12 (d its distance to the wall, the max over its
+//         stencil's faces on that axis) — exact for the rule: its 4 wall-plane faces carry 0, the 4 one cell in weigh
+//         d/dx in total. Positive control, same scene and state: the 'cell' form (J per cell, applied by NGP) must
+//         VIOLATE it — the check fails if the control passes (a check that the old kernel meets tests nothing).
 //     W5  REPORTED: the particle-level remainder of face-level (31), Σ_f |Σ_q w_qf·u_V,q| / Σ_f Σ_q w_qf·|ŝ_q| over the
-//         non-wall faces with Σw ≥ 1 — the sub-kernel part (Σ_q w_qf·(J_f − J(x_q))) the density projection removes.
+//         non-wall faces with Σw ≥ 1 — the sub-kernel part (Σ_q w_qf·(J_f − J(x_q))) the density projection removes;
+//         over the scene's own particles (the faces W2's clusters reach are theirs alone).
+//     W1m–W4m  W1–W4 on the W scene reflected through the box centre (every coordinate x_a → extent_a − x_a, gravity +y,
+//         the clusters with it): the planes at own-axis index n take the floor's and the lower planes' part.
+//     Wb  a held ball (weak coupling, never integrated) among the drops: 16×28×16 filled 18 cells deep, no particle inside
+//         the ball, R = 3dx at (8.3, 7.4, 7.7)·dx, mulberry32(81), the drops every 16th particle below 14·dx, 0.25 s. The
+//         ball's S_f is this file's own 2×2×2 box (subsamples at ±dx/4, each clamp(½ − d/(dx/2), 0, 1) of its signed
+//         distance d). Wb1 J_f = 0 on every face with S_f ≥ 1, ≥ 1 of them with Σw ≥ WMIN in a dispersed drop's
+//         stencil. Wb2, Wb3 W2 and W3 with the ball (S_f also equal to flipRef's solidFraction to 1e-12). Wb4 every
+//         carrier within dx of the ball has |u_V·n̂| ≤ (φ/dx)·Σ_a |n̂_a|·max_f|J_f,a| + 1e-12 (the max over its own
+//         stencil faces per axis) — exact for the ramp; positive control: the same state's u_V without the ramp (the
+//         oracle's) must violate it. The shell's |J·n̂| is reported.
+//     Wg  the dam-break gate, in a scene of its own (a gate and a ball together throw): 16×20×8 filled 16 cells deep, the
+//         gate at x-face plane 8 lifting at 1e-4 m/s (its edge 0.025 mm at 0.25 s: every row closed), the drops as in W,
+//         on both sides. Wg1 J_f = 0 on the plane's closed faces — every x-face at i = 8 whose row (j clamped into
+//         [0, ny)) has its centre above the edge, from the geometry — ghost-layer edge faces included; ≥ 1 in-window and
+//         ≥ 1 edge face with Σw ≥ WMIN in a drop's stencil. Wg2, Wg3 W2 and W3 there (the mirror rule's scene). Wg4 W4 at
+//         the gate plane, two-sided, for the carriers within dx of it whose stencil's faces on it are all closed;
+//         positive control: the oracle without the mirror rule (the pre-fix rule) must violate it.
 //     Revision 2026-09-30 01:50, after the first run (FAIL W4: 35× the bound, W1–W3 exact): the wall planes' edge faces in
 //     the ghost layer are GHOST, not SOLID, in GridLayout.defaultFaceTypes, and W1/W2 had encoded the implementation's
 //     "SOLID only" rule — so J_n did not vanish at a wall next to a corner. The implementation now zeroes every face in a
 //     wall's plane; W1/W2 name the same physical set (J·n = 0 holds on the whole plane); W4, the physical criterion, is
 //     unchanged.
+//     Revision 2026-09-30 04:42 (review wf_c8d4ee53-cb7, findings #1, #2, #4, #7, #8, #10, #19). The criteria come from the
+//     verified reviewers' recipes and were fixed before this revision's first run, on the code with the review's two
+//     flipRef fixes (the mirror clause, #4; the ball's ramp, #1). Added: WMIN as this file's literal — the oracle had read
+//     flipRef.FACE_WEIGHT_MIN from the module under test, so a changed constant passed W, and "independently of flipRef"
+//     held only for the stencil (#10); W2's threshold coverage and its clusters — the scene had no face with
+//     0 < Σw < WMIN that a drop reaches, so a bare Σw > 0 guard passed W and the "rule dropped" mutant was caught only by
+//     0/0 → NaN on faces no particle reads (#10); the mirror rule and the ball's faces in the zero set (#2, #4, #7), the
+//     ramp in W3's oracle (#1); W4 two-sided and W1m–W4m — the wall-ward part alone, in a scene whose drops reach no
+//     upper plane, let a mistake that the rule and W1/W2 share at own-axis index n pass (#8); the arms Wb (#1, #2, #7)
+//     and Wg (#2, #4).
+//     Disclosure (#19): W5 (reported) was also changed after the first run, which the 01:50 note does not say — its max_f
+//     over the non-SOLID faces became the aggregate Σ_f/Σ_f over the non-wall faces (the max, ~855, was dominated by
+//     faces with near-zero Σw·|ŝ|), and the cell form's value was added at 01:46. "Fixed … before the first run" above
+//     holds for W1–W4 only.
 import { loadTsModules } from './lib/loadTs.mjs'
 
 const QUICK = process.argv.includes('--quick')
@@ -162,97 +204,295 @@ function rk4(st, s0, dt0, sub, checkpoints) {
 const dist = (u, v) => Math.hypot(u[0] - v[0], u[1] - v[1], u[2] - v[2])
 
 // ── W: the counter-flux on the MAC faces ──────────────────────────────────────────────────────────────────────────
+/** W2's Σw threshold: this file's own literal, the value fixed at 01:42 — not flipRef.FACE_WEIGHT_MIN, the module under
+ *  test (read from there, a change of that constant passed W: review 2026-09-30 #10). */
+const WMIN = 1e-3
+const g3 = (T, size) => [0, 1, 2].map(() => new T(size))
+const xOf = (p, q) => [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
+/** flipRef's face J, or NaN on every face when it kept none (the cell form): every comparison then fails, none throws. */
+const faceJ = (sim, size) => sim.driftFaceJ ?? g3(Float64Array, size).map(g => g.fill(NaN))
 /** Visit the 8 faces of grid `a` in the trilinear stencil of x (the MAC face offsets: 0 on axis a, ½ on the others). */
 function faceStencil(L, a, x, fn) {
   const f = x.map((v, b) => v / DX - (a === b ? 0 : 0.5)), b0 = f.map(Math.floor), t = f.map((v, b) => v - b0[b])
   for (let dk = 0; dk < 2; dk++) for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++)
     fn(L.idx(b0[0] + di, b0[1] + dj, b0[2] + dk), (di ? t[0] : 1 - t[0]) * (dj ? t[1] : 1 - t[1]) * (dk ? t[2] : 1 - t[2]), [b0[0] + di, b0[1] + dj, b0[2] + dk])
 }
-function wScene(form) {
+/** Every face (a; i, j, k) of the three MAC grids over its logical range, ghost layers included — this file's own loop. */
+function forFaces(L, fn) {
+  const nn = [L.nx, L.ny, L.nz]
+  for (let a = 0; a < 3; a++) {
+    const lo = [-1, -1, -1], hi = [...nn]; lo[a] = 0
+    for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) fn(a, i, j, k, L.idx(i, j, k))
+  }
+}
+/** The ball's solid fraction S_f of every face's dx³ control volume, computed HERE (not flipRef.solidFraction): 2×2×2
+ *  subsamples at ±dx/4 about the face centre, each the partial volume clamp(½ − d/(dx/2), 0, 1) of its signed distance d
+ *  to the sphere — the definition flipRef.sphereFractions documents, in this file's own code. */
+function ballFractions(L, ball) {
+  const sf = g3(Float64Array, L.size)
+  forFaces(L, (a, i, j, k, s2) => {
+    const f = [i, j, k].map((v, b) => (v + (b === a ? 0 : 0.5)) * DX)
+    let v = 0
+    for (const ox of [-0.25, 0.25]) for (const oy of [-0.25, 0.25]) for (const oz of [-0.25, 0.25]) {
+      const d = Math.hypot(f[0] + ox * DX - ball.c[0], f[1] + oy * DX - ball.c[1], f[2] + oz * DX - ball.c[2]) - ball.R
+      v += Math.min(1, Math.max(0, 0.5 - d / (DX / 2)))
+    }
+    sf[a][s2] = v / 8
+  })
+  return sf
+}
+/** The W oracle, computed HERE: Σw and S_f from every particle with this file's stencil, the zero set, and J_f = 0 on it
+ *  and where Σw < WMIN, S_f/Σw elsewhere. Zero set: every face in a window wall's plane (own-axis index 0 or n, the
+ *  ghost layer's edge faces included), every SOLID face, every GHOST face whose in-plane mirror (transverse indices
+ *  clamped into range) is SOLID — the gate plane's ghost-layer edges (review #4; mirrorRule false: the pre-fix rule,
+ *  Wg4's control) — and, with a ball, every face with this file's S_f ≥ 1. The face types are the simulation's STATE
+ *  (defaultFaceTypes, the gate's rows), not a result under test. */
+function wOracle(L, sim, p, { ball = null, mirrorRule = true } = {}) {
+  const S = L.size, nn = [L.nx, L.ny, L.nz], { SOLID, GHOST } = gridLayout.FaceType
+  const Wo = g3(Float64Array, S), So = g3(Float64Array, S), nearDrop = g3(Uint8Array, S)
+  for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, xOf(p, q), (s2, w) => {
+    Wo[a][s2] += w
+    if (p.drop[q] > 0 && w > 0) { So[a][s2] += w * p.slip[3 * q + a]; nearDrop[a][s2] = 1 }
+  })
+  const sfo = ball ? ballFractions(L, ball) : null, zero = g3(Uint8Array, S), cl = (v, m) => (v < 0 ? 0 : v >= m ? m - 1 : v)
+  forFaces(L, (a, i, j, k, s2) => {
+    const c = [i, j, k], t = sim.faceType[a]
+    const ghostMirrorSolid = t[s2] === GHOST && t[L.idx(a === 0 ? i : cl(i, L.nx), a === 1 ? j : cl(j, L.ny), a === 2 ? k : cl(k, L.nz))] === SOLID
+    if (c[a] === 0 || c[a] === nn[a] || t[s2] === SOLID || (mirrorRule && ghostMirrorSolid) || (sfo !== null && sfo[a][s2] >= 1)) zero[a][s2] = 1
+  })
+  const Jo = So.map((Sa, a) => Sa.map((v, s2) => (zero[a][s2] || !(Wo[a][s2] >= WMIN) ? 0 : v / Wo[a][s2])))
+  return { Wo, So, nearDrop, sfo, zero, Jo }
+}
+/** Each particle's u_V from face values Jg: (dispersed ? s : 0) − J(x_q), J(x_q) = Σ_f w_f·Jg_f with this file's stencil;
+ *  with `ball`, within dx of its surface J −= (1 − max(0, φ)/dx)·(J·n̂)·n̂, φ = |x − c| − R, n̂ = (x − c)/|x − c| — the
+ *  ramp of review #1 (without `ball`: none, Wb4's control). */
+function driftOf(L, p, Jg, ball = null) {
+  const u = new Float64Array(3 * p.n)
+  for (let q = 0; q < p.n; q++) {
+    const x = xOf(p, q), J = [0, 1, 2].map(a => { let v = 0; faceStencil(L, a, x, (s2, w) => { v += w * Jg[a][s2] }); return v })
+    if (ball) {
+      const e = x.map((v, a) => v - ball.c[a]), r = Math.hypot(...e), phi = r - ball.R
+      if (phi < DX && r > 0) {
+        const nh = e.map(v => v / r), jn = J[0] * nh[0] + J[1] * nh[1] + J[2] * nh[2], ramp = (1 - Math.max(0, phi) / DX) * jn
+        for (let a = 0; a < 3; a++) J[a] -= ramp * nh[a]
+      }
+    }
+    for (let a = 0; a < 3; a++) u[3 * q + a] = (p.drop[q] > 0 ? p.slip[3 * q + a] : 0) - J[a]
+  }
+  return u
+}
+/** W4's worst ratio, two-sided (review #8): a carrier's |u_V,a| within dx of a window wall over (d/dx)·max|J_f| of its
+ *  stencil's faces on that axis (≤ 1 passes). */
+function wallRatio(L, p, drift, Jg) {
+  let worst = 0, carriers = 0
+  for (let q = 0; q < p.n; q++) {
+    if (p.drop[q] > 0) continue
+    const x = xOf(p, q)
+    for (let a = 0; a < 3; a++) for (const side of [0, 1]) {
+      const dWall = side ? L.extent[a] - x[a] : x[a]
+      if (!(dWall < DX)) continue
+      let jm = 0
+      faceStencil(L, a, x, (s2, w) => { if (w > 0) jm = Math.max(jm, Math.abs(Jg[a][s2])) })
+      carriers++
+      worst = Math.max(worst, Math.abs(drift[3 * q + a]) / ((dWall / DX) * jm + 1e-12))
+    }
+  }
+  return { worst, carriers }
+}
+/** D-a's oil cloud in the 16×30×8 tank; `reflected`: the same fill reflected through the box centre with gravity +y, so
+ *  the planes at own-axis index n take the floor's and the lower planes' part (review #8). */
+function wScene(reflected) {
   const d = 1e-3, nx = 16, nz = 8, L = new GridLayout({ nx, ny: 30, nz, dx: DX })
-  const sim = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: d, driftForm: form }))
+  const sim = new FlipRef(L, { ...opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: d, driftForm: 'face' }), gravity: [0, reflected ? G : -G, 0] })
   const { p } = fill(nx, 24, nz, DX, mulberry32(81), () => [W.rho, 0])
   for (let q = 0; q < p.n; q++) if (q % 16 === 5 && p.pos[3 * q + 1] < 10 * DX) { p.material[q] = 1; p.mass[q] = OIL.rho * VP }
+  if (reflected) for (let q = 0; q < p.n; q++) for (let a = 0; a < 3; a++) p.pos[3 * q + a] = L.extent[a] - p.pos[3 * q + a]
   return { L, sim, p }
 }
-{
-  const { L, sim, p } = wScene('face')
-  for (let k = 0; k < 30; k++) sim.step(p, DT)
+/** W2's Σw-threshold coverage (review #10): the particles with two isolated clusters appended — each 3 water carriers low
+ *  in a cell of row 27 and one 1 mm oil drop at y = (27.5 + δ)·dx, δ = 1e-3 and 4e-3, off the stencil planes (x = i +
+ *  0.63, z = k + 0.57 cells), released sideways at 0.01 m/s; more than 2 cells from every wall and 3 rows above the
+ *  liquid, so nothing else reaches them. Only the drop reaches the row-28 x- and z-faces, with Σw ≈ δ·w_x·w_z: below
+ *  and above WMIN. Reflected with the scene. */
+function withClusters(L, p, reflected) {
+  const add = []
+  for (const [i, k, delta] of [[4, 2, 1e-3], [11, 4, 4e-3]]) {
+    for (let r = 0; r < 3; r++) add.push({ x: [i + 0.41 + 0.09 * r, 27.21 + 0.03 * r, k + 0.53], mat: 0, slip: [0, 0, 0] })
+    add.push({ x: [i + 0.63, 27.5 + delta, k + 0.57], mat: 1, slip: [0.01, 0, 0.01] })
+  }
+  const n0 = p.n, P = flipRef.makeParticles(n0 + add.length)
+  P.pos.set(p.pos.subarray(0, 3 * n0)); P.vel.set(p.vel.subarray(0, 3 * n0)); P.c.forEach((c, a) => c.set(p.c[a].subarray(0, 3 * n0)))
+  P.mass.set(p.mass.subarray(0, n0)); P.material.set(p.material.subarray(0, n0)); P.enthalpy.set(p.enthalpy.subarray(0, n0))
+  P.slip = new Float64Array(3 * P.n); P.slip.set(p.slip.subarray(0, 3 * n0))
+  P.drop = new Float64Array(P.n); P.drop.set(p.drop.subarray(0, n0))
+  add.forEach((c, m) => {
+    const q = n0 + m
+    for (let a = 0; a < 3; a++) { P.pos[3 * q + a] = reflected ? L.extent[a] - c.x[a] * DX : c.x[a] * DX; P.slip[3 * q + a] = reflected ? -c.slip[a] : c.slip[a] }
+    P.material[q] = c.mat; P.mass[q] = (c.mat ? OIL.rho : W.rho) * VP
+  })
+  return P
+}
+/** W1–W4 on the W scene (W1m–W4m reflected), W5 on the unreflected one. */
+function wRun(reflected) {
+  const tag = reflected ? 'm' : '', where = reflected ? ', mirrored scene' : ''
+  const { L, sim, p: p0 } = wScene(reflected)
+  for (let k = 0; k < 30; k++) sim.step(p0, DT)
+  const n0 = p0.n, p = withClusters(L, p0, reflected)
   sim.p2g(p)
   const slip0 = p.slip.slice(), drop0 = p.drop.slice()
   sim.driftFlux(p, DT)
   const S = L.size, n = p.n, disp = q => p.drop[q] > 0, SOLID = gridLayout.FaceType.SOLID
-  // the oracle: Σw and S_f from every particle with this file's stencil, then the rule
-  const Wo = [0, 1, 2].map(() => new Float64Array(S)), So = [0, 1, 2].map(() => new Float64Array(S)), nearDrop = [0, 1, 2].map(() => new Uint8Array(S))
-  for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => {
-    Wo[a][s2] += w
-    if (disp(q) && w > 0) { So[a][s2] += w * p.slip[3 * q + a]; nearDrop[a][s2] = 1 }
-  })
-  // wall faces: every face in a window wall's plane (own-axis logical index 0 or n — the ghost layer's edge faces too)
-  // and every SOLID face; logical coordinates from this file's own loop over the face range
-  const nn = [L.nx, L.ny, L.nz], wall = [0, 1, 2].map(() => new Uint8Array(S))
-  for (let a = 0; a < 3; a++) {
-    const lo = [-1, -1, -1], hi = [...nn]; lo[a] = 0
-    for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
-      const c = [i, j, k], s2 = L.idx(i, j, k)
-      if (c[a] === 0 || c[a] === nn[a] || sim.faceType[a][s2] === SOLID) wall[a][s2] = 1
-    }
-  }
-  const Jo = [0, 1, 2].map(a => So[a].map((v, s2) => (wall[a][s2] || !(Wo[a][s2] >= flipRef.FACE_WEIGHT_MIN) ? 0 : v / Wo[a][s2])))
-  const Jf = sim.driftFaceJ
-  let wallNonzero = 0, wallTouched = 0, edgeTouched = 0, dW = 0, dJ = 0, jMax = 0
+  const { Wo, So, nearDrop, zero, Jo } = wOracle(L, sim, p), Jf = faceJ(sim, S)
+  let wallNonzero = 0, wallTouched = 0, edgeTouched = 0, dW = 0, dJ = 0, jMax = 0, below = 0, above = 0
   for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) {
-    if (wall[a][s2]) { if (!Jf || Jf[a][s2] !== 0) wallNonzero++; if (nearDrop[a][s2]) { wallTouched++; if (sim.faceType[a][s2] !== SOLID) edgeTouched++ } }
-    dW = Math.max(dW, Math.abs(Wo[a][s2] - sim.weight[a][s2])); dJ = Math.max(dJ, Jf ? Math.abs(Jo[a][s2] - Jf[a][s2]) : Infinity); jMax = Math.max(jMax, Math.abs(Jo[a][s2]))
+    if (zero[a][s2]) { if (Jf[a][s2] !== 0) wallNonzero++; if (nearDrop[a][s2]) { wallTouched++; if (sim.faceType[a][s2] !== SOLID) edgeTouched++ } }
+    else if (So[a][s2] !== 0 && Wo[a][s2] >= WMIN / 4 && Wo[a][s2] < 4 * WMIN) { if (Wo[a][s2] < WMIN) below++; else above++ }
+    dW = Math.max(dW, Math.abs(Wo[a][s2] - sim.weight[a][s2])); dJ = Math.max(dJ, Math.abs(Jo[a][s2] - Jf[a][s2])); jMax = Math.max(jMax, Math.abs(Jo[a][s2]))
   }
-  const nDisp = [...Array(n).keys()].filter(disp).length
-  check(wallNonzero === 0 && wallTouched > 0, `W1 J_f = 0 on every wall face (${nDisp} dispersed drops after 0.25 s): ${wallNonzero} wall faces with J ≠ 0 (0); ${wallTouched} wall faces in a drop's stencil (≥ 1), ${edgeTouched} of them ghost-layer edge faces`)
-  check(dW <= 1e-12 && dJ <= 1e-12, `W2 face counter-flux = the oracle (S_f/Σw_f, 0 on wall faces and below FACE_WEIGHT_MIN): max |ΔΣw| ${dW.toExponential(2)}, max |ΔJ_f| ${dJ.toExponential(2)} m/s (≤ 1e-12; max |J_f| ${jMax.toExponential(3)} m/s)`)
-  // W3 + W4 on flipRef's drift, W4 also on the control's
-  const uOracle = new Float64Array(3 * n)
-  for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) { let j = 0; faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => { j += w * Jo[a][s2] }); uOracle[3 * q + a] = (disp(q) ? p.slip[3 * q + a] : 0) - j }
+  let nDisp = 0, nClus = 0
+  for (let q = 0; q < n; q++) if (disp(q)) { if (q < n0) nDisp++; else nClus++ }
+  check(wallNonzero === 0 && wallTouched > 0, `W1${tag} J_f = 0 on every wall face${where} (${nDisp} dispersed drops after 0.25 s, ${nClus} in W2's clusters): ${wallNonzero} wall faces with J ≠ 0 (0); ${wallTouched} wall faces in a drop's stencil (≥ 1), ${edgeTouched} of them ghost-layer edge faces`)
+  check(dW <= 1e-12 && dJ <= 1e-12 && below >= 1 && above >= 1, `W2${tag} face counter-flux = the oracle (S_f/Σw_f, 0 on the zero set and where Σw_f < WMIN = 1e-3)${where}: max |ΔΣw| ${dW.toExponential(2)}, max |ΔJ_f| ${dJ.toExponential(2)} m/s (≤ 1e-12; max |J_f| ${jMax.toExponential(3)} m/s); the threshold exercised: ${below} faces off the zero set with S_f ≠ 0 and Σw in [WMIN/4, WMIN), ${above} in [WMIN, 4·WMIN) (each ≥ 1)`)
+  const uO = driftOf(L, p, Jo)
   let dU = 0
-  for (let i = 0; i < 3 * n; i++) dU = Math.max(dU, Math.abs(sim.drift[i] - uOracle[i]))
-  check(dU <= 1e-12, `W3 every particle's u_V = (dispersed ? s : 0) − Σ w_f·J_f: max |Δu_V| ${dU.toExponential(2)} m/s over ${n} particles (≤ 1e-12)`)
-  /** W4's worst ratio: a carrier's wall-ward drift over (d/dx)·max|J_f| of its stencil faces on that axis (≤ 1 passes). */
-  const wallRatio = (drift, Jgrid) => {
-    let worst = 0, carriers = 0
-    for (let q = 0; q < n; q++) {
-      if (disp(q)) continue
-      const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
-      for (let a = 0; a < 3; a++) for (const side of [0, 1]) {
-        const dWall = side ? L.extent[a] - x[a] : x[a]
-        if (!(dWall < DX)) continue
-        const toward = side ? drift[3 * q + a] : -drift[3 * q + a]
-        if (!(toward > 0)) continue
-        let jm = 0
-        faceStencil(L, a, x, (s2, w) => { if (w > 0) jm = Math.max(jm, Math.abs(Jgrid[a][s2])) })
-        carriers++
-        worst = Math.max(worst, toward / ((dWall / DX) * jm + 1e-12))
-      }
-    }
-    return { worst, carriers }
-  }
-  const wf = wallRatio(sim.drift, Jo)
+  for (let i = 0; i < 3 * n; i++) dU = Math.max(dU, Math.abs(sim.drift[i] - uO[i]))
+  check(dU <= 1e-12, `W3${tag} every particle's u_V = (dispersed ? s : 0) − Σ w_f·J_f${where}: max |Δu_V| ${dU.toExponential(2)} m/s over ${n} particles (≤ 1e-12)`)
+  const wf = wallRatio(L, p, sim.drift, Jo)
   // the control from the same state: the cell form (its J lives per cell; the bound uses the face oracle's max, which
   // is what the wall condition allows)
   p.slip.set(slip0); p.drop.set(drop0)
-  const ctl = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: 1e-3, driftForm: 'cell' }))
+  const ctl = new FlipRef(L, { ...opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: 1e-3, driftForm: 'cell' }), gravity: [...sim.gravity] })
   ctl.u = sim.u; ctl.faceAccel.forEach((f, a) => f.set(sim.faceAccel[a])); ctl.weight = sim.weight
   ctl.driftFlux(p, DT)
-  const wc = wallRatio(ctl.drift, Jo)
-  check(wf.worst <= 1 && wc.worst > 1, `W4 carriers next to a wall are not driven into it: worst wall-ward |u_V|/((d/dx)·max|J_f|) ${wf.worst.toFixed(4)} over ${wf.carriers} carrier-axes within dx of a wall (≤ 1); control (cell form, same state) ${wc.worst.toExponential(2)} over ${wc.carriers} (must be > 1)`)
-  // W5 (reported): the particle-level remainder of face-level (31)
+  const wc = wallRatio(L, p, ctl.drift, Jo)
+  check(wf.worst <= 1 && wc.worst > 1, `W4${tag} carriers next to a wall move normal to it at most as the wall allows${where}: worst |u_V·n|/((d/dx)·max|J_f|) ${wf.worst.toFixed(4)} over ${wf.carriers} carrier-axes within dx of a wall (≤ 1, two-sided); control (cell form, same state) ${wc.worst.toExponential(2)} over ${wc.carriers} (must be > 1)`)
+  if (reflected) return
+  // W5 (reported): the particle-level remainder of face-level (31), over the scene's own particles (the faces W2's
+  // clusters reach are theirs alone, so the value is the quantity reported since 01:46)
   p.slip.set(slip0); p.drop.set(drop0)
   const remainder = drift => {
-    const R = [0, 1, 2].map(() => new Float64Array(S)), A = [0, 1, 2].map(() => new Float64Array(S))
-    for (let q = 0; q < n; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]], (s2, w) => { R[a][s2] += w * drift[3 * q + a]; if (disp(q)) A[a][s2] += w * Math.abs(p.slip[3 * q + a]) })
+    const R = g3(Float64Array, S), A = g3(Float64Array, S)
+    for (let q = 0; q < n0; q++) for (let a = 0; a < 3; a++) faceStencil(L, a, xOf(p, q), (s2, w) => { R[a][s2] += w * drift[3 * q + a]; if (disp(q)) A[a][s2] += w * Math.abs(p.slip[3 * q + a]) })
     let remN = 0, remD = 0, faces = 0
-    for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) if (Wo[a][s2] >= 1 && A[a][s2] > 0 && !wall[a][s2]) { remN += Math.abs(R[a][s2]); remD += A[a][s2]; faces++ }
+    for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) if (Wo[a][s2] >= 1 && A[a][s2] > 0 && !zero[a][s2]) { remN += Math.abs(R[a][s2]); remD += A[a][s2]; faces++ }
     return { r: remN / remD, faces }
   }
   const rf = remainder(sim.drift), rc = remainder(ctl.drift)
   info(`W5 particle-level remainder of face-level (31): Σ_f |Σ w·u_V| / Σ_f Σ w·|ŝ| ${rf.r.toFixed(4)} over ${rf.faces} non-wall faces with Σw ≥ 1 and drops; the cell form from the same state ${rc.r.toFixed(4)} (reported; the density projection removes it)`)
+}
+wRun(false)
+wRun(true)
+
+// Wb: a held ball among the drops (review #1, #2, #7) — the ball clause (S_f ≥ 1) and the ramp at its surface
+{
+  const nx = 16, ny = 28, nz = 16, c = [8.3 * DX, 7.4 * DX, 7.7 * DX], ball = { c, R: 3 * DX }, L = new GridLayout({ nx, ny, nz, dx: DX })
+  const sim = new FlipRef(L, opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: 1e-3, driftForm: 'face' }))
+  // a rest fill 18 cells deep with the particles inside the ball removed (s31c2-ref's pool), the drops every 16th particle
+  // below 14·dx, around the ball; the ball held — weak coupling (the default), never integrated, its velocity stays 0
+  const { p: all } = fill(nx, 18, nz, DX, mulberry32(81), () => [W.rho, 0])
+  const keep = []
+  for (let q = 0; q < all.n; q++) if (Math.hypot(all.pos[3 * q] - c[0], all.pos[3 * q + 1] - c[1], all.pos[3 * q + 2] - c[2]) >= ball.R) keep.push(q)
+  const p = flipRef.makeParticles(keep.length)
+  keep.forEach((q, i) => { p.pos.set(all.pos.subarray(3 * q, 3 * q + 3), 3 * i); p.mass[i] = all.mass[q] })
+  for (let q = 0; q < p.n; q++) if (q % 16 === 5 && p.pos[3 * q + 1] < 14 * DX) { p.material[q] = 1; p.mass[q] = OIL.rho * VP }
+  sim.sphere = { center: [...c], radius: ball.R, velocity: [0, 0, 0] }
+  for (let k = 0; k < 30; k++) sim.step(p, DT)
+  sim.sphereFractions()
+  sim.p2g(p)
+  sim.driftFlux(p, DT)
+  const S = L.size, n = p.n, disp = q => p.drop[q] > 0
+  const { Wo, nearDrop, sfo, Jo } = wOracle(L, sim, p, { ball }), Jf = faceJ(sim, S)
+  let inBall = 0, inBallNonzero = 0, reached = 0, dW = 0, dS = 0, dJ = 0, jMax = 0
+  for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) {
+    if (sfo[a][s2] >= 1) { inBall++; if (Jf[a][s2] !== 0) inBallNonzero++; if (nearDrop[a][s2] && Wo[a][s2] >= WMIN) reached++ }
+    dW = Math.max(dW, Math.abs(Wo[a][s2] - sim.weight[a][s2])); dS = Math.max(dS, Math.abs(sfo[a][s2] - sim.solidFraction[a][s2]))
+    dJ = Math.max(dJ, Math.abs(Jo[a][s2] - Jf[a][s2])); jMax = Math.max(jMax, Math.abs(Jo[a][s2]))
+  }
+  const nDisp = [...Array(n).keys()].filter(disp).length
+  check(inBallNonzero === 0 && reached >= 1, `Wb1 J_f = 0 inside the ball (held, R = 3dx; ${nDisp} dispersed drops around it after 0.25 s): ${inBallNonzero} of the ${inBall} faces with S_f ≥ 1 (this file's box) have J ≠ 0 (0); ${reached} of them with Σw ≥ WMIN in a dispersed drop's stencil (≥ 1)`)
+  check(dW <= 1e-12 && dS <= 1e-12 && dJ <= 1e-12, `Wb2 face counter-flux = the oracle with the ball (0 where S_f ≥ 1): max |ΔΣw| ${dW.toExponential(2)}, max |ΔS_f| (flipRef's solidFraction) ${dS.toExponential(2)}, max |ΔJ_f| ${dJ.toExponential(2)} m/s (≤ 1e-12; max |J_f| ${jMax.toExponential(3)} m/s)`)
+  const uO = driftOf(L, p, Jo, ball)
+  let dU = 0
+  for (let i = 0; i < 3 * n; i++) dU = Math.max(dU, Math.abs(sim.drift[i] - uO[i]))
+  check(dU <= 1e-12, `Wb3 every particle's u_V = (dispersed ? s : 0) − J(x_q), J·n̂ ramped to 0 at the ball's surface: max |Δu_V| ${dU.toExponential(2)} m/s over ${n} particles (≤ 1e-12)`)
+  /** Wb4: a carrier within dx of the ball, |u_V·n̂| over (φ/dx)·Σ_a |n̂_a|·max|J_f,a| of its own stencil faces per axis. */
+  const ballRatio = drift => {
+    let worst = 0, carriers = 0, sumN = 0, sumAbs = 0
+    for (let q = 0; q < n; q++) {
+      if (disp(q)) continue
+      const x = xOf(p, q), e = x.map((v, a) => v - c[a]), r = Math.hypot(...e), phi = r - ball.R
+      if (!(phi < DX) || !(r > 0)) continue
+      const nh = e.map(v => v / r), un = Math.abs(drift[3 * q] * nh[0] + drift[3 * q + 1] * nh[1] + drift[3 * q + 2] * nh[2])
+      let bound = 0
+      for (let a = 0; a < 3; a++) { let jm = 0; faceStencil(L, a, x, (s2, w) => { if (w > 0) jm = Math.max(jm, Math.abs(Jo[a][s2])) }); bound += Math.abs(nh[a]) * jm }
+      carriers++; sumN += un; sumAbs += Math.hypot(drift[3 * q], drift[3 * q + 1], drift[3 * q + 2])
+      worst = Math.max(worst, un / ((Math.max(0, phi) / DX) * bound + 1e-12))
+    }
+    return { worst, carriers, meanN: sumN / carriers, meanAbs: sumAbs / carriers }
+  }
+  const bf = ballRatio(sim.drift), bc = ballRatio(driftOf(L, p, Jo))
+  check(bf.carriers > 0 && bf.worst <= 1 && bc.worst > 1, `Wb4 carriers next to the ball move normal to it at most as the ramp allows: worst |u_V·n̂|/((φ/dx)·Σ_a |n̂_a|·max|J_f,a|) ${bf.worst.toFixed(4)} over ${bf.carriers} carriers within dx of it (≤ 1); control (the same state's u_V without the ramp) ${bc.worst.toExponential(2)} (must be > 1)`)
+  info(`Wb ball shell (the ${bc.carriers} carriers within dx): mean |J·n̂| ${bc.meanN.toExponential(3)} m/s = ${(bc.meanN / bc.meanAbs).toFixed(3)} of mean |J| without the ramp (the faces the surface cuts keep their J); with it mean |u_V·n̂| ${bf.meanN.toExponential(3)} m/s (reported)`)
+}
+
+// Wg: the dam-break gate's plane (review #4, #2) — a scene of its own: a gate and a ball together throw (applyGate)
+{
+  const nx = 16, ny = 20, nz = 8, GI = 8, SPEED = 1e-4, STEPS = 30, xg = GI * DX, L = new GridLayout({ nx, ny, nz, dx: DX })
+  const sim = new FlipRef(L, { ...opts({ 0: W, 1: OIL }, () => SIGMA['oil|water'], { dropDiameter: 1e-3, driftForm: 'face' }), gate: { i: GI, speed: SPEED } })
+  const { p } = fill(nx, 16, nz, DX, mulberry32(81), () => [W.rho, 0])
+  for (let q = 0; q < p.n; q++) if (q % 16 === 5 && p.pos[3 * q + 1] < 10 * DX) { p.material[q] = 1; p.mass[q] = OIL.rho * VP }
+  for (let k = 0; k < STEPS; k++) sim.step(p, DT)
+  sim.p2g(p)
+  sim.driftFlux(p, DT)
+  const S = L.size, n = p.n
+  // the plane's closed faces from the geometry, not the face types: the last step's edge (applyGate takes it at
+  // mid-step) and every x-face at i = GI whose row — j clamped into [0, ny), so a ghost-layer edge face follows the row
+  // it borders — has its centre above it
+  const yEdge = SPEED * (STEPS - 0.5) * DT, closed = new Uint8Array(S), edge = new Uint8Array(S)
+  let rowsClosed = 0
+  for (let j = 0; j < ny; j++) if ((j + 0.5) * DX > yEdge) rowsClosed++
+  for (let k = -1; k <= nz; k++) for (let j = -1; j <= ny; j++) if ((Math.min(Math.max(j, 0), ny - 1) + 0.5) * DX > yEdge) {
+    const s2 = L.idx(GI, j, k)
+    closed[s2] = 1
+    if (j < 0 || j >= ny || k < 0 || k >= nz) edge[s2] = 1
+  }
+  const { Wo, nearDrop, Jo } = wOracle(L, sim, p), Jf = faceJ(sim, S)
+  let closedNonzero = 0, nClosed = 0, nEdge = 0, inReached = 0, edgeReached = 0, dW = 0, dJ = 0, jMax = 0
+  for (let s2 = 0; s2 < S; s2++) if (closed[s2]) {
+    nClosed++
+    if (edge[s2]) nEdge++
+    if (Jf[0][s2] !== 0) closedNonzero++
+    if (nearDrop[0][s2] && Wo[0][s2] >= WMIN) { if (edge[s2]) edgeReached++; else inReached++ }
+  }
+  for (let a = 0; a < 3; a++) for (let s2 = 0; s2 < S; s2++) {
+    dW = Math.max(dW, Math.abs(Wo[a][s2] - sim.weight[a][s2])); dJ = Math.max(dJ, Math.abs(Jo[a][s2] - Jf[a][s2])); jMax = Math.max(jMax, Math.abs(Jo[a][s2]))
+  }
+  let left = 0, right = 0
+  for (let q = 0; q < n; q++) if (p.drop[q] > 0) { if (p.pos[3 * q] < xg) left++; else right++ }
+  check(closedNonzero === 0 && inReached >= 1 && edgeReached >= 1, `Wg1 J_f = 0 on the gate plane's closed faces, ghost-layer edges included (gate at x-face ${GI} lifting at ${SPEED} m/s: edge ${(yEdge * 1e3).toFixed(4)} mm after ${STEPS} steps, ${rowsClosed}/${ny} rows closed; dispersed drops ${left} left and ${right} right of it): ${closedNonzero} of the ${nClosed} closed faces (${nEdge} ghost-layer edge faces) with J ≠ 0 (0); ${inReached} in-window and ${edgeReached} edge faces with Σw ≥ WMIN in a drop's stencil (each ≥ 1)`)
+  check(dW <= 1e-12 && dJ <= 1e-12, `Wg2 face counter-flux = the oracle with the gate (its closed rows SOLID, their ghost-layer edges by the mirror rule): max |ΔΣw| ${dW.toExponential(2)}, max |ΔJ_f| ${dJ.toExponential(2)} m/s (≤ 1e-12; max |J_f| ${jMax.toExponential(3)} m/s)`)
+  const uO = driftOf(L, p, Jo)
+  let dU = 0
+  for (let i = 0; i < 3 * n; i++) dU = Math.max(dU, Math.abs(sim.drift[i] - uO[i]))
+  check(dU <= 1e-12, `Wg3 every particle's u_V = (dispersed ? s : 0) − Σ w_f·J_f with the gate: max |Δu_V| ${dU.toExponential(2)} m/s over ${n} particles (≤ 1e-12)`)
+  /** Wg4: a carrier within dx of the gate plane whose x-stencil's faces on it are all closed — |u_V,x| over
+   *  (d/dx)·max|J_f,x| of its stencil faces (the plane's 4 carry 0, the 4 one cell off weigh d/dx). */
+  const gateRatio = drift => {
+    let worst = 0, carriers = 0
+    for (let q = 0; q < n; q++) {
+      if (p.drop[q] > 0) continue
+      const x = xOf(p, q), d = Math.abs(x[0] - xg)
+      if (!(d < DX)) continue
+      let allClosed = true, jm = 0
+      faceStencil(L, 0, x, (s2, w, cc) => { if (cc[0] === GI && !closed[s2]) allClosed = false; if (w > 0) jm = Math.max(jm, Math.abs(Jo[0][s2])) })
+      if (!allClosed) continue
+      carriers++
+      worst = Math.max(worst, Math.abs(drift[3 * q]) / ((d / DX) * jm + 1e-12))
+    }
+    return { worst, carriers }
+  }
+  const gf = gateRatio(sim.drift), gc = gateRatio(driftOf(L, p, wOracle(L, sim, p, { mirrorRule: false }).Jo))
+  check(gf.carriers > 0 && gf.worst <= 1 && gc.worst > 1, `Wg4 carriers next to the closed gate move normal to it at most as a wall allows: worst |u_V,x|/((d/dx)·max|J_f,x|) ${gf.worst.toFixed(4)} over ${gf.carriers} carriers within dx of the plane (≤ 1, two-sided); control (the oracle without the mirror rule — the pre-fix rule — same state) ${gc.worst.toExponential(2)} over ${gc.carriers} (must be > 1)`)
 }
 
 // ── B: balance at rest ────────────────────────────────────────────────────────────────────────────────────────────

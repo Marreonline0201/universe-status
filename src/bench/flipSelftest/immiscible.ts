@@ -3,7 +3,9 @@
 // reference flipRef.driftFlux on IDENTICAL inputs — the same f32 particle positions, slip history, face velocities and
 // face accelerations on both sides — K30–K33, and the face acceleration itself (K34, flipRef.captureFaceAccel) on the
 // same f32 u* and projected u. The drift in both forms: K32 the face form (the default: J on the MAC faces with P2G's
-// stencil and weight sum, 0 on the walls) per face and per particle, K32c the cell form (the control). Metrics only —
+// stencil and weight sum, 0 on the walls) per face and per particle — on BOTH face runs, the first from zeroed face
+// buffers (review 2026-09-30 #6: identical inputs twice cannot see a stale-read order) — and around a held ball (the
+// S_f ≥ 1 zero rule and the J·n ramp at its surface, review #1/#2/#7), K32c the cell form (the control). Metrics only —
 // scripts/fluid-gates/s35i-gpu.mjs applies the tolerances. Every bound below is derived from f32 rounding (u = 2^-24;
 // WGSL: × − + and conversions correctly rounded, ÷ 2.5 ulp, pow via exp2(y·log2 x) ≤ 64 ulp here, exp (3 + 2|x|) ulp).
 import { GridLayout, FaceType, type Vec3 } from '../../sim-ref/gridLayout'
@@ -27,7 +29,20 @@ export const IMM = {
 const SIGMA: Record<string, number> = { 'oil|water': 0.0245, 'mercury|water': 0.375 }
 type MatName = keyof typeof IMM
 
-interface Scene { L: GridLayout; p: RefParticles; ids: number[]; names: MatName[]; drop?: number }
+interface Scene { L: GridLayout; p: RefParticles; ids: number[]; names: MatName[]; drop?: number; ball?: { center: Vec3; radius: number } }
+
+/** The scene without the particles `drop` rejects (the ball's interior). */
+function keepParticles(sc: Scene, keep: (x: Vec3) => boolean): Scene {
+  const old = sc.p, idx: number[] = []
+  for (let q = 0; q < old.n; q++) if (keep([old.pos[3 * q], old.pos[3 * q + 1], old.pos[3 * q + 2]])) idx.push(q)
+  const p = makeParticles(idx.length)
+  p.slip = new Float64Array(3 * p.n); p.drop = new Float64Array(p.n)
+  idx.forEach((q, r) => {
+    for (let a = 0; a < 3; a++) { p.pos[3 * r + a] = old.pos[3 * q + a]; p.vel[3 * r + a] = old.vel[3 * q + a]; p.slip![3 * r + a] = old.slip![3 * q + a] }
+    p.mass[r] = old.mass[q]; p.material[r] = old.material[q]; p.drop![r] = old.drop![q]
+  })
+  return { ...sc, p }
+}
 
 /** 8 ppc over cells [0, n) × [0, depth) × [0, n): material by `pick(q, x, y, z)` (an index into `names`), a random
  *  velocity of amplitude `amp(y)` per particle, and the slip/drop history `hist(q)`; all f32-rounded. */
@@ -66,6 +81,14 @@ function makeScene(kind: string, seed: number): Scene {
     // half with a slip of up to 1 m/s (Re up to ~6000: Newton's drag branch)
     return scene(n, 12, [0, 1], ['water', 'mercury'], rng, every16, () => 0.2,
       (q, nm) => (nm === 'mercury' && q % 32 === 5 ? { s: [2 * (rng() - 0.5), 2 * (rng() - 0.5), 2 * (rng() - 0.5)].map(v => v / Math.sqrt(3)) as Vec3, d: 0 } : none()), 1e-2)
+  }
+  if (kind === 'ball') {
+    // the 'oil' scene around a held ball (R = 2.5 dx, off the lattice), its interior emptied: dispersed drops reach the
+    // faces the surface cuts and the fully solid faces 0.5–0.68 dx inside it (review 2026-09-30 #1/#2/#7)
+    const center: Vec3 = [Math.fround(8.3 * DX), Math.fround(6.4 * DX), Math.fround(4.2 * DX)], radius = Math.fround(2.5 * DX)
+    const sc = scene(n, 12, [0, 1], ['water', 'oil'], rng, every16, () => 0.2,
+      (q, nm) => (nm === 'oil' && q % 32 === 5 ? { s: [0.03 * (rng() - 0.5), 0.03 * (rng() - 0.5), 0.03 * (rng() - 0.5)], d: 0 } : none()), 1e-3)
+    return { ...keepParticles(sc, x => Math.hypot(x[0] - center[0], x[1] - center[1], x[2] - center[2]) >= radius), ball: { center, radius } }
   }
   if (kind === 'hinze') {
     // Hinze sizing: the velocity noise grows with height (quiet floor: d_max ≥ dx, resolved; stirred top: sub-grid drops),
@@ -135,6 +158,18 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   }
   const k34 = { accRatio: accDiff / (16 * U * accMax), accMax, accFaces, accSolidFaces }
 
+  // the ball, after K34 (faceAccel reads faceSolid): held, on both sides; the reference gets the GPU's own f32 face
+  // fractions, so the S_f ≥ 1 rule sees identical inputs (no face straddles 1 between f32 and f64)
+  let rampR = 0
+  if (sc.ball) {
+    const c = sc.ball.center, R = sc.ball.radius
+    gpu.setSphere({ center: c, radius: R, velocity: [0, 0, 0], density: 0 })
+    await submit(device, e => gpu.encodeSphereFractions(e))
+    const fsG = new Float32Array(await gpu.readBuffer(gpu.faceSolidBuf, 4 * 3 * S))
+    cpu.sphere = { center: [...c] as Vec3, radius: R, velocity: [0, 0, 0] }
+    for (const ax of [0, 1, 2] as const) for (let s = 0; s < S; s++) cpu.solidFraction[ax][s] = fsG[ax * S + s]
+    rampR = R
+  }
   // K30–K33 inputs: the final u and the reference's face accelerations, f32 on both sides
   const u3 = new Float32Array(3 * S), a3 = new Float32Array(3 * S)
   for (const ax of [0, 1, 2]) { u3.set(cpu.u[ax], ax * S); a3.set(cpu.faceAccel[ax], ax * S) }
@@ -144,21 +179,25 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   for (let q = 0; q < p.n; q++) st4.set([slip0[3 * q], slip0[3 * q + 1], slip0[3 * q + 2], drop0[q]], 4 * q)
   // P2G's Σw (the face form's denominator): the GPU's own faceScatter on the same f32 positions the reference's p2g used
   await submit(device, e => gpu.encodeScatter(e))
-  // the cell form (K32c, the control) from the slip history, then the face form (the default) twice from the same history
-  // — the second run's J proves driftFaces left every face sum at zero — so the drift buffer ends with the face form (K33)
+  // the cell form (K32c, the control) from the slip history, then the face form (the default) twice from the same history,
+  // both runs checked: run 1 starts from face buffers that are zero (cleared here; the cell run never touches them), so a
+  // pipeline that reads the previous encode's sums or J gives J_f = 0 or u_V = own there; run 2 proves driftFaces left
+  // every face sum at zero (an uncleared sum doubles S_f). The drift buffer ends with the face form (K33)
   device.queue.writeBuffer(imm.bufs.slipState, 0, st4)
   imm.driftForm = 'cell'
   await submit(device, e => imm.encode(e, p.n))
   const gDriftC = new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n))
   imm.driftForm = 'face'
+  await submit(device, e => { e.clearBuffer(imm.bufs.slipFace); e.clearBuffer(imm.bufs.driftFace) })
+  const runs: { gFace: Float32Array; gDrift: Float32Array }[] = []
   for (let r = 0; r < 2; r++) {
     device.queue.writeBuffer(imm.bufs.slipState, 0, st4)
     await submit(device, e => imm.encode(e, p.n))
+    runs.push({ gFace: new Float32Array(await gpu.readBuffer(imm.bufs.driftFace, 4 * 3 * S)), gDrift: new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n)) })
   }
   cpu.driftFlux(p, dt)
   const gSlip = new Float32Array(await gpu.readBuffer(imm.bufs.slipState, 16 * p.n))
-  const gDrift = new Float32Array(await gpu.readBuffer(gpu.driftBuf, 16 * p.n))
-  const gFace = new Float32Array(await gpu.readBuffer(imm.bufs.driftFace, 4 * 3 * S))
+  const gDrift = runs[1].gDrift
   const gInf = new Float32Array(await gpu.readBuffer(imm.bufs.cellInf, 4 * 8 * S))
   const gStats = await imm.readStats()
   // the reference's cell form from the same inputs (its slip update is the face form's: pass 1 does not depend on J)
@@ -342,37 +381,70 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
       dS[a][s2] += dw * sa + w * Bs[q] + 3 * U * w * sa + 2 ** -37
     })
   }
-  let faceRatio = 0, facesChecked = 0, facesExcused = 0, wallTouched = 0, edgeTouched = 0, faceMax = 0, faceZeroMismatch = 0
+  // the zero set: wall-plane faces (own-axis 0 or n, SOLID) and faces inside the ball (S_f ≥ 1, the GPU's own fractions
+  // on both sides); ballTouched counts ball faces with Σw ≥ FACE_WEIGHT_MIN that a drop reaches (the rule is exercised)
+  let facesChecked = 0, facesExcused = 0, wallTouched = 0, edgeTouched = 0, ballTouched = 0, faceMax = 0
+  const inBall = (ax: number, s2: number) => cpu.solidFraction[ax][s2] >= 1
+  const zeroFace = [0, 1, 2].map(() => new Uint8Array(S)), checkedFace = [0, 1, 2].map(() => new Uint8Array(S))
   for (const ax of [0, 1, 2] as const) {
     const [lo, hi] = L.faceRange(ax)
     for (let k3 = lo[2]; k3 <= hi[2]; k3++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
-      const s2 = L.idx(i, j, k3), own = [i, j, k3][ax], W = Wref[ax][s2], ref = Jref[ax][s2], got = gFace[ax * S + s2]
-      const wall = own === 0 || own === n[ax] || cpu.faceType[ax][s2] === FaceType.SOLID
-      if (wall && Sabs[ax][s2] > 0) { wallTouched++; if (cpu.faceType[ax][s2] !== FaceType.SOLID) edgeTouched++ }
+      const s2 = L.idx(i, j, k3), own = [i, j, k3][ax], W = Wref[ax][s2], ref = Jref[ax][s2]
+      const wall = own === 0 || own === n[ax] || cpu.faceType[ax][s2] === FaceType.SOLID || inBall(ax, s2)
+      if (wall && Sabs[ax][s2] > 0) {
+        if (inBall(ax, s2)) { if (W >= FACE_WEIGHT_MIN) ballTouched++ } else { wallTouched++; if (cpu.faceType[ax][s2] !== FaceType.SOLID) edgeTouched++ }
+      }
       if (faceBad[ax][s2] || (!wall && Math.abs(W - FACE_WEIGHT_MIN) <= dWb[ax][s2] + U * W)) { faceBad[ax][s2] = 1; facesExcused++; continue }
       facesChecked++
-      if (wall || !(W >= FACE_WEIGHT_MIN)) { if (got !== 0 || ref !== 0) faceZeroMismatch++; continue }
+      checkedFace[ax][s2] = 1
+      if (wall || !(W >= FACE_WEIGHT_MIN)) { zeroFace[ax][s2] = 1; continue }
       faceMax = Math.max(faceMax, Math.abs(ref))
-      const B = (dS[ax][s2] + 2 * U * Sabs[ax][s2] + Math.abs(ref) * (dWb[ax][s2] + U * W)) / Math.max(1e-30, W - dWb[ax][s2]) + 3 * U * Math.abs(ref) + 1e-30
-      faceB[ax][s2] = B
-      faceRatio = Math.max(faceRatio, Math.abs(got - ref) / B)
+      faceB[ax][s2] = (dS[ax][s2] + 2 * U * Sabs[ax][s2] + Math.abs(ref) * (dWb[ax][s2] + U * W)) / Math.max(1e-30, W - dWb[ax][s2]) + 3 * U * Math.abs(ref) + 1e-30
     }
   }
-  let driftRatio = 0, driftChecked = 0, driftSkipped = 0, driftMax = 0
-  for (let q = 0; q < p.n; q++) {
-    const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
-    let bad = false, dJ = 0
-    for (let a = 0; a < 3; a++) tapsOf(a, x, (s2, w) => {
-      if (faceBad[a][s2]) bad = true
-      dJ += (3 * dT + 14 * U) * Math.abs(Jref[a][s2]) + w * faceB[a][s2]
-    })
-    if (bad) { driftSkipped++; continue }
-    const ref = [0, 1, 2].map(a => cpu.drift[3 * q + a]), dv = Math.hypot(...ref)
-    const B = (p.drop![q] > 0 ? Bs[q] : 0) + dJ + U * dv + 1e-30
-    const err = Math.hypot(gDrift[4 * q] - ref[0], gDrift[4 * q + 1] - ref[1], gDrift[4 * q + 2] - ref[2])
-    driftRatio = Math.max(driftRatio, err / B); driftChecked++; driftMax = Math.max(driftMax, dv)
+  // the ball's J·n ramp on the GPU in f32 (driftParticlesFace): r = x − c, |r|, φ = |r| − R, n = r/|r|, f = 1 − φ/dx,
+  // J − f·(J·n)·n. |δφ| ≤ 4u·|r| + ½u·|φ|, so |δf| ≤ (4u·|r| + ½u·dx)/dx + 3u; |δn| ≤ 5u per component; the dot, the
+  // products and the subtraction ≤ 23u·|J| more: B_ramp = |J|·u·(4·(R + dx)/dx + 27) within dx of the surface (|r| ≤
+  // R + dx). The map J ↦ J − f·(J·n)·n has norm ≤ 1 (f ∈ [0, 1]), so the interpolation's bound dJ carries through; the
+  // ramp is continuous at φ = 0 and φ = dx, so an f32/f64 split of the φ < dx test costs no more than B_ramp
+  const rampB = rampR > 0 ? U * (4 * (rampR + DX) / DX + 27) : 0
+  let rampParticles = 0
+  const k32run = (gFace: Float32Array, gDrift: Float32Array) => {
+    let faceRatio = 0, faceZeroMismatch = 0, driftRatio = 0, driftChecked = 0, driftSkipped = 0, driftMax = 0
+    rampParticles = 0
+    for (const ax of [0, 1, 2] as const) for (let s2 = 0; s2 < S; s2++) {
+      if (!checkedFace[ax][s2]) continue
+      const ref = Jref[ax][s2], got = gFace[ax * S + s2]
+      if (zeroFace[ax][s2]) { if (got !== 0 || ref !== 0) faceZeroMismatch++; continue }
+      faceRatio = Math.max(faceRatio, Math.abs(got - ref) / faceB[ax][s2])
+    }
+    for (let q = 0; q < p.n; q++) {
+      const x = [p.pos[3 * q], p.pos[3 * q + 1], p.pos[3 * q + 2]]
+      let bad = false, dJ = 0
+      for (let a = 0; a < 3; a++) tapsOf(a, x, (s2, w) => {
+        if (faceBad[a][s2]) bad = true
+        dJ += (3 * dT + 14 * U) * Math.abs(Jref[a][s2]) + w * faceB[a][s2]
+      })
+      if (bad) { driftSkipped++; continue }
+      const ref = [0, 1, 2].map(a => cpu.drift[3 * q + a]), dv = Math.hypot(...ref)
+      let B = (p.drop![q] > 0 ? Bs[q] : 0) + dJ + U * dv + 1e-30
+      if (sc.ball) {
+        const c = sc.ball.center, rl = Math.hypot(x[0] - c[0], x[1] - c[1], x[2] - c[2])
+        if (rl - sc.ball.radius < DX * (1 + 1e-6)) {
+          const own = p.drop![q] > 0 ? [0, 1, 2].map(a => p.slip![3 * q + a]) : [0, 0, 0]
+          B += rampB * Math.hypot(own[0] - ref[0], own[1] - ref[1], own[2] - ref[2])
+          rampParticles++
+        }
+      }
+      const err = Math.hypot(gDrift[4 * q] - ref[0], gDrift[4 * q + 1] - ref[1], gDrift[4 * q + 2] - ref[2])
+      driftRatio = Math.max(driftRatio, err / B); driftChecked++; driftMax = Math.max(driftMax, dv)
+    }
+    return { faceRatio, faceZeroMismatch, driftRatio, driftChecked, driftSkipped, driftMax }
   }
-  const k32 = { faceRatio, facesChecked, facesExcused, faceZeroMismatch, wallTouched, edgeTouched, faceMax, driftRatio, driftChecked, driftSkipped, driftMax, slipFormDiff }
+  const r1 = k32run(runs[0].gFace, runs[0].gDrift), r2 = k32run(runs[1].gFace, runs[1].gDrift)
+  const k32 = { faceRatio: Math.max(r1.faceRatio, r2.faceRatio), facesChecked, facesExcused, faceZeroMismatch: r1.faceZeroMismatch + r2.faceZeroMismatch,
+    wallTouched, edgeTouched, ballTouched, rampParticles, faceMax, driftRatio: Math.max(r1.driftRatio, r2.driftRatio), driftChecked: r2.driftChecked,
+    driftSkipped: r2.driftSkipped, driftMax: r2.driftMax, slipFormDiff, run1: r1, run2: r2 }
 
   // K32c the cell form (the control): u_V = own − J, J = Σ_k α_k ū_Ck; cells with an excused particle are skipped
   const cellBad = new Uint8Array(S), cellCnt = new Float64Array(K * S), cellSum = new Float64Array(3 * K * S), cellB = new Float64Array(K * S)
@@ -408,6 +480,7 @@ export async function immKernels(device: GPUDevice, o: { kind?: string; seed?: n
   // K33 the advection adds the drift (g2pMac, IMMISCIBLE): with u = 0 on every face (all valid), x ← x + Δt·u_V exactly
   // up to f32 rounding: |Δ| ≤ ulp-level ½u·|x| (the add) + u·Δt|u_V| (the product) + ½u·|x + Δt·u_V| — 2u·(|x| + Δt|u_V|)
   // covers them; particles the wall clamp moves are excluded (counted)
+  if (sc.ball) gpu.clearSphere()   // g2pMac would push particles out of the ball: K33 tests the drift's add alone
   const zeros = new Float32Array(3 * S), ones = new Uint32Array(3 * S).fill(1)
   gpu.writeGrid(gpu.finalVelocityBuffer, { u: zeros, valid: ones })
   const before = new Float32Array(await gpu.readBuffer(gpu.posBuf, 16 * p.n))
