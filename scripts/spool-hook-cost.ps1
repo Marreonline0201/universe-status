@@ -9,6 +9,9 @@
 #  - peak working set and peak private bytes: the OS-maintained counters (GetProcessMemoryInfo on the process
 #    handle, read after exit), cross-checked by a separate polling pass that reads PeakWorkingSet64 until exit
 #  - baseline: the same, for node.exe running an EMPTY .mjs file (the floor any node hook pays)
+#  - worst cases, 5 firings each: the costliest command the hook still classifies (a 65,534-char chain of
+#    assignments, just under the 65,536-char classification cap) and the largest payload it still parses (a valid
+#    PostToolBatch just under the 32 MB stdin cap); together they bound what ONE firing can cost
 # The hook runs from a throwaway install in %TEMP% (install-hook.mjs with UNIVERSE_OFFICE_HOME), so the real spool
 # is never touched; the temp folder is removed at the end. Refuses to run on battery or with < 0.8 GB free RAM.
 param([int]$Runs = 30, [string]$Node = '')
@@ -78,12 +81,24 @@ $payload = (@{
   tool_use_id = 'toolu_01HkF8x3Qm9VbN2rT5yWcLpZ'
 } | ConvertTo-Json -Compress -Depth 5)
 
-function Invoke-Firing([string]$script, [bool]$poll) {
+# worst case the classifier still runs on: a 65,534-char chain of PowerShell assignments, just under the hook's
+# 65,536-char classification cap (each `$a =` level was one more re-tokenisation before the nesting bound)
+$capPayload = (@{
+  session_id = '944994c0-d7e9-4be1-a2a7-032471f945b2'; hook_event_name = 'PreToolUse'; agent_id = 'agent-a8451ad399c9231e2'
+  tool_name = 'Bash'; tool_input = @{ command = ('$a = ' * 13106) + 'rm x' }; tool_use_id = 'toolu_cap'
+} | ConvertTo-Json -Compress -Depth 5)
+# the largest payload the hook parses at all: a valid PostToolBatch just under the 32 MB stdin cap (one Read call
+# whose tool_response is about 32 MB of text); a bigger stdin is a parse_error record without being parsed
+$bigPrefix = '{"session_id":"944994c0-d7e9-4be1-a2a7-032471f945b2","hook_event_name":"PostToolBatch","agent_id":"agent-a8451ad399c9231e2","tool_calls":[{"tool_name":"Read","tool_input":{"file_path":"C:/x/big.txt"},"tool_use_id":"toolu_big","tool_response":"'
+$bigSuffix = '"}]}'
+$bigPayload = $bigPrefix + ('x' * (32MB - 1024 - $bigPrefix.Length - $bigSuffix.Length)) + $bigSuffix
+
+function Invoke-Firing([string]$script, [bool]$poll, [string]$stdin = $payload) {
   $psi = New-Psi $script
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $p = [System.Diagnostics.Process]::Start($psi)
   $h = $p.Handle
-  $p.StandardInput.Write($payload)
+  $p.StandardInput.Write($stdin)
   $p.StandardInput.Close()
   $polledPeak = [long]0
   if ($poll) {
@@ -147,7 +162,18 @@ try {
   $apiMax = ($pollRuns | ForEach-Object { $_.PeakWsMB } | Measure-Object -Maximum).Maximum
   Write-Output ('polling cross-check: max polled PeakWorkingSet64 {0:N1} MB vs OS peak counter after exit {1:N1} MB' -f $pollMax, $apiMax)
 
-  $all = $hookRuns + $pollRuns
+  # worst cases (5 firings each): the per-firing ceiling, not the typical cost
+  $capRuns = @(); for ($i = 0; $i -lt 5; $i++) { $capRuns += Invoke-Firing $hook $false $capPayload }
+  Show ('worst classified: {0:N0}-byte chain' -f $capPayload.Length) $capRuns
+  $freeNow = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 2)
+  $bigRuns = @()
+  if ($freeNow -lt 1.0) { Write-Output "free RAM $freeNow GB < 1.0 GB: the 32 MB payload row is skipped" }
+  else {
+    for ($i = 0; $i -lt 5; $i++) { $bigRuns += Invoke-Firing $hook $false $bigPayload }
+    Show ('worst parsed: {0:N1} MB PostToolBatch' -f ($bigPayload.Length / 1MB)) $bigRuns
+  }
+
+  $all = $hookRuns + $pollRuns + $capRuns + $bigRuns
   $bad = @($all | Where-Object { $_.Exit -ne 0 -or $_.OutBytes -ne 0 })
   $lines = @(Get-ChildItem (Join-Path $officeHome 'spool') -Filter 'events-*.jsonl' | Get-Content | Where-Object { $_ })
   Write-Output ('hook firings {0}: exit codes all 0 and no output: {1}; spool lines written {2} (expected {0})' -f $all.Count, ($bad.Count -eq 0), $lines.Count)

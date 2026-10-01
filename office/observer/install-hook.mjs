@@ -80,7 +80,7 @@ function selfCheck() {
     if (lines.length !== 1) problems.push(`expected 1 spool line, found ${lines.length}`);
     else {
       const rec = JSON.parse(lines[0]);
-      if (rec.ev !== 'PreToolUse' || rec.aid !== 'installcheck' || rec.k !== 'historyShelf' || rec.a !== 'glance') {
+      if (rec.ev !== 'PreToolUse' || rec.aid !== 'agent-installcheck' || rec.k !== 'historyShelf' || rec.a !== 'glance') {
         problems.push(`unexpected record ${lines[0]}`);
       }
     }

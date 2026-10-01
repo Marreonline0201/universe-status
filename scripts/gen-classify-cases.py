@@ -18,9 +18,15 @@
 #   batch        classify_batch cases (reference outputs)
 #   agentPre     classify_agent_pre cases (reference outputs)
 #   edge         hand-picked parser edge cases (quotes, heredocs, here-strings, Unicode whitespace, R2 nesting...)
+#   nest         P4, the segment-nesting bound: chains at, below and above MAX_SEGMENT_NEST, stored as a recipe
+#                (cmd = pre * k + mid + post * k) so long chains stay small here; the port rebuilds the same string
+#   batchStations every batch (and every one-call batch) at every station kind: the reference classify_batch with
+#                cur_kind = that station (the oracle for the observer's station rule, classify.mjs resolveAtStation)
+#   unicode      Python's own \d and \w as code-point ranges, read by running re over every code point 0..0x10FFFF
+#                (the port embeds these exact tables instead of trusting the JS engine's Unicode version)
 # Every shell case also carries the reference steps() split and the heredoc-stripped text, so a port
 # mismatch can be located in the splitter or in the segment classifier.
-import hashlib, json, os, pathlib, platform, sys, unicodedata, importlib.util
+import hashlib, json, os, pathlib, platform, re, sys, unicodedata, importlib.util
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_REF = pathlib.Path(r'C:/Users/ddogr/AppData/Local/Temp/claude/C--Users-ddogr-OneDrive-Desktop-Questions/'
@@ -47,6 +53,7 @@ fx = {
     'generator': 'scripts/gen-classify-cases.py',
     'reference': {'classify_final.py': sha(REF), 'classify_s3.py': sha(cf._P)},
     'python': platform.python_version(), 'unicodedata': unicodedata.unidata_version,
+    'maxSegmentNest': cf.MAX_SEGMENT_NEST,
 }
 
 # ---- shell: the final self-test
@@ -224,8 +231,68 @@ E = [
     # Python's strip() removes \x1c-\x1f and \x85 but not the BOM ﻿ (JS trim() is the opposite)
     'cat <<EOF > f\nrm x\nEOF\x85\nnode y', 'cat <<EOF > f\nrm x\n﻿EOF\nnode y', "@'\nx\n\x1c'@ ; node y",
     'python3.٣ a.py',
+    # Unicode 16.0 additions that Python 3.13 (Unicode 15.1) does not know: a digit (python3.N, an fd before >) and a
+    # letter (a function name). The port must answer as the reference does, whatever its JS engine's Unicode version.
+    'python3.\U0001CCF1 a.py', 'echo done \U0001CCF2> err.log', 'gꟋ() { rm -rf x; }; g',
+    'echo a \U00010D40>&\U00010D41 b > f', 'x\U00016130() { node a; }; x',
 ]
 fx['edge'] = [shell_case(c) for c in E]
+
+# ---- nest: P4, the segment-nesting bound (recipes; cmd = pre * k + mid + post * k)
+N = cf.MAX_SEGMENT_NEST
+NEST = []
+def nest(pre, mid, post, ks):
+    for k in ks:
+        cmd = pre * k + mid + post * k
+        NEST.append({'pre': pre, 'mid': mid, 'post': post, 'k': k, 'py': out(cf.classify_shell(cmd))})
+around = [0, 1, N - 3, N - 2, N - 1, N, N + 1, N + 2]
+nest('$a = ', 'rm x', '', around + [1200, 2000])                 # `$x = <command>` (R5): k levels = k + 1 open calls
+nest('$a += ', 'Get-Content f', '', around)
+nest('A=$(', 'ls', ')', around + [1200])                          # X=$( ... ) (R5), one token per level
+nest('a=$( ', 'rm x', '', around + [2000])                        # X=$( with spaces: k tokens re-joined per level
+nest('X=(', 'node a.js', '', around)                              # X=( ... (R5)
+nest('bash -c "', '$a = rm x', '"', [0, 1])                       # R2 inside R5-free text
+nest('', 'bash -c "' + '$a = ' * (N - 3) + 'rm x"', '', [0])      # R2 opens a level too: 1 + 1 + (N - 3) = N - 1
+nest('', 'bash -c "' + '$a = ' * (N - 2) + 'rm x"', '', [0])      # = N open calls: still classified
+nest('', 'bash -c "' + '$a = ' * (N - 1) + 'rm x"', '', [0])      # one more would open: no move
+nest('', 'ls; ' + '$a = ' * N + 'rm x', '', [0])                 # the other step still counts
+nest('', '$a = ' * N + 'rm x | node b', '', [0])                 # an unclassified first stage ends the pipeline
+nest('', 'X=$( ' + '$a = ' * (N - 2) + 'curl u)', '', [0])       # mixed R5 branches: 1 + 1 + (N - 2) = N open
+nest('', 'X=$( ' + '$a = ' * (N - 1) + 'curl u)', '', [0])       # one more would open: no move
+nest('', 'X=$($a = curl u)', '', [0])                             # (lstrip('$(') also eats the $ of $a: no move)
+fx['nest'] = NEST
+assert any(c['py'][1] is None for c in NEST) and any(c['py'][1] is not None and c['k'] == N - 1 for c in NEST)
+
+# ---- batchStations: every fixture batch and every one-call batch, at every station kind (reference classify_batch)
+STATIONS = [None] + cf.PRECEDENCE + sorted(c3.LIBRARY_KINDS - set(cf.PRECEDENCE))
+BS = [b['args'][0] for b in fx['batch'] if b['args'][0]]           # the batch cases' call lists (results unused)
+TS = ['ToolSearch', {'query': 'q'}, 't']
+for calls in ([TS], [TS, ['Read', {}, 'r']], [['Read', {}, 'r'], TS], [TS, ['Skill', {}, 's']], [['Skill', {}, 's'], TS],
+              [TS, ['Foo', {}, 'f']], [['Foo', {}, 'f'], TS], [TS, ['Bash', {'command': 'git log -3'}, 'g']],
+              [TS, ['Bash', {'command': 'npm test'}, 'n']], [['WebSearch', {}, 'w'], TS], [TS, ['WebFetch', {}, 'w']],
+              [TS, ['Bash', {'command': 'cd x'}, 'c']], [['Bash', {'command': 'cd x'}, 'c'], TS], [TS, TS],
+              [TS, ['Skill', {}, 's'], ['Read', {}, 'r']], [['Agent', {'run_in_background': True}, 'a'], TS],
+              [['Agent', {'run_in_background': False}, 'a'], TS], [TS, ['SendMessage', {}, 'm']], [TS, ['ListAgents', {}, 'l']]):
+    BS.append(calls)
+for t in fx['tools']:                                             # every tool branch as a one-call batch
+    name, inp, cur, res = t['args']
+    if res == '' and cur is None: BS.append([[name, inp, 'x']])
+_seen = set(); BS = [c for c in BS if not (json.dumps(c) in _seen or _seen.add(json.dumps(c)))]
+fx['batchStations'] = {'stations': STATIONS, 'cases': [
+    {'calls': calls, 'py': [out(cf.classify_batch([tuple(x) for x in calls], st)) for st in STATIONS]} for calls in BS]}
+
+# ---- unicode: Python's \d and \w over every code point, as inclusive [first, last] ranges
+def ranges(rx):
+    r = re.compile(rx); res = []; start = prev = None
+    for cp in range(0x110000):
+        if r.fullmatch(chr(cp)):
+            if start is None: start = cp
+            prev = cp
+        elif start is not None:
+            res.append([start, prev]); start = None
+    if start is not None: res.append([start, prev])
+    return res
+fx['unicode'] = {'d': ranges(r'\d'), 'w': ranges(r'\w')}
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 OUT.write_text(json.dumps(fx, ensure_ascii=True, indent=1) + '\n', encoding='utf-8', newline='\n')

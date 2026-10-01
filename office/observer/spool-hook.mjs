@@ -7,22 +7,38 @@
 //   2. reads all of stdin;
 //   3. parses it; on failure (empty, malformed, not an object, over 32 MB, stdin not closed within 5 s) it writes
 //      {v,ts,ev:"parse_error"} and nothing else;
-//   4. classifies the tool call with classify.mjs: only a category (object kind + activity id) leaves the process;
+//   4. classifies the tool call with classify.mjs: only a category (object kind + activity id) leaves the process.
+//      A Bash / PowerShell command longer than MAX_CLASSIFY_COMMAND is not classified (the record has no k / a);
+//      the classifier's memory is linear in the command, and this caps it (longest real command: 22,835 chars);
 //   5. appends ONE allowlisted JSON line, in a single write, to <home>/spool/events-YYYY-MM-DD.jsonl
 //      (YYYY-MM-DD = the local date of ts);
 //   6. prints NOTHING to stdout or stderr and ALWAYS exits 0. An async hook's output would be handed to the model
 //      on its next turn, so the observer must not speak.
 //
-// Record allowlist (v1): v ts sid ev aid at k a tu bg to st ch run intr n bt r. Never written: tool_input,
-// tool_response, prompts, descriptions, last_assistant_message, error text, paths, commands, URLs, tool names,
-// background_tasks description/command/name. Every written value is checked, not just its key:
+// Record allowlist (v1): v ts sid ev aid at k a tsr tu bg to st ch tid run err intr n bt r. Never written:
+// tool_input, tool_response (beyond the checked status / ids / error flag below), prompts, descriptions,
+// last_assistant_message, error text, paths, commands, URLs, tool names, background_tasks description/command/name.
+// Every written value is checked, not just its key:
 //   k, a        closed sets from classify.mjs (KINDS, ACTIVITY_ID)
+//   tsr         true when a ToolSearch call would win this batch at a library station (PostToolBatch only); the
+//               observer applies the library rule with classify.mjs resolveAtStation
 //   ev          a closed set of event names, else "other"
-//   st, r, bt.type, bt.status   a short identifier token (letters, digits, _ -; max 32), else dropped
-//   sid, aid, at, ch, run, bt.id    [A-Za-z0-9_.:-]{1,64}, else dropped (at may also be "" for internal agents)
+//   st          PostToolUse(Agent|Workflow) tool_response.status, read only from the structured tool_response
+//               OBJECT: a closed set (Agent: completed, async_launched, remote_launched; Workflow: async_launched,
+//               remote_launched); any other string status is written as "other"
+//   err         true when a Workflow's tool_response.error is a non-empty string (the script failed its syntax
+//               check and never runs); the error text is never written
+//   r, bt.type, bt.status   a short identifier token (letters, digits, _ -; max 32), else dropped; the documented
+//               labels "cloud session" and "MCP task" are written as cloud-session and mcp-task
+//   sid, aid, ch, tid, run, bt.id   the raw id when it is [A-Za-z0-9_.:-]{1,64}; any other non-empty string is
+//               written as "#" + 12 hex characters of sha256(the id without an "agent-" prefix), so it is never
+//               confused with a raw id, cannot carry text, and still joins across fields and events
+//   at          [A-Za-z0-9_.:-]{1,64} or "" (internal agents), else dropped
 //   tu          10 hex characters of sha256(tool_use_id)
 //   ts          ms since the epoch at which this hook process started (performance.timeOrigin)
-// aid and ch have any "agent-" prefix removed, so a child's ch joins its own aid. bt ids are kept raw (probe 5).
+// Ids are written raw, with any "agent-" prefix KEPT (plan probe 3 asks whether one exists and where); the observer
+// normalises before joining aid / ch / bt.id. SubagentStop's bt describes the PARENT session's background tasks
+// (hooks.md SubagentStop input), never the stopping subagent's own.
 //
 // <home> = UNIVERSE_OFFICE_HOME (absolute path; tests) or C:/Users/ddogr/.universe-office. The installed copy
 // lives in <home>/bin/ next to classify.mjs (office/observer/install-hook.mjs puts both there).
@@ -43,6 +59,7 @@ const MAX_STDIN = 32 * 1024 * 1024;
 const STDIN_DEADLINE_MS = 5000;
 const MAX_LINE = 4096;            // bytes incl. the newline; only bt can be trimmed to fit
 const MAX_BT = 50;
+const MAX_CLASSIFY_COMMAND = 65536;   // chars; longer shell commands are not classified (no k / a)
 
 if (process.env.OFFICE_AGENT_ID) quit();
 const HOME = process.env.UNIVERSE_OFFICE_HOME || DEFAULT_HOME;
@@ -57,28 +74,30 @@ const RE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 // plan 5.5 (PermissionRequest, StopFailure) and a few well-known ones. Anything else is written as "other".
 const EVENTS = new Set(['SubagentStart', 'SubagentStop', 'PreToolUse', 'PostToolBatch', 'PostToolUse', 'PostToolUseFailure',
   'Stop', 'SessionEnd', 'PermissionRequest', 'StopFailure', 'SessionStart', 'UserPromptSubmit', 'Notification', 'PreCompact']);
+const STATUSES = new Map([['Agent', new Set(['completed', 'async_launched', 'remote_launched'])],   // AgentOutput
+  ['Workflow', new Set(['async_launched', 'remote_launched'])]]);                                  // WorkflowOutput
+const BT_LABELS = new Map([['cloud session', 'cloud-session'], ['MCP task', 'mcp-task']]);         // hooks.md Stop input
 const isDict = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const own = (o, k) => (isDict(o) && Object.hasOwn(o, k) ? o[k] : undefined);
-const idField = (x) => (typeof x === 'string' && RE_ID.test(x) ? x : undefined);
+const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+/** An id field: the raw id when it is a plain id, else "#" + 12 hex of the id's hash (prefix-normalised). */
+const idOut = (x) => {
+  if (typeof x !== 'string' || x.length === 0) return undefined;
+  if (RE_ID.test(x)) return x;
+  return '#' + sha(x.startsWith('agent-') ? x.slice(6) : x).slice(0, 12);
+};
 const token = (x) => (typeof x === 'string' && RE_TOKEN.test(x) ? x : undefined);
-const agentId = (x) => (typeof x === 'string' ? idField(x.startsWith('agent-') ? x.slice(6) : x) : undefined);
-const agentType = (x) => (x === '' ? '' : idField(x));
-const toolUseHash = (x) => (typeof x === 'string' && x.length > 0
-  ? createHash('sha256').update(x, 'utf8').digest('hex').slice(0, 10) : undefined);
+const btLabel = (x) => (typeof x === 'string' && BT_LABELS.has(x) ? BT_LABELS.get(x) : token(x));
+const agentType = (x) => (x === '' ? '' : (typeof x === 'string' && RE_ID.test(x) ? x : undefined));
+const toolUseHash = (x) => (typeof x === 'string' && x.length > 0 ? sha(x).slice(0, 10) : undefined);
 const isShell = (name) => name === 'Bash' || name === 'PowerShell';
-
-/** tool_response as an object: PostToolUse sends one; PostToolBatch may send it serialized. Never written. */
-function responseObject(resp) {
-  if (isDict(resp)) return resp;
-  if (typeof resp === 'string' && resp.length <= 1_000_000 && /^\s*\{/.test(resp)) {
-    try { const o = JSON.parse(resp); return isDict(o) ? o : null; } catch { return null; }
-  }
-  return null;
-}
+/** A Bash / PowerShell call whose command is too long to classify. */
+const tooLong = (name, input) => isShell(name) && typeof own(input, 'command') === 'string'
+  && own(input, 'command').length > MAX_CLASSIFY_COMMAND;
 
 // ---------------------------------------------------------------------------------------------- record
 function setCategory(rec, C, name, input, agentStatus) {
-  if (!C) return;
+  if (!C || tooLong(name, input)) return;
   try {
     const [act, kind] = C.classifyCallAtHook(name, input, agentStatus);
     if (kind !== null && C.KINDS.has(kind)) rec.k = kind;
@@ -87,20 +106,23 @@ function setCategory(rec, C, name, input, agentStatus) {
   } catch { /* the reference raises here too (malformed tool_input): no category */ }
 }
 
+// PostToolBatch: tool_response is the tool_result text the model saw (hooks.md, PostToolBatch input), not the
+// structured output, so nothing is read from it: an Agent call in a batch is classified by the hook-time rule.
 function setBatchCategory(rec, C, calls) {
   if (!C) return;
   try {
     const list = calls.map((c) => {
       if (!isDict(c)) throw new TypeError('tool call is not an object');
-      const name = own(c, 'tool_name');
-      const status = name === 'Agent' ? token(own(responseObject(own(c, 'tool_response')), 'status')) ?? null : null;
-      return [name, own(c, 'tool_input'), status];
+      const name = own(c, 'tool_name'), input = own(c, 'tool_input');
+      if (tooLong(name, input)) throw new RangeError('command too long to classify');
+      return [name, input, null];
     });
-    const [act, kind] = C.classifyBatchAtHook(list);
+    const { result: [act, kind], tsr } = C.batchAtHook(list);
     if (kind !== null && C.KINDS.has(kind)) rec.k = kind;
     const id = C.ACTIVITY_ID.get(act);
     if (id) rec.a = id;
-  } catch { /* the reference raises for a malformed call: no category */ }
+    if (tsr === true) rec.tsr = true;
+  } catch { /* the reference raises for a malformed call; a too-long command: no category */ }
 }
 
 function setToolUse(rec, ev) {
@@ -115,7 +137,7 @@ function setBackgroundTasks(rec, tasks) {
     if (out.length >= MAX_BT) break;
     if (!isDict(t)) continue;
     const e = {};
-    const id = idField(own(t, 'id')), type = token(own(t, 'type')), status = token(own(t, 'status'));
+    const id = idOut(own(t, 'id')), type = btLabel(own(t, 'type')), status = btLabel(own(t, 'status'));
     if (id !== undefined) e.id = id;
     if (type !== undefined) e.type = type;
     if (status !== undefined) e.status = status;
@@ -127,12 +149,12 @@ function setBackgroundTasks(rec, tasks) {
 /** One spool record from one parsed hook payload. Key order = the allowlist order. */
 function buildRecord(ev, C) {
   const rec = { v: VERSION, ts: TS };
-  const sid = idField(own(ev, 'session_id'));
+  const sid = idOut(own(ev, 'session_id'));
   if (sid !== undefined) rec.sid = sid;
   const name = own(ev, 'hook_event_name');
   const evName = typeof name === 'string' && EVENTS.has(name) ? name : 'other';
   rec.ev = evName;
-  const aid = agentId(own(ev, 'agent_id'));
+  const aid = idOut(own(ev, 'agent_id'));
   if (aid !== undefined) rec.aid = aid;
 
   switch (evName) {
@@ -140,7 +162,7 @@ function buildRecord(ev, C) {
     case 'SubagentStop': {
       const at = agentType(own(ev, 'agent_type'));
       if (at !== undefined) rec.at = at;
-      if (evName === 'SubagentStop') setBackgroundTasks(rec, own(ev, 'background_tasks'));
+      if (evName === 'SubagentStop') setBackgroundTasks(rec, own(ev, 'background_tasks'));   // the PARENT's tasks
       break;
     }
     case 'PreToolUse': {
@@ -156,19 +178,26 @@ function buildRecord(ev, C) {
       break;
     }
     case 'PostToolUse': {
+      // Only the structured tool_response OBJECT (AgentOutput / WorkflowOutput) is read; a string response is text,
+      // never parsed. Status, ids and the error flag are the only things taken from it.
       const toolName = own(ev, 'tool_name');
-      const resp = toolName === 'Agent' || toolName === 'Workflow' ? responseObject(own(ev, 'tool_response')) : null;
-      const status = resp ? token(own(resp, 'status')) : undefined;
-      setCategory(rec, C, toolName, own(ev, 'tool_input'), toolName === 'Agent' ? status ?? null : null);
+      const known = STATUSES.get(toolName);
+      const resp = known && isDict(own(ev, 'tool_response')) ? own(ev, 'tool_response') : null;
+      const raw = resp ? own(resp, 'status') : undefined;
+      const status = typeof raw === 'string' ? (known.has(raw) ? raw : 'other') : undefined;
+      const agentStatus = toolName === 'Agent' && status !== undefined && status !== 'other' ? status : null;
+      setCategory(rec, C, toolName, own(ev, 'tool_input'), agentStatus);
       setToolUse(rec, ev);
       if (status !== undefined) rec.st = status;
-      if (toolName === 'Agent') {
-        const ch = agentId(own(resp, 'agentId'));
+      if (resp) {
+        const ch = toolName === 'Agent' ? idOut(own(resp, 'agentId')) : undefined;
         if (ch !== undefined) rec.ch = ch;
-      }
-      if (toolName === 'Workflow') {
-        const run = idField(own(resp, 'runId'));
+        const tid = idOut(own(resp, 'taskId'));                    // remote_launched Agent; every Workflow
+        if (tid !== undefined) rec.tid = tid;
+        const run = toolName === 'Workflow' ? idOut(own(resp, 'runId')) : undefined;
         if (run !== undefined) rec.run = run;
+        const err = own(resp, 'error');
+        if (toolName === 'Workflow' && typeof err === 'string' && err.length > 0) rec.err = true;
       }
       break;
     }
