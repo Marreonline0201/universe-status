@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useStatusSocket } from './hooks/useStatusSocket'
 import { useOfficeSocket } from './hooks/useOfficeSocket'
 import { DocsPage } from './components/DocsPage'
-import { PixelOffice } from './components/office/PixelOffice'
+import { WorkerOffice } from './components/office/WorkerOffice'
 import { ConnectionMap } from './components/ConnectionMap'
 import { FluidTest } from './components/FluidTest'
 import { ReportsPage } from './components/reports/ReportsPage'
@@ -14,7 +14,7 @@ type View = 'docs' | 'connections' | 'agents' | 'reports' | 'lab' | 'fluid'
 const VIEWS: { id: View; label: string }[] = [
   { id: 'docs',        label: 'GAME GUIDE' },
   { id: 'connections',  label: 'CONNECTIONS' },
-  { id: 'agents',      label: 'AGENT OFFICE' },
+  { id: 'agents',      label: 'WORKER OFFICE' },
   { id: 'reports',     label: 'REPORTS' },
   { id: 'lab',         label: 'LABORATORY' },
   { id: 'fluid',       label: 'FLUID TEST' },
@@ -43,10 +43,12 @@ export function App() {
   const world = useStatusSocket()
   const office = useOfficeSocket()
   const [view, setView] = useState<View>(initialView)
+  // The WORKER OFFICE stays mounted once opened (hidden with display:none on other tabs), so its map and
+  // pre-render are built once and survive tab switches (plan §5.3).
+  const [officeMounted, setOfficeMounted] = useState(() => view === 'agents')
   const [initialExp] = useState<string | null>(initialExperiment)
   const [labFocusRequest, setLabFocusRequest] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const hasBlocked = office.state.agents.some(a => a.status === 'blocked')
   const pendingOwner = office.state.requests.filter(r => r.status === 'pending').length
 
   return (
@@ -86,11 +88,10 @@ export function App() {
 
         {VIEWS.map(v => {
           const isActive = view === v.id
-          const showAlert = v.id === 'agents' && hasBlocked
           return (
             <button
               key={v.id}
-              onClick={() => setView(v.id)}
+              onClick={() => { setView(v.id); if (v.id === 'agents') setOfficeMounted(true) }}
               style={{
                 background: isActive ? 'rgba(0,180,255,0.1)' : 'none',
                 border: `1px solid ${isActive ? 'rgba(0,180,255,0.4)' : 'rgba(0,180,255,0.1)'}`,
@@ -106,17 +107,6 @@ export function App() {
               }}
             >
               {v.label}
-              {showAlert && (
-                <span style={{
-                  position: 'absolute',
-                  top: -4, right: -4,
-                  width: 8, height: 8,
-                  borderRadius: '50%',
-                  background: '#ffb830',
-                  boxShadow: '0 0 6px #ffb830',
-                  animation: 'blockedPulse 1.2s ease-in-out infinite',
-                }} />
-              )}
               {v.id === 'reports' && pendingOwner > 0 && (
                 <span style={{
                   position: 'absolute',
@@ -175,9 +165,9 @@ export function App() {
       <div style={{ flex: 1, minHeight: 0, position: 'relative', zIndex: 5, overflow: 'hidden' }}>
         {view === 'docs' && <DocsPage />}
         {view === 'connections' && <ConnectionMap />}
-        {view === 'agents' && (
-          <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)' }}>
-            <PixelOffice office={office} />
+        {officeMounted && (
+          <div style={{ height: '100%', background: 'rgba(4,8,18,0.88)', display: view === 'agents' ? 'block' : 'none' }}>
+            <WorkerOffice active={view === 'agents'} />
           </div>
         )}
         {view === 'reports' && (

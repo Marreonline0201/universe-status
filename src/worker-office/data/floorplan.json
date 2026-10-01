@@ -1,0 +1,3648 @@
+{
+ "tile": 16,
+ "width": 34,
+ "height": 23,
+ "legend": {
+  "#": {
+   "name": "wall",
+   "color": "#2e2620",
+   "walkable": false
+  },
+  "~": {
+   "name": "window in an outer wall",
+   "color": "#9ec7d8",
+   "walkable": false
+  },
+  "+": {
+   "name": "interior opening (doorway, 2+ tiles wide)",
+   "color": "#7a6a55",
+   "walkable": true
+  },
+  ":": {
+   "name": "corridor floor (travertine)",
+   "color": "#5a544c",
+   "walkable": true
+  },
+  ".": {
+   "name": "room floor (finish per room: see zones[].floor)",
+   "color": "#6b4f33",
+   "walkable": true
+  },
+  ",": {
+   "name": "sidewalk",
+   "color": "#8e8a82",
+   "walkable": true
+  },
+  "q": {
+   "name": "arrival slot (sidewalk; released front to back)",
+   "color": "#a39d92",
+   "walkable": true
+  },
+  "u": {
+   "name": "use spot: stand here facing N to use the object directly N",
+   "color": "#9c8a62",
+   "walkable": true
+  },
+  "*": {
+   "name": "place tile: reading place / wait / queue / hold (data only; drawn as the room floor)",
+   "color": "#6f7f9a",
+   "walkable": true
+  },
+  "D": {
+   "name": "front door leaf: (16,19) OUT, (17,19) IN (drawn on the state layer)",
+   "color": "#aad6de",
+   "walkable": true
+  },
+  "m": {
+   "name": "doormat",
+   "color": "#8a6a48",
+   "walkable": true
+  },
+  "%": {
+   "name": "planter (map border)",
+   "color": "#3a6b42",
+   "walkable": false
+  },
+  "_": {
+   "name": "street (map border)",
+   "color": "#3a3d42",
+   "walkable": false
+  },
+  "A": {
+   "name": "historyShelf",
+   "color": "#2f5a3e",
+   "walkable": false
+  },
+  "B": {
+   "name": "bookshelf",
+   "color": "#6b3f2a",
+   "walkable": false
+  },
+  "C": {
+   "name": "fileCabinet",
+   "color": "#8a847a",
+   "walkable": false
+  },
+  "E": {
+   "name": "espressoMachine",
+   "color": "#2e2e34",
+   "walkable": false
+  },
+  "F": {
+   "name": "fridge",
+   "color": "#9aa4ac",
+   "walkable": false
+  },
+  "G": {
+   "name": "readingLedge",
+   "color": "#8a6a4a",
+   "walkable": false
+  },
+  "H": {
+   "name": "armchairN",
+   "color": "#2f4f3d",
+   "walkable": false
+  },
+  "I": {
+   "name": "pigeonholes",
+   "color": "#7a5c3e",
+   "walkable": false
+  },
+  "J": {
+   "name": "postShelf",
+   "color": "#b08a5a",
+   "walkable": false
+  },
+  "K": {
+   "name": "kanbanBoard",
+   "color": "#eef1f4",
+   "walkable": false
+  },
+  "L": {
+   "name": "lectern",
+   "color": "#9c7c58",
+   "walkable": false
+  },
+  "M": {
+   "name": "manualsShelf",
+   "color": "#1971c2",
+   "walkable": false
+  },
+  "N": {
+   "name": "cardCatalog",
+   "color": "#7d5a3a",
+   "walkable": false
+  },
+  "O": {
+   "name": "sofaN",
+   "color": "#3f6a52",
+   "walkable": false
+  },
+  "P": {
+   "name": "pcDesk",
+   "color": "#c8ccd4",
+   "walkable": false
+  },
+  "Q": {
+   "name": "serverRack",
+   "color": "#1c1f26",
+   "walkable": false
+  },
+  "R": {
+   "name": "frontDesk",
+   "color": "#b9ad97",
+   "walkable": false
+  },
+  "S": {
+   "name": "sink",
+   "color": "#7e8890",
+   "walkable": false
+  },
+  "T": {
+   "name": "readingTable",
+   "color": "#5c4230",
+   "walkable": false
+  },
+  "U": {
+   "name": "ups",
+   "color": "#343a46",
+   "walkable": false
+  },
+  "V": {
+   "name": "shredder",
+   "color": "#2b2b2b",
+   "walkable": false
+  },
+  "W": {
+   "name": "waterCooler",
+   "color": "#74c0fc",
+   "walkable": false
+  },
+  "X": {
+   "name": "benchTerminal",
+   "color": "#4a4f57",
+   "walkable": false
+  },
+  "Y": {
+   "name": "copier",
+   "color": "#d8d2c6",
+   "walkable": false
+  },
+  "c": {
+   "name": "receptionChair",
+   "color": "#42544a",
+   "walkable": false
+  },
+  "f": {
+   "name": "floorLamp",
+   "color": "#e8c87a",
+   "walkable": false
+  },
+  "h": {
+   "name": "taskChairN",
+   "color": "#33413a",
+   "walkable": false
+  },
+  "i": {
+   "name": "inOutBoard",
+   "color": "#b8e0c2",
+   "walkable": false
+  },
+  "n": {
+   "name": "noticeBoard",
+   "color": "#b5835a",
+   "walkable": false
+  },
+  "o": {
+   "name": "wallClock",
+   "color": "#f1efe8",
+   "walkable": false
+  },
+  "p": {
+   "name": "plant",
+   "color": "#2f9e44",
+   "walkable": false
+  },
+  "t": {
+   "name": "meetingTable",
+   "color": "#4a3a2c",
+   "walkable": false
+  },
+  "v": {
+   "name": "visitorChair",
+   "color": "#556b5f",
+   "walkable": false
+  },
+  "w": {
+   "name": "woodChairN",
+   "color": "#6e5240",
+   "walkable": false
+  },
+  "y": {
+   "name": "printer",
+   "color": "#e8ecef",
+   "walkable": false
+  },
+  "z": {
+   "name": "coatStand",
+   "color": "#5a6a7a",
+   "walkable": false
+  }
+ },
+ "rows": [
+  "####~~####################~~##~~##",
+  "#BBBGGBBB#CCCCCCCCCCCCCC#pPPPPPPp#",
+  "#uuuuuuuu#uuuuuuuuuuuuuu#*hhhhhh*#",
+  "#........#..............#........#",
+  "#*.NNMM..#*.LCCC..CCCL.*#..XXXX.*#",
+  "#*.uuuu..+..uuuu..uuuu..+..uuuu.*#",
+  "#........+..............+........#",
+  "#*.TTTT..#*.AAAA..AAAA.*#..XXXX.*#",
+  "#*.wwww..#*.uuuu..uuuu.*#..uuuu.*#",
+  "#p.......#p*..........*p#........#",
+  "#######++######++++##nn##++#######",
+  "#::::::::::::::::::::::::::::::::#",
+  "#::::::::::::::::::::::::::::::::#",
+  "#KKK++#####++#o++++ii########++###",
+  "#uuu..#FSEW..#.....uuyJYVIII#..QQ#",
+  "#.....#uuuu..#c......uuuuuuu#..uu#",
+  "#ttt.*#......#RR*...........#....#",
+  "#www.*#......#uu*..****.....#.**.#",
+  "#....p#HOOOfH#.....zvv.****p#...U#",
+  "##~~####~~~#####DD##~~##~~########",
+  "%,,,,,,,,,,,,,,,mmqqqqqqqqqq,,,,,%",
+  "%,,,,,,,,,,,,,,,,,qqqqqqqqqq,,,,,%",
+  "__________________________________"
+ ],
+ "objects": [
+  {
+   "id": "cab-01",
+   "name": "fileCabinet",
+   "x": 10,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 10,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-02",
+   "name": "fileCabinet",
+   "x": 11,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 11,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-03",
+   "name": "fileCabinet",
+   "x": 12,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 12,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-04",
+   "name": "fileCabinet",
+   "x": 13,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 13,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-05",
+   "name": "fileCabinet",
+   "x": 14,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 14,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-06",
+   "name": "fileCabinet",
+   "x": 15,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 15,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-07",
+   "name": "fileCabinet",
+   "x": 16,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 16,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-08",
+   "name": "fileCabinet",
+   "x": 17,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 17,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-09",
+   "name": "fileCabinet",
+   "x": 18,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 18,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-10",
+   "name": "fileCabinet",
+   "x": 19,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 19,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-11",
+   "name": "fileCabinet",
+   "x": 20,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 20,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-12",
+   "name": "fileCabinet",
+   "x": 21,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 21,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-13",
+   "name": "fileCabinet",
+   "x": 22,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 22,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-14",
+   "name": "fileCabinet",
+   "x": 23,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 23,
+     "y": 2,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-15",
+   "name": "fileCabinet",
+   "x": 13,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 13,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-16",
+   "name": "fileCabinet",
+   "x": 14,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 14,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-17",
+   "name": "fileCabinet",
+   "x": 15,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 15,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-18",
+   "name": "fileCabinet",
+   "x": 18,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 18,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-19",
+   "name": "fileCabinet",
+   "x": 19,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 19,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "cab-20",
+   "name": "fileCabinet",
+   "x": 20,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 20,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fileCabinet",
+   "char": "C",
+   "class": "functional",
+   "tileKinds": [
+    "fileCabinet"
+   ]
+  },
+  {
+   "id": "hist-1",
+   "name": "historyShelf",
+   "x": 12,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 12,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-2",
+   "name": "historyShelf",
+   "x": 13,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 13,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-3",
+   "name": "historyShelf",
+   "x": 14,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 14,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-4",
+   "name": "historyShelf",
+   "x": 15,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 15,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-5",
+   "name": "historyShelf",
+   "x": 18,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 18,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-6",
+   "name": "historyShelf",
+   "x": 19,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 19,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-7",
+   "name": "historyShelf",
+   "x": 20,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 20,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "hist-8",
+   "name": "historyShelf",
+   "x": 21,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 21,
+     "y": 8,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "historyShelf",
+   "char": "A",
+   "class": "functional",
+   "tileKinds": [
+    "historyShelf"
+   ],
+   "use": "fetch-then-read: pull a ledger here (~1.2 s), then read at the nearest free records reading place"
+  },
+  {
+   "id": "lectern-W",
+   "name": "lectern",
+   "x": 12,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 12,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "lectern",
+   "char": "L",
+   "class": "functional",
+   "tileKinds": [
+    "lectern"
+   ]
+  },
+  {
+   "id": "lectern-E",
+   "name": "lectern",
+   "x": 21,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 21,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "lectern",
+   "char": "L",
+   "class": "functional",
+   "tileKinds": [
+    "lectern"
+   ]
+  },
+  {
+   "id": "book-1",
+   "name": "bookshelf",
+   "x": 1,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 1,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "book-2",
+   "name": "bookshelf",
+   "x": 2,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 2,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "book-3",
+   "name": "bookshelf",
+   "x": 3,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 3,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "book-4",
+   "name": "bookshelf",
+   "x": 6,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 6,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "book-5",
+   "name": "bookshelf",
+   "x": 7,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 7,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "book-6",
+   "name": "bookshelf",
+   "x": 8,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 8,
+     "y": 2,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "bookshelf",
+   "char": "B",
+   "class": "functional",
+   "tileKinds": [
+    "bookshelf"
+   ],
+   "use": "fetch-then-read: pull a book here, then read at the nearest free library reading place"
+  },
+  {
+   "id": "ledge",
+   "name": "readingLedge",
+   "x": 4,
+   "y": 1,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 4,
+     "y": 2,
+     "facing": "N",
+     "pose": "readU",
+     "how": "stand"
+    },
+    {
+     "x": 5,
+     "y": 2,
+     "facing": "N",
+     "pose": "readU",
+     "how": "stand"
+    }
+   ],
+   "kind": "readingLedge",
+   "char": "G",
+   "class": "functional",
+   "tileKinds": [
+    "readingLedgeW",
+    "readingLedgeE"
+   ],
+   "use": "library reading place (standing)"
+  },
+  {
+   "id": "catalog",
+   "name": "cardCatalog",
+   "x": 3,
+   "y": 4,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 3,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    },
+    {
+     "x": 4,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "cardCatalog",
+   "char": "N",
+   "class": "functional",
+   "tileKinds": [
+    "cardCatalogW",
+    "cardCatalogE"
+   ],
+   "use": "fetch-then-read: flick cards + jot a call slip here, then read at a library reading place"
+  },
+  {
+   "id": "manuals",
+   "name": "manualsShelf",
+   "x": 5,
+   "y": 4,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 5,
+     "y": 5,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    },
+    {
+     "x": 6,
+     "y": 5,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "manualsShelf",
+   "char": "M",
+   "class": "functional",
+   "tileKinds": [
+    "manualsShelfW",
+    "manualsShelfE"
+   ],
+   "use": "fetch-then-read: pull a binder here, then read at a library reading place"
+  },
+  {
+   "id": "reading-table",
+   "name": "readingTable",
+   "x": 3,
+   "y": 7,
+   "w": 4,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 3,
+     "y": 8,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 3,
+      "y": 9
+     },
+     "how": "sit"
+    },
+    {
+     "x": 4,
+     "y": 8,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 4,
+      "y": 9
+     },
+     "how": "sit"
+    },
+    {
+     "x": 5,
+     "y": 8,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 5,
+      "y": 9
+     },
+     "how": "sit"
+    },
+    {
+     "x": 6,
+     "y": 8,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 6,
+      "y": 9
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "readingTable",
+   "char": "T",
+   "class": "functional",
+   "tileKinds": [
+    "readingTableW",
+    "readingTableC",
+    "readingTableC",
+    "readingTableE"
+   ],
+   "use": "library reading place (seated)"
+  },
+  {
+   "id": "desk-1",
+   "name": "pcDesk",
+   "x": 26,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 26,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 26,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "desk-2",
+   "name": "pcDesk",
+   "x": 27,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 27,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 27,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "desk-3",
+   "name": "pcDesk",
+   "x": 28,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 28,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 28,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "desk-4",
+   "name": "pcDesk",
+   "x": 29,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 29,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 29,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "desk-5",
+   "name": "pcDesk",
+   "x": 30,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 30,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 30,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "desk-6",
+   "name": "pcDesk",
+   "x": 31,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 31,
+     "y": 2,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 31,
+      "y": 3
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "pcDesk",
+   "char": "P",
+   "class": "functional",
+   "tileKinds": [
+    "pcDesk"
+   ]
+  },
+  {
+   "id": "meeting-table",
+   "name": "meetingTable",
+   "x": 1,
+   "y": 16,
+   "w": 3,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 1,
+     "y": 17,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 1,
+      "y": 18
+     },
+     "how": "sit"
+    },
+    {
+     "x": 2,
+     "y": 17,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 2,
+      "y": 18
+     },
+     "how": "sit"
+    },
+    {
+     "x": 3,
+     "y": 17,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 3,
+      "y": 18
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "meetingTable",
+   "char": "t",
+   "class": "functional",
+   "tileKinds": [
+    "meetingTableW",
+    "meetingTableC",
+    "meetingTableE"
+   ]
+  },
+  {
+   "id": "bench-1",
+   "name": "benchTerminal",
+   "x": 27,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 27,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-2",
+   "name": "benchTerminal",
+   "x": 28,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 28,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-3",
+   "name": "benchTerminal",
+   "x": 29,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 29,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-4",
+   "name": "benchTerminal",
+   "x": 30,
+   "y": 4,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 30,
+     "y": 5,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-5",
+   "name": "benchTerminal",
+   "x": 27,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 27,
+     "y": 8,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-6",
+   "name": "benchTerminal",
+   "x": 28,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 28,
+     "y": 8,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-7",
+   "name": "benchTerminal",
+   "x": 29,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 29,
+     "y": 8,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "bench-8",
+   "name": "benchTerminal",
+   "x": 30,
+   "y": 7,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 30,
+     "y": 8,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "benchTerminal",
+   "char": "X",
+   "class": "functional",
+   "tileKinds": [
+    "benchTerminal"
+   ]
+  },
+  {
+   "id": "kanban",
+   "name": "kanbanBoard",
+   "x": 1,
+   "y": 13,
+   "w": 3,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 1,
+     "y": 14,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    },
+    {
+     "x": 2,
+     "y": 14,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    },
+    {
+     "x": 3,
+     "y": 14,
+     "facing": "N",
+     "pose": "reachU",
+     "how": "stand"
+    }
+   ],
+   "kind": "kanbanBoard",
+   "char": "K",
+   "class": "functional",
+   "tileKinds": [
+    "kanbanBoardW",
+    "kanbanBoardC",
+    "kanbanBoardE"
+   ]
+  },
+  {
+   "id": "inout-board",
+   "name": "inOutBoard",
+   "x": 19,
+   "y": 13,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 19,
+     "y": 14,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    },
+    {
+     "x": 20,
+     "y": 14,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "inOutBoard",
+   "char": "i",
+   "class": "lifecycle",
+   "tileKinds": [
+    "inOutBoardW",
+    "inOutBoardE"
+   ]
+  },
+  {
+   "id": "pigeonholes",
+   "name": "pigeonholes",
+   "x": 25,
+   "y": 14,
+   "w": 3,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 25,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    },
+    {
+     "x": 26,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    },
+    {
+     "x": 27,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "pigeonholes",
+   "char": "I",
+   "class": "functional",
+   "tileKinds": [
+    "pigeonholesW",
+    "pigeonholesC",
+    "pigeonholesE"
+   ]
+  },
+  {
+   "id": "post-shelf",
+   "name": "postShelf",
+   "x": 22,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 22,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "postShelf",
+   "char": "J",
+   "class": "functional",
+   "tileKinds": [
+    "postShelf"
+   ]
+  },
+  {
+   "id": "copier",
+   "name": "copier",
+   "x": 23,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 23,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "copier",
+   "char": "Y",
+   "class": "functional",
+   "tileKinds": [
+    "copier"
+   ]
+  },
+  {
+   "id": "printer",
+   "name": "printer",
+   "x": 21,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 21,
+     "y": 15,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "printer",
+   "char": "y",
+   "class": "lifecycle",
+   "tileKinds": [
+    "printer"
+   ]
+  },
+  {
+   "id": "shredder",
+   "name": "shredder",
+   "x": 24,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 24,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "shredder",
+   "char": "V",
+   "class": "functional",
+   "tileKinds": [
+    "shredder"
+   ]
+  },
+  {
+   "id": "front-desk",
+   "name": "frontDesk",
+   "x": 14,
+   "y": 16,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 14,
+     "y": 17,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    },
+    {
+     "x": 15,
+     "y": 17,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand"
+    }
+   ],
+   "kind": "frontDesk",
+   "char": "R",
+   "class": "lifecycle",
+   "tileKinds": [
+    "frontDeskW",
+    "frontDeskE"
+   ]
+  },
+  {
+   "id": "rack-1",
+   "name": "serverRack",
+   "x": 31,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 31,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand",
+     "reserved": true
+    }
+   ],
+   "kind": "serverRack",
+   "char": "Q",
+   "class": "reserved: no tool maps here in the final tool map (machine checks go to the bench); activity LEDs stay live (aggregate of real tool events)",
+   "tileKinds": [
+    "serverRack"
+   ],
+   "use": "reserved: no tool maps here (machine checks run at the bench); rack LEDs = workers with a tool call in flight"
+  },
+  {
+   "id": "rack-2",
+   "name": "serverRack",
+   "x": 32,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 32,
+     "y": 15,
+     "facing": "N",
+     "pose": "useU",
+     "how": "stand",
+     "reserved": true
+    }
+   ],
+   "kind": "serverRack",
+   "char": "Q",
+   "class": "reserved: no tool maps here in the final tool map (machine checks go to the bench); activity LEDs stay live (aggregate of real tool events)",
+   "tileKinds": [
+    "serverRack"
+   ],
+   "use": "reserved: no tool maps here (machine checks run at the bench); rack LEDs = workers with a tool call in flight"
+  },
+  {
+   "id": "sofa",
+   "name": "sofaN",
+   "x": 8,
+   "y": 18,
+   "w": 3,
+   "h": 1,
+   "facing": "N",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 8,
+     "y": 18,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 8,
+      "y": 17
+     },
+     "how": "sit"
+    },
+    {
+     "x": 9,
+     "y": 18,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 9,
+      "y": 17
+     },
+     "how": "sit"
+    },
+    {
+     "x": 10,
+     "y": 18,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 10,
+      "y": 17
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "sofaN",
+   "char": "O",
+   "class": "lifecycle",
+   "tileKinds": [
+    "sofaNorthW",
+    "sofaNorthC",
+    "sofaNorthE"
+   ]
+  },
+  {
+   "id": "armchair-W",
+   "name": "armchairN",
+   "x": 7,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 7,
+     "y": 18,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 7,
+      "y": 17
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "armchairN",
+   "char": "H",
+   "class": "lifecycle",
+   "tileKinds": [
+    "armchairN"
+   ]
+  },
+  {
+   "id": "armchair-E",
+   "name": "armchairN",
+   "x": 12,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": true,
+   "interaction": [
+    {
+     "x": 12,
+     "y": 18,
+     "facing": "N",
+     "pose": "sit",
+     "sitFrom": {
+      "x": 12,
+      "y": 17
+     },
+     "how": "sit"
+    }
+   ],
+   "kind": "armchairN",
+   "char": "H",
+   "class": "lifecycle",
+   "tileKinds": [
+    "armchairN"
+   ]
+  },
+  {
+   "id": "fridge",
+   "name": "fridge",
+   "x": 7,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [
+    {
+     "x": 7,
+     "y": 15,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "fridge",
+   "char": "F",
+   "class": "decor (filler if opted in)",
+   "tileKinds": [
+    "fridge"
+   ],
+   "use": "lounge overflow: stand here WAITING (pager); never touches the appliance"
+  },
+  {
+   "id": "sink",
+   "name": "sink",
+   "x": 8,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [
+    {
+     "x": 8,
+     "y": 15,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "sink",
+   "char": "S",
+   "class": "decor (filler if opted in)",
+   "tileKinds": [
+    "sink"
+   ],
+   "use": "lounge overflow: stand here WAITING (pager); never touches the appliance"
+  },
+  {
+   "id": "espressoMachine",
+   "name": "espressoMachine",
+   "x": 9,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [
+    {
+     "x": 9,
+     "y": 15,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "espressoMachine",
+   "char": "E",
+   "class": "decor (filler if opted in)",
+   "tileKinds": [
+    "espressoMachine"
+   ],
+   "use": "lounge overflow: stand here WAITING (pager); never touches the appliance"
+  },
+  {
+   "id": "waterCooler",
+   "name": "waterCooler",
+   "x": 10,
+   "y": 14,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [
+    {
+     "x": 10,
+     "y": 15,
+     "facing": "N",
+     "pose": "standU",
+     "how": "stand"
+    }
+   ],
+   "kind": "waterCooler",
+   "char": "W",
+   "class": "decor (filler if opted in)",
+   "tileKinds": [
+    "waterCooler"
+   ],
+   "use": "lounge overflow: stand here WAITING (pager); never touches the appliance"
+  },
+  {
+   "id": "front-door",
+   "name": "frontDoor",
+   "x": 16,
+   "y": 19,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": true,
+   "interaction": [],
+   "kind": "frontDoor",
+   "char": "D",
+   "class": "lifecycle",
+   "tileKinds": [
+    "doorOutLeaf",
+    "doorInLeaf"
+   ],
+   "note": "walk-through: OUT leaf (16,19) west, IN leaf (17,19) east (keep right); drawn on the per-frame state layer"
+  },
+  {
+   "id": "task-chair-1",
+   "name": "taskChairN",
+   "x": 26,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-1",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "task-chair-2",
+   "name": "taskChairN",
+   "x": 27,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-2",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "task-chair-3",
+   "name": "taskChairN",
+   "x": 28,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-3",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "task-chair-4",
+   "name": "taskChairN",
+   "x": 29,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-4",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "task-chair-5",
+   "name": "taskChairN",
+   "x": 30,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-5",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "task-chair-6",
+   "name": "taskChairN",
+   "x": 31,
+   "y": 2,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "taskChairN",
+   "char": "h",
+   "class": "seat of desk-6",
+   "tileKinds": [
+    "taskChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-1",
+   "name": "woodChairN",
+   "x": 3,
+   "y": 8,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of reading-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-2",
+   "name": "woodChairN",
+   "x": 4,
+   "y": 8,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of reading-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-3",
+   "name": "woodChairN",
+   "x": 5,
+   "y": 8,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of reading-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-4",
+   "name": "woodChairN",
+   "x": 6,
+   "y": 8,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of reading-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-5",
+   "name": "woodChairN",
+   "x": 1,
+   "y": 17,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of meeting-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-6",
+   "name": "woodChairN",
+   "x": 2,
+   "y": 17,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of meeting-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "wood-chair-7",
+   "name": "woodChairN",
+   "x": 3,
+   "y": 17,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "woodChairN",
+   "char": "w",
+   "class": "seat of meeting-table",
+   "tileKinds": [
+    "woodChairN"
+   ]
+  },
+  {
+   "id": "receptionChair",
+   "name": "receptionChair",
+   "x": 14,
+   "y": 15,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [],
+   "kind": "receptionChair",
+   "char": "c",
+   "class": "decor",
+   "tileKinds": [
+    "receptionChair"
+   ]
+  },
+  {
+   "id": "ups",
+   "name": "ups",
+   "x": 32,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [],
+   "kind": "ups",
+   "char": "U",
+   "class": "decor",
+   "tileKinds": [
+    "ups"
+   ]
+  },
+  {
+   "id": "plant-1",
+   "name": "plant",
+   "x": 1,
+   "y": 9,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-2",
+   "name": "plant",
+   "x": 5,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-3",
+   "name": "plant",
+   "x": 10,
+   "y": 9,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-4",
+   "name": "plant",
+   "x": 23,
+   "y": 9,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-5",
+   "name": "plant",
+   "x": 25,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-6",
+   "name": "plant",
+   "x": 27,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "plant-7",
+   "name": "plant",
+   "x": 32,
+   "y": 1,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "plant",
+   "char": "p",
+   "class": "decor",
+   "tileKinds": [
+    "plant"
+   ]
+  },
+  {
+   "id": "coatStand",
+   "name": "coatStand",
+   "x": 19,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "coatStand",
+   "char": "z",
+   "class": "decor",
+   "tileKinds": [
+    "coatStand"
+   ]
+  },
+  {
+   "id": "floorLamp",
+   "name": "floorLamp",
+   "x": 11,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "floorLamp",
+   "char": "f",
+   "class": "decor",
+   "tileKinds": [
+    "floorLamp"
+   ]
+  },
+  {
+   "id": "visitorChair-1",
+   "name": "visitorChair",
+   "x": 20,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "visitorChair",
+   "char": "v",
+   "class": "decor",
+   "tileKinds": [
+    "visitorChair"
+   ]
+  },
+  {
+   "id": "visitorChair-2",
+   "name": "visitorChair",
+   "x": 21,
+   "y": 18,
+   "w": 1,
+   "h": 1,
+   "facing": "N",
+   "functional": false,
+   "interaction": [],
+   "kind": "visitorChair",
+   "char": "v",
+   "class": "decor",
+   "tileKinds": [
+    "visitorChair"
+   ]
+  },
+  {
+   "id": "wallClock",
+   "name": "wallClock",
+   "x": 14,
+   "y": 13,
+   "w": 1,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [],
+   "kind": "wallClock",
+   "char": "o",
+   "class": "decor",
+   "tileKinds": [
+    "wallClock"
+   ]
+  },
+  {
+   "id": "noticeBoard",
+   "name": "noticeBoard",
+   "x": 21,
+   "y": 10,
+   "w": 2,
+   "h": 1,
+   "facing": "S",
+   "functional": false,
+   "interaction": [],
+   "kind": "noticeBoard",
+   "char": "n",
+   "class": "decor",
+   "tileKinds": [
+    "noticeBoardW",
+    "noticeBoardE"
+   ]
+  },
+  {
+   "id": "doormat",
+   "name": "doormat",
+   "x": 16,
+   "y": 20,
+   "w": 2,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "doormat",
+   "char": "m",
+   "class": "decor",
+   "tileKinds": [
+    "doormatW",
+    "doormatE"
+   ]
+  },
+  {
+   "id": "planter-1",
+   "name": "planter",
+   "x": 0,
+   "y": 20,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "planter",
+   "char": "%",
+   "class": "decor",
+   "tileKinds": [
+    "planter"
+   ]
+  },
+  {
+   "id": "planter-2",
+   "name": "planter",
+   "x": 0,
+   "y": 21,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "planter",
+   "char": "%",
+   "class": "decor",
+   "tileKinds": [
+    "planter"
+   ]
+  },
+  {
+   "id": "planter-3",
+   "name": "planter",
+   "x": 33,
+   "y": 20,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "planter",
+   "char": "%",
+   "class": "decor",
+   "tileKinds": [
+    "planter"
+   ]
+  },
+  {
+   "id": "planter-4",
+   "name": "planter",
+   "x": 33,
+   "y": 21,
+   "w": 1,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "planter",
+   "char": "%",
+   "class": "decor",
+   "tileKinds": [
+    "planter"
+   ]
+  },
+  {
+   "id": "street",
+   "name": "street",
+   "x": 0,
+   "y": 22,
+   "w": 34,
+   "h": 1,
+   "facing": "-",
+   "functional": false,
+   "interaction": [],
+   "kind": "street",
+   "char": "_",
+   "class": "decor (map border)",
+   "tileKinds": [
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street",
+    "street"
+   ]
+  }
+ ],
+ "zones": [
+  {
+   "name": "LIBRARY",
+   "x": 1,
+   "y": 1,
+   "w": 8,
+   "h": 9,
+   "floor": "#3b5a40",
+   "finish": "green carpet"
+  },
+  {
+   "name": "RECORDS",
+   "x": 10,
+   "y": 1,
+   "w": 14,
+   "h": 9,
+   "floor": "#6f6b64",
+   "finish": "grey vinyl"
+  },
+  {
+   "name": "WORK ROOM",
+   "x": 25,
+   "y": 1,
+   "w": 8,
+   "h": 9,
+   "floor": "#6b4f33",
+   "finish": "oak (existing art)"
+  },
+  {
+   "name": "MEETING",
+   "x": 1,
+   "y": 14,
+   "w": 5,
+   "h": 5,
+   "floor": "#3d4a66",
+   "finish": "blue carpet"
+  },
+  {
+   "name": "BREAK ROOM",
+   "x": 7,
+   "y": 14,
+   "w": 6,
+   "h": 5,
+   "floor": "#8a8276",
+   "finish": "checker tile"
+  },
+  {
+   "name": "RECEPTION",
+   "x": 14,
+   "y": 14,
+   "w": 14,
+   "h": 5,
+   "floor": "#8c8478",
+   "finish": "terrazzo"
+  },
+  {
+   "name": "SERVERS",
+   "x": 29,
+   "y": 14,
+   "w": 4,
+   "h": 5,
+   "floor": "#7d848c",
+   "finish": "raised floor"
+  },
+  {
+   "name": "MAIL / PRINT CORNER",
+   "x": 21,
+   "y": 14,
+   "w": 7,
+   "h": 5,
+   "floor": "#5a5f66",
+   "finish": "grey carpet tiles",
+   "parent": "RECEPTION"
+  },
+  {
+   "name": "CORRIDOR",
+   "x": 1,
+   "y": 11,
+   "w": 32,
+   "h": 2,
+   "floor": "#5a544c",
+   "finish": "travertine"
+  },
+  {
+   "name": "SIDEWALK",
+   "x": 1,
+   "y": 20,
+   "w": 32,
+   "h": 2,
+   "floor": "#8e8a82",
+   "finish": "concrete"
+  },
+  {
+   "name": "STREET",
+   "x": 0,
+   "y": 22,
+   "w": 34,
+   "h": 1,
+   "floor": "#3a3d42",
+   "finish": "asphalt"
+  }
+ ],
+ "door": {
+  "x": 16,
+  "y": 19,
+  "w": 2,
+  "h": 1,
+  "outLeaf": {
+   "x": 16,
+   "y": 19
+  },
+  "inLeaf": {
+   "x": 17,
+   "y": 19
+  },
+  "doormat": [
+   {
+    "x": 16,
+    "y": 20
+   },
+   {
+    "x": 17,
+    "y": 20
+   }
+  ],
+  "senseTiles": 2,
+  "rule": "opens only while a real arriving/leaving worker is within 2 tiles; keep right: IN leaf east, OUT leaf west"
+ },
+ "places": [
+  {
+   "x": 10,
+   "y": 4,
+   "pool": "records-west",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 10,
+   "y": 7,
+   "pool": "records-west",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 10,
+   "y": 8,
+   "pool": "records-west",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 11,
+   "y": 9,
+   "pool": "records-west",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 23,
+   "y": 4,
+   "pool": "records-east",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 23,
+   "y": 7,
+   "pool": "records-east",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 23,
+   "y": 8,
+   "pool": "records-east",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 22,
+   "y": 9,
+   "pool": "records-east",
+   "role": "reading place (records) + cabinet/lectern overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 25,
+   "y": 2,
+   "pool": "work-desks",
+   "role": "pcDesk overflow wait",
+   "facing": "S",
+   "pose": "standD"
+  },
+  {
+   "x": 32,
+   "y": 2,
+   "pool": "work-desks",
+   "role": "pcDesk overflow wait",
+   "facing": "S",
+   "pose": "standD"
+  },
+  {
+   "x": 32,
+   "y": 4,
+   "pool": "work-bench",
+   "role": "bench overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 32,
+   "y": 5,
+   "pool": "work-bench",
+   "role": "bench overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 32,
+   "y": 7,
+   "pool": "work-bench",
+   "role": "bench overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 32,
+   "y": 8,
+   "pool": "work-bench",
+   "role": "bench overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 1,
+   "y": 4,
+   "pool": "library",
+   "role": "reading place (library) + catalog/manuals overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 1,
+   "y": 5,
+   "pool": "library",
+   "role": "reading place (library) + catalog/manuals overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 1,
+   "y": 7,
+   "pool": "library",
+   "role": "reading place (library) + catalog/manuals overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 1,
+   "y": 8,
+   "pool": "library",
+   "role": "reading place (library) + catalog/manuals overflow wait",
+   "facing": "S",
+   "pose": "readD"
+  },
+  {
+   "x": 5,
+   "y": 16,
+   "pool": "meeting",
+   "role": "meeting overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 5,
+   "y": 17,
+   "pool": "meeting",
+   "role": "meeting overflow wait",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 23,
+   "y": 18,
+   "pool": "mail-corner",
+   "role": "mail/print overflow wait + arrival hold (3rd choice)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 24,
+   "y": 18,
+   "pool": "mail-corner",
+   "role": "mail/print overflow wait + arrival hold (3rd choice)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 25,
+   "y": 18,
+   "pool": "mail-corner",
+   "role": "mail/print overflow wait + arrival hold (3rd choice)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 26,
+   "y": 18,
+   "pool": "mail-corner",
+   "role": "mail/print overflow wait + arrival hold (3rd choice)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 30,
+   "y": 17,
+   "pool": "servers",
+   "role": "rack overflow wait (unused in the final tool map)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 31,
+   "y": 17,
+   "pool": "servers",
+   "role": "rack overflow wait (unused in the final tool map)",
+   "facing": "N",
+   "pose": "standU"
+  },
+  {
+   "x": 16,
+   "y": 17,
+   "pool": "front-desk queue",
+   "role": "front-desk queue (FIFO: (16,17) first, then (16,16))",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 16,
+   "y": 16,
+   "pool": "front-desk queue",
+   "role": "front-desk queue (FIFO: (16,17) first, then (16,16))",
+   "facing": "W",
+   "pose": "standL"
+  },
+  {
+   "x": 19,
+   "y": 17,
+   "pool": "hold",
+   "role": "arrival hold (2nd choice, after the in/out board spots) + departure hold after the hand-in",
+   "facing": "S",
+   "pose": "standD"
+  },
+  {
+   "x": 20,
+   "y": 17,
+   "pool": "hold",
+   "role": "arrival hold (2nd choice, after the in/out board spots) + departure hold after the hand-in",
+   "facing": "S",
+   "pose": "standD"
+  },
+  {
+   "x": 21,
+   "y": 17,
+   "pool": "hold",
+   "role": "arrival hold (2nd choice, after the in/out board spots) + departure hold after the hand-in",
+   "facing": "S",
+   "pose": "standD"
+  },
+  {
+   "x": 22,
+   "y": 17,
+   "pool": "hold",
+   "role": "arrival hold (2nd choice, after the in/out board spots) + departure hold after the hand-in",
+   "facing": "S",
+   "pose": "standD"
+  }
+ ],
+ "arrivalSlots": [
+  {
+   "x": 18,
+   "y": 20,
+   "order": 1
+  },
+  {
+   "x": 18,
+   "y": 21,
+   "order": 2
+  },
+  {
+   "x": 19,
+   "y": 20,
+   "order": 3
+  },
+  {
+   "x": 19,
+   "y": 21,
+   "order": 4
+  },
+  {
+   "x": 20,
+   "y": 20,
+   "order": 5
+  },
+  {
+   "x": 20,
+   "y": 21,
+   "order": 6
+  },
+  {
+   "x": 21,
+   "y": 20,
+   "order": 7
+  },
+  {
+   "x": 21,
+   "y": 21,
+   "order": 8
+  },
+  {
+   "x": 22,
+   "y": 20,
+   "order": 9
+  },
+  {
+   "x": 22,
+   "y": 21,
+   "order": 10
+  },
+  {
+   "x": 23,
+   "y": 20,
+   "order": 11
+  },
+  {
+   "x": 23,
+   "y": 21,
+   "order": 12
+  },
+  {
+   "x": 24,
+   "y": 20,
+   "order": 13
+  },
+  {
+   "x": 24,
+   "y": 21,
+   "order": 14
+  },
+  {
+   "x": 25,
+   "y": 20,
+   "order": 15
+  },
+  {
+   "x": 25,
+   "y": 21,
+   "order": 16
+  },
+  {
+   "x": 26,
+   "y": 20,
+   "order": 17
+  },
+  {
+   "x": 26,
+   "y": 21,
+   "order": 18
+  },
+  {
+   "x": 27,
+   "y": 20,
+   "order": 19
+  },
+  {
+   "x": 27,
+   "y": 21,
+   "order": 20
+  }
+ ],
+ "arrivalSlotsOverflow": [
+  {
+   "x": 28,
+   "y": 20
+  },
+  {
+   "x": 29,
+   "y": 20
+  },
+  {
+   "x": 30,
+   "y": 20
+  },
+  {
+   "x": 31,
+   "y": 20
+  },
+  {
+   "x": 32,
+   "y": 20
+  },
+  {
+   "x": 28,
+   "y": 21
+  },
+  {
+   "x": 29,
+   "y": 21
+  },
+  {
+   "x": 30,
+   "y": 21
+  },
+  {
+   "x": 31,
+   "y": 21
+  },
+  {
+   "x": 32,
+   "y": 21
+  }
+ ],
+ "exitLane": [
+  {
+   "x": 9,
+   "y": 20
+  },
+  {
+   "x": 10,
+   "y": 20
+  },
+  {
+   "x": 11,
+   "y": 20
+  },
+  {
+   "x": 12,
+   "y": 20
+  },
+  {
+   "x": 13,
+   "y": 20
+  },
+  {
+   "x": 14,
+   "y": 20
+  },
+  {
+   "x": 15,
+   "y": 20
+  },
+  {
+   "x": 9,
+   "y": 21
+  },
+  {
+   "x": 10,
+   "y": 21
+  },
+  {
+   "x": 11,
+   "y": 21
+  },
+  {
+   "x": 12,
+   "y": 21
+  },
+  {
+   "x": 13,
+   "y": 21
+  },
+  {
+   "x": 14,
+   "y": 21
+  },
+  {
+   "x": 15,
+   "y": 21
+  }
+ ],
+ "openings": {
+  "library|corridor": [
+   {
+    "x": 7,
+    "y": 10
+   },
+   {
+    "x": 8,
+    "y": 10
+   }
+  ],
+  "records|corridor": [
+   {
+    "x": 15,
+    "y": 10
+   },
+   {
+    "x": 16,
+    "y": 10
+   },
+   {
+    "x": 17,
+    "y": 10
+   },
+   {
+    "x": 18,
+    "y": 10
+   }
+  ],
+  "work|corridor": [
+   {
+    "x": 25,
+    "y": 10
+   },
+   {
+    "x": 26,
+    "y": 10
+   }
+  ],
+  "library|records": [
+   {
+    "x": 9,
+    "y": 5
+   },
+   {
+    "x": 9,
+    "y": 6
+   }
+  ],
+  "records|work": [
+   {
+    "x": 24,
+    "y": 5
+   },
+   {
+    "x": 24,
+    "y": 6
+   }
+  ],
+  "meeting|corridor": [
+   {
+    "x": 4,
+    "y": 13
+   },
+   {
+    "x": 5,
+    "y": 13
+   }
+  ],
+  "break|corridor": [
+   {
+    "x": 11,
+    "y": 13
+   },
+   {
+    "x": 12,
+    "y": 13
+   }
+  ],
+  "reception|corridor": [
+   {
+    "x": 15,
+    "y": 13
+   },
+   {
+    "x": 16,
+    "y": 13
+   },
+   {
+    "x": 17,
+    "y": 13
+   },
+   {
+    "x": 18,
+    "y": 13
+   }
+  ],
+  "servers|corridor": [
+   {
+    "x": 29,
+    "y": 13
+   },
+   {
+    "x": 30,
+    "y": 13
+   }
+  ]
+ },
+ "functionalMeaning": "true = its use or its state is driven by real helper events (tool calls, arrivals, hand-ins, waits; the rack LEDs count real in-flight calls); false = static decor, seats (their desk/table carries the interaction), the kitchen (standing spots for lounge overflow only) and the wall clock (real time, not helper events)",
+ "walkableRule": "legend[char].walkable AND 0 < x < width-1 AND 0 < y < height-1 (border never walkable; officeMap.ts:212-213). Seats (h, w, O, H) are solid for walkers: entered only from sitFrom.",
+ "scale": {
+  "metresPerTile": 0.6,
+  "basis": "600 mm server rack = 1 tile; 2-tile double door = 1.2 m [E]",
+  "walkTilesPerSecond": 3.2,
+  "note": "figures are drawn ~1 tile tall (a pixel-art convention, not to scale)"
+ },
+ "gridSha256": "e9548001a0d8f15b7846f82d8c563fda6f2bf6d4d69c4c6ac51cca0413545fdb",
+ "layoutBasis": "step-3 final grid sha256 9b8b0d443093cef6 + the 4 step-4 hold tiles marked * (19..22,17)",
+ "checks": {
+  "C1_C5": "ALL PASS (place_final.py, final classifier, 409 helpers)",
+  "mutations_caught": 7,
+  "validInfrastructure": "0 of 14280 ordered pairs fail (infra_check.py)"
+ }
+}

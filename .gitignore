@@ -35,3 +35,6 @@ office/state/
 office/config/owner-token.txt
 start-office.bat
 office-runtime.log
+
+# worker office visual-check screenshots
+scripts/out/

@@ -11,7 +11,9 @@
     "office": "npm --prefix office run start",
     "office:mock": "npm --prefix office run mock",
     "office:assign": "npm --prefix office run assign --",
-    "test:worker-office": "node scripts/classify-test.mjs && node scripts/spool-hook-test.mjs"
+    "test:worker-office": "node scripts/classify-test.mjs && node scripts/spool-hook-test.mjs",
+    "test:worker-office-map": "npx tsx scripts/worker-office-map-check.ts && npx tsx scripts/worker-office-walk-smoke.ts && npx tsx scripts/worker-office-render-check.ts",
+    "check:worker-office-visual": "node scripts/worker-office-visual-check.mjs"
   },
   "dependencies": {
     "@types/three": "^0.183.1",
