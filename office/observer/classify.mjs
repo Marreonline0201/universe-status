@@ -13,6 +13,9 @@
 //       shell levels alike); a segment that would open one more is unclassified (no move). Without it the R5 rule
 //       re-tokenised the rest of the segment once per level with no limit: a 10 KB `$a = $a = ...` chain cost the
 //       hook 258 MB, and Python stopped only at RecursionError. Real commands open at most 3 (17,497 commands).
+//   F11 (lead ruling, 2026-10-01) inOutBoard ranks below every station kind in PRECEDENCE (see there). The reference
+//       is the F11 copy of classify_final.py named in scripts/gen-classify-cases.py (the original with only this
+//       change).
 // The reference's measurement toggles (CF_* environment variables) are deliberately NOT ported: the shipped
 // classifier always has P1 and P2 on. scripts/classify-test.mjs plants the "off" variants as mutants instead.
 //
@@ -147,16 +150,20 @@ const SHELLS = new Set(['powershell', 'pwsh', 'bash', 'sh', 'cmd']);
 export const MACHINE_CHECK_KIND = 'benchTerminal';
 export const LIBRARY_KINDS = new Set(['bookshelf', 'readingLedge', 'cardCatalog', 'manualsShelf', 'readingTable']);
 
-// ---- P1: precedence, highest first (plan 4.3)
+// ---- P1: precedence, highest first (plan 4.3), with the lead's ruling F11 (2026-10-01): the in/out board is an
+// arrival hold only (plan 4.4), so a ListAgents 'roster look' is a STAY at the observer; it ranks BELOW every station
+// kind so that it never hides a real call in the same batch. Calls with no kind still rank below it, so ListAgents
+// alone (or beside a no-move call) is still inOutBoard.
 export const PRECEDENCE = Object.freeze(['printer', 'frontDesk', 'meetingTable',
   'benchTerminal',
   'pcDesk',
   'postShelf', 'shredder', 'copier',
   'bookshelf', 'cardCatalog',
-  'pigeonholes', 'kanbanBoard', 'manualsShelf', 'inOutBoard',
+  'pigeonholes', 'kanbanBoard', 'manualsShelf',
   'lectern',
   'historyShelf',
-  'fileCabinet']);
+  'fileCabinet',
+  'inOutBoard']);   // [mutation-target:inoutboard-rank]
 const RANK = new Map(PRECEDENCE.map((k, i) => [k, i]));
 export function rank(kind) { return RANK.has(kind) ? RANK.get(kind) : PRECEDENCE.length + (pyTruthy(kind) ? 0 : 1); }
 

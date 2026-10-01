@@ -133,6 +133,11 @@ function invariants(m, fx = FIXTURE) {
   const expect = (cond, what) => { if (!cond) bad.push(what); };
   // closed sets
   expect(m.PRECEDENCE.length === 17 && new Set(m.PRECEDENCE).size === 17, 'PRECEDENCE has 17 distinct kinds');
+  // F11 (lead ruling 2026-10-01): the in/out board (a ListAgents roster look, a STAY) ranks below every station kind,
+  // and a call with no kind ranks below it (ListAgents alone stays inOutBoard)
+  expect(m.PRECEDENCE.at(-1) === 'inOutBoard', `F11: inOutBoard is last in PRECEDENCE (got ${m.PRECEDENCE.at(-1)})`);
+  expect(m.PRECEDENCE.every((k) => k === 'inOutBoard' || m.rank(k) < m.rank('inOutBoard')) && m.rank('inOutBoard') < m.rank(null),
+    'F11: every station kind outranks inOutBoard, which outranks no kind');
   const ids = [...m.ACTIVITY_ID.values()];
   expect(m.ACTIVITY_ID.size === 35 && new Set(ids).size === ids.length, 'activity ids are 1:1 (35 activities)');
   expect(ids.every((id) => /^[a-z][a-z-]{1,15}$/.test(id)), 'activity ids are short lowercase slugs');
@@ -232,6 +237,9 @@ const MUTANTS = [
   ['tsr-off', 'the batch tsr bit is never set (a ToolSearch at a library station loses the batch)',
     [["return { result: pickByPrecedence(items), tsr: w >= 0 && calls[w][0] === 'ToolSearch' };",
       'return { result: pickByPrecedence(items), tsr: false };']]],
+  ['inoutboard-old-rank', 'F11 off: inOutBoard back at its step-3 rank, above lectern / history / cabinets (a roster look hides a real call)',
+    [["  'pigeonholes', 'kanbanBoard', 'manualsShelf',\n", "  'pigeonholes', 'kanbanBoard', 'manualsShelf', 'inOutBoard',\n"],
+     ["  'fileCabinet',\n  'inOutBoard']);   // [mutation-target:inoutboard-rank]", "  'fileCabinet']);"]]],
 ];
 
 async function main() {

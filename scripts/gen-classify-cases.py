@@ -4,7 +4,11 @@
 #
 #   python scripts/gen-classify-cases.py [path/to/classify_final.py]
 #
-# Default reference path = the planning scratchpad of session 944994c0 (see the worker-office plan, Appendix B).
+# Default reference path = the F11 copy of the planning scratchpad's classify_final.py (session 944994c0, see the
+# worker-office plan, Appendix B): scratchpad/o5-s4s0/ref/classify_final.py is the original (office/plan/, sha256
+# e72fe25d..., left unchanged) with ONE change, the lead's ruling F11 of 2026-10-01: inOutBoard ranks below every
+# station kind in PRECEDENCE (a ListAgents 'roster look' never hides a real call in the same batch; alone it is still
+# inOutBoard, a STAY at the observer). Like the original it loads ../../office-place-s3/classify_s3.py.
 # The fixture records the sha256 of both reference files, the Python and Unicode-database versions, and is
 # byte-for-byte deterministic (no timestamps), so a re-run against the same reference reproduces it exactly.
 #
@@ -30,7 +34,7 @@ import hashlib, json, os, pathlib, platform, re, sys, unicodedata, importlib.uti
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_REF = pathlib.Path(r'C:/Users/ddogr/AppData/Local/Temp/claude/C--Users-ddogr-OneDrive-Desktop-Questions/'
-                           r'944994c0-d7e9-4be1-a2a7-032471f945b2/scratchpad/office/plan/classify_final.py')
+                           r'944994c0-d7e9-4be1-a2a7-032471f945b2/scratchpad/o5-s4s0/ref/classify_final.py')
 REF = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_REF
 OUT = HERE.parent / 'office' / 'observer' / 'classify-cases.json'
 
@@ -159,10 +163,23 @@ batch([['Agent', {}, 'a'], ['Bash', {'command': 'npm test'}, 'b']])
 batch([['Agent', {}, 'a'], ['Bash', {'command': 'npm test'}, 'b']], None, {'a': 'async_launched'})
 batch([['Bash', {'command': 'cd x'}, 'a'], ['Foo', {}, 'b']]); batch([['Foo', {}, 'a'], ['Bash', {'command': 'ls'}, 'b']])
 batch([['SubagentHandback', {}, 'a'], ['StructuredOutput', {}, 'b'], ['Bash', {'command': 'node a.js'}, 'c']])
+# F11 (lead ruling 2026-10-01): a ListAgents 'roster look' ranks below every station kind, so it never hides a real
+# call in the same batch, in either order (the kinds it used to outrank: fileCabinet, historyShelf, lectern; and the
+# ones that already outranked it); alone, or beside a call with no kind, it is still inOutBoard (a STAY at the observer)
+batch([['ListAgents', {}, 'l']])
+for other in (['Read', {}, 'r'], ['Grep', {}, 'g'], ['Bash', {'command': 'git log -3'}, 'h'], ['Bash', {'command': 'git diff'}, 'd'],
+              ['Bash', {'command': 'cd x'}, 'c'], ['Foo', {}, 'f'], ['Skill', {}, 's'], ['TaskList', {}, 't'],
+              ['Bash', {'command': 'npm test'}, 'n']):
+    batch([['ListAgents', {}, 'l'], other]); batch([other, ['ListAgents', {}, 'l']])
+batch([['ListAgents', {}, 'l'], ['Bash', {'command': 'cd x'}, 'c'], ['Read', {}, 'r']])
 for b in B:
     calls, cur, results = b['args']
     b['py'] = out(cf.classify_batch([tuple(x) for x in calls], cur, results))
 fx['batch'] = B
+# the reference must carry F11, or this would silently regenerate the old precedence
+assert cf.PRECEDENCE[-1] == 'inOutBoard', ('reference without F11: inOutBoard is not last in PRECEDENCE', cf.PRECEDENCE)
+assert cf.classify_batch([('ListAgents', {}, 'l'), ('Read', {}, 'r')])[1] == 'fileCabinet'
+assert cf.classify_batch([('ListAgents', {}, 'l'), ('Bash', {'command': 'cd x'}, 'c')])[1] == 'inOutBoard'
 
 # ---- agentPre (reference outputs)
 P = [{'args': [x]} for x in ({}, None, {'run_in_background': True}, {'run_in_background': False},
