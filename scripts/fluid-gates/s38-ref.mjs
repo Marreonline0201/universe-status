@@ -6,11 +6,13 @@
 // and the guard in step()).
 //
 //   node scripts/fluid-gates/s38-ref.mjs                    (every section)
-//   node scripts/fluid-gates/s38-ref.mjs --only=W1b,W1aK     (sections W0a, W0b, W0c, W1a, W1aK, W1b, W1c, W1d,
+//   node scripts/fluid-gates/s38-ref.mjs --only=W1b,W1aK     (sections W0a, W0b, W0c, W1a, W1aK, W1b, W1c, W1cctl, W1d,
 //                                                            comma-separated; s38-mutations.mjs runs the sections of
 //                                                            the checks each mutant must fail)
 //   node scripts/fluid-gates/s38-ref.mjs --only=W0a --w0a-pinned   (W0a plus its recorded one-time comparison against
 //                                                            7b248dc4 — see W0a; any other argument is refused)
+//   node scripts/fluid-gates/s38-ref.mjs --only=W1c --w1c-ensemble   (W1c plus its seed ensemble W1cE, seeds 17–24 per
+//                                                            axis — see W1c revision B; it requires W1c in the run)
 //
 // Criteria fixed 2026-09-30, written here before this file's first run. Every oracle is computed HERE: the Keulegan
 // constants a_s = 5.5, b = 2.5 (eq. 13–14) and the branch crossing Re_c are this file's own literals and bisection (never
@@ -205,7 +207,7 @@
 //      refusal as that point's failure — its τ and u* are NaN, which fails every W1b criterion — instead of crashing the
 //      gate, and the line appends the refusals' count and first message. No criterion changes; with no refusal every
 //      line prints as before.
-// W1c  the sheet [spec §4 W1c; FR/spec/sheet_test_p.mjs/.out]: a one-cell sheet — s34scenes block() over the first row
+// W1c  the sheet [spec §4 W1c; FR/spec/sheet_test_p.mjs/.out]: a one-cell sheet — s34scenes block() over the first row (superseded by revision B below)
 //      of a 400 × 8 × 4 tank of 5 cm cells (20 m), 8 ppc, mulberry32(7) — at u0 = 2 m/s along x, and the same sheet
 //      along z (4 × 8 × 400); s34-ref's solver at tolerances 1e-5 / 1e-4, gravity −y, Δt = 3.673 ms, the full step,
 //      t ≤ 1 s; darcyTest f = 0.02. Measured: the mean flow-axis velocity of the particles inside the fixed window
@@ -258,6 +260,90 @@
 //      x +0.08 %, 5/8; z +0.28 %, 8/8) — a realization spread plus a common positive gain, whose candidate (untested) is
 //      the spec's open item 7.3, the thin-film momentum gain. The spec's "restored" 0.2 % rested on one realization
 //      read at four checkpoints (z only at t = 1 s).
+// W1c revision B (the certifying revision), 2026-09-30 — pre-registered before its first run (FR/w1cz/plan.md step 3,
+//      frozen by its sha256; this file's and s38-mutations.mjs's sha256 recorded in FR/w1cz/PREREG.txt before the first
+//      run — DEC 11:14: this file had no pre-run fingerprint for its first revision). flipRef is not edited. Unchanged: the
+//      scene (block() over row 0 of 400 × 8 × 4 or 4 × 8 × 400 cells of 5 cm, 8 ppc, mulberry32(7), u0 = 2 m/s), Δt, the
+//      tolerances 1e-5 / 1e-4, darcyTest f = 0.02, the checkpoints (the steps nearest 0.25, 0.5, 1 s: 68, 136, 272) and
+//      the 3 %†; no bound is widened. Why: the stage-off control drifts 0.057–0.552 % per realization with a common
+//      positive gain (the revision note above; STUDY D3). The paired loss ℓ = ū_ctrl − ū_stage cancels the drift only
+//      approximately: the friction feedback on a common drift is ≤ (2 + kt)/(1 + kt)·max|d_c|/u0 of the loss (derived;
+//      k = (f/8)·u0/h = 0.1/s), and its realization part decorrelates as the stage run lags the control (6.1, 24.1, 93.6
+//      mm at the checkpoints) with no bound without an assumption — worst case 0.55 % of u0 = 23 % of the 0.25 s loss;
+//      that is a bound, the recorded paired residuals are −0.05 % to +1.09 % of L on all four arms, CPU and GPU. The
+//      0.2 % validity could be neither derived nor dropped for ℓ; revision B takes the drift out of the certified
+//      quantity instead.
+//      (shadow) Each step n of a shadowed run starts from its state X: the gate snapshots every typed array of the
+//      particle object (the list asserted at the start), p.n and sim.time, runs step() with the stage DISARMED (class
+//      Shadow: applyWallShear returns while armed is false — W1d's Armed pattern), reads ū_S, restores X in place, and
+//      runs the step ARMED. The armed branch is the one that continues, and it always runs last. τ_n = ū_S(disarmed) −
+//      ū_S(armed) is the stage's loss at step n through that step's P2G, ghost-fluid projection, extrapolation and G2P.
+//      Both branches share X and the density correction (it precedes the stage, flipRef.ts:561, :564), hence every
+//      position, label, θ and pressure matrix; the rest of the step is linear (affine) in velocity at fixed positions
+//      (:2095–2214, :1551–1573, :1646–1664, :2004–2028) up to the pressure CG's stopping test (cold start, :2248, :2267,
+//      :2273): the solver's own drift at step n cancels in τ_n. Λ(N) = Σ_{n ≤ N} τ_n.
+//      (set) S = the particles whose flow coordinate is in [9, 11] m at t = 0 (inclusive, as the window). block() puts
+//      each particle strictly inside its cell (lib/s34scenes.mjs:24–25), so |S| = 40 × 4 × 8 = 1280 and S's depth
+//      N_S·V_p/area = 5 cm exactly; |S| = 1280 is asserted per axis and seed (else the gate throws: no verdict).
+//      References: L(t) = u0 − u0/(1 + (f/8)·u0·t/h) (as before); Λ_traj(N) = Σ_{n ≤ N} λ(ū_S before step n),
+//      λ(U) = U − 1/(1/U + Δt·(f/8)/h), the exact one-step Darcy loss (a scale error ε of the stage gives
+//      Λ/Λ_traj − 1 = ε to 4e-4·ε; the second-order friction feedback on the drift, present in Λ/L, is absent here).
+//      Lines per axis:
+//      W1cshadow.<x|z>.null — the control (option absent) run through the same shadow loop: its two branches are one
+//        computation from the restored state, 0 differing 64-bit words of pos, vel, c and mass at every step t ≤ 1 s
+//        (the restore is complete; no state carries between branches).
+//      W1cshadow.<x|z>.lockstep — the shadowed stage run's particle state at step 272 equals a plain FlipRef stage
+//        run's, 0 differing words (the disarmed branch leaves no residue).
+//      W1cshadow.<x|z>.lin — the linearity premise, same-state: at steps 1 and 17k (k = 1…16) the pair is also run from
+//        X with the pressure tolerance 1e-9 (ψ unchanged, so every position is identical), giving τ_n^tight; pass
+//        |τ_n^tight − τ_n| ≤ 3e-3·max(λ_n, |τ_n|) at every sampled step, λ_n = λ(ū_S before step n). 3e-3 chosen: a
+//        per-step error ≤ ε moves Λ/Λ_traj by ≤ ε, so the CG stop may use at most one tenth of the 3 % verdict; the 17
+//        sampled steps are evidence for the 272, not a bound over them. The normalization never falls below the
+//        stage-independent λ_n, so a stage whose effect is zero gives 0 and passes (its W1c.<axis>.step then FAILS);
+//        it grows with |τ_n| only where the stage acts harder than Darcy, where the truncation error grows with the
+//        perturbation. Rule: no validity line can fail because the stage's effect is small or absent. The tight
+//        branches' log entries and ledger increments are removed, so the log holds the continuing branch's 272 entries.
+//      A failed W1cshadow line is a counted FAIL and prints that axis's W1c.<axis>.step VOID (the harness or its premise
+//      is broken, not the stage): fix the harness, never a criterion.
+//      W1c.<x|z>.run (review GATE-F5's split; always gated, never VOID): the continuing branch's log holds 272 entries,
+//        fewest cells acted on > 0, Σ|booked| > 0.
+//      W1c.<x|z>.step (seed 7): at each checkpoint |Λ/L − 1| ≤ 3 %† AND |Λ/Λ_traj − 1| ≤ 3 %†.
+//      INFO W1c.report.<x|z> [FRICTION open item 3]: Λ_traj/L − 1 (the measured feedback); ℓ_S = ū_S,ctrl − ū_S,stage vs
+//        L; Γ = ℓ_S − Λ, the drift the pair does not cancel (exact identity Γ = d_c − d_s; d_c = ū_S,ctrl − u0; d_s =
+//        ū_S,stage − u0 + Λ, the solver's own change along the stage run); the ledger β (the change of S's velocity sum
+//        across super.applyWallShear alone, inside any control's pre/post hooks) and Λ/β; min and max of τ_n/λ_n; S's
+//        flow-coordinate span; max |τ_n^tight − τ_n|/max(λ_n, |τ_n|); and, with the numbers they printed before, the
+//        full-step loss over the fixed window [9, 11] m vs L and the control's window drift against the old 0.2 %.
+//      ctl:W1c.skipped (x and z; must FAIL W1c.<axis>.step's criterion at ≥ 1 checkpoint): the shadowed control's Λ ≡ 0
+//        (−100 %).
+//      Retired by a recorded decision (DEC, 2026-09-30): W1cvalid.<x|z> (the 0.2 % control drift) and the window's
+//      full-step loss as the certifying statistic — both INFO now, same numbers. The labels W1c.x and W1c.z are not
+//      reused: the old W1c.x PASS (CERT:36) stays the old claim, and the new lines name Λ. Uncertified by revision B:
+//      the original claim that the full-step loss over 1 s matches the ODE within 3 % (on z it was VOID; on x it is no
+//      longer gated) and the solver's carrying of the stage's loss across steps (Γ, reported only). Re-gate rule: ℓ_S of
+//      an axis is gated again at 3 % against L, with the validity |ū_S,ctrl/u0 − 1| ≤ 0.2 % at every step t ≤ 1 s, by a
+//      recorded decision once one full run shows that validity for seed 7 and every W1cE seed of the axis. It is not
+//      expected to be met while the per-seed spread persists (0.057–0.552 %, STUDY D3), since every candidate fix of
+//      open item 3 targets the mean gain: the full-step claim is retired, not deferred.
+// W1cctl (its own section; s38-mutations runs neither it nor W1cE, so the harness's control exercises only
+//      ctl:W1c.skipped of W1c's controls; this file's own full run gates both). Each control is a shadowed stage run of
+//      the seed-7 sheet to step 68, judged by W1c.<axis>.step's criterion at the 0.25 s checkpoint against the f = 0.02
+//      references (narrowed from "≥ 1 of 3 checkpoints": every derived miss is ≥ 95 % there); each must FAIL:
+//      ctl:W1c.tau2.<x|z> (f = 0.04; derived +99.93 % vs Λ_traj, +95.2 % vs L); ctl:W1c.sign.<x|z> (f = −0.02;
+//      −200.07 %, −205.1 %); ctl:W1c.nottransmitted.<x|z> (class NotTransmitted: on armed steps its p2g reads the
+//      pre-stage velocities — the log and the ledger book in full, Λ = 0: −100 %); ctl:W1c.dropz.z (class DropZ: every
+//      v_z restored after the stage: −100 % on z) and ctl:W1c.xonly.z (class XOnly: v_z := 0 before the stage, restored
+//      after — the in-file twin of the mutant 'z-component ignored': −100 % on z). Every control class derives from
+//      Shadow. REPORTED: W1c.keulegan, moved here unchanged (its own plain x control and keulegan1938 run).
+// W1cE (the ensemble; runs only with --w1c-ensemble, which requires W1c in the run, as --w0a-pinned requires W0a; seeds
+//      17–24 per axis, none run in this scene before — D1–D4 used 1–8, the open-item-3 study 9–16 and 25–32;
+//      pre-registered here): per seed and axis a shadowed stage run; W1c.<axis>.step's criterion, |S| = 1280 and
+//      W1c.<axis>.run's non-vacuity, each seed its own line W1cE.<x|z>.s<seed>; REPORTED per seed d_s, per axis the mean
+//      and SD of Λ/L − 1 and Λ/Λ_traj − 1 at each checkpoint. Its claim covers the tree it ran on (W0apin's wording): it
+//      is re-run after any change to flipRef.ts. No seed is dropped or replaced.
+//      Outcome rules (W1c, W1cctl, W1cE): a W1c.<axis>.step, W1c.<axis>.run or W1cE FAIL is a FAIL — no retune, no seed
+//      swap, no statistic change; a control that does not miss is a FAIL; a W1cshadow FAIL is fixed in the harness,
+//      never by a criterion; Γ of any size is evidence for FRICTION open item 3 and reopens nothing here.
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -267,16 +353,18 @@ import { s34Scenes, mulberry32, G, DX, RHO } from './lib/s34scenes.mjs'
 import { ETSIN600_FRONT } from './lib/s34metrics.mjs'
 import { waterAt, waterOpts } from './lib/s34solver.mjs'
 
-const SECTIONS = ['W0a', 'W0b', 'W0c', 'W1a', 'W1aK', 'W1b', 'W1c', 'W1d']
+const SECTIONS = ['W0a', 'W0b', 'W0c', 'W1a', 'W1aK', 'W1b', 'W1c', 'W1cctl', 'W1d']
 const ARGS = process.argv.slice(2)
 // a misspelt argument would silently skip what it names: every argument is --only=… or --w0a-pinned
-for (const a of ARGS) if (!a.startsWith('--only=') && a !== '--w0a-pinned') throw new Error(`unknown argument "${a}" (accepted: --only=<sections>, --w0a-pinned)`)
+for (const a of ARGS) if (!a.startsWith('--only=') && a !== '--w0a-pinned' && a !== '--w1c-ensemble') throw new Error(`unknown argument "${a}" (accepted: --only=<sections>, --w0a-pinned, --w1c-ensemble)`)
 const ONLY = ARGS.find(a => a.startsWith('--only='))?.slice(7).split(',') ?? null
 // an unknown name would run nothing and print PASS (s34-ref.mjs review 2026-09-29): refuse it
 for (const s of ONLY ?? []) if (!SECTIONS.includes(s)) throw new Error(`--only: unknown section "${s}" (${SECTIONS.join(', ')})`)
 const run = name => !ONLY || ONLY.includes(name)
 const PINNED = ARGS.includes('--w0a-pinned')
 if (PINNED && !run('W0a')) throw new Error('--w0a-pinned: the pinned comparison is part of W0a, which this run does not include')
+const ENSEMBLE = ARGS.includes('--w1c-ensemble')
+if (ENSEMBLE && !run('W1c')) throw new Error('--w1c-ensemble: the seed ensemble W1cE is part of W1c, which this run does not include')
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
 const { gridLayout, flipRef, mat, it, lg } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, it: `${SRC}/composition/interfacialTension.ts`, lg: `${SRC}/composition/liquidGate.ts` })
 const { GridLayout, FaceType } = gridLayout
@@ -286,7 +374,7 @@ const TREE = { FlipRef, GridLayout, FaceType, makeParticles }
 let fails = 0, voids = 0
 const check = (ok, label, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${label} ${msg}`); if (!ok) fails++ }
 /** A check whose scene failed its own validity check (that line is the counted FAIL): neither pass nor fail. */
-const voidCheck = (label, msg) => { console.log(`VOID ${label} ${msg} (uncertified: its control failed the validity check)`); voids++ }
+const voidCheck = (label, msg, why = 'its control failed the validity check') => { console.log(`VOID ${label} ${msg} (uncertified: ${why})`); voids++ }
 /** An in-file positive control: `failed` = it failed its criterion, as required. */
 const control = (failed, label, msg) => { console.log(`${failed ? 'PASS' : 'FAIL'} ctl:${label} ${msg}`); if (!failed) fails++ }
 const info = (label, msg) => console.log(`INFO ${label} ${msg}`)
@@ -787,54 +875,215 @@ if (run('W1b')) {
   check(scanOk, 'W1b.scan', `U 1e-7 → 5 m/s, 4001 geometric points at h ${HS.map(x => (1000 * x).toPrecision(3)).join('/')} mm: decreases ${drops} (0), non-finite ${nonFinite} (0); |τ/τ_lam − 1| at U = 1e-7 ${e2(lowWorst)} (≤ 1e-12); at Re_h = Re_c(1 ∓ 1e-6) worst |τ/τ_branch − 1| ${e2(crossWorst)} (≤ 1e-9), jump |τ₊/τ₋ − 1| ${e2(jumpWorst)} (≤ 1e-5)${refusedSince(r4)}`)
 }
 
-// ── W1c: the sheet ───────────────────────────────────────────────────────────────────────────────────────────────────
-if (run('W1c')) {
-  const U0 = 2, F = 0.02, h = 0.05, S = scenes()
-  function sheet(axis, law) {
-    const nx = axis === 0 ? 400 : 4, nz = axis === 0 ? 4 : 400
-    const L = new GridLayout({ nx, ny: 8, nz, dx: h })
-    const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...(law ? { wallShear: law } : {}) }))
-    const p = S.block([0, 0, 0], [nx - 1, 0, nz - 1], mulberry32(7), 8, h)
-    for (let q = 0; q < p.n; q++) p.vel[3 * q + axis] = U0
-    const depth = p.n * (h ** 3 / 8) / (nx * h * nz * h), out = []
-    for (let s = 1; s * DT_A2 <= 1 + 1e-9; s++) {
-      sim.step(p, DT_A2)
-      let m = 0, su = 0
-      for (let q = 0; q < p.n; q++) { const x = p.pos[3 * q + axis]; if (x >= 9 && x <= 11) { m++; su += p.vel[3 * q + axis] } }
-      out.push({ t: s * DT_A2, u: su / m })
-    }
-    return { out, depth, log: sim.wallShearLog }
-  }
-  const TS = [0.25, 0.5, 1.0]
-  const at = (r, t) => r.out.reduce((b, o) => (Math.abs(o.t - t) < Math.abs(b.t - t) ? o : b))
-  const exact = (t, depth, f = F) => U0 - U0 / (1 + (f / 8) * U0 * t / depth)
-  const rel = (ctrl, stage, t) => { const c = at(ctrl, t), s = at(stage, t); return (c.u - s.u) / exact(c.t, ctrl.depth) - 1 }
+// ── W1c: the sheet — revision B (header): Λ, the stage's per-step same-state loss; W1cctl; W1cE (--w1c-ensemble) ──────
+if (run('W1c') || run('W1cctl')) {
+  const U0 = 2, F = 0.02, h = 0.05, VP = h ** 3 / 8, S0 = scenes()
   const DARCY = { wall: 'y-', law: 'darcyTest', f: F }
-  const runs = {}
-  for (const [axis, name] of [[0, 'x'], [2, 'z']]) {
-    const ctrl = sheet(axis, null), stage = sheet(axis, DARCY)
-    runs[name] = { ctrl, stage }
-    const rs = TS.map(t => rel(ctrl, stage, t)), drift = Math.max(...ctrl.out.map(o => Math.abs(o.u / U0 - 1)))
-    const minCells = stage.log.reduce((m, e) => Math.min(m, e.cells), Infinity), booked = stage.log.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0)
-    const ok = rs.every(r => Math.abs(r) <= 0.03) && stage.log.length === ctrl.out.length && minCells > 0 && booked > 0
-    const worstAt = ctrl.out.reduce((b, o) => (Math.abs(o.u / U0 - 1) > Math.abs(b.u / U0 - 1) ? o : b)), valid = drift <= 0.002
-    check(valid, `W1cvalid.${name}`, `validity of the ${name} sheet: the control's (stage off) window-mean drift |ū/u0 − 1| max ${(100 * drift).toFixed(3)} % at t ${worstAt.t.toFixed(3)} s over ${ctrl.out.length} steps t ≤ 1 s (≤ 0.2 %); at t ${TS.map(t => { const o = at(ctrl, t); return `${o.t.toFixed(3)} s ${o.u / U0 - 1 >= 0 ? '+' : ''}${(100 * (o.u / U0 - 1)).toFixed(3)} %` }).join(', ')}`)
-    const lossMsg = `one-cell sheet along ${name} (depth ${(100 * ctrl.depth).toFixed(3)} cm, u0 ${U0} m/s, darcyTest f ${F}, window [9, 11] m): loss vs exact at t ${TS.map((t, i) => `${at(ctrl, t).t.toFixed(3)} s ${rs[i] >= 0 ? '+' : ''}${(100 * rs[i]).toFixed(2)} %`).join(', ')} (±3 % each); log entries ${stage.log.length}, fewest cells acted on ${minCells} (> 0), Σ|booked| ${e2(booked)} N·s (> 0)`
-    if (valid) check(ok, `W1c.${name}`, lossMsg)
-    else voidCheck(`W1c.${name}`, lossMsg)
+  const NW = (() => { let n = 0; for (let s = 1; s * DT_A2 <= 1 + 1e-9; s++) n++; return n })()   // the steps t ≤ 1 s (272)
+  /** The checkpoints: the steps nearest 0.25, 0.5 and 1 s (68, 136, 272), the first of equals as before. */
+  const CHECK = [0.25, 0.5, 1.0].map(t => { let b = 1; for (let s = 2; s <= NW; s++) if (Math.abs(s * DT_A2 - t) < Math.abs(b * DT_A2 - t)) b = s; return b })
+  const exact = (t, depth, f = F) => U0 - U0 / (1 + (f / 8) * U0 * t / depth)   // L(t), as before
+  const lambda = (U, depth) => U - 1 / (1 / U + DT_A2 * (F / 8) / depth)      // the exact one-step Darcy loss (f = 0.02)
+  const pc = r => `${r >= 0 ? '+' : ''}${(100 * r).toFixed(2)} %`
+  const within = r => Math.abs(r.rL) <= 0.03 && Math.abs(r.rT) <= 0.03    // W1c.<axis>.step's criterion at one checkpoint
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length
+  const sdev = a => { const m = mean(a); return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)) }
+  const layoutOf = axis => new GridLayout({ nx: axis === 0 ? 400 : 4, ny: 8, nz: axis === 0 ? 4 : 400, dx: h })
+  const optsOf = law => opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...(law ? { wallShear: law } : {}) })
+  /** The sheet (unchanged): block() over row 0 of 400 × 8 × 4 or 4 × 8 × 400 cells of 5 cm, 8 ppc, mulberry32(seed), u0. */
+  function sheetOf(axis, seed) {
+    const nx = axis === 0 ? 400 : 4, nz = axis === 0 ? 4 : 400
+    const p = S0.block([0, 0, 0], [nx - 1, 0, nz - 1], mulberry32(seed), 8, h)
+    for (let q = 0; q < p.n; q++) p.vel[3 * q + axis] = U0
+    return p
   }
-  const fails3 = rs => rs.some(r => !(Math.abs(r) <= 0.03))
-  const fmt = rs => rs.map(r => `${r >= 0 ? '+' : ''}${(100 * r).toFixed(2)} %`).join(', ')
-  for (const [label, f] of [['W1c.tau2', 2 * F], ['W1c.sign', -F]]) {
-    const st = sheet(0, { wall: 'y-', law: 'darcyTest', f }), rs = TS.map(t => rel(runs.x.ctrl, st, t))
-    control(fails3(rs), label, `x sheet, darcyTest f = ${f} against the f = ${F} reference, must miss the ±3 %: ${fmt(rs)}`)
+  /** S (header): the particles whose flow coordinate is in [9, 11] m at t = 0, inclusive; |S| = 1280 asserted (no verdict). */
+  function setS(p, axis) {
+    const l = []
+    for (let q = 0; q < p.n; q++) { const x = p.pos[3 * q + axis]; if (x >= 9 && x <= 11) l.push(q) }
+    if (l.length !== 1280) throw new Error(`W1c: |S| = ${l.length} on axis ${axis} (1280 required: block() puts every particle strictly inside its cell) — no verdict`)
+    return Int32Array.from(l)
   }
-  const rsSkip = TS.map(t => rel(runs.x.ctrl, runs.x.ctrl, t))
-  control(fails3(rsSkip), 'W1c.skipped', `x sheet, the stage skipped (the control as the stage run), must miss the ±3 %: ${fmt(rsSkip)}`)
-  // REPORTED: keulegan1938 against its own ODE
-  const kg = sheet(0, SHEAR_ON), nu = 1.001596e-3 / RHO, depth = runs.x.ctrl.depth
-  const ode = t1 => { let u = U0; const n = 1000, d = t1 / n, fr = x => -tauOracle(x, depth, nu, RHO) / (RHO * depth); for (let i = 0; i < n; i++) { const k1 = fr(u), k2 = fr(u + 0.5 * d * k1), k3 = fr(u + 0.5 * d * k2), k4 = fr(u + d * k3); u += d * (k1 + 2 * k2 + 2 * k3 + k4) / 6 } return u }
-  info('W1c.keulegan', `x sheet, keulegan1938 (20 °C water), loss vs its ODE dū/dt = −τ(ū, h)/(ρh) (this file's law, RK4): ${TS.map(t => { const c = at(runs.x.ctrl, t), s = at(kg, t), ref = U0 - ode(c.t); return `t ${c.t.toFixed(3)} s ${(100 * ((c.u - s.u) / ref - 1)).toFixed(2)} %` }).join(', ')} (reported; spec 1.1–2.1 %)`)
+  const meanS = (p, S, axis) => { let s = 0; for (let r = 0; r < S.length; r++) s += p.vel[3 * S[r] + axis]; return s / S.length }
+  /** The old statistic (retired to INFO): the mean flow-axis velocity of the particles inside the fixed window [9, 11] m. */
+  const windowMean = (p, axis) => { let m = 0, su = 0; for (let q = 0; q < p.n; q++) { const x = p.pos[3 * q + axis]; if (x >= 9 && x <= 11) { m++; su += p.vel[3 * q + axis] } } return su / m }
+  const spanS = (p, S, axis) => { let lo = Infinity, hi = -Infinity; for (let r = 0; r < S.length; r++) { const x = p.pos[3 * S[r] + axis]; if (x < lo) lo = x; if (x > hi) hi = x } return [lo, hi] }
+  // the shadow's snapshot: every typed array of the particle object (the list asserted before and after every run), p.n and
+  // sim.time — restored in place
+  const PKEYS = ['c', 'enthalpy', 'mass', 'material', 'n', 'pos', 'vel']
+  const assertKeys = p => { const k = Object.keys(p).sort().join(', '); if (k !== PKEYS.join(', ')) throw new Error(`W1c: the particle object holds ${k}; the shadow's snapshot covers ${PKEYS.join(', ')} — no verdict`) }
+  const snapAll = p => ({ n: p.n, pos: Float64Array.from(p.pos), vel: Float64Array.from(p.vel), c: p.c.map(a => Float64Array.from(a)), mass: Float64Array.from(p.mass), material: Uint32Array.from(p.material), enthalpy: Float64Array.from(p.enthalpy) })
+  const restoreAll = (p, X) => { p.n = X.n; p.pos.set(X.pos); p.vel.set(X.vel); for (let a = 0; a < 3; a++) p.c[a].set(X.c[a]); p.mass.set(X.mass); p.material.set(X.material); p.enthalpy.set(X.enthalpy) }
+  /** The stage only while armed (W1d's Armed pattern); the ledger β: the change of S's flow-axis velocity sum across
+   *  super.applyWallShear alone, inside any control's pre/post hooks (report only). */
+  class Shadow extends FlipRef {
+    armed = true; ledger = 0; S = null; ax = 0
+    applyWallShear(p, dt2) {
+      if (!this.armed) return
+      this.pre(p)
+      const b0 = this.sumS(p)
+      super.applyWallShear(p, dt2)
+      this.ledger += this.sumS(p) - b0
+      this.post(p)
+    }
+    sumS(p) { let s = 0; for (let r = 0; r < this.S.length; r++) s += p.vel[3 * this.S[r] + this.ax]; return s }
+    pre() {}
+    post() {}
+  }
+  /** ctl:W1c.nottransmitted: on armed steps P2G reads the pre-stage velocities — the log and the ledger book in full, Λ = 0. */
+  class NotTransmitted extends Shadow {
+    preVel = null
+    pre(p) { this.preVel = Float64Array.from(p.vel) }
+    p2g(p) {
+      if (!this.preVel) return super.p2g(p)
+      const after = Float64Array.from(p.vel)
+      p.vel.set(this.preVel); super.p2g(p); p.vel.set(after)
+      this.preVel = null
+    }
+  }
+  /** ctl:W1c.dropz.z: every v_z restored after the stage. */
+  class DropZ extends Shadow {
+    pre(p) { this.vz = new Float64Array(p.n); for (let q = 0; q < p.n; q++) this.vz[q] = p.vel[3 * q + 2] }
+    post(p) { for (let q = 0; q < p.n; q++) p.vel[3 * q + 2] = this.vz[q] }
+  }
+  /** ctl:W1c.xonly.z: v_z := 0 before the stage, restored after (the in-file twin of the mutant 'z-component ignored'). */
+  class XOnly extends Shadow {
+    pre(p) { this.vz = new Float64Array(p.n); for (let q = 0; q < p.n; q++) { this.vz[q] = p.vel[3 * q + 2]; p.vel[3 * q + 2] = 0 } }
+    post(p) { for (let q = 0; q < p.n; q++) p.vel[3 * q + 2] = this.vz[q] }
+  }
+  /** A shadowed stage run (header, revision B): every step n from its state X — the stage DISARMED (ū_S → uOff), X restored,
+   *  then ARMED, the branch that continues (uOn); τ_n = uOff − uOn, Λ = Σ τ_n, Λ_traj = Σ λ(ū_S before step n). With
+   *  `tight`, at steps 1 and 17k the pair is also run from X at pressure tolerance 1e-9 (ψ unchanged), its log entries and
+   *  ledger increments removed (the linearity premise). */
+  function shadowRun(axis, seed, Cls, law, steps, tight) {
+    const sim = new Cls(layoutOf(axis), optsOf(law)), p = sheetOf(axis, seed), S = setS(p, axis)
+    sim.S = S; sim.ax = axis
+    assertKeys(p)
+    const depth = S.length * VP / ((11 - 9) * 4 * h), TOL0 = sim.pressureTolerance
+    const r = { S, depth, tau: [], lam: [], uOn: [], Lam: [], LamTraj: [], win: [], span: [], tight: [] }
+    let Lam = 0, LamTraj = 0
+    for (let n = 1; n <= steps; n++) {
+      const X = snapAll(p), t0 = sim.time, uPre = meanS(p, S, axis), lam = lambda(uPre, depth)
+      sim.armed = false; sim.step(p, DT_A2); const uOff = meanS(p, S, axis); restoreAll(p, X); sim.time = t0
+      if (tight && (n === 1 || n % 17 === 0)) {
+        const L0 = sim.wallShearLog.length, B0 = sim.ledger
+        sim.pressureTolerance = 1e-9
+        if (sim.pressureTolerance !== 1e-9) throw new Error('W1c: the tight pressure tolerance did not take — no verdict')
+        sim.armed = false; sim.step(p, DT_A2); const uOffT = meanS(p, S, axis); restoreAll(p, X); sim.time = t0
+        sim.armed = true; sim.step(p, DT_A2); const uOnT = meanS(p, S, axis); restoreAll(p, X); sim.time = t0
+        sim.wallShearLog.length = L0; sim.ledger = B0; sim.pressureTolerance = TOL0
+        r.tight.push({ n, tau: uOffT - uOnT })
+      }
+      sim.armed = true; sim.step(p, DT_A2); const uOn = meanS(p, S, axis)   // the continuing branch, always last
+      const tau = uOff - uOn
+      Lam += tau; LamTraj += lam
+      r.tau.push(tau); r.lam.push(lam); r.uOn.push(uOn); r.Lam.push(Lam); r.LamTraj.push(LamTraj); r.win.push(windowMean(p, axis))
+      if (CHECK.includes(n)) r.span.push(spanS(p, S, axis))
+    }
+    assertKeys(p)
+    Object.assign(r, { p, log: sim.wallShearLog, ledger: sim.ledger })
+    return r
+  }
+  /** The control (option absent) through the same shadow loop, without the tight branches: the two branches' end states
+   *  compared word by word at every step (the null check); its Λ ≡ 0 is ctl:W1c.skipped. */
+  function shadowControl(axis, seed, steps) {
+    const sim = new Shadow(layoutOf(axis), optsOf(null)), p = sheetOf(axis, seed), S = setS(p, axis)
+    sim.S = S; sim.ax = axis
+    assertKeys(p)
+    const depth = S.length * VP / ((11 - 9) * 4 * h)
+    const r = { S, depth, words: [], uS: [], Lam: [], LamTraj: [], win: [] }
+    let Lam = 0, LamTraj = 0
+    for (let n = 1; n <= steps; n++) {
+      const X = snapAll(p), t0 = sim.time, lam = lambda(meanS(p, S, axis), depth)
+      sim.armed = false; sim.step(p, DT_A2); const A1 = snap(p), u1 = meanS(p, S, axis); restoreAll(p, X); sim.time = t0
+      sim.armed = true; sim.step(p, DT_A2); const u2 = meanS(p, S, axis)
+      r.words.push(diffWords(A1, snap(p)))
+      Lam += u1 - u2; LamTraj += lam
+      r.uS.push(u2); r.Lam.push(Lam); r.LamTraj.push(LamTraj); r.win.push(windowMean(p, axis))
+    }
+    assertKeys(p)
+    r.p = p
+    return r
+  }
+  /** A plain FlipRef run (the lockstep reference; W1c.keulegan's runs): the window means per step. */
+  function plainRun(axis, seed, law, steps) {
+    const sim = new FlipRef(layoutOf(axis), optsOf(law)), p = sheetOf(axis, seed), win = []
+    for (let n = 1; n <= steps; n++) { sim.step(p, DT_A2); win.push(windowMean(p, axis)) }
+    return { p, win }
+  }
+  const checkRows = r => CHECK.map(n => { const t = n * DT_A2, La = r.Lam[n - 1], LT = r.LamTraj[n - 1]; return { n, t, La, rL: La / exact(t, r.depth) - 1, rT: La / LT - 1 } })
+  const nonVac = r => ({ entries: r.log.length, minCells: r.log.reduce((m, e) => Math.min(m, e.cells), Infinity), booked: r.log.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0) })
+  const harnessWhy = 'its axis\'s W1cshadow line failed: the harness or its premise is broken, not the stage'
+
+  if (run('W1c')) {
+    const harness = {}, skipped = {}
+    for (const [axis, name] of [[0, 'x'], [2, 'z']]) {
+      const ctl = shadowControl(axis, 7, NW), st = shadowRun(axis, 7, Shadow, DARCY, NW, true), plain = plainRun(axis, 7, DARCY, NW)
+      // W1cshadow: the harness and its premise
+      const nNull = ctl.words.filter(w => w !== 0).length, okNull = ctl.words.length === NW && nNull === 0
+      check(okNull, `W1cshadow.${name}.null`, `the control (option absent) through the shadow loop, its two branches one computation from the restored state: steps with differing words of pos, vel, c and mass ${nNull} of ${ctl.words.length} (0; at most ${Math.max(...ctl.words)} words); the snapshot covers ${PKEYS.join(', ')} and sim.time`)
+      const dLock = diffWords(snap(st.p), snap(plain.p))
+      check(dLock === 0, `W1cshadow.${name}.lockstep`, `the shadowed stage run (disarmed branch, then the armed one that continues; tight branches at steps 1 and 17k) vs a plain FlipRef stage run, darcyTest f ${F}, seed 7: ${dLock} differing words at step ${NW} (0)`)
+      const lin = st.tight.map(({ n, tau }) => ({ n, err: Math.abs(tau - st.tau[n - 1]) / Math.max(st.lam[n - 1], Math.abs(st.tau[n - 1])) }))
+      const worst = lin.reduce((b, x) => (x.err > b.err ? x : b), { n: 0, err: 0 }), okLin = lin.length === 17 && lin.every(x => x.err <= 3e-3)
+      check(okLin, `W1cshadow.${name}.lin`, `the linearity premise, same state, pressure tolerance 1e-9 (ψ 1e-4 unchanged), at ${lin.length} sampled steps (1 and 17k; 17 required): max |τ^tight − τ|/max(λ_n, |τ_n|) ${e2(worst.err)} at step ${worst.n} (≤ 3e-3 at every sampled step)`)
+      harness[name] = okNull && dLock === 0 && okLin
+      // W1c.<axis>.run: non-vacuity, always gated, never VOID (review GATE-F5)
+      const nv = nonVac(st)
+      check(nv.entries === NW && nv.minCells > 0 && nv.booked > 0, `W1c.${name}.run`, `the continuing branch's stage log: entries ${nv.entries} (${NW}), fewest cells acted on ${nv.minCells} (> 0), Σ|booked| ${e2(nv.booked)} N·s (> 0)`)
+      // W1c.<axis>.step: Λ against L and against Λ_traj at the checkpoints, 3 %† each
+      const rows = checkRows(st)
+      const msg = `the stage's per-step same-state loss Λ of S (|S| ${st.S.length}, depth ${(100 * st.depth).toFixed(3)} cm; seed 7, u0 ${U0} m/s along ${name}, darcyTest f ${F}): ${rows.map(x => `t ${x.t.toFixed(3)} s (step ${x.n}) Λ ${x.La.toFixed(6)} m/s, ${pc(x.rL)} vs L, ${pc(x.rT)} vs Λ_traj`).join('; ')} (±3 %† each)`
+      if (harness[name]) check(rows.every(within), `W1c.${name}.step`, msg)
+      else voidCheck(`W1c.${name}.step`, msg, harnessWhy)
+      skipped[name] = checkRows(ctl)
+      // INFO W1c.report.<axis> [FRICTION open item 3]
+      const rep = CHECK.map((n, i) => { const t = n * DT_A2, L = exact(t, st.depth), uc = ctl.uS[n - 1], us = st.uOn[n - 1], La = st.Lam[n - 1], ell = uc - us; return { t, L, ell, Gam: ell - La, dc: uc - U0, ds: us - U0 + La, fb: st.LamTraj[n - 1] / L - 1, span: st.span[i] } })
+      const ratio = st.tau.map((x, i) => x / st.lam[i]), betaMean = -st.ledger / st.S.length
+      const depthOld = ctl.p.n * (h ** 3 / 8) / ((axis === 0 ? 400 : 4) * h * (axis === 0 ? 4 : 400) * h)   // the old W1c's depth
+      const oldRel = CHECK.map(n => (ctl.win[n - 1] - st.win[n - 1]) / exact(n * DT_A2, depthOld) - 1)
+      let wk = 0
+      for (let i = 1; i < ctl.win.length; i++) if (Math.abs(ctl.win[i] / U0 - 1) > Math.abs(ctl.win[wk] / U0 - 1)) wk = i
+      const drift = Math.abs(ctl.win[wk] / U0 - 1)
+      info(`W1c.report.${name}`, `[FRICTION open item 3] at t ${rep.map(x => x.t.toFixed(3)).join(' / ')} s: Λ_traj/L − 1 (the measured feedback) ${rep.map(x => pc(x.fb)).join(', ')}; ℓ_S = ū_S,ctrl − ū_S,stage vs L ${rep.map(x => pc(x.ell / x.L - 1)).join(', ')}; Γ = ℓ_S − Λ = d_c − d_s ${rep.map(x => `${(1000 * x.Gam).toFixed(3)} mm/s (d_c ${(1000 * x.dc).toFixed(3)}, d_s ${(1000 * x.ds).toFixed(3)})`).join(', ')}; the ledger β (S's booked mean decrement, ${NW} steps) ${betaMean.toFixed(6)} m/s, Λ/β ${(st.Lam[NW - 1] / betaMean).toFixed(5)}; τ_n/λ_n min ${Math.min(...ratio).toFixed(5)} max ${Math.max(...ratio).toFixed(5)}; S's flow-coordinate span ${rep.map(x => `[${x.span[0].toFixed(3)}, ${x.span[1].toFixed(3)}]`).join(', ')} m; max |τ^tight − τ|/max(λ_n, |τ_n|) ${e2(worst.err)}; retired to INFO, the numbers they printed before: the full-step loss over the fixed window [9, 11] m vs L ${CHECK.map((n, i) => `t ${(n * DT_A2).toFixed(3)} s ${oldRel[i] >= 0 ? '+' : ''}${(100 * oldRel[i]).toFixed(2)} %`).join(', ')}; the control's window-mean drift |ū/u0 − 1| max ${(100 * drift).toFixed(3)} % at t ${((wk + 1) * DT_A2).toFixed(3)} s over ${ctl.win.length} steps (the old bound 0.2 %: ${drift <= 0.002 ? 'within' : 'exceeded'})`)
+    }
+    // ctl:W1c.skipped (x and z): the shadowed control's Λ ≡ 0 must miss W1c.<axis>.step's criterion at ≥ 1 checkpoint
+    control(['x', 'z'].every(k => skipped[k].some(x => !within(x))), 'W1c.skipped', `the shadowed control (the stage skipped: Λ ≡ 0) must miss W1c.<axis>.step's criterion at ≥ 1 checkpoint on each axis: ${['x', 'z'].map(k => `${k} ${skipped[k].map(x => `${pc(x.rL)} vs L`).join(', ')}`).join('; ')}`)
+    // W1cE (--w1c-ensemble): seeds 17–24 per axis, never run in this scene before (header); each seed its own line
+    if (ENSEMBLE) {
+      const ens = { x: [], z: [] }
+      for (const [axis, name] of [[0, 'x'], [2, 'z']]) for (let seed = 17; seed <= 24; seed++) {
+        const r = shadowRun(axis, seed, Shadow, DARCY, NW, false), rows = checkRows(r), nv = nonVac(r)
+        const ds = CHECK.map(n => r.uOn[n - 1] - U0 + r.Lam[n - 1])
+        ens[name].push(rows)
+        const msg = `seed ${seed}, u0 ${U0} m/s along ${name}, darcyTest f ${F}: |S| ${r.S.length} (1280); Λ ${rows.map(x => `t ${x.t.toFixed(3)} s ${pc(x.rL)} vs L, ${pc(x.rT)} vs Λ_traj`).join('; ')} (±3 %† each); log entries ${nv.entries} (${NW}), fewest cells acted on ${nv.minCells} (> 0), Σ|booked| ${e2(nv.booked)} N·s (> 0); REPORTED d_s ${ds.map(v => (1000 * v).toFixed(3)).join(' / ')} mm/s`
+        const ok = r.S.length === 1280 && rows.every(within) && nv.entries === NW && nv.minCells > 0 && nv.booked > 0
+        if (harness[name]) check(ok, `W1cE.${name}.s${seed}`, msg)
+        else voidCheck(`W1cE.${name}.s${seed}`, msg, harnessWhy)
+      }
+      for (const name of ['x', 'z']) info(`W1cE.${name}`, `seeds 17–24 (${ens[name].length}): per checkpoint mean and SD of Λ/L − 1 ${CHECK.map((n, i) => { const v = ens[name].map(rw => rw[i].rL); return `t ${(n * DT_A2).toFixed(3)} s ${pc(mean(v))} (SD ${(100 * sdev(v)).toFixed(2)} %)` }).join(', ')}; of Λ/Λ_traj − 1 ${CHECK.map((n, i) => { const v = ens[name].map(rw => rw[i].rT); return `t ${(n * DT_A2).toFixed(3)} s ${pc(mean(v))} (SD ${(100 * sdev(v)).toFixed(2)} %)` }).join(', ')}`)
+    }
+  }
+
+  // ── W1cctl: W1c's in-file controls (header) — each a shadowed stage run of the seed-7 sheet to step 68, judged by
+  // W1c.<axis>.step's criterion at the 0.25 s checkpoint against the f = 0.02 references; each must FAIL
+  if (run('W1cctl')) {
+    const n0 = CHECK[0], t0 = n0 * DT_A2
+    for (const [label, desc, Cls, law, axes, derived] of [
+      ['W1c.tau2', 'τ×2 (darcyTest f = 0.04)', Shadow, { wall: 'y-', law: 'darcyTest', f: 2 * F }, [0, 2], 'derived +99.93 % vs Λ_traj, +95.2 % vs L'],
+      ['W1c.sign', 'sign flipped (darcyTest f = −0.02)', Shadow, { wall: 'y-', law: 'darcyTest', f: -F }, [0, 2], 'derived −200.07 % vs Λ_traj, −205.1 % vs L'],
+      ['W1c.nottransmitted', 'not transmitted (on armed steps P2G reads the pre-stage velocities)', NotTransmitted, DARCY, [0, 2], 'derived −100 %: the log and the ledger book in full, Λ = 0'],
+      ['W1c.dropz', 'Δv_z dropped (every v_z restored after the stage)', DropZ, DARCY, [2], 'derived −100 % on z'],
+      ['W1c.xonly', 'x only (v_z := 0 before the stage, restored after; the in-file twin of the mutant \'z-component ignored\')', XOnly, DARCY, [2], 'derived −100 % on z'],
+    ]) for (const axis of axes) {
+      const name = axis === 0 ? 'x' : 'z', r = shadowRun(axis, 7, Cls, law, n0, false), x = checkRows(r)[0], nv = nonVac(r)
+      control(!within(x), `${label}.${name}`, `${desc}, the ${name} sheet: a shadowed stage run to step ${n0}, judged by W1c.${name}.step's criterion at t ${t0.toFixed(3)} s against the f = ${F} references, must miss the ±3 %: ${pc(x.rT)} vs Λ_traj, ${pc(x.rL)} vs L (${derived}); log entries ${nv.entries}, Σ|booked| ${e2(nv.booked)} N·s, the ledger ${r.ledger.toExponential(3)} m/s`)
+    }
+    // REPORTED: W1c.keulegan, moved here unchanged (its own plain x control and keulegan1938 run)
+    const cx = plainRun(0, 7, null, NW), kg = plainRun(0, 7, SHEAR_ON, NW), nu = 1.001596e-3 / RHO, depth = cx.p.n * (h ** 3 / 8) / (400 * h * 4 * h)
+    const ode = t1 => { let u = U0; const n = 1000, d = t1 / n, fr = x => -tauOracle(x, depth, nu, RHO) / (RHO * depth); for (let i = 0; i < n; i++) { const k1 = fr(u), k2 = fr(u + 0.5 * d * k1), k3 = fr(u + 0.5 * d * k2), k4 = fr(u + d * k3); u += d * (k1 + 2 * k2 + 2 * k3 + k4) / 6 } return u }
+    info('W1c.keulegan', `x sheet, keulegan1938 (20 °C water), loss vs its ODE dū/dt = −τ(ū, h)/(ρh) (this file's law, RK4): ${CHECK.map(n => { const t = n * DT_A2, ref = U0 - ode(t); return `t ${t.toFixed(3)} s ${(100 * ((cx.win[n - 1] - kg.win[n - 1]) / ref - 1)).toFixed(2)} %` }).join(', ')} (reported; spec 1.1–2.1 %)`)
+  }
 }
 
 // ── W1d: the placement audit ─────────────────────────────────────────────────────────────────────────────────────────

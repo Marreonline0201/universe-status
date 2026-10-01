@@ -10,9 +10,15 @@
 // check: uncertified, neither pass nor fail) is UNUSABLE for every mutant and never counted as a catch. A named check is
 // the table's, never renamed: it CATCHES a mutant when ≥ 1 of its lines flips and none of its lines is unusable — a
 // check with an unusable line (W1c while W1c.z is VOID: the table's W1c is the x AND the z sheet) demonstrates only
-// part of the table's claim, so it cannot make the mutant CAUGHT. Hence, while s38-ref's W1c.z is VOID (its control's
-// drift failed W1cvalid.z — see s38-ref's revision note), every mutant the table attributes to W1c (option ignored,
-// sign flipped, τ×2) or to its z sheet (z-component ignored) is PARTIAL at best: the honest verdict, reported as such.
+// part of the table's claim, so it cannot make the mutant CAUGHT.
+// Since s38-ref's W1c revision B (2026-09-30) the table's W1c is the lines W1c.<x|z>.step (the stage's per-step
+// same-state loss Λ) and W1c.<x|z>.run (non-vacuity); W1c.z is the z sheet's two. Neither goes VOID on the control's
+// drift any more (W1cvalid.* are INFO), so the mutants attributed to W1c (option ignored, sign flipped, τ×2) or to its
+// z sheet (z-component ignored, Δv_z dropped) are expected CAUGHT. W1c's validity lines W1cshadow.* (harness integrity
+// and the linearity premise) are named by no mutant; a W1cshadow FAIL VOIDs its axis's step line, which then cannot
+// count as a catch. s38-ref's section W1cctl (W1c's in-file controls) and its flag-gated W1cE (the seed ensemble) are
+// named by no mutant and absent from `order` (cost): this harness's control exercises only ctl:W1c.skipped of W1c's
+// controls; s38-ref's own full run gates the rest.
 // Verdicts: CAUGHT = every named check caught it; PARTIAL = some named check did, another passed or is (partly)
 // unusable (the table's claim does not hold, or cannot be shown, for it — reported, never hidden); MISSED = only checks
 // the table does not name flipped; SURVIVED = nothing flipped; INVALID = the run ended without its verdict line (a crash
@@ -23,7 +29,7 @@
 // W0a.column, W0a.pool.entered, W0a.pool (W0a's same-tree lines; W0a.column also names W0a.column.entered, the printed
 // hit list shows which flipped), W0b, W0b.force, W0b.drift, W0c, W1a, W1aK, W1aK.6 (the energy check — its stage-level
 // half; its pool half, W3P1.energy, runs in s38-dambreak, outside this harness), W1aK.default, W1b, W1b.lam, W1b.scan,
-// W1c (the losses and non-vacuity, x and z), W1c.z, W1d(i), W1d(ii). W1c's validity lines (W1cvalid.*) and W0a's
+// W1c (W1c.x.step, W1c.x.run, W1c.z.step, W1c.z.run), W1c.z (the z sheet's two), W0b.sigma (W0b.sigma.null, W0b.sigma.zero), W1d(i), W1d(ii). W1c's validity lines (W1cshadow.*) and W1cE's lines and W0a's
 // --w0a-pinned lines (W0apin.*, never run here) are named by no mutant.
 // Not here: W1d's G1 control (placement on the grid) is a subclass inside s38-ref (ctl:W1d.G1), so flipRef carries no
 // gate-only placement code; the spec's GPU mutant (per-frame placement) belongs to gpu-mutations.mjs.
@@ -162,6 +168,8 @@ const M = [
   ['drift guard ignores σ', SIGMA, '      return true', ['W0b.sigma']],
   ['unsourced σ taken as a pair', SIGMA, '      if (s === null || s > 0) return true', ['W0b.sigma.null']],
   ["σ = 0 taken as a pair (the page's rule)", SIGMA, '      if (s !== null) return true', ['W0b.sigma.zero']],
+  // ADDED 2026-09-30 (W1c revision B; pre-registered in FR/w1cz/plan.md before its first run): the stage applies Δv_x only
+  ['Δv_z dropped (the stage applies Δv_x only)', APPLY, 'p.vel[3 * q] += dvx[c]', ['W1a', 'W1c.z']],
 ]
 // none since 2026-09-30: the literal max() form is refused below Re_h ≈ 2.77 and runs in M (header)
 const EQUIV = []
