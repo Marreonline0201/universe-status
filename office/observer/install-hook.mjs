@@ -13,7 +13,8 @@
 //    a node process that fails on a missing file.
 //  - The self-check runs the INSTALLED hook once, on a synthetic PreToolUse payload, with its spool redirected to a
 //    throwaway temp folder (the real spool is not touched), and requires: exit 0, nothing on stdout or stderr,
-//    exactly one record with the expected category.
+//    exactly one record with the expected category, the agent id without its "agent-" prefix, the agent type, and the
+//    per-record cost fields (dur cpu rss, integers) — so a PASS also shows that the installed hook is this version.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync, unlinkSync, rmdirSync, mkdtempSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -64,7 +65,7 @@ function selfCheck() {
   const env = { ...process.env, UNIVERSE_OFFICE_HOME: tmp };
   delete env.OFFICE_AGENT_ID;
   const payload = JSON.stringify({
-    session_id: 'install-check', hook_event_name: 'PreToolUse', agent_id: 'agent-installcheck',
+    session_id: 'install-check', hook_event_name: 'PreToolUse', agent_id: 'agent-installcheck', agent_type: 'install-check',
     tool_name: 'Bash', tool_input: { command: 'git status' }, tool_use_id: 'toolu_install_check',
   });
   const problems = [];
@@ -80,7 +81,9 @@ function selfCheck() {
     if (lines.length !== 1) problems.push(`expected 1 spool line, found ${lines.length}`);
     else {
       const rec = JSON.parse(lines[0]);
-      if (rec.ev !== 'PreToolUse' || rec.aid !== 'agent-installcheck' || rec.k !== 'historyShelf' || rec.a !== 'glance') {
+      const costs = ['dur', 'cpu', 'rss'].every((k) => Number.isInteger(rec[k]) && rec[k] >= 0);
+      if (rec.ev !== 'PreToolUse' || rec.aid !== 'installcheck' || rec.at !== 'install-check' || rec.k !== 'historyShelf'
+          || rec.a !== 'glance' || !costs) {
         problems.push(`unexpected record ${lines[0]}`);
       }
     }
