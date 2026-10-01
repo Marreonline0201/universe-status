@@ -20,8 +20,6 @@
 //   And with a broken floorplan (the ?raw module answered with "{}"), the tab shows the note and the loader's error
 //   while the header and the other tabs keep working.
 // PNGs go to scripts/out/ (git-ignored). Exits 1 on any failed check.
-import { createServer } from 'vite'
-import { chromium } from 'playwright-core'
 import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
@@ -59,6 +57,9 @@ function freeRamGb() {
 }
 const freeGb = freeRamGb()
 if (freeGb < 1.5) { console.error(`free RAM ${freeGb.toFixed(2)} GB < 1.5 GB — not starting a dev server and a browser`); process.exit(2) }
+// loaded only after the RAM gate, so the gate reads the machine before Vite and Playwright take their share
+const { createServer } = await import('vite')
+const { chromium } = await import('playwright-core')
 
 let failures = 0
 const check = (ok, what) => { if (ok) console.log(`  ok   ${what}`); else { failures++; console.error(`  FAIL ${what}`) } }
