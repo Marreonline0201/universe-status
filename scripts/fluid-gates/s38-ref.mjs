@@ -77,6 +77,37 @@
 //      a step are printed (reported). Sensitivity control ctl:W0b.drift (must FAIL W0b.drift's criterion): the same scene
 //      with the drift off (immiscible absent) and the option ON acts — its log: cells acted on > 0 and Σ|booked| > 0.
 //      The clause removed from flipRef runs in s38-mutations ('drift guard removed', named W0b.drift).
+//      (sigma) ADDED 2026-09-30 (decisions 15:06 / 15:40: "a σ-less W0b arm (water + ethanol, where the stage must
+//      act)"; pre-registered in FR/w1cz/plan.md, sha256 in FR/w1cz/PREREG.txt, before its first run). flipRef
+//      immiscibleDriftActive closes the stage only when two of the step's materials form a pair whose σ is > 0 — its
+//      docstring: "exactly when driftFlux can give a particle slip" (flipRef.ts:973–992; driftFlux disperses a particle
+//      only if σ > 0, :729–730). W0b.drift (σ 0.375) cannot see that half. Scene: the (drift) arm's, its second liquid a
+//      parameter — sub-cell 7 of each floor cell is ethanol at 20 °C (materialData LIQUIDS.ethanol ρ and μ; 32
+//      particles, material 1), every particle carrying p.mu; instant release, 20 steps of A2's Δt; the law keulegan1938.
+//      Premises, asserted before any verdict (a failed premise aborts: no verdict): interfacialTension('water',
+//      'ethanol') is null; both ν = μ/ρ (printed) are < VISCOUS_RUN_NU.
+//      (null) the page's σ table: IMM = { props of both, σ from interfacialTension.ts }. Runs, through a subclass that
+//      only counts driftFlux's entries: A the option ON with IMM; B the option off with IMM; C the option ON, immiscible
+//      absent. Pass W0b.sigma.null: (1) A's stage log holds 20 entries (the guard open at every step); (2) over A's log
+//      cells acted on > 0 and Σ|booked| > 0; (3) driftFlux entered 20× in A and in B, and lastDrift.dispersed = 0 after
+//      every step of both; (4) A and B differ in ≥ 1 word; (5) A and C: 0 differing words, and their logs equal entry by
+//      entry (t, cells, impX, impZ, tauMax, laminar). (5) is exact: with no pair σ > 0 no particle is dispersed
+//      (flipRef.ts:729–730), so J_f and J(x_q) are +0 and u_V = +0 (:803, :816, :842); advect adds that +0 where the
+//      drift-free run adds the literal 0 (:2203–2206); the u* snapshot and captureFaceAccel write only uStar and
+//      faceAccel, which only driftFlux reads (:571–572, :603, :623–639); diffWords compares pos, vel, c and mass.
+//      (zero) the CPU contract's other half: IMM0 = { props of both, sigma: (x, y) => (x === y ? null : 0) }, a σ = 0
+//      pair — reachable through the public σ callback (flipRef.ts:55–56), in no table (interfacialTension.ts: 0.375 and
+//      0.0245 N/m only). Run A0 = A with IMM0. Pass W0b.sigma.zero: (1), (2) and (5) with A0 in place of A, and (3)
+//      for A0 (driftFlux entered 20×, dispersed 0 after every step).
+//      Disclosed: the page counts every non-null σ as a pair (backends.ts:509–510), so at σ = 0 the page would guard the
+//      stage and the CPU would not; W0b.sigma.zero certifies the CPU reference's contract, not page parity.
+//      In-file controls (each must FAIL (1) and (2); expected 0 entries, 0 cells): ctl:W0b.sigma.null — run A with a
+//      subclass whose immiscibleDriftActive() returns true whenever options.immiscible is set and ≥ 2 materials are
+//      present (σ ignored); ctl:W0b.sigma.zero — run A0 with a subclass that takes any non-null σ as a pair (the page's
+//      rule). Refactor regression: the (drift) arm's lines keep their d30130f6 values (W0b.drift 32 dispersed, 1024
+//      particles, 0 words, 0 entries; ctl:W0b.drift 672 cells, 3.44e-3 N·s — FR/cert2/s38-ref_d30130f6.out:11–12).
+//      Mutants (s38-mutations): 'drift guard ignores σ' → W0b.sigma; 'unsourced σ taken as a pair' → W0b.sigma.null;
+//      'σ = 0 taken as a pair (the page's rule)' → W0b.sigma.zero.
 // W0c  the refusals [review wf_fbc58c55-116 M1 (CPU-F1) and M2 (CPU-F3); prereg R-M; pre-registered 2026-09-30 before
 //      its first run]. Each case must throw its OWN refusal — an Error whose message is that refusal's (a throw of any
 //      other kind, or no throw, fails the case) — and each line's must-run twins must run. (ctor) the constructor with
@@ -247,7 +278,7 @@ const run = name => !ONLY || ONLY.includes(name)
 const PINNED = ARGS.includes('--w0a-pinned')
 if (PINNED && !run('W0a')) throw new Error('--w0a-pinned: the pinned comparison is part of W0a, which this run does not include')
 const SRC = process.env.FLUID_REF_SRC ?? 'src'
-const { gridLayout, flipRef, mat, it } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, it: `${SRC}/composition/interfacialTension.ts` })
+const { gridLayout, flipRef, mat, it, lg } = await loadTsModules({ gridLayout: `${SRC}/sim-ref/gridLayout.ts`, flipRef: `${SRC}/sim-ref/flipRef.ts`, mat: `${SRC}/composition/materialData.ts`, it: `${SRC}/composition/interfacialTension.ts`, lg: `${SRC}/composition/liquidGate.ts` })
 const { GridLayout, FaceType } = gridLayout
 const { FlipRef, makeParticles, keuleganTau, CellLabel } = flipRef
 const TREE = { FlipRef, GridLayout, FaceType, makeParticles }
@@ -365,6 +396,11 @@ if (run('W0a')) {
 
 // ── W0b: the viscous guard ───────────────────────────────────────────────────────────────────────────────────────────
 if (run('W0b')) {
+  // W0b.sigma's premises (header), asserted before any verdict: a failed premise aborts the gate (no verdict, never a pass)
+  const ETH = { rho: mat.LIQUIDS.ethanol.density(20), mu: mat.LIQUIDS.ethanol.viscosity(20) }, SIG_WE = it.interfacialTension('water', 'ethanol')
+  const NU_W = mat.LIQUIDS.water.viscosity(20) / RHO, NU_E = ETH.mu / ETH.rho
+  if (SIG_WE !== null) throw new Error(`W0b.sigma: premise failed — interfacialTension('water', 'ethanol') = ${SIG_WE} (null required): no verdict`)
+  if (!(NU_W < lg.VISCOUS_RUN_NU && NU_E < lg.VISCOUS_RUN_NU)) throw new Error(`W0b.sigma: premise failed — ν water ${NU_W}, ethanol ${NU_E} m²/s (both < VISCOUS_RUN_NU ${lg.VISCOUS_RUN_NU} required): no verdict`)
   const OIL = { rho: mat.LIQUIDS['olive-oil'].density(20), mu: mat.LIQUIDS['olive-oil'].viscosity(20) }
   const a = 4 * 0.05, tauEnd = 20.5 * DT_A2 / Math.sqrt(a / G)   // 20 steps
   const colRun = (Cls, extra, rho) => { const r = s34Scenes({ ...TREE, FlipRef: Cls }, opts).column({ aCells: 4, n2: 1, h: 0.05, nx: 12, tauEnd, extra, rho }); return { p: snap(r.p), n: r.p.n, steps: r.ts.length, log: r.sim.wallShearLog, visc: r.sim.lastViscosity } }
@@ -387,25 +423,67 @@ if (run('W0b')) {
   const WAT = { rho: RHO, mu: mat.LIQUIDS.water.viscosity(20) }, MERC = { rho: mat.HG_RHO_20C, mu: mat.LIQUIDS.mercury.viscosity(20) }
   const KEYS = ['water', 'mercury'], SIGMA = it.interfacialTension('water', 'mercury')
   const IMM = { props: { 0: WAT, 1: MERC }, sigma: (x, y) => it.interfacialTension(KEYS[x], KEYS[y]) }
-  const driftRun = extra => {
+  /** The (drift) arm's scene; its second liquid (sub-cell 7 of each floor cell, material 1) and the solver class are
+   *  parameters (W0b.sigma, header), the σ callback travels in extra.immiscible. The (drift) arm passes mercury, IMM and
+   *  FlipRef, as before. Per step: lastDrift.dispersed; the class's driftFlux entries if it counts them (CountDrift). */
+  const driftRun = (extra, liq2 = MERC, Cls = FlipRef) => {
     const h = 0.05, L = new GridLayout({ nx: 12, ny: 12, nz: 8, dx: h })
-    const sim = new FlipRef(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...extra }))
+    const sim = new Cls(L, opts({ pressureTolerance: 1e-5, psiTolerance: 1e-4, ...extra }))
     const p = scenes().block([0, 0, 0], [3, 3, 7], () => 0.5, 8, h)   // the W0b column's block at the sub-cell centres: no rng draws
     p.mu = new Float64Array(p.n)
+    let n2 = 0
     for (let q = 0; q < p.n; q++) {
-      const hg = q % 8 === 7 && p.pos[3 * q + 1] < h   // sub-cell 7 of each floor cell: one mercury drop per floor cell
-      const liq = hg ? MERC : WAT
-      p.material[q] = hg ? 1 : 0; p.mass[q] = liq.rho * h ** 3 / 8; p.mu[q] = liq.mu
+      const two = q % 8 === 7 && p.pos[3 * q + 1] < h   // sub-cell 7 of each floor cell: one drop of the second liquid per floor cell
+      const liq = two ? liq2 : WAT
+      p.material[q] = two ? 1 : 0; p.mass[q] = liq.rho * h ** 3 / 8; p.mu[q] = liq.mu
+      if (two) n2++
     }
     let dispersed = 0
-    for (let s = 0; s < 20; s++) { sim.step(p, DT_A2); dispersed = Math.max(dispersed, sim.lastDrift.dispersed) }
-    return { p: snap(p), n: p.n, log: sim.wallShearLog, dispersed }
+    const perStep = []
+    for (let s = 0; s < 20; s++) { sim.step(p, DT_A2); dispersed = Math.max(dispersed, sim.lastDrift.dispersed); perStep.push(sim.lastDrift.dispersed) }
+    return { p: snap(p), n: p.n, n2, log: sim.wallShearLog, dispersed, perStep, entries: sim.driftEntries }
   }
   const dOn = driftRun({ immiscible: IMM, wallShear: SHEAR_ON }), dOff = driftRun({ immiscible: IMM }), dd = diffWords(dOn.p, dOff.p)
   check(dd === 0 && dOn.log.length === 0, 'W0b.drift', `the drift guard: water + mercury (σ ${SIGMA} N/m; ν ${e2(WAT.mu / WAT.rho)} and ${e2(MERC.mu / MERC.rho)} m²/s, both < VISCOUS_RUN_NU), the immiscible drift active (at most ${dOff.dispersed} dispersed particles in a step): option ON vs off, 20 steps, ${dOn.n} particles: ${dd} differing words (0); stage log entries ${dOn.log.length} (0: the stage never ran)`)
   const dCtl = driftRun({ wallShear: SHEAR_ON })
   const cActed = dCtl.log.reduce((s, e) => s + e.cells, 0), cBooked = dCtl.log.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0)
   control(cActed > 0 && cBooked > 0, 'W0b.drift', `sensitivity: the same scene with the drift off (immiscible absent) and the option ON must act: cells acted on ${cActed}, Σ|booked| ${e2(cBooked)} N·s (> 0 each)`)
+  // (sigma) the drift guard's σ half (2026-09-30, header): water + ethanol, σ from the page's table (null) and a synthetic σ = 0
+  // (ETH, SIG_WE, NU_W, NU_E and the premises: at the top of this section)
+  const KEYS_E = ['water', 'ethanol']
+  /** Counts driftFlux's entries; otherwise the tree's solver. */
+  class CountDrift extends FlipRef { driftEntries = 0; driftFlux(p, dt) { this.driftEntries++; return super.driftFlux(p, dt) } }
+  const IMM_E = { props: { 0: WAT, 1: ETH }, sigma: (x, y) => it.interfacialTension(KEYS_E[x], KEYS_E[y]) }   // (null): the page's σ table
+  const IMM_0 = { props: { 0: WAT, 1: ETH }, sigma: (x, y) => (x === y ? null : 0) }                         // (zero): a σ = 0 pair
+  const sA = driftRun({ immiscible: IMM_E, wallShear: SHEAR_ON }, ETH, CountDrift)   // A: the option ON with IMM
+  const sB = driftRun({ immiscible: IMM_E }, ETH, CountDrift)                        // B: the option off with IMM
+  const sC = driftRun({ wallShear: SHEAR_ON }, ETH, CountDrift)                      // C: the option ON, immiscible absent
+  const sA0 = driftRun({ immiscible: IMM_0, wallShear: SHEAR_ON }, ETH, CountDrift)  // A0: A with IMM0
+  const actedOf = r => r.log.reduce((s, e) => s + e.cells, 0), bookedOf = r => r.log.reduce((s, e) => s + Math.abs(e.impX) + Math.abs(e.impZ), 0)
+  const LOG_KEYS = ['t', 'cells', 'impX', 'impZ', 'tauMax', 'laminar']
+  const logsEqual = (a, b) => a.length === b.length && a.every((e, i) => LOG_KEYS.every(k => Object.is(e[k], b[i][k])))
+  const c1 = r => r.log.length === 20, c2 = r => actedOf(r) > 0 && bookedOf(r) > 0
+  const c3 = r => r.entries === 20 && r.perStep.length === 20 && r.perStep.every(d => d === 0)
+  const say3 = r => `driftFlux entered ${r.entries}× (20), dispersed after each step max ${Math.max(...r.perStep)} over ${r.perStep.length} steps (0 each)`
+  const dAB = diffWords(sA.p, sB.p), dAC = diffWords(sA.p, sC.p), dA0C = diffWords(sA0.p, sC.p), eqAC = logsEqual(sA.log, sC.log), eqA0C = logsEqual(sA0.log, sC.log)
+  const pre = `water + ethanol at 20 °C (ethanol ρ ${ETH.rho} kg/m³, μ ${ETH.mu} Pa·s; ν water ${e2(NU_W)}, ethanol ${e2(NU_E)} m²/s, both < VISCOUS_RUN_NU ${e2(lg.VISCOUS_RUN_NU)}), ${sA.n} particles (${sA.n2} ethanol), 20 steps, keulegan1938`
+  check(c1(sA) && c2(sA) && c3(sA) && c3(sB) && dAB >= 1 && dAC === 0 && eqAC, 'W0b.sigma.null', `the drift guard's σ half, the page's σ table: ${pre}, σ(water, ethanol) ${SIG_WE} (null: miscible or unsourced), immiscible set: (1) A's stage log entries ${sA.log.length} (20); (2) cells acted on ${actedOf(sA)} (> 0), Σ|booked| ${e2(bookedOf(sA))} N·s (> 0); (3) A: ${say3(sA)}; B (option off): ${say3(sB)}; (4) A vs B ${dAB} differing words (≥ 1); (5) A vs C (the same run, immiscible absent) ${dAC} differing words (0), logs ${eqAC ? 'equal' : 'NOT equal'} entry by entry (${sA.log.length} / ${sC.log.length} entries)`)
+  check(c1(sA0) && c2(sA0) && c3(sA0) && dA0C === 0 && eqA0C, 'W0b.sigma.zero', `the drift guard's σ half, the CPU contract at σ = 0 (a synthetic callback; not page parity — backends.ts counts any non-null σ): ${pre}, σ(water, ethanol) := 0: (1) A0's stage log entries ${sA0.log.length} (20); (2) cells acted on ${actedOf(sA0)} (> 0), Σ|booked| ${e2(bookedOf(sA0))} N·s (> 0); (3) A0: ${say3(sA0)}; (5) A0 vs C ${dA0C} differing words (0), logs ${eqA0C ? 'equal' : 'NOT equal'} entry by entry (${sA0.log.length} / ${sC.log.length} entries)`)
+  /** ctl:W0b.sigma.null: a guard that ignores σ — closed whenever options.immiscible is set and ≥ 2 materials are present. */
+  class GuardIgnoresSigma extends CountDrift { immiscibleDriftActive(p) { return this.immiscible !== null && new Set(p.material.subarray(0, p.n)).size >= 2 } }
+  /** ctl:W0b.sigma.zero: the page's rule — any non-null σ is a pair (backends.ts:509–510). */
+  class PageSigmaRule extends CountDrift {
+    immiscibleDriftActive(p) {
+      const I = this.immiscible
+      if (!I) return false
+      const mats = [...new Set(p.material.subarray(0, p.n))]
+      for (const a of mats) for (const b of mats) if (a !== b && I.sigma(a, b) !== null) return true
+      return false
+    }
+  }
+  const cN = driftRun({ immiscible: IMM_E, wallShear: SHEAR_ON }, ETH, GuardIgnoresSigma), cZ = driftRun({ immiscible: IMM_0, wallShear: SHEAR_ON }, ETH, PageSigmaRule)
+  control(!c1(cN) && !c2(cN), 'W0b.sigma.null', `run A with a guard that ignores σ (closed whenever immiscible is set and ≥ 2 materials are present) must fail (1) and (2): stage log entries ${cN.log.length} (20 would pass), cells acted on ${actedOf(cN)}, Σ|booked| ${e2(bookedOf(cN))} N·s`)
+  control(!c1(cZ) && !c2(cZ), 'W0b.sigma.zero', `run A0 with the page's rule (any non-null σ is a pair) must fail (1) and (2): stage log entries ${cZ.log.length} (20 would pass), cells acted on ${actedOf(cZ)}, Σ|booked| ${e2(bookedOf(cZ))} N·s`)
 }
 
 // ── W0c: the refusals ────────────────────────────────────────────────────────────────────────────────────────────────

@@ -60,6 +60,10 @@
 // as before, and "depth from row 0 only" restores the pre-revision rule (named W1aK: its W1aK.col cell must miss by
 // ≫ 1e-9). "floor row taken as rows 0–1 (binning)" still moves the floor-row test (onFloorRow) itself, so row 1 is then
 // binned as floor row (M_c, U_c and Δv) instead of counted as depth; "Δv applied to rows 0–1" is unchanged.
+// ADDED 2026-09-30 (W0b.sigma; pre-registered in FR/w1cz/plan.md before their first run): three mutants of the drift
+// guard's σ clause (flipRef.ts:989), each named by the arm that must catch it — W0b.sigma (both arms), W0b.sigma.null
+// (the page's σ table: water + ethanol, σ null), W0b.sigma.zero (the CPU contract at σ = 0, a synthetic callback).
+// Before W0b.sigma all three survived every gate: W0b.drift's pair has σ 0.375.
 //
 //   node scripts/fluid-gates/s38-mutations.mjs               (exit 0 = control passed every check AND every mutant caught)
 //   node scripts/fluid-gates/s38-mutations.mjs --check       (only verify the find strings against the working tree)
@@ -114,6 +118,7 @@ const NU_TAU = 'if (!(Number.isFinite(nu) && nu > 0)) throw'
 const LAW_NAME = 'if (!(WALL_SHEAR_LAW_NAMES as readonly string[]).includes(W.law)) throw'
 const MU_FALLBACK = 'muq = p.mu ? p.mu[q] : this.viscosityDefault'
 const MAXRET = 'const tT = rho * us * us, tL = 3 * rho * nu * U / h\n  return tL >= tT ? { tau: tL, ustar: Math.sqrt(tL / rho), laminar: true } : { tau: tT, ustar: us, laminar: false }'
+const SIGMA = '      if (s !== null && s > 0) return true'
 
 // [why, find, replace, named checks] — the spec's §4 W3 CPU table, in its order, then the addition
 const M = [
@@ -153,6 +158,10 @@ const M = [
   ['max() in place of the Re_h rule, literally (the stage\'s Newton from U/25; refused below Re_h ≈ 2.77)', BODY, sub(sub(BODY, LAM, ''), TURB, MAXRET), ['W1b.scan']],
   // CPU-F2 (R-F2): today's rule until 2026-09-30 — the depth from row 0 alone
   ['depth from row 0 only', HC, 'hc = Math.min(h, Vc / (h * h)), rho = M[c] / Vc', ['W1aK']],
+  // ADDED 2026-09-30 (W0b.sigma; pre-registered in FR/w1cz/plan.md before their first run): the σ half of the drift guard
+  ['drift guard ignores σ', SIGMA, '      return true', ['W0b.sigma']],
+  ['unsourced σ taken as a pair', SIGMA, '      if (s === null || s > 0) return true', ['W0b.sigma.null']],
+  ["σ = 0 taken as a pair (the page's rule)", SIGMA, '      if (s !== null) return true', ['W0b.sigma.zero']],
 ]
 // none since 2026-09-30: the literal max() form is refused below Re_h ≈ 2.77 and runs in M (header)
 const EQUIV = []
