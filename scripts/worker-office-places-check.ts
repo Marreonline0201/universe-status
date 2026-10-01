@@ -133,7 +133,7 @@ const STAY_ROLES = new Set(['use', 'pull', 'read', 'readAtShelf', 'sibling', 'wa
 function checkCounts(M: Mod, map: OfficeMap): string[] {
   const F = new Fails()
   const L = M.buildPlaceLayout(map)
-  const tilesOf = (ids: readonly string[]) => ids.map(id => xy(L.place(id)))
+  const tilesOf = (ids: readonly PlaceId[]) => ids.map(id => xy(L.place(id)))
   F.eq('points / stand / seats', [L.points.length, L.points.filter(p => p.how === 'stand').length, L.points.filter(p => p.how === 'sit').length], [88, 70, 18])
   F.eq('points not facing N', L.points.filter(p => p.facing !== 'N').map(p => p.id), [])
   // one-to-one with object tiles, read from the map: a stand point and a desk / table seat serve the tile N of them, a
@@ -738,7 +738,7 @@ function checkFetchRead(M: Mod, map: OfficeMap): string[] {
     const b = new M.PlaceBook(L)
     // classified by the plan's tiles (§4.4 / §3.2), not by the layout's own tiers
     const named = ['ledge', 'table', 'aisle'] as const
-    const tierOf = (id: string) => named[CHAIN_POOLS['@library'].findIndex(t => t.some(([x, y]) => k(L.place(id)) === `${x},${y}`))] ?? 'other'
+    const tierOf = (id: PlaceId) => named[CHAIN_POOLS['@library'].findIndex(t => t.some(([x, y]) => k(L.place(id)) === `${x},${y}`))] ?? 'other'
     const got: string[] = []
     for (let i = 1; i <= 11; i++) {
       const kind: StationKind = i === 5 ? 'manualsShelf' : i === 8 ? 'cardCatalog' : 'bookshelf'
@@ -937,7 +937,7 @@ function checkHolds(M: Mod, map: OfficeMap): string[] {
   const b = new M.PlaceBook(L)
   const got = Array.from({ length: 11 }, (_, i) => b.hold(`H${i + 1}`, 'arrival', IN).place)
   // classified by the plan's tiles (§4.6), not by the layout's own tiers
-  const tier = (id: string | null) => id === null ? 'none' : ['board', 'hold', 'mail'][ARRIVAL.findIndex(t => t.some(([x, y]) => k(L.place(id)) === `${x},${y}`))] ?? 'other'
+  const tier = (id: PlaceId | null) => id === null ? 'none' : ['board', 'hold', 'mail'][ARRIVAL.findIndex(t => t.some(([x, y]) => k(L.place(id)) === `${x},${y}`))] ?? 'other'
   F.eq('E8 arrival hold: 2 board spots, 4 hold tiles, 4 mail-corner tiles, then none', got.map(tier),
     ['board', 'board', 'hold', 'hold', 'hold', 'hold', 'mail', 'mail', 'mail', 'mail', 'none'])
   F.eq('E8 arrival holds are distinct', new Set(got.filter(Boolean)).size, 10)

@@ -139,10 +139,10 @@ while (heap.length > 0) {
     }
     apply(r.changes, t)
   } else if (type === 2) {
-    const h = book.holding(owner(i))
-    if (h?.role !== 'pull' || h.pull !== pullOf.get(i)) continue
+    const h = book.holding(owner(i)), pull = pullOf.get(i)
+    if (h?.role !== 'pull' || pull === undefined || h.pull !== pull) continue
     bump(pulls, k)
-    apply(book.endPull(owner(i), h.pull), t)
+    apply(book.endPull(owner(i), pull), t)
     if (book.holding(owner(i))?.role === 'readAtShelf') bump(fallback, k)
   } else {
     if (waitStart.has(i)) { bump(neverServed, k); waitStart.delete(i) }
