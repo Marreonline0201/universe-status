@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "office": "npm --prefix office run start",
     "office:mock": "npm --prefix office run mock",
-    "office:assign": "npm --prefix office run assign --"
+    "office:assign": "npm --prefix office run assign --",
+    "test:worker-office": "node scripts/classify-test.mjs && node scripts/spool-hook-test.mjs"
   },
   "dependencies": {
     "@types/three": "^0.183.1",
