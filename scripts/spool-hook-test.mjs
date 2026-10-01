@@ -14,11 +14,15 @@
 // fields carry it only in a form that is not a valid id (written hashed). The marker must appear nowhere in the spool.
 // Memory: the hook runs with a --import preload that writes the process's peak working set (maxRSS) to a temp file
 // on exit; chained assignments and a command at the classification cap must stay near a `git status` firing.
-// Step 4 stage 0 (2026-10-01; checks labelled "S4"): ids without the agent- prefix; at on the tool events; the run
-// token taken ONLY from a workflow agent's own transcript path (each near-miss paired with the path it differs from by
-// one part, so every check also fails on the old hook); tus on PostToolBatch (ordered, paired with Pre's tu, cut to
-// fit 4,096 bytes); dur / cpu / rss on every record (ts + dur inside the spawn window, plausible units). The S4
-// checks are then run against planted mutants of the hook, and each mutant must fail them.
+// Step 4 stage 0 (2026-10-01; checks labelled "S4"): ids without the agent- prefix (every leading one: agent-agent-x
+// is x, review finding 4); at on the tool events; the run token taken ONLY from a workflow agent's own transcript path
+// (each near-miss paired with the path it differs from by one part, so every check also fails on the old hook; the
+// documented payloads never carry that path, review finding 1, so those are regex tests on an undocumented shape, and
+// the live-shaped Start / Pre write no run); tus on PostToolBatch (ordered, paired with Pre's tu, cut to fit 4,096
+// bytes); dur / cpu / rss on every record (ts + dur inside the spawn window, plausible units); the value cap (review
+// finding 3: more than MAX_VALUES '{' '[' ',' outside strings is a parse_error, exact at the boundary, never tripped by
+// a string, its escapes handled both ways; in the memory section, tiny objects over the cap stay near the baseline). The
+// S4 checks are then run against planted mutants of the hook, and each mutant must fail them.
 import { spawnSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, statSync, existsSync, rmSync, copyFileSync } from 'node:fs';
 import { tmpdir, freemem } from 'node:os';
@@ -88,8 +92,20 @@ const RE_HASHED_ID = /^#[0-9a-f]{12}$/;
 const isIdOut = (x) => typeof x === 'string' && (RE_ID.test(x) || RE_HASHED_ID.test(x));
 const RE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const ST = new Set(['completed', 'async_launched', 'remote_launched', 'other']);
-/** What the hook writes for an id that is not a plain id: '#' + 12 hex of sha256(the id without 'agent-'). */
-const hid = (s) => '#' + createHash('sha256').update(s.startsWith('agent-') ? s.slice(6) : s, 'utf8').digest('hex').slice(0, 12);
+/** What the hook writes for an id that is not a plain id: '#' + 12 hex of sha256(the id without any 'agent-' prefix:
+ *  every leading 'agent-' is stripped, review finding 4). */
+const hid = (s) => '#' + createHash('sha256').update(s.replace(/^(?:agent-)+/, ''), 'utf8').digest('hex').slice(0, 12);
+/** The hook's value cap: more '{' '[' ',' outside strings than this and the stdin is not parsed (parse_error). */
+const MAX_VALUES = 100_000;
+/** Independent of the hook's byte scan: the number of '{', '[' and ',' that JSON.stringify(x) writes outside strings,
+ *  counted on the VALUE (one per object or array, one comma between members or elements). */
+function structural(x) {
+  if (x === null || typeof x !== 'object') return 0;
+  const vs = Array.isArray(x) ? x : Object.values(x);
+  let n = 1 + Math.max(0, vs.length - 1);
+  for (const v of vs) n += structural(v);
+  return n;
+}
 
 function spoolLines(home) {
   const dir = join(home, 'spool');
@@ -141,6 +157,7 @@ function validate(line, what, r) {
   ok(EVENTS.has(rec.ev), `${what}: ev "${rec.ev}" is a known event, other or parse_error`);
   for (const k of ['sid', 'aid', 'ch', 'tid', 'run']) if (k in rec) ok(isIdOut(rec[k]), `${what}: ${k} format "${rec[k]}"`);
   for (const k of ['sid', 'aid', 'ch', 'tid', 'run']) if (k in rec) ok(!String(rec[k]).startsWith('agent-'), `${what}: ${k} carries no agent- prefix`);
+  for (const e of Array.isArray(rec.bt) ? rec.bt : []) if (e && 'id' in e) ok(!String(e.id).startsWith('agent-'), `${what}: bt.id carries no agent- prefix`);
   if ('at' in rec) ok((rec.at === '' || RE_ID.test(rec.at)) && AT_EVENTS.has(rec.ev), `${what}: at format, on a subagent start / stop or a tool event only`);
   if ('run' in rec) {
     ok(['SubagentStart', 'PreToolUse', 'PostToolUse'].includes(rec.ev), `${what}: run only on SubagentStart, PreToolUse and PostToolUse(Workflow)`);
@@ -214,7 +231,7 @@ const bashInput = (command, more = {}) => ({ command, description: txt('desc'), 
 
 // ------------------------------------------------------------------------------------------------ step 4 stage 0 (S4)
 // Run on the installed hook (all must pass), on HEAD's hook (WO_OBSERVER_DIR: all must fail) and, group by group, on
-// the planted mutants below (each mutant must fail its group). groups: ids, at, run, tus, cost (null = all).
+// the planted mutants below (each mutant must fail its group). groups: ids, at, run, tus, cost, cap (null = all).
 const WF = 'wf_6e02fbec-6b6';                   // the shape of a real run folder (wf_ + 8 hex + - + 3 hex)
 const WA = { agent_id: 'a1b2c3', agent_type: 'workflow-subagent' };
 /** A workflow agent's own transcript (.../<sid>/subagents/workflows/wf_<id>/agent-<aid>.jsonl); the marker only in
@@ -249,6 +266,19 @@ function s4Checks(home, groups = null) {
       { id: `agent-${MARK} x`, type: 'subagent', status: 'running' }] }, 'S4 fire: Stop, prefixed task ids'));
     exact(rec, { sid: SID, ev: 'Stop', bt: [{ id: 'a7f3', type: 'subagent', status: 'running' }, { id: hid(`${MARK} x`), type: 'subagent', status: 'running' }] },
       'S4 ids: bt.id without the prefix; a non-plain id still hashed');
+    // EVERY leading agent- is stripped (review finding 4: one strip wrote agent-agent-x as agent-x), in every id field
+    ({ rec } = fireOne(home, { ...COMMON, session_id: 'agent-agent-s9', hook_event_name: 'PostToolUse', agent_id: 'agent-agent-a7f4', agent_type: 'general-purpose',
+      tool_name: 'Agent', tool_input: {}, tool_use_id: 'u12', tool_response: { status: 'async_launched', agentId: 'agent-agent-agent-a7f5' } }, 'S4 fire: Post(Agent), doubly prefixed ids'));
+    exact(rec, { sid: 's9', ev: 'PostToolUse', aid: 'a7f4', at: 'general-purpose', k: 'frontDesk', a: 'helper-bg', tu: h10('u12'), st: 'async_launched', ch: 'a7f5' },
+      'S4 ids: agent-agent-x is written x (sid, aid, ch; a triple prefix too)');
+    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: {}, tool_use_id: 'u13',
+      tool_response: { status: 'async_launched', taskId: 'agent-agent-w5', runId: 'agent-agent-wf_9' } }, 'S4 fire: Post(Workflow), doubly prefixed ids'));
+    exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('u13'), st: 'async_launched', tid: 'w5', run: 'wf_9' }, 'S4 ids: tid and run without any agent- prefix');
+    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'Stop', background_tasks: [{ id: 'agent-agent-a7f6', type: 'subagent', status: 'running' },
+      { id: 'agent-agent-', type: 'subagent', status: 'running' }, { id: `agent-agent-${MARK} y`, type: 'subagent', status: 'running' }] }, 'S4 fire: Stop, doubly prefixed task ids'));
+    exact(rec, { sid: SID, ev: 'Stop', bt: [{ id: 'a7f6', type: 'subagent', status: 'running' }, { id: hid('agent-agent-'), type: 'subagent', status: 'running' },
+      { id: hid(`${MARK} y`), type: 'subagent', status: 'running' }] },
+    'S4 ids: bt.id without any prefix; agent-agent- alone is the empty id, hashed (never written as agent-); a non-plain id hashed after the strip');
   }
   if (want('at')) {
     // at on every tool event of a subagent (recorded, never shown); a call without agent_type has none, '' stays '',
@@ -273,21 +303,38 @@ function s4Checks(home, groups = null) {
       `S4 at on a tool event: a valid type is written, none / free text / over 64 chars give none, '' stays '' | got ${JSON.stringify(got)}`);
   }
   if (want('run')) {
-    // the run token: ONLY from the agent's own transcript path (.../subagents/workflows/wf_<id>/agent-<aid>.jsonl)
+    // the run token: ONLY from the agent's own transcript path (.../subagents/workflows/wf_<id>/agent-<aid>.jsonl).
+    // The DOCUMENTED payloads never carry that path where the hook looks (review finding 1; the lead's ruling is
+    // pending): hooks.md gives SubagentStart only agent_id and agent_type, agent_transcript_path only on SubagentStop,
+    // and a subagent's tool events carry the PARENT's transcript_path. Live, 0 of the 513 records written from the 18:32
+    // install to 19:15 (3 workflow Starts, 276 workflow Pres) have run. So:
+    //  - the live-shaped cases first: a Start and a Pre whose only path is the parent session's transcript write nothing;
+    //  - every case after them is a REGEX test on an undocumented payload shape: it pins what the hook would do with
+    //    such a path, not that the feature works.
     const full = (ev, extra) => ({ sid: SID, ev, aid: 'a1b2c3', at: 'workflow-subagent', ...extra });
     const preRec = { k: 'fileCabinet', a: 'read', tu: h10('u6') };
+    const parentTranscript = `C:\\Users\\${MARK}\\.claude\\projects\\C--${MARK}-proj\\${SID}.jsonl`;
+    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, transcript_path: parentTranscript }, 'S4 fire: Start, live-shaped (the parent\'s transcript_path only)'));
+    exact(rec, full('SubagentStart', {}), 'S4 run, live-shaped: a workflow agent\'s Start as documented (agent_id, agent_type, the parent\'s transcript_path) writes no run');
+    ({ rec } = fireOne(home, preIn({ transcript_path: parentTranscript }), 'S4 fire: Pre, live-shaped (the parent\'s transcript_path only)'));
+    exact(rec, full('PreToolUse', preRec), 'S4 run, live-shaped: a workflow agent\'s Pre as documented (the parent\'s transcript_path) writes no run');
     ({ rec } = fireOne(home, preIn({ transcript_path: runPath.win() }), 'S4 fire: Pre, a Windows transcript path'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run: Pre in a workflow agent, Windows path (\\)');
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre in a workflow agent, Windows path (\\)');
     ({ rec } = fireOne(home, preIn({ transcript_path: runPath.posix() }), 'S4 fire: Pre, a POSIX transcript path'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run: Pre, POSIX path (/)');
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre, POSIX path (/)');
     ({ rec } = fireOne(home, preIn({ transcript_path: runPath.mixed() }), 'S4 fire: Pre, mixed separators'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run: Pre, mixed separators');
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre, mixed separators');
     ({ rec } = fireOne(home, preIn({ agent_id: 'agent-a1b2c3', transcript_path: runPath.win() }), 'S4 fire: Pre, a prefixed agent_id'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run: the file name is matched against the agent_id without its agent- prefix');
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): the file name is matched against the agent_id without its agent- prefix');
+    // review finding 4 in the file-name comparison: both sides lose EVERY leading agent- before they are compared
+    ({ rec } = fireOne(home, preIn({ agent_id: 'agent-agent-a1b2c3', transcript_path: runPath.win() }), 'S4 fire: Pre, a doubly prefixed agent_id'));
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): agent_id agent-agent-a1b2c3 matches the file agent-a1b2c3.jsonl');
+    ({ rec } = fireOne(home, preIn({ transcript_path: runPath.win('agent-a1b2c3') }), 'S4 fire: Pre, a doubly prefixed file name'));
+    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): the file agent-agent-a1b2c3.jsonl matches agent_id a1b2c3');
     ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, agent_transcript_path: runPath.win() }, 'S4 fire: Start, agent_transcript_path'));
-    exact(rec, full('SubagentStart', { run: WF }), 'S4 run: SubagentStart, from agent_transcript_path (transcript_path is the parent\'s)');
+    exact(rec, full('SubagentStart', { run: WF }), 'S4 run (regex, an undocumented shape: hooks.md lists agent_transcript_path on SubagentStop only): SubagentStart, from agent_transcript_path');
     ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, agent_transcript_path: path('atp'), transcript_path: runPath.posix() }, 'S4 fire: Start, transcript_path'));
-    exact(rec, full('SubagentStart', { run: WF }), 'S4 run: SubagentStart, from transcript_path when agent_transcript_path does not match');
+    exact(rec, full('SubagentStart', { run: WF }), 'S4 run (regex, an undocumented shape): SubagentStart, from transcript_path when agent_transcript_path does not match');
     // near-misses: each differs from the matching path by one part, and must write nothing; the twin (the matching
     // path, same payload otherwise) is fired once and checked with each, so each check also fails on the old hook
     const runOf = (payload, what) => { const { rec: x } = fireOne(home, payload, what); return x === null ? 'no record' : (x.run ?? null); };
@@ -366,6 +413,41 @@ function s4Checks(home, groups = null) {
     ok(rec !== null && ['dur', 'cpu', 'rss'].every((k) => Number.isInteger(rec[k])) && Object.keys(rec).slice(-3).join() === 'dur,cpu,rss',
       `S4 cost: dur, cpu, rss are the last three keys of a SessionEnd record | ${rec && Object.keys(rec)}`);
   }
+  if (want('cap')) {
+    // the value cap (review finding 3): memory grows with the NUMBER of JSON values, not only with bytes (1M empty
+    // objects are 2.9 MB of stdin and ~340 MB of memory), so a stdin with more than MAX_VALUES '{' '[' ',' outside
+    // strings is not parsed: a parse_error record, as over 32 MB. Each payload's count is computed on the value
+    // (structural(), not the hook's byte scan).
+    const calls = [0, 1, 2].map((i) => ({ tool_name: 'Read', tool_input: {}, tool_use_id: `v${i}`, tool_response: txt('r') }));
+    const batchRec = { sid: SID, ev: 'PostToolBatch', aid: 'a1b2c3', at: 'workflow-subagent', k: 'fileCabinet', a: 'read', tus: [h10('v0'), h10('v1'), h10('v2')], n: 3 };
+    /** A Batch of the 3 calls with an unread `pad` array as its LAST member, sized so that the count is exactly `count`. */
+    const withCount = (count, before = {}) => {
+      const p = { ...COMMON, hook_event_name: 'PostToolBatch', ...WA, tool_calls: calls, ...before, pad: [] };
+      p.pad = new Array(Math.max(1, count - structural(p) + 1)).fill(0);
+      ok(structural(p) === count, `S4 cap: the payload's count is ${structural(p)}, want ${count}`);
+      return p;
+    };
+    ({ rec } = fireOne(home, withCount(MAX_VALUES), 'S4 fire: a Batch with exactly MAX_VALUES values'));
+    exact(rec, batchRec, `S4 cap: ${MAX_VALUES} values are parsed (the cap is inclusive)`);
+    ({ rec } = fireOne(home, withCount(MAX_VALUES + 1), 'S4 fire: one value over the cap'));
+    exact(rec, { ev: 'parse_error' }, `S4 cap: ${MAX_VALUES + 1} values: a parse_error record, nothing parsed`);
+    // { [ , inside strings are never values: a 1.2 MB tool response made of 1.2 million of them is parsed. It spans
+    // many stdin chunks (about 64 KB each), so a scan done chunk by chunk would also have to carry its string state
+    const one = { ...batchRec, tus: [h10('v0')], n: 1 };
+    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'PostToolBatch', ...WA, tool_calls: [{ ...calls[0], tool_response: '{[,'.repeat(400_000) }] },
+      'S4 fire: 1.2 MB of { [ , inside a string'));
+    exact(rec, one, 'S4 cap: 1.2 million { [ , inside a string are not values');
+    // an escaped quote does not end a string: x\" and then 200,000 braces, all inside the string
+    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'PostToolBatch', ...WA, tool_calls: [{ ...calls[0], tool_response: `x"${'{'.repeat(200_000)}` }] },
+      'S4 fire: an escaped quote, then braces'));
+    exact(rec, one, 'S4 cap: after \\" the string goes on (the 200,000 braces inside it are not values)');
+    // ...but an escaped BACKSLASH does not escape the quote after it: a string ending in \ (written "x\\") is closed, so
+    // the values after it count; its twin at the cap is parsed
+    ({ rec } = fireOne(home, withCount(MAX_VALUES + 1, { note: 'x\\' }), 'S4 fire: a string ending in a backslash, then one value over the cap'));
+    exact(rec, { ev: 'parse_error' }, 'S4 cap: a string ending in \\ is closed by its quote, so the values after it count (parse_error)');
+    ({ rec } = fireOne(home, withCount(MAX_VALUES, { note: 'x\\' }), 'S4 fire: a string ending in a backslash, at the cap'));
+    exact(rec, batchRec, 'S4 cap: ...and the same payload at the cap is parsed');
+  }
 }
 
 // The S4 mutants: [group, name, [[exact target text in spool-hook.mjs, replacement], ...]]; each target exactly once.
@@ -375,6 +457,8 @@ const HOOK_MUTANTS = [
     "const AT_EVENTS = new Set(['SubagentStart', 'SubagentStop']);"]]],
   ['ids', 'ids keep the agent- prefix (the old rule)', [[
     "  const s = stripAgent(x);\n  return RE_ID.test(s) ? s : '#' + sha(s).slice(0, 12);", "  return RE_ID.test(x) ? x : '#' + sha(stripAgent(x)).slice(0, 12);"]]],
+  ['ids', 'only the first agent- prefix stripped (the stage-0 stripAgent; review finding 4)', [[
+    "const stripAgent = (s) => s.replace(/^(?:agent-)+/, '');", "const stripAgent = (s) => (s.startsWith('agent-') ? s.slice(6) : s);"]]],
   ['run', 'run: the wf_ part found anywhere before the agent\'s file (no subagents / workflows parts)', [[
     'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
     'const RE_RUN_PATH = /[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/](?:[^\\\\/]*[\\\\/])*agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;']]],
@@ -384,8 +468,9 @@ const HOOK_MUTANTS = [
   ['run', 'run: no agent- file required (any path inside the run folder)', [
     ['const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
       'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})(?:[\\\\/]|$)/;'],
-    ['    if (m && m[2] === aid) return m[1];', '    if (m) return m[1];']]],
-  ['run', 'run: any agent\'s transcript (no own-id match)', [['    if (m && m[2] === aid) return m[1];', '    if (m) return m[1];']]],
+    ['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m) return m[1];']]],
+  ['run', 'run: any agent\'s transcript (no own-id match)', [['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m) return m[1];']]],
+  ['run', 'run: the file\'s id compared with its agent- prefixes kept (review finding 4)', [['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m && m[2] === aid) return m[1];']]],
   ['run', 'run: the wf_ part not checked as a token', [[
     'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
     'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[^\\\\/]+)[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;']]],
@@ -402,6 +487,16 @@ const HOOK_MUTANTS = [
   ['cost', 'cpu in microseconds, not ms', [['    rec.cpu = Math.round((u.user + u.system) / 1000);', '    rec.cpu = u.user + u.system;']]],
   ['cost', 'dur as an epoch time (performance.timeOrigin + now), not a duration', [['    rec.dur = Math.round(performance.now());', '    rec.dur = Math.round(performance.timeOrigin + performance.now());']]],
   ['cost', 'no cost fields on a parse_error record', [['function append(rec) {\n  measure(rec);', "function append(rec) {\n  if (rec.ev !== 'parse_error') measure(rec);"]]],
+  // the value cap (review finding 3)
+  ['cap', 'no value cap (the stage-0 hook)', [['  finish(size > MAX_VALUES && overValueCap(buf) ? null : buf);', '  finish(buf);']]],
+  ['cap', 'the cap exclusive (a payload of exactly MAX_VALUES values refused)', [['&& ++values > MAX_VALUES) return true;', '&& ++values >= MAX_VALUES) return true;']]],
+  ['cap', 'the scan skipped below 1 MB (a wrong shortcut: only a stdin of at most MAX_VALUES bytes is safe to skip)', [[
+    '  finish(size > MAX_VALUES && overValueCap(buf) ? null : buf);', '  finish(size > 1048576 && overValueCap(buf) ? null : buf);']]],
+  ['cap', '{ [ , inside strings counted (no string state)', [['    if (inString) {\n', '    if (false) {\n']]],
+  ['cap', 'backslash escapes ignored (\\" ends the string)', [['      else if (b === 0x5c) escaped = true;                         // a backslash escapes the next byte\n', '']]],
+  ['cap', 'a quote after a backslash BYTE always taken as escaped (the previous byte, not the escape state: "x\\\\" never closes)', [[
+    '      if (escaped) escaped = false;\n      else if (b === 0x5c) escaped = true;                         // a backslash escapes the next byte\n      else if (b === 0x22) inString = false;                       // the closing quote\n',
+    '      if (b === 0x22 && buf[i - 1] !== 0x5c) inString = false;\n']]],
 ];
 
 // ------------------------------------------------------------------------------------------------ run
@@ -782,16 +877,15 @@ try {
       'const out = process.env.WO_MAXRSS_OUT;',
       "if (out) process.on('exit', () => { try { writeFileSync(out, String(process.resourceUsage().maxRSS)); } catch { /* none */ } });",
       ''].join('\n'));
-    /** Fire one PreToolUse Bash with `command` under the preload: -> {mb: peak working set in MB, rec}. The child's
-     *  JS heap is capped at 512 MB so that a classifier WITHOUT the nesting bound (run against an older hook) dies
-     *  instead of taking the machine's memory: its 64 KB chain would need gigabytes. */
-    const measure = (command, what) => {
+    /** Fire one payload under the preload: -> {mb: peak working set in MB, rec}. The child's JS heap is capped at
+     *  512 MB so that a hook WITHOUT a bound (an older hook: the classifier's nesting bound, the value cap) dies instead
+     *  of taking the machine's memory: a 64 KB chain would need gigabytes. */
+    const measurePayload = (payload, what) => {
       firings += 1;
       const out = join(TMP, `maxrss-${firings}.txt`);
       const t0 = Date.now();
       const r = spawnSync(process.execPath, ['--max-old-space-size=512', '--import', pathToFileURL(preload).href, join(HOME, 'bin', 'spool-hook.mjs')], {
-        input: JSON.stringify({ ...COMMON, hook_event_name: 'PreToolUse', ...SUB, tool_name: 'Bash', tool_input: { command }, tool_use_id: 'toolu_mem' }),
-        env: childEnv(HOME, { WO_MAXRSS_OUT: out }), timeout: 120000, windowsHide: true, maxBuffer: 1 << 20 });
+        input: JSON.stringify(payload), env: childEnv(HOME, { WO_MAXRSS_OUT: out }), timeout: 120000, windowsHide: true, maxBuffer: 1 << 20 });
       assertSilent(r, what);
       const lines = newLines(HOME);
       ok(lines.length === 1, `${what}: one new spool line (got ${lines.length})`);
@@ -800,6 +894,8 @@ try {
       ok(Number.isFinite(kb) && kb > 10_000, `${what}: maxRSS was recorded (${kb} KB)`);
       return { mb: kb / 1024, rec };
     };
+    /** One PreToolUse Bash with `command`. */
+    const measure = (command, what) => measurePayload({ ...COMMON, hook_event_name: 'PreToolUse', ...SUB, tool_name: 'Bash', tool_input: { command }, tool_use_id: 'toolu_mem' }, what);
     const bases = [1, 2, 3].map((i) => measure('git status', `baseline git status #${i}`).mb).sort((x, y) => x - y);
     const base = bases[1];                                          // the median of three
     console.log(`  baseline (git status): ${bases.map((x) => x.toFixed(1)).join(' / ')} MB, median ${base.toFixed(1)} MB`);
@@ -818,6 +914,21 @@ try {
       console.log(`  ${what}: ${command.length} chars, peak ${mb.toFixed(1)} MB (+${(mb - base).toFixed(1)} MB)`);
       ok(mb - base <= maxUp, `${what}: peak ${mb.toFixed(1)} MB is at most ${maxUp} MB above the git status baseline ${base.toFixed(1)} MB`);
       ok(rec && rec.a === a, `${what}: activity ${rec && rec.a} (want ${a})`);
+    }
+    // the value cap (review finding 3): memory grows with the number of JSON values (~300 bytes per empty call), which
+    // the 32 MB byte cap does not bound. A Batch of tiny calls over the cap is refused before it is parsed; one at the
+    // cap is the most a payload of tiny objects can cost
+    const tiny = (n) => ({ ...COMMON, hook_event_name: 'PostToolBatch', ...SUB, tool_calls: Array.from({ length: n }, () => ({})) });
+    const atCap = Math.floor((MAX_VALUES - structural(tiny(0)) + 1) / 2);
+    ok(structural(tiny(atCap)) <= MAX_VALUES && structural(tiny(atCap + 1)) > MAX_VALUES, `memory: ${atCap} empty calls is the largest Batch of them under the value cap`);
+    for (const [what, n, maxUp, ev] of [
+      [`200,000 empty calls (${(JSON.stringify(tiny(200_000)).length / 1048576).toFixed(2)} MB, over the value cap)`, 200_000, 24, 'parse_error'],
+      [`${atCap} empty calls (at the value cap)`, atCap, 48, 'PostToolBatch'],
+    ]) {
+      const { mb, rec } = measurePayload(tiny(n), what);
+      console.log(`  ${what}: peak ${mb.toFixed(1)} MB (+${(mb - base).toFixed(1)} MB)`);
+      ok(mb - base <= maxUp, `${what}: peak ${mb.toFixed(1)} MB is at most ${maxUp} MB above the git status baseline ${base.toFixed(1)} MB`);
+      ok(rec && rec.ev === ev && (ev === 'parse_error' || rec.n === n), `${what}: record ${rec && rec.ev} n ${rec && rec.n} (want ${ev}${ev === 'parse_error' ? '' : ` n ${n}`})`);
     }
   }
 

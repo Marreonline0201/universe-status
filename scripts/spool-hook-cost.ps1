@@ -10,8 +10,13 @@
 #    handle, read after exit), cross-checked by a separate polling pass that reads PeakWorkingSet64 until exit
 #  - baseline: the same, for node.exe running an EMPTY .mjs file (the floor any node hook pays)
 #  - worst cases, 5 firings each: the costliest command the hook still classifies (a 65,534-char chain of
-#    assignments, just under the 65,536-char classification cap) and the largest payload it still parses (a valid
-#    PostToolBatch just under the 32 MB stdin cap); together they bound what ONE firing can cost
+#    assignments, just under the 65,536-char classification cap) and the longest STRING it still parses (a valid
+#    PostToolBatch just under the 32 MB stdin cap: one Read call with about 32 MB of text). These two do NOT bound
+#    what one firing can cost (corrected 2026-10-01, step-4 review finding 3): memory also grows with the NUMBER of
+#    JSON values, about 120-300 bytes each, so tiny objects cost far more per byte than text (a Batch of 1M empty
+#    calls is 2.9 MB of stdin and took ~340 MB; 11M would fit under 32 MB). Since that review the hook refuses a stdin
+#    with more than 100,000 values ('{' '[' ',' outside strings: a parse_error record, nothing parsed), and
+#    spool-hook-test.mjs measures a Batch of tiny objects at that cap and one over it (its memory section)
 # The hook runs from a throwaway install in %TEMP% (install-hook.mjs with UNIVERSE_OFFICE_HOME), so the real spool
 # is never touched; the temp folder is removed at the end. Refuses to run on battery or with < 0.8 GB free RAM.
 param([int]$Runs = 30, [string]$Node = '')
@@ -87,8 +92,9 @@ $capPayload = (@{
   session_id = '944994c0-d7e9-4be1-a2a7-032471f945b2'; hook_event_name = 'PreToolUse'; agent_id = 'agent-a8451ad399c9231e2'
   tool_name = 'Bash'; tool_input = @{ command = ('$a = ' * 13106) + 'rm x' }; tool_use_id = 'toolu_cap'
 } | ConvertTo-Json -Compress -Depth 5)
-# the largest payload the hook parses at all: a valid PostToolBatch just under the 32 MB stdin cap (one Read call
-# whose tool_response is about 32 MB of text); a bigger stdin is a parse_error record without being parsed
+# the largest payload IN BYTES the hook parses: a valid PostToolBatch just under the 32 MB stdin cap (one Read call
+# whose tool_response is about 32 MB of text); a bigger stdin is a parse_error record without being parsed. Not the
+# most memory one firing can take: see the header (values, not bytes)
 $bigPrefix = '{"session_id":"944994c0-d7e9-4be1-a2a7-032471f945b2","hook_event_name":"PostToolBatch","agent_id":"agent-a8451ad399c9231e2","tool_calls":[{"tool_name":"Read","tool_input":{"file_path":"C:/x/big.txt"},"tool_use_id":"toolu_big","tool_response":"'
 $bigSuffix = '"}]}'
 $bigPayload = $bigPrefix + ('x' * (32MB - 1024 - $bigPrefix.Length - $bigSuffix.Length)) + $bigSuffix

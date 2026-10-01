@@ -5,8 +5,12 @@
 //   1. exits at once when OFFICE_AGENT_ID is set (the old office fleet's own sessions; same guard as
 //      session-office-up.ps1);
 //   2. reads all of stdin;
-//   3. parses it; on failure (empty, malformed, not an object, over 32 MB, stdin not closed within 5 s) it writes
-//      {v,ts,ev:"parse_error"} plus the per-record cost fields (dur cpu rss) and nothing else;
+//   3. parses it; on failure (empty, malformed, not an object, over 32 MB, more than MAX_VALUES values, stdin not
+//      closed within 5 s) it writes {v,ts,ev:"parse_error"} plus the per-record cost fields (dur cpu rss) and nothing
+//      else. The value cap bounds memory, which grows with the NUMBER of JSON values (about 120-300 bytes each), not
+//      only with bytes: 1M empty objects are 2.9 MB of stdin and took ~340 MB. The values are the '{' '[' ',' bytes
+//      outside strings (one per object or array, one per extra member or element), counted in one pass before the
+//      parse; a payload over the cap is never parsed;
 //   4. classifies the tool call with classify.mjs: only a category (object kind + activity id) leaves the process.
 //      A Bash / PowerShell command longer than MAX_CLASSIFY_COMMAND is not classified (the record has no k / a);
 //      the classifier's memory is linear in the command, and this caps it (longest real command: 22,835 chars);
@@ -33,19 +37,23 @@
 //               check and never runs); the error text is never written
 //   r, bt.type, bt.status   a short identifier token (letters, digits, _ -; max 32), else dropped; the documented
 //               labels "cloud session" and "MCP task" are written as cloud-session and mcp-task
-//   sid, aid, ch, tid, run, bt.id   ids: any "agent-" prefix is stripped first (plan 5.2; probe 3 found none in the
-//               payloads, so this changes nothing seen so far), then the id is written raw when it is
-//               [A-Za-z0-9_.:-]{1,64}, else as "#" + 12 hex characters of sha256(the stripped id), so it is never
-//               confused with a raw id, cannot carry text, and still joins across fields and events
+//   sid, aid, ch, tid, run, bt.id   ids: every leading "agent-" is stripped first, so agent-agent-x is x (plan
+//               5.2; probe 3 found none in the payloads, so this changes nothing seen so far), then the id is written
+//               raw when it is [A-Za-z0-9_.:-]{1,64}, else as "#" + 12 hex characters of sha256(the stripped id), so
+//               it is never confused with a raw id, cannot carry text, and still joins across fields and events
 //   at          agent_type, on SubagentStart, SubagentStop and the tool events (PreToolUse, PostToolBatch,
 //               PostToolUse, PostToolUseFailure) when the payload has it: [A-Za-z0-9_.:-]{1,64} or "" (internal
 //               agents), else dropped. Recorded to tell workflow agents apart; never displayed (plan D9)
 //   run         PostToolUse(Workflow): tool_response.runId (an id, as above). SubagentStart and PreToolUse: the
 //               workflow run of the agent's OWN transcript: when agent_transcript_path or transcript_path ends in the
 //               consecutive parts  subagents / workflows / wf_<id> / agent-<agent_id>.jsonl  (either separator, / or
-//               \; <agent_id> = this payload's agent_id without "agent-"; wf_<id> = "wf_" + 1..61 of [A-Za-z0-9_-]),
-//               ONLY the wf_<id> part is written. Any other path writes nothing; no other part of a path is ever
-//               written (plan probes 1 and 5: this links an agent to its run, and a retry to the run it replaces)
+//               \; the file's id and this payload's agent_id compared without their "agent-" prefixes; wf_<id> =
+//               "wf_" + 1..61 of [A-Za-z0-9_-]), ONLY the wf_<id> part is written. Any other path writes nothing; no
+//               other part of a path is ever written (plan probes 1 and 5: this links an agent to its run, and a retry
+//               to the run it replaces). The DOCUMENTED payloads carry no such path on these events (hooks.md:
+//               SubagentStart has agent_id and agent_type, agent_transcript_path is on SubagentStop only, and a
+//               subagent's tool events carry the parent's transcript_path), and live this run has never been written:
+//               step-4 review finding 1, the lead's ruling pending
 //   tu          10 hex characters of sha256(tool_use_id)
 //   tus         PostToolBatch: the tu of each call of the batch, in call order (a call without a tool_use_id is
 //               skipped), cut from the end so that the line stays within 4,096 bytes (plan probes 2 and 10: a Pre
@@ -74,6 +82,7 @@ const VERSION = 1;
 const TS = Math.floor(Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : Date.now());
 const DEFAULT_HOME = 'C:/Users/ddogr/.universe-office';
 const MAX_STDIN = 32 * 1024 * 1024;
+const MAX_VALUES = 100_000;       // '{' '[' ',' outside strings; more is not parsed (memory: see step 3 above)
 const STDIN_DEADLINE_MS = 5000;
 const MAX_LINE = 4096;            // bytes incl. the newline; only tus and bt can be cut to fit
 const MAX_BT = 50;
@@ -105,8 +114,8 @@ const BT_LABELS = new Map([['cloud session', 'cloud-session'], ['MCP task', 'mcp
 const isDict = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const own = (o, k) => (isDict(o) && Object.hasOwn(o, k) ? o[k] : undefined);
 const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
-const stripAgent = (s) => (s.startsWith('agent-') ? s.slice(6) : s);
-/** An id field: the id without an "agent-" prefix, raw when it is a plain id, else "#" + 12 hex of its hash. */
+const stripAgent = (s) => s.replace(/^(?:agent-)+/, '');
+/** An id field: the id without any leading "agent-", raw when it is a plain id, else "#" + 12 hex of its hash. */
 const idOut = (x) => {
   if (typeof x !== 'string' || x.length === 0) return undefined;
   const s = stripAgent(x);
@@ -131,7 +140,7 @@ function runFromPath(ev) {
     const p = own(ev, key);
     if (typeof p !== 'string' || p.length > MAX_PATH) continue;
     const m = RE_RUN_PATH.exec(p);
-    if (m && m[2] === aid) return m[1];
+    if (m && stripAgent(m[2]) === aid) return m[1];
   }
   return undefined;
 }
@@ -354,6 +363,22 @@ async function finish(buf) {
   quit();
 }
 
+/** The values of step 3: the '{' '[' ',' bytes outside strings, counted up to the first one over MAX_VALUES. The
+ *  bytes " \ { [ , never occur inside a UTF-8 multi-byte sequence. */
+function overValueCap(buf) {
+  let inString = false, escaped = false, values = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (b === 0x5c) escaped = true;                         // a backslash escapes the next byte
+      else if (b === 0x22) inString = false;                       // the closing quote
+    } else if (b === 0x22) inString = true;
+    else if ((b === 0x7b || b === 0x5b || b === 0x2c) && ++values > MAX_VALUES) return true;   // { [ ,
+  }
+  return false;
+}
+
 const chunks = [];
 let size = 0, tooBig = false;
 const deadline = setTimeout(() => finish(null), STDIN_DEADLINE_MS);
@@ -363,5 +388,11 @@ process.stdin.on('data', (c) => {
   size += c.length;
   if (size > MAX_STDIN) { tooBig = true; chunks.length = 0; } else chunks.push(c);
 });
-process.stdin.on('end', () => finish(tooBig ? null : Buffer.concat(chunks, size)));
+process.stdin.on('end', () => {
+  if (tooBig) { finish(null); return; }
+  const buf = Buffer.concat(chunks, size);
+  // each counted value is one byte, so a stdin of at most MAX_VALUES bytes is never over the cap: only a longer one
+  // is scanned (one pass, about 50 ms for 32 MB)
+  finish(size > MAX_VALUES && overValueCap(buf) ? null : buf);
+});
 process.stdin.on('error', () => finish(null));
