@@ -36,16 +36,15 @@ const VISUALLY_HIDDEN = {
   position: 'absolute', width: 1, height: 1, margin: -1, padding: 0, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
 } as const
 
+const subscribeNarrow = (onChange: () => void) => {
+  const m = window.matchMedia(NARROW_QUERY)
+  m.addEventListener('change', onChange)
+  return () => m.removeEventListener('change', onChange)
+}
+const isNarrow = () => window.matchMedia(NARROW_QUERY).matches
+const notNarrow = () => false
 function useNarrow(): boolean {
-  return useSyncExternalStore(
-    onChange => {
-      const m = window.matchMedia(NARROW_QUERY)
-      m.addEventListener('change', onChange)
-      return () => m.removeEventListener('change', onChange)
-    },
-    () => window.matchMedia(NARROW_QUERY).matches,
-    () => false,
-  )
+  return useSyncExternalStore(subscribeNarrow, isNarrow, notNarrow)
 }
 
 export function WorkerOffice({ active }: { active: boolean }) {
