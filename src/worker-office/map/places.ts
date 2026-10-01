@@ -41,7 +41,9 @@
 //                           has no tile in it yet. The front-desk queue is a LINE: it fills front first ((16,17), then
 //                           (16,16)) and its waiters move up when the front frees (a parked worker does not).
 //   hold(owner, which)      arrival hold: in/out-board spots, then the hold tiles, then the mail corner (§4.6, D10);
-//                           departure hold: the hold tiles. Null when none is free (the worker stays where it is).
+//                           departure hold: the hold tiles, then the mail corner (lead ruling F15). Within a tier the
+//                           nearest free place by walked distance (+ crowding on points), ties to the declaration
+//                           order. Null when none is free (the worker stays where it is, keeping what it holds).
 //   reserve / transfer      raw bookings of one named place (snapshot re-sync): role 'reserved', off every wait list
 //                           (the observer re-queues with assign); refused, with nothing changed, if another owner holds it.
 //   release / dispose       release frees an owner and serves the waiters; dispose releases everyone and refuses every
@@ -70,8 +72,9 @@ export type StationKind = (typeof STATION_KINDS)[number]
 /** Every object kind the hook's classifier emits (office/observer/classify.mjs KINDS = its PRECEDENCE list) -> the
  *  station a Pre of that kind sends the worker to, or null: STAY (plan §4.2 "Pre, no kind -> STAY, bubble only").
  *  The in/out board maps to null: plan §4.4 uses it "only as an arrival hold" (per-call unit: none), so a roster look
- *  (ListAgents) is a STAY. §2 row 2 and §4.3 list ListAgents / inOutBoard as if it were a station; that conflict in
- *  the plan is the lead's to settle — this table is the one place to change. */
+ *  (ListAgents) is a STAY. Settled by the lead's ruling F11 (decisions.md 2026-10-01 'Worker office step 3 pass 1'):
+ *  the board stays an arrival hold only, and the classifier ranks inOutBoard below every station kind
+ *  (office/observer/classify.mjs PRECEDENCE), so a roster look never hides a real call in the same batch. */
 export const STATION_FOR_KIND: Readonly<Record<string, StationKind | null>> = {
   printer: 'printer', frontDesk: 'frontDesk', meetingTable: 'meetingTable', benchTerminal: 'benchTerminal', pcDesk: 'pcDesk',
   postShelf: 'postShelf', shredder: 'shredder', copier: 'copier', bookshelf: 'bookshelf', cardCatalog: 'cardCatalog',
@@ -167,11 +170,12 @@ const isPoolName = (link: ChainLinkName): link is PoolName => link.startsWith('@
 /** Arrival hold (§4.6 step 6, D10 = 10 places): the in/out-board spots (flip the magnet), then the hold tiles
  *  (19..22,17), then the mail corner. */
 export const ARRIVAL_HOLD: readonly (readonly HoldMember[])[] = [[{ points: 'inOutBoard' }], [{ pool: '@hold' }], [{ pool: '@mail' }]]
-/** Departure hold after the hand-in (§4.6 "Finishing"): the hold tiles only. OPEN (a plan gap, for the owner / lead):
- *  the arrival hold's second tier is the same 4 tiles, so in an arrival burst hold() returns null for a finisher, who
- *  then keeps its desk spot until its Stop (p50 10.7 s, cap 90 s) while the mail corner may be free. The plan does
- *  not say; the decision (e.g. fall back to the mail corner, or arrivals never take the last hold tile) goes here. */
-export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }]]
+/** Departure hold after the hand-in (§4.6 "Finishing"): the hold tiles, then the mail corner (lead ruling F15,
+ *  decisions.md 2026-10-01 'Worker office step 3 pass 1'). The arrival hold's second tier is the same 4 tiles, so in an
+ *  arrival burst they can all be taken; a finisher then waits in the mail corner (as arrivals do), and only when both
+ *  are full does hold() return null and the finisher keep its desk spot until its Stop (p50 10.7 s, cap 90 s) — the
+ *  last resort, since it blocks the front-desk line. Never the in/out board. */
+export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }], [{ pool: '@mail' }]]
 /** Points no policy ever assigns (plan §2 row 21: rack points reserved; D8). */
 export const RESERVED_POINT_KINDS: readonly ObjectKind[] = ['serverRack']
 /** Virtual cost, in tiles, per occupied 4-adjacent point of the same kind (plan §4.7 [E]). */
@@ -694,9 +698,10 @@ export class PlaceBook {
     return this.#end()
   }
 
-  /** Arrival hold (in/out-board spots, hold tiles, mail corner) or departure hold (hold tiles). On success the owner
-   *  leaves any wait list. Null place when none is free: nothing changes (the owner keeps what it holds and stays on
-   *  any wait list). */
+  /** Arrival hold (in/out-board spots, hold tiles, mail corner) or departure hold (hold tiles, mail corner: F15); the
+   *  nearest free place of the first tier that has one. On success the owner leaves any wait list. Null place when
+   *  none is free: nothing changes (the owner keeps what it holds and stays on any wait list). A bad origin is refused
+   *  first, even when every place is taken. */
   hold(owner: OwnerId, which: 'arrival' | 'departure', from: Tile): HoldResult {
     this.#begin('hold')
     this.#checkOrigin(from, 'hold')

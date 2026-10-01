@@ -25,8 +25,9 @@
 //   E  scenarios with exact expected changes: fetch-then-read (pull, nearest reading place, fallback at the shelf),
 //      the step-aside on a freed place and on a queue join (records; the library with two shelf kinds waiting), pull
 //      ids, the library tiers, the front-desk line (promotion, move-up, a parked worker, the 5th finisher keeping its
-//      booking), the chains and sibling promotion, FIFO, STAY, the lounge order, the holds, dispose, refusals that
-//      change nothing, crowding and the declaration-order tie-break;
+//      booking), the chains and sibling promotion, FIFO, STAY, the lounge order, the holds (nearest first, ties by
+//      declaration order; the departure hold's mail-corner fallback, lead ruling F15), dispose, refusals that change
+//      nothing (a full hold included), crowding pinned from both sides (the verifier's S1 / S2) and the tie-break;
 //   F  the overflow chains terminate: flat, no link names its own kind or repeats, the pool is last, every expansion
 //      is repetition-free;
 //   G  every object kind the hook's classifier emits maps to a station or to STAY, and never makes assign() throw.
@@ -168,7 +169,7 @@ function checkCounts(M: Mod, map: OfficeMap): string[] {
   }
   F.eq('chain pools', [...L.pools.keys()].sort(), Object.keys(CHAIN_POOLS).sort())
   F.eq('arrival hold: board spots, hold tiles, mail corner (D10 = 10)', L.arrivalHold.map(tilesOf), ARRIVAL)
-  F.eq('departure hold: the hold tiles', L.departureHold.map(tilesOf), [HOLD])
+  F.eq('departure hold: the hold tiles, then the mail corner (lead ruling F15, 2026-10-01)', L.departureHold.map(tilesOf), [HOLD, MAIL])
   F.eq('station capacities = replay_fetch_read.py CAP', sortObj(Object.fromEntries([...L.stations].map(([s, st]) => [s, st.points.length]))), sortObj(CAP))
   F.eq('lounge tiers: the sofa, then the armchairs', L.stations.get('lounge')?.tiers.map(tilesOf), [[[8, 18], [9, 18], [10, 18]], [[7, 18], [12, 18]]])
   F.eq('chains = replay_fetch_read.py CHAIN (shelves: none)', sortObj(Object.fromEntries([...L.stations].map(([s, st]) => [s, st.chain.map(l => (l.type === 'pool' ? l.pool : l.kind))]))), sortObj(CHAIN))
@@ -896,6 +897,23 @@ function checkQueues(M: Mod, map: OfficeMap): string[] {
       [c1, c2, c2z], ['cab-08.1', 'cab-06.1', 'cab-07.1'])
     F.eq('E11 = independent nearest', [c2, c2z], [nearest(L, from, cabs, new Set([c1]), 1.5), nearest(L, from, cabs, new Set([c1]), 0)])
   }
+  // E11 the crowding cost pinned from both sides (the verifier's S1 / S2): S1 needs a cost above 1 (at 1, cab-02.1 ties
+  // cab-03.1 and wins by declaration order), S2 a cost below 2 (at 2, book-4.1 ties book-2.1 and loses), so only a cost
+  // in (1, 2) passes both — the plan's 1.5 (§4.7)
+  {
+    const b = new M.PlaceBook(L)
+    b.reserve('T', L.placeId('cab-01.1'))
+    const s1 = b.assign('X', 'fileCabinet', { x: 10, y: 2 }).place
+    F.eq('E11 S1: cab-01.1 taken, from (10,2): cab-03.1 (2 steps) beats cab-02.1 (1 step + 1.5 for its occupied neighbour)',
+      [s1, L.distance({ x: 10, y: 2 }, L.placeId('cab-02.1')), L.distance({ x: 10, y: 2 }, L.placeId('cab-03.1'))], ['cab-03.1', 1, 2])
+    const b2 = new M.PlaceBook(L)
+    b2.reserve('T', L.placeId('book-5.1'))
+    const s2 = b2.assign('X', 'bookshelf', { x: 6, y: 5 }).place
+    F.eq('E11 S2: book-5.1 taken, from (6,5): book-4.1 (5 steps + 1.5 = 6.5) beats book-2.1 (7 steps)',
+      [s2, L.distance({ x: 6, y: 5 }, L.placeId('book-4.1')), L.distance({ x: 6, y: 5 }, L.placeId('book-2.1'))], ['book-4.1', 5, 7])
+    F.eq('E11 S1 / S2 = independent nearest at the plan\'s 1.5', [s1, s2],
+      [nearest(L, { x: 10, y: 2 }, L.stations.get('fileCabinet')!.points, new Set(['cab-01.1']), 1.5), nearest(L, { x: 6, y: 5 }, L.stations.get('bookshelf')!.points, new Set(['book-5.1']), 1.5)])
+  }
   // E12 the lounge (plan §4.6): the sofa's seats, then the armchairs, then standing at a kitchen spot
   {
     const b = new M.PlaceBook(L)
@@ -941,12 +959,55 @@ function checkHolds(M: Mod, map: OfficeMap): string[] {
   F.eq('E8 arrival hold: 2 board spots, 4 hold tiles, 4 mail-corner tiles, then none', got.map(tier),
     ['board', 'board', 'hold', 'hold', 'hold', 'hold', 'mail', 'mail', 'mail', 'mail', 'none'])
   F.eq('E8 arrival holds are distinct', new Set(got.filter(Boolean)).size, 10)
-  const h3 = got[2]!
+  // nearest first within a tier (walked distance + crowding), ties by declaration order: from the IN leaf (17,19)
+  const order = (tiers: readonly (readonly PlaceId[])[], from: Tile) => {
+    const held = new Set<string>(), out: (string | null)[] = []
+    for (const t of tiers) for (let n = 0; n < t.length; n++) { const p = nearest(L, from, t, held, M.CROWD_COST); out.push(p); if (p) held.add(p) }
+    return out
+  }
+  F.eq('E8 arrivals from the IN leaf in order = independent nearest, tier by tier', got.slice(0, 10), order(L.arrivalHold, IN))
+  F.eq('E8 arrivals from the IN leaf in order (pinned)', got, ['inout-board.1', 'inout-board.2', 'hold-1', 'hold-2', 'hold-3', 'hold-4',
+    'mail-corner-1', 'mail-corner-2', 'mail-corner-3', 'mail-corner-4', null])
+  const h3 = got[2]!, m2 = got[7]!
   b.release('H3')
-  F.eq('E8 departure hold: a hold tile only', b.hold('X', 'departure', { x: 15, y: 17 }).place, h3)
+  F.eq('E8 departure hold: the one free hold tile', b.hold('X', 'departure', { x: 15, y: 17 }).place, h3)
   b.release('H1')
-  F.eq('E8 departure hold never uses the board or the mail corner (none left)', b.hold('Y', 'departure', { x: 15, y: 17 }).place, null)
-  F.eq('E8 the hold role', b.holding('X')?.role, 'hold')
+  F.eq('E8 departure hold never uses the board (only a board spot is free: none)', b.hold('Y', 'departure', { x: 15, y: 17 }).place, null)
+  b.release('H8')
+  F.eq('E8 F15: the hold tiles full, a mail-corner tile free: the finisher falls back to it', b.hold('Y', 'departure', { x: 15, y: 17 }).place, m2)
+  F.eq('E8 the hold role', [b.holding('X')?.role, b.holding('Y')?.role], ['hold', 'hold'])
+  // F15: hold and mail corner full -> no hold; the finisher keeps its desk spot (the last resort), nothing changes
+  {
+    const d = b.assign('D', 'frontDesk', IN).place!
+    const s = JSON.stringify([b.holdings(), b.waiters()])
+    const r = b.hold('D', 'departure', L.place(d))
+    F.eq('E8 F15: hold tiles and mail corner full: no departure hold, the finisher keeps its desk spot, nothing changes',
+      [r.place, r.changes.length, b.holding('D')?.place, b.holding('D')?.role, JSON.stringify([b.holdings(), b.waiters()]) === s], [null, 0, d, 'use', true])
+  }
+  // F15 on an empty book: 9 finishers from the front desk (15,17): the 4 hold tiles nearest first, then the 4 mail-corner
+  // tiles nearest first, then none
+  {
+    const b2 = new M.PlaceBook(L)
+    const dep = Array.from({ length: 9 }, (_, i) => b2.hold(`F${i + 1}`, 'departure', { x: 15, y: 17 }).place)
+    F.eq('E8 F15: departures from (15,17): hold-1..4, then mail-corner-1..4, then none',
+      dep, ['hold-1', 'hold-2', 'hold-3', 'hold-4', 'mail-corner-1', 'mail-corner-2', 'mail-corner-3', 'mail-corner-4', null])
+    F.eq('E8 F15: = independent nearest, tier by tier', dep.slice(0, 8), order(L.departureHold, { x: 15, y: 17 }))
+  }
+  // the tiers are an order, not one pool: from (25,17) the mail corner is nearer (mail-corner-3, 1 step) than any hold
+  // tile (hold-4, 3 steps), yet a free hold tile comes first
+  F.eq('E8 F15: tier order: from (25,17) the departure takes hold-4 (3 steps), not mail-corner-3 (1 step)',
+    new M.PlaceBook(L).hold('Z', 'departure', { x: 25, y: 17 }).place, 'hold-4')
+  // the nearest free place of a tier by walked distance, never the first free one (verifier V22)
+  F.eq('E8 an arrival from (20,14) on an empty book: inout-board.2 (0 steps; the first free spot is inout-board.1, 1 step)',
+    new M.PlaceBook(L).hold('A', 'arrival', { x: 20, y: 14 }).place, 'inout-board.2')
+  F.eq('E8 a departure from (22,16) on an empty book: hold-4 (1 step; the first free tile is hold-1, 4 steps)',
+    new M.PlaceBook(L).hold('A', 'departure', { x: 22, y: 16 }).place, 'hold-4')
+  {
+    const b3 = new M.PlaceBook(L)
+    b3.reserve('T', L.placeId('hold-2'))
+    F.eq('E8 a tie in a tier goes to the declaration order: hold-2 taken, from (20,16): hold-1 (2 steps, tied with hold-3)',
+      [b3.hold('A', 'departure', { x: 20, y: 16 }).place, L.distance({ x: 20, y: 16 }, L.placeId('hold-1')), L.distance({ x: 20, y: 16 }, L.placeId('hold-3'))], ['hold-1', 2, 2])
+  }
   return F.list
 }
 
@@ -1011,6 +1072,23 @@ function checkDispose(M: Mod, map: OfficeMap): string[] {
     F.eq('E10 a bad origin is refused, and nothing changes', [bad.map(([w, f]) => `${w}: ${threw(f) ? 'refused' : 'accepted'}`), JSON.stringify([b4.holdings(), b4.waiters(), b4.fallbackReaders()]) === s],
       [bad.map(([w]) => `${w}: refused`), true])
     F.eq('E10 ...so the refused worker keeps its place in the line', brief(b4.release('D1')).slice(-1), [`V ${cab}>${at(L, 16, 16)} wait served`])
+  }
+  // ...and a hold refuses a bad origin even when it is FULL (the verifier's V23): while a place is free, distance()
+  // refuses a solid origin anyway, so only a full hold shows that hold() checks its origin itself
+  {
+    const b5 = new M.PlaceBook(L)
+    for (let i = 0; i < 10; i++) b5.hold(`H${i}`, 'arrival', IN)          // the 2 board spots, 4 hold tiles, 4 mail-corner tiles
+    const s = JSON.stringify([b5.holdings(), b5.waiters()])
+    const full = [b5.hold('P', 'arrival', IN).place, b5.hold('P', 'departure', IN).place]
+    const bad: [string, () => unknown][] = [
+      ['arrival from a wall (0,0)', () => b5.hold('Z', 'arrival', { x: 0, y: 0 })],
+      ['arrival from off the grid (-1,5)', () => b5.hold('Z', 'arrival', { x: -1, y: 5 })],
+      ['departure from the counter (14,16)', () => b5.hold('Z', 'departure', { x: 14, y: 16 })],
+      ['departure from a half tile (16.5,17)', () => b5.hold('Z', 'departure', { x: 16.5, y: 17 })],
+    ]
+    F.eq('E10 a FULL hold (arrival and departure: none free) still refuses a bad origin, and nothing changes',
+      [full, bad.map(([w, f]) => `${w}: ${threw(f) ? 'refused' : 'accepted'}`), JSON.stringify([b5.holdings(), b5.waiters()]) === s],
+      [[null, null], bad.map(([w]) => `${w}: refused`), true])
   }
   return F.list
 }
@@ -1118,6 +1196,7 @@ const QUEUE_JOIN_STEP = '      if (st.shelfRoom !== null) this.#stepAsideAll(st.
 const GRANT = '    this.#settle(this.#move(owner, place, role, forKind, null, cause))\n'
 const STEP_ASIDE_SERVE = '    const w = this.#waiters.find(x => x.kind === kind)!'
 const DISPOSED = '    if (this.#disposed) throw new Error(`PlaceBook.${op}: the book is disposed; no booking after dispose()`)\n'
+const DEPARTURE_HOLD_LINE = "export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }], [{ pool: '@mail' }]]"
 const MUTANTS: { name: string; check: string; patches: [string, string][] }[] = [
   // the layout
   { name: 'a seat enterable from the side (canStep drops the sitFrom test)', check: 'B', patches: [
@@ -1140,6 +1219,19 @@ const MUTANTS: { name: string; check: string; patches: [string, string][] }[] = 
   { name: 'the arrival hold with the mail corner before the hold tiles', check: 'E3', patches: [
     ["export const ARRIVAL_HOLD: readonly (readonly HoldMember[])[] = [[{ points: 'inOutBoard' }], [{ pool: '@hold' }], [{ pool: '@mail' }]]",
       "export const ARRIVAL_HOLD: readonly (readonly HoldMember[])[] = [[{ points: 'inOutBoard' }], [{ pool: '@mail' }], [{ pool: '@hold' }]]"]] },
+  { name: 'the departure hold stops at the hold tiles (no mail-corner fallback: the rule before F15)', check: 'E3', patches: [
+    [DEPARTURE_HOLD_LINE, "export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }]]"]] },
+  { name: 'the departure hold as one tier (the nearest of the hold tiles and the mail corner)', check: 'E3', patches: [
+    [DEPARTURE_HOLD_LINE, "export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }, { pool: '@mail' }]]"]] },
+  { name: 'the hold takes the first free place of a tier, not the nearest (the verifier\'s V22)', check: 'E3', patches: [
+    ['      const p = this.#nearestFree(tier, from, owner)\n      if (p !== null) {\n        this.#unwait(owner)\n',
+      '      const p = tier.find(id => this.#isFreeFor(id, owner)) ?? null\n      if (p !== null) {\n        this.#unwait(owner)\n']] },
+  { name: 'hold checks no origin: a full hold accepts a bad one (the verifier\'s V23)', check: 'E4', patches: [["    this.#checkOrigin(from, 'hold')\n", '']] },
+  { name: 'ties go to the LAST declared place (cost <= best)', check: 'E3', patches: [
+    ['      if (cost < bestCost) { best = id; bestCost = cost }', '      if (cost <= bestCost) { best = id; bestCost = cost }']] },
+  // crowding (plan §4.7: 1.5 tiles per occupied neighbouring point of the same kind; the verifier's V1 / V2)
+  { name: 'a crowding cost of 1', check: 'E2', patches: [['export const CROWD_COST = 1.5\n', 'export const CROWD_COST = 1\n']] },
+  { name: 'a crowding cost of 4', check: 'E2', patches: [['export const CROWD_COST = 1.5\n', 'export const CROWD_COST = 4\n']] },
   // the book: bookings, ledger, dispose
   { name: 'a double booking allowed (both taken-place refusals removed)', check: 'D', patches: [
     ['      if (other !== undefined && other !== owner) throw new Error(`PlaceBook: ${to} is held by ${other}; ${owner} cannot book it`)\n', ''],
