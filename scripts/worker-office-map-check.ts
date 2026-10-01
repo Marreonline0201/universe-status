@@ -1,4 +1,6 @@
-// Worker office map check (plan §6.1 tests). Run: npx tsx scripts/worker-office-map-check.ts
+// Worker office map check (plan §6.1 tests). Run: node scripts/worker-office-map-check.ts
+// (Node's built-in TypeScript support, Node >= 22.18; the worker-office modules import each other with explicit
+// .ts extensions for it. No tsx and no npx.)
 //
 // A TypeScript port of the planning-phase Python checks, run on src/worker-office/data/floorplan.json ONLY:
 //   - place_s3.py check_placement (C1 reachability, C2 no blocking + the busy office, C3 no overlaps) and its
@@ -11,12 +13,14 @@
 // infra_check.py, validate_floorplan.py, run 2026-10-01); 7 + 1 + 1 layout mutations must each FAIL with the
 // failure Python reported. The port mirrors Python's iteration and BFS neighbour order
 // ((0,1),(0,-1),(1,0),(-1,0)), so tie-broken paths (arrival/departure lanes, side entries) match exactly.
-// Finally loadMap() — the code the page runs — must agree with the port tile for tile.
+// Finally loadMap() — the code the page runs — must agree tile for tile: walkability with the port, and TileKind,
+// objectAt and every opening's two sides with what the JSON itself says (derived here, not by loadMap); the border
+// rule is probed on all four edges.
 // Exits 1 on any difference.
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { loadMap, OBJECT_TILE_KINDS, STRUCTURE_KIND_BY_CHAR } from '../src/worker-office/map/loadMap'
+import { loadMap, OBJECT_TILE_KINDS, STRUCTURE_KIND_BY_CHAR } from '../src/worker-office/map/loadMap.ts'
 
 const JSON_PATH = fileURLToPath(new URL('../src/worker-office/data/floorplan.json', import.meta.url))
 // vault worker-office/floorplan.json with its line endings normalised to LF (the vault file is CRLF, raw sha256
@@ -477,12 +481,61 @@ const r1 = reach(walledRows)
 if (r1.miss.length === 99) { caught++; console.log(`  caught: MUTATION reception/corridor opening walled -> ${r1.miss.length} required tiles cut off (Python 99)`) }
 else fail(`floorplan mutation (opening walled): ${r1.miss.length} cut off, Python 99`)
 
-// ── 8. the page's own loader agrees with this port ────────────────────────────────────────────────────────────
-console.log('loadMap() (the code the page runs) vs this port')
+// ── 8. the page's own loader agrees with this port and with the JSON, tile for tile ───────────────────────────
+console.log('loadMap() (the code the page runs) vs this port and the JSON')
 const map = loadMap(raw)
 let diff = 0
 for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (map.walkable(x, y) !== walkable(x, y)) diff++
 expectEq('tiles where loadMap.walkable differs from place_s3.py make_walk', diff, 0)
+
+// TileKind and objectAt on EVERY tile, derived here from the JSON alone: a structure character's kind (table written
+// here from plan §1.1 / §3.1), else the tileKinds entry of the ONE object whose rectangle covers the tile, row-major
+// (y − oy)·w + (x − ox). Step 2 draws by TileKind, and the door's two leaves carry the keep-right rule.
+const STRUCT: Record<string, string> = { '#': 'wall', '~': 'window', '+': 'opening', ':': 'corridor', '.': 'floor', ',': 'sidewalk', q: 'arrivalSlot', u: 'useSpot', '*': 'placeTile' }
+expectEq('structure characters -> kinds (this table = loadMap STRUCTURE_KIND_BY_CHAR)', STRUCTURE_KIND_BY_CHAR, STRUCT)
+type JsonObj = { id: string; x: number; y: number; w: number; h: number; char: string; tileKinds: string[] }
+const kindDiffs: string[] = [], objDiffs: string[] = []
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+  const c = ROWS[y][x]
+  const covering = (raw.objects as JsonObj[]).filter(o => x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h)
+  let want = '?', wantObj: string | null = null
+  if (Object.hasOwn(STRUCT, c)) {
+    want = STRUCT[c]
+    if (covering.length) objDiffs.push(`(${x},${y}) structure '${c}' lies under ${covering.map(o => o.id).join(', ')}`)
+  } else if (covering.length !== 1 || covering[0].char !== c) {
+    objDiffs.push(`(${x},${y}) '${c}' is covered by ${covering.length} objects (${covering.map(o => `${o.id}:'${o.char}'`).join(', ')})`)
+  } else {
+    const o = covering[0]
+    want = o.tileKinds[(y - o.y) * o.w + (x - o.x)]
+    wantObj = o.id
+  }
+  if (map.tiles[y][x] !== want) kindDiffs.push(`(${x},${y}) '${c}': loadMap ${map.tiles[y][x]}, JSON ${want}`)
+  if ((map.objectAt(x, y)?.id ?? null) !== wantObj) objDiffs.push(`(${x},${y}) objectAt ${map.objectAt(x, y)?.id ?? null}, JSON ${wantObj}`)
+}
+expectEq(`TileKind on all ${W * H} tiles = the JSON: differing tiles (${kindDiffs.length}; first 6)`, kindDiffs.slice(0, 6), [])
+expectEq(`objectAt on all ${W * H} tiles = the one covering JSON object: differing tiles (${objDiffs.length}; first 6)`, objDiffs.slice(0, 6), [])
+expectEq('door leaves: TileKind at door.outLeaf / door.inLeaf (plan §1.2 keep right: OUT (16,19), IN (17,19))',
+  [map.tiles[raw.door.outLeaf.y][raw.door.outLeaf.x], map.tiles[raw.door.inLeaf.y][raw.door.inLeaf.x], [raw.door.outLeaf.x, raw.door.outLeaf.y], [raw.door.inLeaf.x, raw.door.inLeaf.y]],
+  ['doorOutLeaf', 'doorInLeaf', [16, 19], [17, 19]])
+
+// each opening's wall and its two sides, derived here: [north, south] in a horizontal wall run, [west, east] in a
+// vertical one, each the most specific JSON zone (a child zone over its parent) on that side
+type JsonZone = { name: string; x: number; y: number; w: number; h: number; parent?: string }
+const jsonZoneAt = (x: number, y: number) => {
+  const zs = (raw.zones as JsonZone[]).filter(z => x >= z.x && x < z.x + z.w && y >= z.y && y < z.y + z.h)
+  return (zs.find(z => z.parent) ?? zs[0])?.name ?? null
+}
+const sideDiffs: string[] = []
+for (const [name, cells] of OPENINGS) {
+  const horiz = new Set(cells.map(c => c[1])).size === 1
+  const o = map.openings.find(q => q.name === name)
+  for (const [x, y] of cells) {
+    const want = [horiz ? 'horizontal' : 'vertical', ...(horiz ? [jsonZoneAt(x, y - 1), jsonZoneAt(x, y + 1)] : [jsonZoneAt(x - 1, y), jsonZoneAt(x + 1, y)])]
+    const got = o ? [o.wall, o.sides[0].name, o.sides[1].name] : ['missing']
+    if (JSON.stringify(got) !== JSON.stringify(want)) sideDiffs.push(`${name} (${x},${y}): loadMap ${got.join(' ')}, JSON ${want.join(' ')}`)
+  }
+}
+expectEq(`opening sides, tile by tile (${OPENINGS.length} openings; [north, south] or [west, east]): differences`, sideDiffs.slice(0, 6), [])
 expectEq('points / stand / seats / places / slots / overflow / exit lane',
   [map.points.length, map.points.filter(p => p.how === 'stand').length, map.points.filter(p => p.how === 'sit').length,
     map.places.length, map.arrivalSlots.length, map.arrivalSlotsOverflow.length, map.exitLane.length], [88, 70, 18, 32, 20, 10, 14])
@@ -499,12 +552,21 @@ expectEq('structure kinds placed', Object.values(STRUCTURE_KIND_BY_CHAR).filter(
 expectEq('wall-mounted objects', map.objects.filter(o => o.wallMounted).map(o => o.id), ['kanban', 'inout-board', 'wallClock', 'noticeBoard'])
 expectEq('zone of the mail-corner tile (21,16) / reception tile (20,16)', [map.zoneAt(21, 16)?.name, map.zoneAt(20, 16)?.name], ['MAIL / PRINT CORNER', 'RECEPTION'])
 
-// the border is never walkable, whatever its character (officeMap.ts:212-213): open a corridor tile in the west wall
+// the border is never walkable, whatever its character (officeMap.ts:212-213), on ALL four edges and the corners:
+// in a copy whose legend makes every border character walkable, loadMap.walkable must still be false on every border
+// tile — and true wherever those same characters stand inside the border (so it is the border that blocks them)
 const borderRaw = JSON.parse(JSON.stringify(raw))
-borderRaw.rows[11] = ':' + borderRaw.rows[11].slice(1)
-const borderMap = loadMap(borderRaw), borderWalk = makeWalk(borderRaw.rows)
-expectEq('border rule: (0,11) as corridor -> walkable? loadMap / port (false / false); (1,11) (true / true)',
-  [borderMap.walkable(0, 11), borderWalk(0, 11), borderMap.walkable(1, 11), borderWalk(1, 11)], [false, false, true, true])
+const borderTiles: P[] = []
+for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (x === 0 || y === 0 || x === W - 1 || y === H - 1) borderTiles.push([x, y])
+const borderChars = [...new Set(borderTiles.map(([x, y]) => ROWS[y][x]))].sort()
+for (const c of borderChars) borderRaw.legend[c].walkable = true
+const borderMap = loadMap(borderRaw)
+const innerSame: P[] = []
+for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if (borderChars.includes(ROWS[y][x])) innerSame.push([x, y])
+expectEq(`border rule: ${borderTiles.length} border tiles, characters ${JSON.stringify(borderChars.join(''))} made walkable -> tiles loadMap calls walkable`,
+  borderTiles.filter(([x, y]) => borderMap.walkable(x, y)).map(fmt), [])
+expectEq(`... the same characters inside the border are walkable in that copy (${innerSame.length} tiles; not walkable)`,
+  innerSame.length > 0 ? innerSame.filter(([x, y]) => !borderMap.walkable(x, y)).map(fmt) : ['none found'], [])
 
 // loadMap must also reject a broken file (prove the validation can fail)
 const broken = JSON.parse(JSON.stringify(raw))

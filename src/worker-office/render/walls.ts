@@ -1,8 +1,8 @@
 // The shell of the worker office: wall faces, wall tops, windows (north windows seen from inside, facade windows
 // seen from the street) and the jambs beside openings. The wall and window art is the existing office art
 // (assets.ts:22-25, 101-109, 143-166) so the new building matches the old one's materials.
-import { type Ctx, px, lighten } from './paint'
-import { TILE } from './floors'
+import { type Ctx, px, lighten } from './paint.ts'
+import { TILE } from './floors.ts'
 
 const WALL_FACE = '#2e2620'
 const WALL_CAP = '#a08b6a'
@@ -13,6 +13,7 @@ const GLASS_SHINE = 'rgba(255,255,255,0.30)'
 const SKY_TOP = '#9ec7d8'
 const SKY_MID = '#b4d4d4'
 const SKY_BOT = '#c8dfd0'
+const GLASS_GLINTS: readonly (readonly [number, number])[] = [[3, 11], [4, 10], [5, 9], [6, 8], [7, 7], [10, 12], [11, 11], [12, 10], [13, 9]]
 
 /** South face of a wall run: limestone cap, espresso face, baseboard. */
 export function wallFace(g: Ctx) {
@@ -55,9 +56,7 @@ export function windowExterior(g: Ctx) {
   px(g, 1, 5, 14, 9, GLASS_FRAME)
   px(g, 2, 6, 12, 7, '#2b3842')
   px(g, 2, 6, 12, 2, '#3a4c58')
-  for (const [x, y] of [[3, 11], [4, 10], [5, 9], [6, 8], [7, 7], [10, 12], [11, 11], [12, 10], [13, 9]]) {
-    px(g, x, y, 1, 1, 'rgba(200,226,236,0.45)')
-  }
+  for (const [x, y] of GLASS_GLINTS) px(g, x, y, 1, 1, 'rgba(200,226,236,0.45)')
   px(g, 8, 5, 1, 9, GLASS_FRAME)
   px(g, 1, 13, 14, 1, '#c9c2b4')
 }

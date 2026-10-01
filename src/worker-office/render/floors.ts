@@ -6,7 +6,7 @@
 // v = (x & 3) | ((y & 3) << 2) — for patterns that repeat over 2–4 tiles (checker parity, slab joints, terrazzo
 // divider strips); nothing else about the position reaches the art. Base colours come from floorplan.json
 // zones[].floor; shades are derived from them.
-import { type Ctx, px, mix, lighten, darken } from './paint'
+import { type Ctx, px, mix, lighten, darken } from './paint.ts'
 
 export const TILE = 16
 
@@ -221,11 +221,16 @@ export function doorBase(g: Ctx, side: 'W' | 'E') {
   px(g, side === 'W' ? 0 : 15, 4, 1, 12, ALU)
 }
 
+/** Glass glints on a leaf, relative to its left edge (texels). Module constants: the leaves are drawn every frame. */
+const LEAF_GLINT_X: readonly number[] = [3, 4, 5, 9, 10]
+const LEAF_GLINT_Y: readonly number[] = [6, 7, 8, 6, 7]
+
 /** State layer: the two sliding glass leaves, in texels, with the world origin at the door's top-left tile.
- *  open = 0 (closed) .. 1 (fully open, each leaf slid into its side pocket). */
+ *  open = 0 (closed) .. 1 (fully open, each leaf slid into its side pocket). Called every frame: allocates nothing. */
 export function doorLeaves(g: Ctx, x0: number, y0: number, open: number) {
   const slide = Math.round(Math.max(0, Math.min(1, open)) * 14)
-  for (const [i, dir] of [[0, -1], [1, 1]] as const) {
+  for (let i = 0; i < 2; i++) {
+    const dir = i === 0 ? -1 : 1
     const lx = x0 + i * TILE + (i === 0 ? 1 : 0) + dir * slide
     const w = 15
     const clipL = x0 + (i === 0 ? 1 : TILE), clipR = x0 + (i === 0 ? TILE : 2 * TILE - 1)
@@ -238,9 +243,9 @@ export function doorLeaves(g: Ctx, x0: number, y0: number, open: number) {
     if (lx + w <= clipR) px(g, lx + w - 1, y0 + 5, 1, 9, ALU)
     const hx = i === 0 ? lx + w - 3 : lx + 2
     if (hx >= a && hx < b) px(g, hx, y0 + 8, 1, 3, '#dfe4e8')
-    for (const [dx, dy] of [[3, 6], [4, 7], [5, 8], [9, 6], [10, 7]]) {
-      const sx = lx + dx
-      if (sx >= a && sx < b) px(g, sx, y0 + dy, 1, 1, 'rgba(255,255,255,0.35)')
+    for (let j = 0; j < LEAF_GLINT_X.length; j++) {
+      const sx = lx + LEAF_GLINT_X[j]
+      if (sx >= a && sx < b) px(g, sx, y0 + LEAF_GLINT_Y[j], 1, 1, 'rgba(255,255,255,0.35)')
     }
   }
 }

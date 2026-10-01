@@ -1,4 +1,4 @@
-// Walkability smoke test for the WORKER OFFICE map (office-walk-smoke.ts style). Run: npx tsx scripts/worker-office-walk-smoke.ts
+// Walkability smoke test for the WORKER OFFICE map (office-walk-smoke.ts style). Run: node scripts/worker-office-walk-smoke.ts
 // Builds the map with loadMap() — the code the page runs — and, starting from the DOORSTEP outside the front door
 // (not the old map.lobby), asserts:
 //  1. every interaction point is reachable: a stand point on its own tile, a seat through its sitFrom tile (the
@@ -10,7 +10,7 @@
 // Exits non-zero on any failure.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { loadMap, type OfficeMap, type Tile } from '../src/worker-office/map/loadMap'
+import { loadMap, type OfficeMap, type Tile } from '../src/worker-office/map/loadMap.ts'
 
 const raw = JSON.parse(readFileSync(fileURLToPath(new URL('../src/worker-office/data/floorplan.json', import.meta.url)), 'utf8'))
 const map = loadMap(raw)

@@ -3,8 +3,8 @@
 // The floorplan is bundled as text (Vite `?raw`) and parsed here; loadMap() and prerenderOffice() are the same
 // functions the Node checks call, which read the file from disk instead.
 import floorplanText from '../data/floorplan.json?raw'
-import { loadMap, type OfficeMap } from './loadMap'
-import { prerenderOffice, type OfficeScene } from '../render/prerender'
+import { loadMap, type OfficeMap } from './loadMap.ts'
+import { prerenderOffice, type OfficeScene } from '../render/prerender.ts'
 
 let map: OfficeMap | null = null
 let scene: OfficeScene | null = null

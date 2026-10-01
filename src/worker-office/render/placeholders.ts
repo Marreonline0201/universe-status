@@ -1,9 +1,9 @@
 // STEP-1 PLACEHOLDERS for the furniture (plan §6.1: "objects may be simple placeholders; step 2 draws them").
 // Each is a block in the object's legend colour, drawn on a TRANSPARENT layer so the room's floor finish shows
 // around it (the two-layer pre-render). Step 2 replaces this file with tiles-*.ts.
-import type { OfficeObject } from '../map/loadMap'
-import { type Ctx, px, lighten, darken } from './paint'
-import { TILE } from './floors'
+import type { OfficeObject } from '../map/loadMap.ts'
+import { type Ctx, px, lighten, darken } from './paint.ts'
+import { TILE } from './floors.ts'
 
 const SEATS: ReadonlySet<string> = new Set(['taskChairN', 'woodChairN', 'armchairN', 'sofaN', 'receptionChair', 'visitorChair'])
 

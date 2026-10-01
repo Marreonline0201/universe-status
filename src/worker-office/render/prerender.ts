@@ -3,15 +3,17 @@
 //            windows, openings, the door base) and the ground surfaces (sidewalk, street, planters, doormat);
 //            then the wall and furniture shadows, using the new kind sets below;
 //   layer 2  the objects, on a transparent canvas, so the finish shows around them (step 1: placeholders);
-//   light    daylight pools from every window — the north windows AND the facade row — and the floor lamp glow.
-// Room labels are placed from the zone data (not hard-coded coordinates) and drawn by the engine as crisp text.
+//   light    daylight pools from every run of windows — the north windows AND the facade row — and the floor lamp
+//            glow, each clipped to its own room (light does not pass through walls).
+// Room labels are placed from the zone data (not hard-coded coordinates) and drawn by the engine as crisp text; the
+// engine re-places them for the UI text scale (placeLabels), so a bigger font never pushes one across a wall.
 // The door leaves are state, drawn per frame by the engine (floors.ts doorLeaves).
 // The page keeps its one scene in map/office.ts (getOfficeScene); this module stays importable from Node.
-import { SURFACE_KINDS, type OfficeMap, type OfficeObject, type Opening, type TileKind } from '../map/loadMap'
-import { type Ctx, makeCanvas, px, alpha, lighten } from './paint'
-import { TILE, drawFinish, finishOf, variantOf, planter, doormat, doorBase } from './floors'
-import { wallFace, wallTop, windowInterior, windowExterior, jamb } from './walls'
-import { drawPlaceholder } from './placeholders'
+import { SURFACE_KINDS, type OfficeMap, type OfficeObject, type Opening, type TileKind, type Zone } from '../map/loadMap.ts'
+import { type Ctx, makeCanvas, px, alpha, lighten } from './paint.ts'
+import { TILE, drawFinish, finishOf, variantOf, planter, doormat, doorBase } from './floors.ts'
+import { wallFace, wallTop, windowInterior, windowExterior, jamb } from './walls.ts'
+import { drawPlaceholder } from './placeholders.ts'
 
 export interface LabelPlacement {
   readonly text: string
@@ -161,59 +163,108 @@ export function prerenderOffice(map: OfficeMap): OfficeScene {
   }
 
   // ── composite + light ──────────────────────────────────────────────────────────────────────────────────────────
+  // Light never passes through a wall: every pool is clipped to the room it falls into (roomOf: the top-level
+  // zone, so the mail / print corner shares reception's light). Daylight is ONE pool per run of windows, so
+  // neighbouring windows do not stack into bright seams under the mullions.
   const [layer, lg] = makeCanvas(W * TILE, H * TILE)
   lg.drawImage(floorLayer, 0, 0)
   lg.drawImage(objectLayer, 0, 0)
-  const inside = (x: number, y: number) => map.inBounds(x, y) && y < map.facadeRow && !wallLike(x, y)
+  const inside = (x: number, y: number) => map.inBounds(x, y) && y < map.facadeRow && !wallLike(x, y) && roomOf(map, x, y) !== null
+  const lit = (room: Zone, paint: () => void) => {
+    lg.save()
+    lg.beginPath()
+    lg.rect(room.x * TILE, room.y * TILE, room.w * TILE, room.h * TILE)
+    lg.clip()
+    paint()
+    lg.restore()
+  }
   for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (map.tiles[y][x] !== 'window') continue
+    for (let x = 0; x < W;) {
       // daylight falls away from the wall, onto whichever side is the inside of the building
-      const dir = inside(x, y + 1) ? 1 : inside(x, y - 1) ? -1 : 0
-      if (dir === 0) continue
+      const dir = map.tiles[y][x] !== 'window' ? 0 : inside(x, y + 1) ? 1 : inside(x, y - 1) ? -1 : 0
+      if (dir === 0) { x++; continue }
+      const room = roomOf(map, x, y + dir)!
+      const x0 = x
+      while (x < W && map.tiles[y][x] === 'window' && inside(x, y + dir) && roomOf(map, x, y + dir) === room) x++
       const edge = dir > 0 ? (y + 1) * TILE : y * TILE
-      const depth = 40
-      const grad = lg.createLinearGradient(0, edge, 0, edge + dir * depth)
       const a = y === map.facadeRow ? 0.09 : 0.11
-      grad.addColorStop(0, `rgba(255,238,200,${a})`)
-      grad.addColorStop(1, 'rgba(255,238,200,0)')
-      lg.fillStyle = grad
-      lg.fillRect(x * TILE - 3, dir > 0 ? edge : edge - depth, TILE + 6, depth)
+      lit(room, () => {
+        const grad = lg.createLinearGradient(0, edge, 0, edge + dir * DAYLIGHT_DEPTH)
+        grad.addColorStop(0, `rgba(255,238,200,${a})`)
+        grad.addColorStop(1, 'rgba(255,238,200,0)')
+        lg.fillStyle = grad
+        lg.fillRect(x0 * TILE - 3, dir > 0 ? edge : edge - DAYLIGHT_DEPTH, (x - x0) * TILE + 6, DAYLIGHT_DEPTH)
+      })
     }
   }
   for (const o of map.objects) {
     if (o.kind !== 'floorLamp') continue
+    const room = roomOf(map, o.x, o.y)
+    if (!room) continue
     const cx = o.x * TILE + 8, cy = o.y * TILE + 4
-    const grad = lg.createRadialGradient(cx, cy, 2, cx, cy, 40)
-    grad.addColorStop(0, 'rgba(255,205,120,0.26)')
-    grad.addColorStop(1, 'rgba(255,205,120,0)')
-    lg.fillStyle = grad
-    lg.beginPath(); lg.arc(cx, cy, 40, 0, Math.PI * 2); lg.fill()
+    lit(room, () => {
+      const grad = lg.createRadialGradient(cx, cy, 2, cx, cy, LAMP_RADIUS)
+      grad.addColorStop(0, 'rgba(255,205,120,0.26)')
+      grad.addColorStop(1, 'rgba(255,205,120,0)')
+      lg.fillStyle = grad
+      lg.beginPath(); lg.arc(cx, cy, LAMP_RADIUS, 0, Math.PI * 2); lg.fill()
+    })
   }
 
-  return { map, layer, floorLayer, labels: placeLabels(map, lg) }
+  return { map, layer, floorLayer, labels: placeLabels(map, lg, 1) }
+}
+
+/** How far daylight reaches into a room from its windows, and the floor lamp's glow radius (texels). */
+const DAYLIGHT_DEPTH = 40
+const LAMP_RADIUS = 40
+
+/** The room a tile belongs to: its top-level zone (a sub-area such as the mail / print corner is part of its
+ *  parent's room), or null outside every zone. */
+export function roomOf(map: OfficeMap, x: number, y: number): Zone | null {
+  const z = map.zoneAt(x, y)
+  if (!z || z.parent === null) return z
+  return map.zones.find(p => p.name === z.parent) ?? z
 }
 
 /** Plain floor a label may sit on: not a use spot, an opening, the door, the mat or furniture. */
-const LABEL_GROUND: ReadonlySet<TileKind> = new Set<TileKind>(['floor', 'corridor', 'placeTile', 'sidewalk', 'arrivalSlot'])
+export const LABEL_GROUND: ReadonlySet<TileKind> = new Set<TileKind>(['floor', 'corridor', 'placeTile', 'sidewalk', 'arrivalSlot'])
+/** Space kept clear between a label and the ends of its run of floor (texels). */
+export const LABEL_PAD = 3
+/** Canvas font of a room label of `size` texels. */
+export const labelFont = (size: number) => `bold ${size}px ${LABEL_FONT}`
 
-/** One label per zone: its name on the first row (top down) that has a run of plain floor of the zone's own
- *  (most specific) area long enough for the text, at the run's left end. A zone with no such run (the street)
- *  gets no label. Sub-areas (a zone with a parent) use a smaller size. */
-function placeLabels(map: OfficeMap, measureCtx: Ctx): LabelPlacement[] {
+/** One label per zone, for a UI text scale (SettingsContext; the engine re-places on every change and once the
+ *  web font has loaded, because the metrics change): the zone's name, at its base size (rooms 5 texels, sub-areas 4)
+ *  × the scale, on the first row (top down) with a run of plain floor of the zone's own (most specific) area long
+ *  enough for the text, at the run's left end. If no run is long enough, the label goes on the zone's longest run
+ *  (the first one, top down) at the largest size that fits it. So a label never crosses a wall, a doorway or
+ *  furniture at any text scale, and it is never smaller than at scale 1 when the scale is above 1. A zone with no
+ *  plain floor at all (the street) gets no label. */
+export function placeLabels(map: OfficeMap, measureCtx: Ctx, fontScale: number): LabelPlacement[] {
   const out: LabelPlacement[] = []
+  const width = (text: string, size: number) => { measureCtx.font = labelFont(size); return measureCtx.measureText(text).width }
   for (const z of map.zones) {
-    const size = z.parent ? 4 : 5
-    measureCtx.font = `bold ${size}px ${LABEL_FONT}`
-    const need = Math.ceil((measureCtx.measureText(z.name).width + 6) / TILE)
+    const want = (z.parent ? 4 : 5) * fontScale
+    const textW = width(z.name, want)
     let found: LabelPlacement | null = null
+    let best: { x0: number; y: number; len: number } | null = null
     for (let y = z.y; y < z.y + z.h && !found; y++) {
       let run = 0
       for (let x = z.x; x < z.x + z.w; x++) {
         const ok = map.zoneAt(x, y) === z && LABEL_GROUND.has(map.tiles[y][x])
         run = ok ? run + 1 : 0
-        if (run >= need) { found = { text: z.name, x: (x - run + 1) * TILE + 3, y: y * TILE + 8, size }; break }
+        if (!ok) continue
+        const x0 = x - run + 1
+        if (!best || run > best.len) best = { x0, y, len: run }
+        if (run * TILE >= textW + 2 * LABEL_PAD) { found = { text: z.name, x: x0 * TILE + LABEL_PAD, y: y * TILE + 8, size: want }; break }
       }
+    }
+    if (!found && best) {
+      // shrink to the longest run; text width is (close to) linear in the font size, so start there and step down
+      const room = best.len * TILE - 2 * LABEL_PAD
+      let size = Math.floor((want * room) / textW * 4) / 4
+      while (size > 0 && width(z.name, size) > room) size -= 0.25
+      if (size > 0) found = { text: z.name, x: best.x0 * TILE + LABEL_PAD, y: best.y * TILE + 8, size }
     }
     if (found) out.push(found)
   }
