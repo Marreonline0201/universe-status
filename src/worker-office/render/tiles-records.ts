@@ -9,7 +9,7 @@
 import { type Ctx, px } from './paint.ts'
 import {
   CAB_TOP, CAB_FACE, CAB_SEAM, CAB_SHADE, CAB_PLINTH, LABEL_CARD, MONITOR_FRAME, TABLE_WOOD, TABLE_EDGE, LEDGER, GOLD,
-  KRAFT, PAPER, BRASS, BANKER_GREEN, LECTERN_WOOD, SHELF_BACK, shade,
+  KRAFT, PAPER, BRASS, BANKER_GREEN, LECTERN_WOOD, SHELF_BACK, LEDGER_COLOURS, shade,
 } from './palette.ts'
 
 // ── file cabinet (step-2 catalogue: 14 px steel body cols 1-14, top rows 0-2, 4 drawers × 3 rows, plinth row 15) ─
@@ -39,7 +39,6 @@ function fileCabinet(g: Ctx) {
 /** The ledger spines, left to right on each of the two ledger shelves: [x, top row, colour]. Every ledger is 2 px
  *  wide and reaches down to its shelf board. The state layer cuts gaps at these slots; the ledger prop takes the
  *  slot's colour. */
-export const LEDGER_COLOURS = [shade.ledgerA, shade.ledgerB, shade.ledgerC, shade.ledgerD] as const
 export interface Slot { readonly x: number; readonly top: number; readonly bottom: number; readonly w: number; readonly colour: string }
 const ledgerRow = (top: number, bottom: number, order: readonly number[], lows: readonly number[]): Slot[] =>
   order.map((c, i) => ({ x: 2 + 2 * i, top: lows.includes(i) ? top + 1 : top, bottom, w: 2, colour: LEDGER_COLOURS[c] }))

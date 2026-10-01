@@ -2,19 +2,14 @@
 // the reading table with its banker's lamps, and the wooden chairs (the reading table's, also the meeting table's).
 // Same rules as tiles-records.ts: one 16×16 tile at the origin, transparent around the object, no dependence on
 // position. Multi-tile objects have one function per part (W / C / E).
-import { type Ctx, px, darken } from './paint.ts'
+import { type Ctx, px } from './paint.ts'
 import {
   BOOKCASE, CATALOG_WOOD, LABEL_CARD, BRASS, DESK_TOP, DESK_EDGE, PAPER, INK_GREY, TABLE_WOOD, TABLE_EDGE, BANKER_GREEN,
-  CHAIR_WOOD, WALL_BASE, GOLD, SHELF_BACK, shade,
+  CHAIR_WOOD, WALL_BASE, GOLD, SHELF_BACK, BOOK_COLOURS, BINDING_SHADE, shade,
 } from './palette.ts'
 import type { Slot } from './tiles-records.ts'
 
 // ── bookshelf (catalogue: case with 1 px sides, 3 shelves of spines rows 1-4, 6-9, 11-14, boards rows 5, 10, 15) ──
-/** Muted cloth bindings. */
-export const BOOK_COLOURS = {
-  red: '#8a3a32', navy: '#2e3f6e', forest: '#3d6b45', mustard: '#a8862e', plum: '#5e3a5e', teal: '#2e6a6a',
-  tan: '#9a7a52', grey: '#5c5c66',
-} as const
 type BookColour = keyof typeof BOOK_COLOURS
 const shelf = (bottom: number, books: readonly (readonly [number, number, BookColour, number])[]): Slot[] =>
   books.map(([x, w, c, top]) => ({ x, top, bottom, w, colour: BOOK_COLOURS[c] }))
@@ -27,9 +22,8 @@ export const BOOKS: readonly (readonly Slot[])[] = [
   shelf(14, [[1, 2, 'teal', 11], [3, 2, 'red', 12], [5, 2, 'navy', 11], [7, 1, 'mustard', 12], [8, 2, 'forest', 11],
     [10, 2, 'grey', 12], [12, 1, 'tan', 11], [13, 2, 'plum', 11]]),
 ]
-/** The shaded right half of a 2 px spine. */
-const SPINE_SHADE: Readonly<Record<string, string>> = Object.fromEntries(Object.values(BOOK_COLOURS).map(c => [c, darken(c, 0.3)]))
-const darkSpine = (c: string) => SPINE_SHADE[c] ?? c
+/** The shaded right half of a 2 px spine (palette.ts BINDING_SHADE, shared with the pulled book prop). */
+const darkSpine = (c: string) => BINDING_SHADE.get(c) ?? c
 
 function bookshelf(g: Ctx) {
   px(g, 0, 0, 16, 16, BOOKCASE)
@@ -89,7 +83,9 @@ function cardCatalog(g: Ctx, part: 'W' | 'E') {
 // ── reading ledge (catalogue: light-oak top, journal rack front, papers on top) ─────────────────────────────────
 /** The ledge's top surface rows (the state layer spreads a journal on it). */
 export const LEDGE_TOP = { y: 1, h: 8 } as const
-const JOURNALS = { W: ['#2e6a6a', '#a8862e', '#8a3a32'], E: ['#5e3a5e', '#2e3f6e', '#3d6b45'] } as const
+const JOURNALS = {
+  W: [BOOK_COLOURS.teal, BOOK_COLOURS.mustard, BOOK_COLOURS.red], E: [BOOK_COLOURS.plum, BOOK_COLOURS.navy, BOOK_COLOURS.forest],
+} as const
 
 function readingLedge(g: Ctx, part: 'W' | 'E') {
   px(g, 0, LEDGE_TOP.y, 16, LEDGE_TOP.h, DESK_TOP)
@@ -106,15 +102,15 @@ function readingLedge(g: Ctx, part: 'W' | 'E') {
   if (part === 'W') {
     // a folded newspaper: headline, fold, two columns of text
     px(g, 3, 3, 8, 5, shade.newsprint)
-    px(g, 4, 3, 5, 1, '#55555c')
+    px(g, 4, 3, 5, 1, shade.headline)
     px(g, 3, 5, 8, 1, shade.newsFold)
     px(g, 4, 4, 2, 1, INK_GREY); px(g, 7, 4, 3, 1, INK_GREY)
     px(g, 4, 6, 3, 1, INK_GREY); px(g, 8, 6, 2, 1, INK_GREY)
     px(g, 0, 1, 1, 14, shade.ledgeFront)
   } else {
     // a closed journal with a white title strip
-    px(g, 5, 3, 6, 5, '#2e3f6e')
-    px(g, 5, 3, 6, 1, '#40528a')
+    px(g, 5, 3, 6, 5, BOOK_COLOURS.navy)
+    px(g, 5, 3, 6, 1, shade.journalHi)
     px(g, 6, 5, 4, 1, PAPER)
     px(g, 15, 1, 1, 14, shade.ledgeFront)
   }

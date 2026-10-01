@@ -6,19 +6,24 @@
 // against that background. ACTIVITY_ICON is keyed by the classifier's activity ids (office/observer/classify.mjs
 // ACTIVITY_ID: the spool's `a` field), so a bubble never needs text built from tool input (plan §4.10).
 import { type Ctx, makeCanvas, px } from './paint.ts'
-import { MANILA, MANILA_DARK, PAPER, KRAFT, SLIP_YELLOW, STATUS_WORKING, shade } from './palette.ts'
+import {
+  MANILA, MANILA_DARK, PAPER, KRAFT, SLIP_YELLOW, STATUS_WORKING, GOLD, LAMP_SHADE, TAB_GREEN, STEEL, TERM_TEXT, SKY,
+  BUBBLE_BG, ICON_INK, shade,
+} from './palette.ts'
 
 export const ICON_SIZE = 7
 /** The bubble the icons sit in (OfficeEngine.ts drawBubble), composited over the darkest floor. */
-export const ICON_BACKGROUND = 'rgba(8,12,24,0.92)'
+export const ICON_BACKGROUND = BUBBLE_BG
 
-const W = '#e8ecf2'          // light ink
-const G = '#9aa4ac'          // grey ink
-const B = '#74c0fc'          // light blue
-const BLUE_DK = '#1e4a6e'
-const GREEN_LT = '#8ce99a'
-const LEDGER_LT = '#4f8a5c'  // ledger green, lifted for a dark background
-const SPINE_LT = '#3a6b47'
+// Inks (palette.ts ICON_INK, or the furniture's own token where the value is the same)
+const W = ICON_INK.light     // light ink
+const G = STEEL              // grey ink
+const B = SKY                // light blue
+const BLUE_DK = ICON_INK.blueDark
+const GREEN_LT = TERM_TEXT
+const LEDGER_LT = ICON_INK.ledger
+const SPINE_LT = ICON_INK.ledgerSpine
+const DARK = shade.caret     // pupils, the dots of the thought bubble
 
 type Icon = { readonly rows: readonly string[]; readonly ink: Readonly<Record<string, string>> }
 
@@ -26,23 +31,23 @@ const ICONS = {
   /** read a file */
   folder: { rows: ['.......', 'MMM....', 'MMMPPP.', 'DDDDDDD', 'MMMMMMM', 'MMMMMMM', 'MMMMMMM'], ink: { M: MANILA, D: MANILA_DARK, P: PAPER } },
   /** search contents, search history */
-  magnifier: { rows: ['.WWW...', 'WLLLW..', 'WLLLW..', 'WLLLW..', '.WWWH..', '.....H.', '......H'], ink: { W, L: BLUE_DK, H: '#c9a25c' } },
+  magnifier: { rows: ['.WWW...', 'WLLLW..', 'WLLLW..', 'WLLLW..', '.WWWH..', '.....H.', '......H'], ink: { W, L: BLUE_DK, H: GOLD } },
   /** list names */
   list: { rows: ['.......', 'B.WWWWW', '.......', 'B.WWWW.', '.......', 'B.WWWWW', '.......'], ink: { B, W } },
   /** refile / new folder */
   refile: { rows: ['....A..', 'AAAAAA.', '....A..', 'MMM....', 'DDDDDDD', 'MMMMMMM', 'MMMMMMM'], ink: { A: W, M: MANILA, D: MANILA_DARK } },
   /** read history */
-  ledger: { rows: ['.SGGGG.', '.SGGGG.', '.SYYYY.', '.SGGGG.', '.SYYYY.', '.SGGGG.', '.SGGGG.'], ink: { S: SPINE_LT, G: LEDGER_LT, Y: '#e0b862' } },
+  ledger: { rows: ['.SGGGG.', '.SGGGG.', '.SYYYY.', '.SGGGG.', '.SYYYY.', '.SGGGG.', '.SGGGG.'], ink: { S: SPINE_LT, G: LEDGER_LT, Y: ICON_INK.gilt } },
   /** write a file, write history */
-  pen: { rows: ['.....EE', '....PPE', '...PPP.', '..PPP..', '.PPP...', '.TP....', 'T......'], ink: { E: '#f783ac', P: SLIP_YELLOW, T: '#e8c87a' } },
+  pen: { rows: ['.....EE', '....PPE', '...PPP.', '..PPP..', '.PPP...', '.TP....', 'T......'], ink: { E: ICON_INK.eraser, P: SLIP_YELLOW, T: LAMP_SHADE } },
   /** watch a background job, glance at history */
-  eye: { rows: ['.......', '..WWW..', '.WWIWW.', 'WWIKIWW', '.WWIWW.', '..WWW..', '.......'], ink: { W, I: B, K: '#1c2a3a' } },
+  eye: { rows: ['.......', '..WWW..', '.WWIWW.', 'WWIKIWW', '.WWIWW.', '..WWW..', '.......'], ink: { W, I: B, K: DARK } },
   /** set aside (stash) */
   box: { rows: ['.......', 'LLLLLLL', 'KKKKKKK', 'KKKKKKK', 'KKPPPKK', 'KKKKKKK', 'KKKKKKK'], ink: { L: shade.kraftHi, K: KRAFT, P: PAPER } },
   /** compare versions */
-  diff: { rows: ['PPP.PPP', 'PgP.PgP', 'RRR.PPP', 'PPP.PgP', 'PgP.GGG', 'PPP.PPP', 'PPP.PPP'], ink: { P: PAPER, g: G, R: '#ff6b6b', G: '#51cf66' } },
+  diff: { rows: ['PPP.PPP', 'PgP.PgP', 'RRR.PPP', 'PPP.PgP', 'PgP.GGG', 'PPP.PPP', 'PPP.PPP'], ink: { P: PAPER, g: G, R: ICON_INK.red, G: ICON_INK.green } },
   /** read an outside document */
-  book: { rows: ['.......', 'PPP.PPP', 'PgP.PgP', 'PPPsPPP', 'PgPsPgP', 'PPPsPPP', 'CCCCCCC'], ink: { P: PAPER, g: G, s: '#b8b2a4', C: '#c0583f' } },
+  book: { rows: ['.......', 'PPP.PPP', 'PgP.PgP', 'PPPsPPP', 'PgPsPgP', 'PPPsPPP', 'CCCCCCC'], ink: { P: PAPER, g: G, s: ICON_INK.pageGrey, C: ICON_INK.cover } },
   /** search the web */
   globe: { rows: ['..BBB..', '.BLBLB.', 'BLLBLLB', 'BBBBBBB', 'BLLBLLB', '.BLBLB.', '..BBB..'], ink: { B, L: BLUE_DK } },
   /** restore files */
@@ -50,27 +55,27 @@ const ICONS = {
   /** run a program */
   terminal: { rows: ['FFFFFFF', 'F.....F', 'FG....F', 'F.G...F', 'FG.GG.F', 'F.....F', 'FFFFFFF'], ink: { F: G, G: GREEN_LT } },   // the dark bubble is the screen
   /** wait on a run */
-  hourglass: { rows: ['WWWWWWW', '.W...W.', '..WSW..', '...W...', '..W.W..', '.WSSSW.', 'WWWWWWW'], ink: { W, S: '#e0b862' } },
+  hourglass: { rows: ['WWWWWWW', '.W...W.', '..WSW..', '...W...', '..W.W..', '.WSSSW.', 'WWWWWWW'], ink: { W, S: ICON_INK.gilt } },
   /** stop a job */
-  stop: { rows: ['.RRRRR.', 'RRRRRRR', 'RRRRRRR', 'RWWWWWR', 'RRRRRRR', 'RRRRRRR', '.RRRRR.'], ink: { R: '#f03e3e', W } },
+  stop: { rows: ['.RRRRR.', 'RRRRRRR', 'RRRRRRR', 'RWWWWWR', 'RRRRRRR', 'RRRRRRR', '.RRRRR.'], ink: { R: ICON_INK.stopRed, W } },
   /** check the machine */
-  gauge: { rows: ['.......', '..WWW..', '.W...W.', 'W....NW', 'W...N.W', 'W..C..W', 'WWWWWWW'], ink: { W, N: '#ff6b6b', C: W } },
+  gauge: { rows: ['.......', '..WWW..', '.W...W.', 'W....NW', 'W...N.W', 'W..C..W', 'WWWWWWW'], ink: { W, N: ICON_INK.red, C: W } },
   /** final report */
-  printout: { rows: ['PPPPPd.', 'PgggPPd', 'PPPPPPP', 'PggggPP', 'PPPPPPP', 'PgggPPP', 'PPPPPPP'], ink: { P: PAPER, g: G, d: '#b8b2a4' } },
+  printout: { rows: ['PPPPPd.', 'PgggPPd', 'PPPPPPP', 'PggggPP', 'PPPPPPP', 'PgggPPP', 'PPPPPPP'], ink: { P: PAPER, g: G, d: ICON_INK.pageGrey } },
   /** result form */
-  form: { rows: ['..SSS..', 'BBSSSBB', 'BPPPPPB', 'BTPggPB', 'BPPPPPB', 'BTPggPB', 'BBBBBBB'], ink: { B: '#b08a5a', S: G, P: PAPER, T: '#2f9e44', g: G } },
+  form: { rows: ['..SSS..', 'BBSSSBB', 'BPPPPPB', 'BTPggPB', 'BPPPPPB', 'BTPggPB', 'BBBBBBB'], ink: { B: KRAFT, S: G, P: PAPER, T: TAB_GREEN, g: G } },
   /** ask the owner (the front-desk phone) */
-  phone: { rows: ['.WWWWW.', 'WW...WW', 'W.....W', '..RRR..', '.RRRRR.', 'RRRWRRR', 'RRRRRRR'], ink: { W, R: '#ff8787' } },
+  phone: { rows: ['.WWWWW.', 'WW...WW', 'W.....W', '..RRR..', '.RRRRR.', 'RRRWRRR', 'RRRRRRR'], ink: { W, R: ICON_INK.phoneRed } },
   /** launch own background helper (a ticket into the IN tray) */
-  ticket: { rows: ['.......', 'YYdYYYY', 'YYdYYYY', '.YdYYY.', 'YYdYYYY', 'YYdYYYY', '.......'], ink: { Y: SLIP_YELLOW, d: '#c9a227' } },
+  ticket: { rows: ['.......', 'YYdYYYY', 'YYdYYYY', '.YdYYY.', 'YYdYYYY', 'YYdYYYY', '.......'], ink: { Y: SLIP_YELLOW, d: ICON_INK.ticketStub } },
   /** roster look (the in/out board) */
   roster: { rows: ['FFFFFFF', 'FWCWWWF', 'FWWWCWF', 'FCWWWWF', 'FWWCWWF', 'FFFFFFF', '.......'], ink: { F: G, W, C: STATUS_WORKING } },
   /** thinking or writing its next step (no event says which) */
-  think: { rows: ['.WWWWW.', 'WWWWWWW', 'WKWKWKW', 'WWWWWWW', '.WWWWW.', '..W....', '.W.....'], ink: { W, K: '#1c2a3a' } },
+  think: { rows: ['.WWWWW.', 'WWWWWWW', 'WKWKWKW', 'WWWWWWW', '.WWWWW.', '..W....', '.W.....'], ink: { W, K: DARK } },
   /** waiting for its own background job (the pager) */
-  pager: { rows: ['.DDDDD.', '.DGGGD.', '.DGGGD.', '.DDDDD.', '.DLDLD.', '.DDDDD.', '.......'], ink: { D: '#868e96', G: GREEN_LT, L: W } },
+  pager: { rows: ['.DDDDD.', '.DGGGD.', '.DGGGD.', '.DDDDD.', '.DLDLD.', '.DDDDD.', '.......'], ink: { D: ICON_INK.pagerGrey, G: GREEN_LT, L: W } },
   /** a call failed (PostToolUseFailure) */
-  fail: { rows: ['R.....R', '.R...R.', '..R.R..', '...R...', '..R.R..', '.R...R.', 'R.....R'], ink: { R: '#ff6b6b' } },
+  fail: { rows: ['R.....R', '.R...R.', '..R.R..', '...R...', '..R.R..', '.R...R.', 'R.....R'], ink: { R: ICON_INK.red } },
   /** no events for N minutes */
   quiet: { rows: ['...ZZZZ', '.....Z.', '....Z..', '...ZZZZ', 'ZZZ....', '.Z.....', 'ZZZ....'], ink: { Z: G } },
 } as const satisfies Record<string, Icon>

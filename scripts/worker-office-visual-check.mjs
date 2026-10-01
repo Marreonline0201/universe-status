@@ -28,7 +28,7 @@
 //     re-applied to Chrome's own pixels;
 //   - the furniture on screen is exact texel blocks equal to the pre-render (the records room and the work room);
 //   - screenshots: the rooms at the page's own scale (every viewport), and a sheet of every state image over its
-//     tile as Chrome draws it.
+//     base states and its tile, as a worker shows it (stateLayer.ts composeState), as Chrome draws it.
 // PNGs go to scripts/out/ (git-ignored). Exits 1 on any failed check.
 import { mkdirSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -136,8 +136,9 @@ const BROWSER_ART = async () => {
   return { zone, groups: { tiles, states, props, icons } }
 }
 
-/** In the page (step 2): a sheet of every state image over its furniture tile and the room floor under that tile, as
- *  Chrome draws them, scaled up 4× and pinned over the page for one screenshot (removed again after). */
+/** In the page (step 2): a sheet of every state image over its base states (stateLayer.ts composeState: as a worker
+ *  shows it), its furniture tile and the room floor under that tile, as Chrome draws them, scaled up 4× and pinned
+ *  over the page for one screenshot (removed again after). */
 const BROWSER_SHEET = async () => {
   const F = await import('/src/worker-office/render/furniture.ts')
   const S = await import('/src/worker-office/render/stateLayer.ts')
@@ -150,10 +151,11 @@ const BROWSER_SHEET = async () => {
   const g = src.getContext('2d'); g.imageSmoothingEnabled = false
   g.fillStyle = '#1b1f2a'; g.fillRect(0, 0, src.width, src.height)
   keys.forEach((k, i) => {
-    const x = 1 + (i % cols) * cell, y = 1 + Math.floor(i / cols) * cell, tile = k.split('|')[0], p = at.get(tile)
+    const [tile, state, frame] = k.split('|')
+    const x = 1 + (i % cols) * cell, y = 1 + Math.floor(i / cols) * cell, p = at.get(tile)
     if (p) g.drawImage(scene.floorLayer, p[0] * 16, p[1] * 16, 16, 16, x, y, 16, 16)
     if (F.hasFurnitureArt(tile)) g.drawImage(F.furnitureTile(tile), x, y)
-    g.drawImage(S.stateImage(k), x, y)
+    S.composeState(g, S.stateArt(tile, state), Number(frame), x, y)
   })
   const big = document.createElement('canvas'); big.width = src.width * 4; big.height = src.height * 4
   const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false
@@ -365,7 +367,7 @@ try {
       const sheetFile = path.join(OUT, 'worker-office-step2-state-sheet-chrome.png')
       await page.locator('#wo-step2-sheet').screenshot({ path: sheetFile })
       await page.evaluate(() => document.getElementById('wo-step2-sheet')?.remove())
-      console.log(`  saved ${sheetFile} (${sheet.keys} state images over their tiles, 4×)`)
+      console.log(`  saved ${sheetFile} (${sheet.keys} state images over their base states and tiles, 4×)`)
     }
 
     // tab switch: away and back — no rebuild, same engine, same camera; hidden while away

@@ -11,8 +11,11 @@
 // The slice's props (plan §2; pass 2 adds ring binder, envelope, parcel, marker): manila folder (file cabinet),
 // ledger (history shelf), book (bookshelf), call slip (card catalog), printout (printer -> front desk), form (front
 // desk), ticket (front desk IN tray) and pager (a worker really waiting for its own background job).
-import { type Ctx, makeCanvas, px, darken } from './paint.ts'
-import { MANILA, MANILA_DARK, PAPER, INK_GREY, LEDGER, GOLD, SLIP_YELLOW, STEEL, LAMP_GREEN_ON, TAB_ORANGE, shade } from './palette.ts'
+import { type Ctx, makeCanvas, px } from './paint.ts'
+import {
+  MANILA, MANILA_DARK, PAPER, INK_GREY, LEDGER, GOLD, SLIP_YELLOW, STEEL, LAMP_GREEN_ON, TAB_ORANGE, TERM_TEXT, BOOK_COLOURS,
+  BINDING_SHADE, shade,
+} from './palette.ts'
 
 export type PropId = 'folder' | 'ledger' | 'book' | 'callSlip' | 'printout' | 'form' | 'ticket' | 'pager'
 export const PROP_IDS: readonly PropId[] = ['folder', 'ledger', 'book', 'callSlip', 'printout', 'form', 'ticket', 'pager']
@@ -27,26 +30,34 @@ export interface PropArt {
   /** The grip point inside the prop's own box: it lands on the hand anchor. */
   readonly gripX: number
   readonly gripY: number
-  /** colour: the binding of a book or ledger (the slot it was pulled from: stateLayer.ts BOOK_SLOTS / LEDGER_SLOTS). */
+  /** colour: the binding of a book or ledger (the slot it was pulled from: stateLayer.ts BOOK_SLOTS / LEDGER_SLOTS);
+   *  its shaded side comes from palette.ts BINDING_SHADE, so the volume in hand matches the gap it left. */
   readonly draw: (g: Ctx, colour: string) => void
 }
 
-const PAGER_BODY = '#2b2f36'
-const PAGER_SCREEN = '#8ce99a'
+const PAGER_BODY = shade.phone            // the same dark plastic as the desk phone
+const PAGER_SCREEN = TERM_TEXT            // a green LCD
+
+/** The shaded side of a binding (palette.ts BINDING_SHADE). Throws for a colour that binds no book or ledger. */
+function bindingShade(c: string): string {
+  const s = BINDING_SHADE.get(c)
+  if (s === undefined) throw new Error(`no binding shade for ${c} (palette.ts BOOK_COLOURS / LEDGER_COLOURS)`)
+  return s
+}
 
 /** A bound volume (ledger or book) in a given binding: its three views. */
 function volume(defaultBand: boolean): Partial<Record<PropView, PropArt>> {
   return {
     side: { w: 2, h: 5, gripX: 0, gripY: 2, draw: (g, c) => {
-      px(g, 0, 0, 1, 5, c); px(g, 1, 0, 1, 5, darken(c, 0.32)); px(g, 0, 1, 2, 1, GOLD)
+      px(g, 0, 0, 1, 5, c); px(g, 1, 0, 1, 5, bindingShade(c)); px(g, 0, 1, 2, 1, GOLD)
     } },
     held: { w: 5, h: 5, gripX: 2, gripY: 4, draw: (g, c) => {
-      px(g, 0, 0, 5, 5, c); px(g, 0, 0, 1, 5, darken(c, 0.32))
+      px(g, 0, 0, 5, 5, c); px(g, 0, 0, 1, 5, bindingShade(c))
       px(g, 1, 1, 4, 1, GOLD)
       if (defaultBand) px(g, 1, 3, 4, 1, GOLD); else px(g, 2, 2, 2, 1, PAPER)
     } },
     tucked: { w: 6, h: 2, gripX: 3, gripY: 1, draw: (g, c) => {
-      px(g, 0, 0, 6, 2, c); px(g, 0, 1, 6, 1, darken(c, 0.32)); px(g, 4, 0, 1, 2, GOLD)
+      px(g, 0, 0, 6, 2, c); px(g, 0, 1, 6, 1, bindingShade(c)); px(g, 4, 0, 1, 2, GOLD)
     } },
   }
 }
@@ -89,21 +100,31 @@ export const PROP_ART: Readonly<Record<PropId, Partial<Record<PropView, PropArt>
 
 /** Default binding when no slot colour is known. */
 export const PROP_DEFAULT_COLOUR: Readonly<Record<PropId, string>> = {
-  folder: MANILA, ledger: LEDGER, book: '#8a3a32', callSlip: PAPER, printout: PAPER, form: PAPER, ticket: SLIP_YELLOW, pager: PAGER_BODY,
+  folder: MANILA, ledger: LEDGER, book: BOOK_COLOURS.red, callSlip: PAPER, printout: PAPER, form: PAPER, ticket: SLIP_YELLOW, pager: PAGER_BODY,
 }
 
-const cache = new Map<string, HTMLCanvasElement>()
+/** prop -> view -> binding colour -> image. Nested maps, so a hit builds no key string: asking every frame
+ *  allocates nothing (still, a sprite should keep the canvas from pickup to release). */
+const cache = new Map<PropId, Map<PropView, Map<string, HTMLCanvasElement>>>()
+let renders = 0
+/** How many prop images have been rendered (each prop, view and binding at most once). */
+export const propRenders = () => renders
+
 /** The cached image of a prop in a view (and binding colour, for the ledger and the book). Throws if the prop has no
  *  such view. */
 export function propImage(id: PropId, view: PropView, colour = PROP_DEFAULT_COLOUR[id]): HTMLCanvasElement {
-  const key = `${id}|${view}|${colour}`
-  const hit = cache.get(key)
+  let byView = cache.get(id)
+  if (!byView) cache.set(id, (byView = new Map()))
+  let byColour = byView.get(view)
+  if (!byColour) byView.set(view, (byColour = new Map()))
+  const hit = byColour.get(colour)
   if (hit) return hit
   const a = PROP_ART[id][view]
   if (!a) throw new Error(`prop ${id} has no ${view} view`)
   const [c, g] = makeCanvas(a.w, a.h)
   a.draw(g, colour)
-  cache.set(key, c)
+  renders++
+  byColour.set(colour, c)
   return c
 }
 

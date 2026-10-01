@@ -6,14 +6,19 @@
 //   2. the step-2 object catalogue's proposed tokens (office-objects/catalog-s2: mock.py and the catalogue notes);
 //   3. the legend colours of floorplan.json, which are each kind's representative colour (the step-1 placeholders
 //      were drawn in them); the art uses them as the kind's main material.
-// Shades are derived once, here, with mix / lighten / darken (paint.ts), never per draw.
+// Shades are derived once, here, with mix / lighten / darken (paint.ts), never per draw. The art files (tiles-*.ts,
+// stateLayer.ts, props.ts, icons.ts, furniture.ts) hold no colour literal and derive no shade, and every token here
+// is used (by the art, or by another token): scripts/worker-office-art-check.ts scans for all three.
+// Not copied: assets.ts MONITOR_GLOW (#bfe3ff), the old desk's baked glow patch. The lit screen here is
+// shade.screenLit, paler, because it carries 1 px lines of text and the red / green result line (plan §4.5): WCAG
+// contrast of line / red / green 2.9 / 3.7 / 2.0 : 1 on screenLit against 2.6 / 3.4 / 1.8 : 1 on MONITOR_GLOW.
+// Nor COUNTER_TOP: the kitchen counter is pass 2.
 import { mix, lighten, darken } from './paint.ts'
 
 // ── 1. existing office tokens (assets.ts) ────────────────────────────────────────────────────────────────────────
 export const DESK_TOP = '#8a6a4a'        // light-oak desk
 export const DESK_EDGE = '#9c7c58'
 export const MONITOR = '#10141f'
-export const MONITOR_GLOW = '#bfe3ff'
 export const MONITOR_FRAME = '#c8ccd4'   // silver bezel
 export const CHAIR_BODY = '#33413a'      // forest ergonomic chair
 export const CHAIR_BACK = '#42544a'
@@ -22,8 +27,7 @@ export const TABLE_EDGE = '#6e5240'
 export const SOFA_BODY = '#3f6a52'       // green velvet
 export const SOFA_SEAT = '#4d7d61'
 export const SOFA_DARK = '#2f4f3d'
-export const LAMP_SHADE = '#e8c87a'
-export const COUNTER_TOP = '#d8d2c6'     // quartz
+export const LAMP_SHADE = '#e8c87a'      // warm lamp gold (here: the pen icon's nib)
 export const COUNTER_CAB = '#4a3a2c'     // walnut cabinets
 export const STEEL = '#9aa4ac'
 export const POT_CERAMIC = '#c9b8a4'
@@ -79,12 +83,50 @@ export const LIGHT_POOL = 'rgba(255,214,140,0.20)'   // warm pool under a lit la
 export const SLIP_YELLOW = '#ffd43b'     // job tickets, call slips (assets.ts sticky-note yellow)
 export const DIFF_RED = '#e03131'        // a removed line in a comparison
 export const DIFF_GREEN = '#40c057'      // an added line
+export const SPECULAR = '#ffffff'        // pure white: a glint of light, a page caught mid-turn
+export const SKY = '#74c0fc'             // light blue: the printer's status screen, the light-blue icon ink
+/** The front door's sliding glass leaves (moved with doorLeaves from floors.ts, values unchanged). */
+export const DOOR_GLASS = 'rgba(170,214,222,0.42)'
+export const DOOR_HANDLE = '#dfe4e8'
+export const GLASS_GLINT = 'rgba(255,255,255,0.35)'
+/** The speech bubble the icons sit in (OfficeEngine.ts drawBubble). */
+export const BUBBLE_BG = 'rgba(8,12,24,0.92)'
+
+/** Muted cloth bindings of the library's books (the book prop takes its slot's binding). */
+export const BOOK_COLOURS = {
+  red: '#8a3a32', navy: '#2e3f6e', forest: '#3d6b45', mustard: '#a8862e', plum: '#5e3a5e', teal: '#2e6a6a',
+  tan: '#9a7a52', grey: '#5c5c66',
+} as const
 
 /** Dim (off) colours of the bench terminal's stack light. */
 export const LAMP_RED_OFF = '#5a2a2a'
 export const LAMP_AMBER_OFF = '#5a4a1a'
 export const LAMP_GREEN_OFF = '#2a4a2a'
 export const LAMP_BLUE_OFF = '#2a3a5a'
+/** Lit colours of the stack light, by lamp, and the 1 px highlight on each lit lamp (derived once). */
+export const STACK_LAMP_ON = { blue: LAMP_BLUE_ON, red: LAMP_RED_ON, amber: LAMP_AMBER_ON, green: LAMP_GREEN_ON } as const
+export const STACK_LAMP_HI: Readonly<Record<keyof typeof STACK_LAMP_ON, string>> = {
+  blue: lighten(LAMP_BLUE_ON, 0.45), red: lighten(LAMP_RED_ON, 0.45), amber: lighten(LAMP_AMBER_ON, 0.45), green: lighten(LAMP_GREEN_ON, 0.45),
+}
+
+/** Bubble-icon inks (icons.ts): light colours for the dark bubble. Values the furniture already names are taken from
+ *  there (MANILA, PAPER, KRAFT, GOLD, TAB_GREEN, STEEL, TERM_TEXT, LAMP_SHADE, SLIP_YELLOW, SKY, shade.caret). */
+export const ICON_INK = {
+  light: '#e8ecf2',
+  blueDark: '#1e4a6e',
+  ledger: '#4f8a5c',          // ledger green, lifted for the dark bubble
+  ledgerSpine: '#3a6b47',
+  gilt: '#e0b862',
+  eraser: '#f783ac',
+  red: '#ff6b6b',
+  green: '#51cf66',
+  pageGrey: '#b8b2a4',
+  cover: '#c0583f',
+  stopRed: '#f03e3e',
+  phoneRed: '#ff8787',
+  ticketStub: '#c9a227',
+  pagerGrey: '#868e96',
+} as const
 
 // ── derived shades (computed once) ───────────────────────────────────────────────────────────────────────────────
 export const shade = {
@@ -127,10 +169,8 @@ export const shade = {
   screenLine: '#7a8ba0',
   stoneHi: lighten(FRONT_DESK_STONE, 0.2),
   stoneLo: darken(FRONT_DESK_STONE, 0.18),
-  cabFront: COUNTER_CAB,
   cabFrontLo: darken(COUNTER_CAB, 0.3),
   printerTop: lighten(PRINTER_BODY, 0.4),
-  printerFace: darken(PRINTER_BODY, 0.06),
   printerBed: darken(PRINTER_BODY, 0.18),
   printerSlot: '#3a3f47',
   sofaBodyHi: lighten(SOFA_BODY, 0.12),
@@ -145,7 +185,6 @@ export const shade = {
   chairBase: WALL_BASE,
   phone: '#2b2f36',
   phoneHi: '#454b55',
-  trayWire: STEEL,
   trayBed: '#6f757e',
   boardSocket: '#d4dae0',
   kraftHi: lighten(KRAFT, 0.18),
@@ -169,7 +208,7 @@ export const shade = {
   handset: '#1f2228',
   cabTopEdge: lighten(COUNTER_CAB, 0.18),
   printerSide: darken(PRINTER_BODY, 0.16),
-  printerPanel: '#74c0fc',
+  printerPanel: SKY,
   folderShadow: darken(MANILA_DARK, 0.45),
   ribbon: '#c92a2a',                       // a ledger's red ribbon marker
   pageLit: '#fffdf6',
@@ -181,4 +220,23 @@ export const shade = {
   slipPale: '#ffe8a3',
   ticketStub: darken(SLIP_YELLOW, 0.2),
   alu: BOARD_FRAME,                         // the door's aluminium frames (floors.ts ALU)
+  headline: '#55555c',                      // a folded newspaper's headline
+  journalHi: '#40528a',                     // the closed navy journal's lit top edge
+  /** In/out board magnets (plan §2 row 2). A magnet is 1 px, so its colour is the only cue: each ink is held to
+   *  3:1 or more against the white board AND the empty socket it fills (the art check measures the drawn pixels).
+   *  The bright status cyan (1.6 : 1 on the board) is darkened in its own hue; a waiting or stale magnet keeps
+   *  the status colour (4.8 and 8.9 : 1); the steel back shown mid-flip is a darker steel than STEEL (2.2 : 1). */
+  magnetWorking: darken(STATUS_WORKING, 0.5),
+  magnetBack: darken(STEEL, 0.4),
 } as const
+
+/** The four ledger bindings on the history shelves (the ledger prop takes its slot's binding). */
+export const LEDGER_COLOURS = [shade.ledgerA, shade.ledgerB, shade.ledgerC, shade.ledgerD] as const
+
+/** The shaded side of a binding, by binding colour, as the shelves draw it (the right half of a 2 px spine): a book
+ *  darkens 30%, every ledger shares the history shelf's spine shade. A pulled book or ledger (props.ts) uses the
+ *  same, so it looks like the volume that left the gap. Derived once. */
+export const BINDING_SHADE: ReadonlyMap<string, string> = new Map<string, string>([
+  ...Object.values(BOOK_COLOURS).map(c => [c, darken(c, 0.3)] as [string, string]),
+  ...LEDGER_COLOURS.map(c => [c, shade.ledgerSpine] as [string, string]),
+])
