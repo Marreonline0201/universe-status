@@ -73,6 +73,9 @@ export class MpmGpuSimulator {
   private contactDetectBG!: GPUBindGroup
 
   private numParticles = 0
+  /** Most particles the buffers hold. A spawn over it is refused (RangeError), never clamped: a clipped spawn is a
+   *  different experiment than the one asked for, and an upload past the buffer's end is a dropped write. */
+  readonly maxParticles = MAX_PARTICLES
   private frameCount = 0
   // Code units (cells, τ): see src/fluid-engine/units.ts for the SI conversions.
   private gravity = 0.3    // downward gravity MAGNITUDE in cells/τ² — the sign is applied once, in gridForces.wgsl
@@ -259,6 +262,7 @@ export class MpmGpuSimulator {
 
   /** Upload initial particles to GPU, replacing any existing particles */
   spawnParticles(particles: GpuParticle[]) {
+    if (particles.length > MAX_PARTICLES) throw new RangeError(`this tank holds at most ${MAX_PARTICLES} particles; refusing ${particles.length}`)
     const data = new Float32Array(particles.length * FLOATS_PER_PARTICLE)
     for (let i = 0; i < particles.length; i++) {
       const offset = i * FLOATS_PER_PARTICLE
@@ -285,11 +289,9 @@ export class MpmGpuSimulator {
 
   /** Add more particles without clearing existing ones */
   addParticles(particles: GpuParticle[]) {
-    if (this.numParticles + particles.length > MAX_PARTICLES) {
-      console.warn(`Particle overflow: ${this.numParticles} + ${particles.length} > ${MAX_PARTICLES}, clamping`)
-      particles = particles.slice(0, MAX_PARTICLES - this.numParticles)
-      if (particles.length === 0) return
-    }
+    // refused, never clamped (it used to keep the first particles that fit and warn only in the console)
+    const room = MAX_PARTICLES - this.numParticles
+    if (particles.length > room) throw new RangeError(`this tank holds at most ${MAX_PARTICLES} particles (${room} free); refusing ${particles.length}`)
     const data = new Float32Array(particles.length * FLOATS_PER_PARTICLE)
     for (let i = 0; i < particles.length; i++) {
       const offset = i * FLOATS_PER_PARTICLE
@@ -430,7 +432,8 @@ export class MpmGpuSimulator {
 
   /** Read positions / velocities / composition ids of all live particles back to the CPU.
       Used by the Lab's motion metrics (agent-run experiments) — a few samples per run, so a
-      throwaway staging buffer per call is fine (≤16MB at the 200k lab cap). Returns null on
+      throwaway staging buffer per call is fine (80 B a particle: 80 MB at the 1,000,000 capacity, ≈ 62 MB for a
+      tank full at rest packing). Returns null on
       failure or when empty; never throws into the render loop. */
   async readParticleSample(): Promise<{ positions: Float32Array; velocities: Float32Array; compIds: Uint32Array; affine: Float32Array } | null> {
     if (!this.initialized || this.numParticles === 0) return null

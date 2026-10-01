@@ -19,10 +19,6 @@ import { packingFor } from '../fluid-engine/spawn'
 import { benchHookEnabled, installBenchHook } from '../bench/benchHook'
 import { parseScenario } from '../lab/scenario'
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const MAX_PARTICLES = 1_000_000
-
 // ── React Component ──────────────────────────────────────────────────────────
 
 export function FluidTest() {
@@ -36,6 +32,7 @@ export function FluidTest() {
   const [temperatureVal, setTemperatureVal] = useState(20)
   const [fps, setFps] = useState(0)
   const [particleCount, setParticleCount] = useState(0)
+  const [capacity, setCapacity] = useState<number | null>(null)   // the tank's own (it showed 1,000,000 on every solver)
   const [fpsWarning, setFpsWarning] = useState(false)
   const [rtFactor, setRtFactor] = useState(1)
   const [stokes, setStokes] = useState<{ iterations: number; converged: boolean; capHits: number } | null>(null)
@@ -183,9 +180,10 @@ export function FluidTest() {
       setCompositions(engine.getCompositions())
       setMenu(engine.getMenuEntries())
       setParticleCount(engine.particleCount)
+      setCapacity(engine.maxParticles)
       setTank(engine.tank)
       // a resize may remove a ball that no longer fits: the button follows the engine
-      engine.onTankChange = t => { setTank(t); setParticleCount(engine.particleCount); setBallActive(engine.ballActive) }
+      engine.onTankChange = t => { setTank(t); setParticleCount(engine.particleCount); setCapacity(engine.maxParticles); setBallActive(engine.ballActive) }
       if (benchHookEnabled()) {
         // Scripted tests drive the same callbacks the buttons call.
         uninstallHook = installBenchHook(engine.benchTarget({
@@ -331,7 +329,7 @@ export function FluidTest() {
             color: 'rgba(100,150,200,0.6)',
             letterSpacing: 1,
           }}>
-            N: {particleCount} / {MAX_PARTICLES}
+            N: {particleCount} / {capacity ?? '—'}
           </span>
         </div>
       </div>

@@ -94,8 +94,9 @@ export interface SimBackend {
   resize?(cells: Vec3, shiftM?: Vec3): Promise<{ kept: number; removed: number; ballRemoved: boolean; compositions: number[] }>
   /** The tank's grid cells per axis (a resizable backend). */
   readonly cells?: Vec3
-  /** Most particles the tank holds (scales with the cell count). */
-  readonly maxParticles?: number
+  /** Most particles the tank holds (the incompressible solver's scales with the cell count). A load or spawn over it
+   *  is refused with a RangeError before anything changes — never clamped. */
+  readonly maxParticles: number
   destroy(): void
 }
 
@@ -144,11 +145,21 @@ export class MpmBackend implements SimBackend {
 
   get particleBuffer() { return this.sim.particleBuffer }
   get particleCount() { return this.sim.particleCount }
+  get maxParticles(): number { return this.sim.maxParticles }
   private toGpu(ps: readonly SpawnParticle[]): GpuParticle[] {
     return ps.map(p => ({ pos: p.pos, vel: p.vel, composition_id: p.compositionId, temperature: p.temperatureC, phase: p.phase }))
   }
-  setParticles(ps: readonly SpawnParticle[]) { this.sim.spawnParticles(this.toGpu(ps)) }
-  addParticles(ps: readonly SpawnParticle[]) { this.sim.addParticles(this.toGpu(ps)) }
+  // capacity first, with the incompressible backend's words, so the page reports a full tank the same way on both
+  setParticles(ps: readonly SpawnParticle[]) {
+    const cap = this.sim.maxParticles
+    if (ps.length > cap) throw new RangeError(`this tank holds at most ${cap} particles; refusing ${ps.length}`)
+    this.sim.spawnParticles(this.toGpu(ps))
+  }
+  addParticles(ps: readonly SpawnParticle[]) {
+    const cap = this.sim.maxParticles, room = cap - this.sim.particleCount
+    if (ps.length > room) throw new RangeError(`this tank holds at most ${cap} particles (${room} free); refusing ${ps.length}`)
+    this.sim.addParticles(this.toGpu(ps))
+  }
   setGravity(gMs2: number) { this.sim.setGravity(accelToCode(gMs2)) }
   setCompositionProps(gpuData: Float32Array) { this.sim.updateCompositionProps(gpuData) }
   setBall(ball: BallState) { this.sim.setSphereObstacle(ball.center, ball.radius, ball.velocity) }

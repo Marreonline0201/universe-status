@@ -15,7 +15,7 @@ if (!ok && !initError) initError = navigator.gpu ? 'engine init failed' : 'WebGP
 
 const { hook } = installBenchHook(engine.benchTarget({
   loadScenario: (json: string) => {
-    const parsed = parseScenario(json)
+    const parsed = parseScenario(json, { packing: engine.tankPacking ?? undefined })   // the live tank's walls, as FLUID TEST does (it used MPM's)
     if (!parsed.ok) throw new Error(parsed.error)
     const r = engine.loadScenario(parsed.scenario)
     if (!r.ok) throw new Error(`scenario refused: ${r.reason}`)

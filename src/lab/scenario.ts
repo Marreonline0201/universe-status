@@ -71,12 +71,11 @@ export function scenarioGravityMs2(s: Pick<LabScenario, 'gravity' | 'gravity_mps
 }
 
 const MAX_PER_SPAWN = 100_000
-const MAX_TOTAL = 200_000
 const ELEMENT_SET = new Set<string>(ELEMENTS)
 
-/** Parse and validate a scenario for the solver whose packing is given (default: the legacy MPM — its tank is the
- *  smaller one, so a scenario valid there is valid on every solver): box bounds follow that solver's tank, and the
- *  particle count its rest spacing. */
+/** Parse and validate a scenario for the tank whose packing is given (default: the legacy MPM's — the smaller of the
+ *  two default tanks, so a scenario valid there fits both): box bounds follow that tank's walls. Capacity is not
+ *  checked here: FluidEngine.loadScenario refuses a scenario its solver and tank cannot hold. */
 export function parseScenario(text: string, opts: { packing?: Packing } = {}):
   | { ok: true; scenario: LabScenario; warning: string | null }
   | { ok: false; error: string } {
@@ -121,7 +120,6 @@ export function parseScenario(text: string, opts: { packing?: Packing } = {}):
   }
   const names = new Set(s.materials.map(m => m.name))
   const builtIns = BUILT_IN_NAMES
-  let total = 0
   const isVec3 = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(c => typeof c === 'number' && Number.isFinite(c))
   for (const sp of s.spawns) {
     if (typeof sp.material !== 'string' || !(names.has(sp.material) || builtIns.has(sp.material.trim().toLowerCase()))) {
@@ -136,8 +134,6 @@ export function parseScenario(text: string, opts: { packing?: Packing } = {}):
       if (!isVec3(sp.box.min) || !isVec3(sp.box.max) || sp.box.min.some((v, i) => v < 0 || v >= sp.box!.max[i] || sp.box!.max[i] > tankInner[i] + 1e-9)) {
         return { ok: false, error: `spawn box must be {min:[x,y,z], max:[x,y,z]} in metres from the tank's inner corner, 0 ≤ min < max ≤ [${inner.join(', ')}]` }
       }
-      // Same count the lattice spawner will place: floor(size / spacing) per axis.
-      total += sp.box.max.reduce((acc, v, i) => acc * Math.max(1, Math.floor((v - sp.box!.min[i]) / DOMAIN_L_M / pk.spacing + 1e-9)), 1)
       continue
     }
     if (typeof sp.count !== 'number' || sp.count < 1 || sp.count > MAX_PER_SPAWN) {
@@ -146,9 +142,10 @@ export function parseScenario(text: string, opts: { packing?: Packing } = {}):
     if (!isVec3(sp.center) || sp.center!.some(c => c < 0 || c > 1)) {
       return { ok: false, error: 'spawn center must be [x,y,z] with components in [0,1]' }
     }
-    total += sp.count
   }
-  if (total > MAX_TOTAL) warnings.push(`total spawn count ${total} exceeds ${MAX_TOTAL} — spawns will be truncated`)
+  // No capacity check here: capacity depends on the solver and the tank (the incompressible one scales with the cell
+  // count), and FluidEngine.loadScenario refuses a scenario that does not fit, with its count — nothing is truncated
+  // since e968fa46. (A fixed 200,000 here warned "will be truncated" for pools that fit, e.g. opt1-cov's 88³ tank.)
   return { ok: true, scenario: s, warning: warnings.length ? warnings.join('; ') : null }
 }
 

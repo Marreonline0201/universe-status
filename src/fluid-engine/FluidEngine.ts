@@ -339,9 +339,15 @@ export class FluidEngine {
    *  released in the middle of the tank. */
   loadDefaultScene() {
     if (!this.sim || this.destroyed || this.rebuilding()) return
-    this.lastScenario = null
     const { lo, size } = cubeForCount(this.tankPoint(0.5, 0.5, 0.5), 10000, this.packing)
     const block = latticeBox(lo, size, { packing: this.packing })
+    // capacity first (a small tank holds fewer than the block): refused, the tank and RESET's target left as they were
+    const cap = this.sim.maxParticles
+    if (block.positions.length > cap) {
+      this.notify('refused', `the default block needs ${block.positions.length} particles; this tank holds at most ${cap}${this.canResizeTank ? ' — make the tank bigger' : ''}`)
+      return
+    }
+    this.lastScenario = null
     this.sim.setParticles(this.particlesOf(block.positions, [0, 0, 0], 0, 20, 1))
     this.sceneIds = new Set([0])
     this.resetClock()
@@ -352,6 +358,10 @@ export class FluidEngine {
     if (kind === 'refused') this.lastRefusal = text
     this.onNotice?.({ kind, text })
   }
+
+  /** Whether the owner can make this tank bigger on this page (a resizable solver and FLUID TEST's tank handles /
+   *  TANK panel) — a refusal suggests it only then. */
+  private get canResizeTank(): boolean { return !!this.sim?.resize && this.options.tankHandles }
 
   /** True (and the page told why) while the tank is being rebuilt: an action now would reach the simulator that is
    *  being replaced and be silently undone, so it is refused instead. */
@@ -445,6 +455,8 @@ export class FluidEngine {
       // the new contents may rule the ball out on this backend (ballRefusal; the monolithic FLIP ball never is)
       const why = this.ball.active ? this.sim.ballRefusal?.() ?? null : null
       if (why) { this.removeBall(); this.notify('warning', `the ball was removed: ${why}`) }
+    } else {
+      this.notify('warning', 'nothing was added: the spawn region has no free space (liquid already fills it)')
     }
     return r.positions.length
   }
@@ -513,8 +525,8 @@ export class FluidEngine {
       for (const p of this.particlesOf(r.positions, vel, compId, temperature, sp.phase ?? 1)) particles.push(p)   // no spread: 1e5 arguments overflow the stack
     }
     // capacity: refused, never clamped (a truncated scenario would be a different experiment than the one asked for)
-    const cap = this.sim.maxParticles ?? 200_000
-    if (particles.length > cap) return this.refuseScenario(`the scenario needs ${particles.length} particles; this tank holds at most ${cap} — make the tank bigger or the spawns smaller`)
+    const cap = this.sim.maxParticles   // each solver's own (MPM fell back to 200,000 here while holding 1,000,000)
+    if (particles.length > cap) return this.refuseScenario(`the scenario needs ${particles.length} particles; this tank holds at most ${cap} — ${this.canResizeTank ? 'make the tank bigger or the spawns smaller' : 'make the spawns smaller'}`)
     this.sim.setParticles(particles)
     this.resetClock()
     this.setGravity(scenarioGravityMs2(s))
@@ -685,6 +697,8 @@ export class FluidEngine {
     this.sim?.setGravity(gMs2)
   }
   get particleCount(): number { return this.sim?.particleCount ?? 0 }
+  /** The tank's particle capacity (null before init); a resize changes it (onTankChange). */
+  get maxParticles(): number | null { return this.sim?.maxParticles ?? null }
 
   /** Sim seconds advanced per wall second over the last ~2 s (1.0 = real time; <1 = dilated). */
   get rtFactor(): number {
