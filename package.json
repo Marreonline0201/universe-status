@@ -13,6 +13,7 @@
     "office:assign": "npm --prefix office run assign --",
     "test:worker-office": "node scripts/classify-test.mjs && node scripts/spool-hook-test.mjs",
     "test:worker-office-map": "node scripts/worker-office-map-check.ts && node scripts/worker-office-walk-smoke.ts && node scripts/worker-office-render-check.ts",
+    "test:worker-office-art": "node scripts/worker-office-art-check.ts",
     "check:worker-office-visual": "node scripts/worker-office-visual-check.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc -v && node node_modules/typescript/bin/tsc -p tsconfig.app.json --noEmit"
   },

@@ -4,9 +4,10 @@
 //   pre-render, TILE BY TILE: every ground tile is drawn as floorplan.json + plan §1.2 say — the floor finish of the
 //     most specific zone (the plan's finish names are mapped to the art HERE, not through floors.ts's table), in that
 //     zone's base colour and the tile's position variant; each doorway half from the zone on its own side; wall faces
-//     and tops, inside and facade windows, the door base, planters, the doormat. No texel is left uncovered; every
-//     furniture tile gets its placeholder on a transparent object layer and nothing else is painted there; shadows
-//     fall exactly where the kind sets say; daylight comes from every RUN of windows (north and facade) and the lamp
+//     and tops, inside and facade windows, the door base, planters, the doormat. No texel is left uncovered; on a
+//     transparent object layer every slice furniture tile is ONE blit of its kind's cached tile (one canvas per kind)
+//     and every pass-2 tile its placeholder, and nothing else is painted there; shadows fall exactly where the kind
+//     sets say (the chairs cast none); daylight comes from every RUN of windows (north and facade) and the lamp
 //     glows, each pool clipped to its own room, no two pools overlapping; room labels come from the zones;
 //   engine: the fit is the largest whole number of device px per texel that fits (sidebar 220–560 px swept at
 //     1440×900 and on the owner's 1707×1067 @150 %; the viewport-height boundary; DPR 1, 1.25, 1.5, 2), placed below
@@ -24,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { loadMap, SURFACE_KINDS } from '../src/worker-office/map/loadMap.ts'
 import * as pre from '../src/worker-office/render/prerender.ts'
 import { drawFinish, variantOf, type FinishId } from '../src/worker-office/render/floors.ts'
+import { hasFurnitureArt } from '../src/worker-office/render/furniture.ts'
 import { WorkerEngine, type WorkerOfficeDebug } from '../src/worker-office/render/WorkerEngine.ts'
 
 const file = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
@@ -268,7 +270,9 @@ console.log(`       by class: ${[...tally.entries()].map(([k, n]) => `${k} ${n}`
 const cornerTiles = [...tally.entries()].filter(([k]) => k.startsWith('MAIL / PRINT CORNER')).reduce((s, [, n]) => s + n, 0)
 ok(cornerTiles > 0 && !groundBad.some(b => b.includes('MAIL / PRINT CORNER')), `the ${cornerTiles} mail / print corner floor tiles carry grey carpet tiles (its own zone, not reception's terrazzo)`)
 
-// layer 2: a placeholder on every furniture tile, in its legend colour, and paint nowhere else
+// layer 2: every furniture tile drawn exactly once on a transparent canvas — a slice tile (pass 1) as ONE blit of its
+// kind's cached 16×16 tile, the same canvas wherever that kind stands (base art never depends on position); a pass-2
+// tile as its step-1 placeholder in its legend colour — and paint nowhere else
 const objTiles = map.objects.filter(o => !SURFACE_KINDS.has(o.kind))
 const objTileCount = objTiles.reduce((s, o) => s + o.w * o.h, 0)
 let underObjects = 0
@@ -279,23 +283,45 @@ for (const o of objTiles) for (let i = 0; i < o.w; i++) {
   if (all) underObjects++
 }
 ok(underObjects === objTileCount, `finish/wall painted under all ${objTileCount} furniture tiles on the ground layer (two-layer pre-render)`)
-ok(objectLayer.ctx.translates.length === objTileCount, `object layer: ${objectLayer.ctx.translates.length} placeholder tiles = ${objTileCount} furniture tiles (door, doormat, planters, street are ground)`)
-ok(objectLayer.ctx.draws.length === 0, 'object layer draws no floor (transparent around each placeholder)')
+const objTileList = objTiles.flatMap(o => o.tileKinds.map((k, i) => ({ o, k, x: o.x + (i % o.w), y: o.y + Math.floor(i / o.w) })))
+const sliceTiles = objTileList.filter(t => hasFurnitureArt(t.k))
+const placeholderTiles = objTileList.length - sliceTiles.length
+ok(objectLayer.ctx.draws.length === sliceTiles.length && objectLayer.ctx.translates.length === placeholderTiles && sliceTiles.length > 0 && placeholderTiles > 0,
+  `object layer: ${objectLayer.ctx.draws.length} blits of cached furniture tiles (pass 1) + ${objectLayer.ctx.translates.length} placeholder tiles (pass 2) = ${objTileCount} furniture tiles (door, doormat, planters, street are ground)`)
+{
+  // each blit: at its own tile, 16×16 from a 16×16 source, from ONE canvas per kind, never one of the floor's tiles
+  const finishSrc = new Set(floor.ctx.draws.map(d => d.src))
+  const srcOfKind = new Map<string, StubCanvas>()
+  const blitBad: string[] = []
+  for (const t of sliceTiles) {
+    const d = objectLayer.ctx.draws.filter(dd => dd.x === t.x * T && dd.y === t.y * T)
+    if (d.length !== 1 || d[0].w !== T || d[0].h !== T || d[0].sw !== T || d[0].sh !== T || finishSrc.has(d[0].src)) { blitBad.push(`(${t.x},${t.y}) ${t.k}`); continue }
+    const prev = srcOfKind.get(t.k)
+    if (prev && prev !== d[0].src) blitBad.push(`(${t.x},${t.y}) ${t.k}: a second canvas for the kind`)
+    srcOfKind.set(t.k, d[0].src)
+  }
+  ok(blitBad.length === 0, `object layer: each of the ${sliceTiles.length} slice tiles is one 16×16 blit at its own tile, from ONE cached canvas per kind (${srcOfKind.size} kinds), never a floor tile${blitBad.length ? ` — wrong: ${blitBad.slice(0, 4).join(', ')}` : ''}`)
+}
 const objPaint = new Map<string, Fill[]>()
 for (const f of objectLayer.ctx.fills) { const k = `${Math.floor(f.x / T)},${Math.floor(f.y / T)}`; if (!objPaint.has(k)) objPaint.set(k, []); objPaint.get(k)!.push(f) }
 const objBad: string[] = []
-for (const o of objTiles) for (let yy = o.y; yy < o.y + o.h; yy++) for (let xx = o.x; xx < o.x + o.w; xx++) {
-  if (!(objPaint.get(`${xx},${yy}`) ?? []).some(f => f.style === map.legend[o.char].color)) objBad.push(`(${xx},${yy}) ${o.id}`)
-  objPaint.delete(`${xx},${yy}`)
+for (const t of objTileList) {
+  const key = `${t.x},${t.y}`
+  if (hasFurnitureArt(t.k)) { if (objPaint.has(key)) objBad.push(`(${t.x},${t.y}) ${t.o.id}: a fill over its blit`); continue }
+  if (!(objPaint.get(key) ?? []).some(f => f.style === map.legend[t.o.char].color)) objBad.push(`(${t.x},${t.y}) ${t.o.id}`)
+  objPaint.delete(key)
 }
-ok(objBad.length === 0 && objPaint.size === 0, `object layer, tile by tile: every furniture tile carries its placeholder in its legend colour; stray paint on ${objPaint.size} other tiles${objBad.length ? ` — missing on ${objBad.slice(0, 4).join(', ')}` : ''}`)
+ok(objBad.length === 0 && objPaint.size === 0, `object layer, tile by tile: every pass-2 tile carries its placeholder in its legend colour, no slice tile is painted over; stray paint on ${objPaint.size} other tiles${objBad.length ? ` — wrong on ${objBad.slice(0, 4).join(', ')}` : ''}`)
 
 // shadows: recomputed here from the rows alone
 const WALLISH_CHARS = new Set(['#', '~', ...wmChars])
 const ch = (x: number, y: number) => (x >= 0 && y >= 0 && x < W && y < H ? ROWS[y][x] : '')
 const receives = (x: number, y: number) => ch(x, y) !== '' && !WALLISH_CHARS.has(ch(x, y)) && ch(x, y) !== 'D'
 const surfaceChars = new Set(map.objects.filter(o => SURFACE_KINDS.has(o.kind)).map(o => o.char))
-const furniture = (x: number, y: number) => { const c = ch(x, y); return c !== '' && !'#~+:.,qu*'.includes(c) && !WALLISH_CHARS.has(c) && !surfaceChars.has(c) }
+/** Seats that lie flat for shadows (step-2 catalogue shadow set "FLOOR_LIKE seat tile"; plan §6.2 no contact shadow
+ *  under seats): the task chairs and the wooden chairs, by their legend names. */
+const FLAT_SEAT_CHARS = new Set(Object.entries(raw.legend as Record<string, { name: string }>).filter(([, e]) => e.name === 'taskChairN' || e.name === 'woodChairN').map(([c]) => c))
+const furniture = (x: number, y: number) => { const c = ch(x, y); return c !== '' && !'#~+:.,qu*'.includes(c) && !WALLISH_CHARS.has(c) && !surfaceChars.has(c) && !FLAT_SEAT_CHARS.has(c) }
 let expWall = 0, expContact = 0, expEast = 0
 for (let y = 0; y < H - 1; y++) for (let x = 0; x < W; x++) {
   if (!receives(x, y + 1)) continue
@@ -306,6 +332,11 @@ for (let y = 0; y < H; y++) for (let x = 0; x < W - 1; x++) if (WALLISH_CHARS.ha
 const count = (style: string) => floor.ctx.fills.filter(f => f.style === style).length
 ok(count('rgba(20,12,4,0.30)') === expWall && count('rgba(20,12,4,0.14)') === expWall, `wall drop shadows: ${count('rgba(20,12,4,0.30)')} (expected ${expWall}, walls + windows + wall-mounted kinds)`)
 ok(count('rgba(20,12,4,0.18)') === expContact, `furniture contact shadows: ${count('rgba(20,12,4,0.18)')} (expected ${expContact})`)
+{
+  const seats = ROWS.join('').split('').filter(c => FLAT_SEAT_CHARS.has(c)).length
+  const underSeats = floor.ctx.fills.filter(f => f.style === 'rgba(20,12,4,0.18)' && FLAT_SEAT_CHARS.has(ch(Math.floor(f.x / T), Math.floor(f.y / T) - 1)))
+  ok(FLAT_SEAT_CHARS.size === 2 && seats === 13 && underSeats.length === 0, `none of the ${seats} task and wooden chairs casts a contact shadow (${underSeats.length} found)`)
+}
 ok(count('rgba(20,12,4,0.16)') === expEast, `east wall shadows: ${count('rgba(20,12,4,0.16)')} (expected ${expEast})`)
 ok(!floor.ctx.fills.some(f => f.style.startsWith('rgba(20,12,4') && f.y >= 19 * T && f.y < 20 * T && f.x >= 16 * T && f.x < 18 * T),
   'no shadow on the door leaves')

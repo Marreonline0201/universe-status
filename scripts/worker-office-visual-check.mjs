@@ -19,8 +19,18 @@
 //   App.tsx's, plan §5.3); the map is pre-rendered once and the engine survives tab switches.
 //   And with a broken floorplan (the ?raw module answered with "{}"), the tab shows the note and the loader's error
 //   while the header and the other tabs keep working.
+// Step 2 (plan §6.2, pass 1: the vertical slice's furniture), at 1440×900 DPR 1:
+//   - before the RAM gate it runs scripts/worker-office-art-check.ts (software canvas, a few seconds), which writes
+//     every art image's RGBA to scripts/out/worker-office-art-pixels.json; in the page, the furniture tiles, state
+//     images, props and icons are then built by the page's own modules (a dynamic import from the Vite dev server:
+//     no debug surface is added to the app) and read back from Chrome's canvases: the same alpha masks as the
+//     software canvas, colours within 2 levels, and plan §2's covered zone (rows 10-15; rows 7-9 in columns 10-15)
+//     re-applied to Chrome's own pixels;
+//   - the furniture on screen is exact texel blocks equal to the pre-render (the records room and the work room);
+//   - screenshots: the rooms at the page's own scale (every viewport), and a sheet of every state image over its
+//     tile as Chrome draws it.
 // PNGs go to scripts/out/ (git-ignored). Exits 1 on any failed check.
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
@@ -55,6 +65,17 @@ function freeRamGb() {
   }
   return os.freemem() / 2 ** 30
 }
+// step 2: the software-canvas art check first (light), so its pixels are fresh for the browser comparison
+let artPixels = null
+let artCheckOk = false
+{
+  const json = path.join(OUT, 'worker-office-art-pixels.json')
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'worker-office-art-check.ts')], { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], timeout: 300_000 })
+    artCheckOk = true
+    artPixels = JSON.parse(readFileSync(json, 'utf8'))
+  } catch (e) { console.error(`art check failed (node scripts/worker-office-art-check.ts for details): ${String(e.stderr ?? e).slice(0, 300)}`) }
+}
 const freeGb = freeRamGb()
 if (freeGb < 1.5) { console.error(`free RAM ${freeGb.toFixed(2)} GB < 1.5 GB — not starting a dev server and a browser`); process.exit(2) }
 // loaded only after the RAM gate, so the gate reads the machine before Vite and Playwright take their share
@@ -63,6 +84,112 @@ const { chromium } = await import('playwright-core')
 
 let failures = 0
 const check = (ok, what) => { if (ok) console.log(`  ok   ${what}`); else { failures++; console.error(`  FAIL ${what}`) } }
+/** In the page: are the texels of a tile region on screen exact s×s blocks, each equal to the pre-rendered texel? */
+const TEXEL_BLOCKS = ({ tx0, tx1, ty0, ty1 }) => {
+  const dbg = window.__workerOffice
+  const c = document.querySelector('canvas[role="img"]')
+  const g = c.getContext('2d')
+  const s = dbg.deviceScale, [ox, oy] = dbg.offset
+  const x0 = ox + tx0 * 16 * s, y0 = oy + ty0 * 16 * s, w = (tx1 - tx0 + 1) * 16 * s, h = (ty1 - ty0 + 1) * 16 * s
+  const img = g.getImageData(x0, y0, w, h).data
+  let bad = 0, texels = 0, wrong = 0
+  for (let ty = 0; ty < h / s; ty++) for (let tx = 0; tx < w / s; tx++) {
+    texels++
+    const i0 = ((ty * s) * w + tx * s) * 4
+    for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) {
+      const i = ((ty * s + dy) * w + tx * s + dx) * 4
+      if (img[i] !== img[i0] || img[i + 1] !== img[i0 + 1] || img[i + 2] !== img[i0 + 2]) bad++
+    }
+    const want = dbg.mapTexel(tx0 * 16 + tx, ty0 * 16 + ty)
+    const got = `rgba(${img[i0]},${img[i0 + 1]},${img[i0 + 2]},1)`
+    if (want !== got) wrong++
+  }
+  return { texels, bad, wrong, s }
+}
+
+/** In the page (step 2): build every furniture tile, state image, prop and icon with the page's own modules and read
+ *  them back from Chrome's canvases as RGBA (base64), plus plan §2's covered zone applied to each state image. */
+const BROWSER_ART = async () => {
+  const F = await import('/src/worker-office/render/furniture.ts')
+  const S = await import('/src/worker-office/render/stateLayer.ts')
+  const P = await import('/src/worker-office/render/props.ts')
+  const I = await import('/src/worker-office/render/icons.ts')
+  const rgba = (c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data
+    let s = ''
+    for (let i = 0; i < d.length; i++) s += String.fromCharCode(d[i])
+    return { w: c.width, h: c.height, b64: btoa(s) }
+  }
+  const covered = (x, y) => y >= 10 || (y >= 7 && x >= 10)
+  const zone = []
+  const states = {}
+  for (const k of S.stateKeys()) {
+    const c = S.stateImage(k)
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (d[(y * c.width + x) * 4 + 3] > 0 && covered(x, y)) zone.push(`${k} (${x},${y})`)
+    states[k] = rgba(c)
+  }
+  const tiles = Object.fromEntries(Object.keys(F.FURNITURE_ART).map(k => [k, rgba(F.furnitureTile(k))]))
+  const props = {}
+  for (const id of P.PROP_IDS) for (const v of ['side', 'held', 'tucked', 'belt']) if (P.PROP_ART[id][v]) props[`${id}|${v}`] = rgba(P.propImage(id, v))
+  const icons = Object.fromEntries(I.ICON_IDS.map(id => [id, rgba(I.iconImage(id))]))
+  return { zone, groups: { tiles, states, props, icons } }
+}
+
+/** In the page (step 2): a sheet of every state image over its furniture tile and the room floor under that tile, as
+ *  Chrome draws them, scaled up 4× and pinned over the page for one screenshot (removed again after). */
+const BROWSER_SHEET = async () => {
+  const F = await import('/src/worker-office/render/furniture.ts')
+  const S = await import('/src/worker-office/render/stateLayer.ts')
+  const O = await import('/src/worker-office/map/office.ts')
+  const scene = O.getOfficeScene(), map = scene.map
+  const at = new Map()
+  for (let y = 0; y < map.height; y++) for (let x = 0; x < map.width; x++) if (!at.has(map.tiles[y][x])) at.set(map.tiles[y][x], [x, y])
+  const keys = S.stateKeys(), cols = 16, cell = 18, rows = Math.ceil(keys.length / cols)
+  const src = document.createElement('canvas'); src.width = cols * cell + 2; src.height = rows * cell + 2
+  const g = src.getContext('2d'); g.imageSmoothingEnabled = false
+  g.fillStyle = '#1b1f2a'; g.fillRect(0, 0, src.width, src.height)
+  keys.forEach((k, i) => {
+    const x = 1 + (i % cols) * cell, y = 1 + Math.floor(i / cols) * cell, tile = k.split('|')[0], p = at.get(tile)
+    if (p) g.drawImage(scene.floorLayer, p[0] * 16, p[1] * 16, 16, 16, x, y, 16, 16)
+    if (F.hasFurnitureArt(tile)) g.drawImage(F.furnitureTile(tile), x, y)
+    g.drawImage(S.stateImage(k), x, y)
+  })
+  const big = document.createElement('canvas'); big.width = src.width * 4; big.height = src.height * 4
+  const bg = big.getContext('2d'); bg.imageSmoothingEnabled = false
+  bg.drawImage(src, 0, 0, big.width, big.height)
+  big.id = 'wo-step2-sheet'
+  Object.assign(big.style, { position: 'fixed', left: '0px', top: '0px', zIndex: 99999, width: `${big.width}px`, height: `${big.height}px` })
+  document.body.appendChild(big)
+  return { w: big.width, h: big.height, keys: keys.length }
+}
+
+/** Compare the browser's art with the software canvas's (scripts/out/worker-office-art-pixels.json): identical alpha
+ *  masks, colours within `tol` levels where both are visible. */
+function compareArt(browser, raster, tol = 2) {
+  const out = { images: 0, maskDiff: [], colourDiff: [], missing: [], maxDelta: 0 }
+  for (const group of ['tiles', 'states', 'props', 'icons']) {
+    const a = browser[group] ?? {}, b = raster[group] ?? {}
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      if (!a[key] || !b[key]) { out.missing.push(`${group}:${key}`); continue }
+      out.images++
+      const x = Buffer.from(a[key].b64, 'base64'), y = Buffer.from(b[key].b64, 'base64')
+      if (a[key].w !== b[key].w || a[key].h !== b[key].h || x.length !== y.length) { out.maskDiff.push(`${group}:${key} size`); continue }
+      let mask = 0, colour = 0
+      for (let i = 0; i < x.length; i += 4) {
+        if ((x[i + 3] > 0) !== (y[i + 3] > 0)) { mask++; continue }
+        if (x[i + 3] === 0) continue
+        const d = Math.max(Math.abs(x[i] - y[i]), Math.abs(x[i + 1] - y[i + 1]), Math.abs(x[i + 2] - y[i + 2]), Math.abs(x[i + 3] - y[i + 3]))
+        out.maxDelta = Math.max(out.maxDelta, d)
+        if (d > tol) colour++
+      }
+      if (mask) out.maskDiff.push(`${group}:${key} (${mask} px)`)
+      if (colour) out.colourDiff.push(`${group}:${key} (${colour} px)`)
+    }
+  }
+  return out
+}
+
 /** Switch tabs with a DOM click: at phone width the header's tab buttons run past the screen edge (pre-existing,
  *  App.tsx), which is not what this check is about. */
 const openTab = (page, label) => page.evaluate((l) => {
@@ -150,27 +277,7 @@ try {
     check(tabs.includes('WORKER OFFICE') && !tabs.includes('AGENT OFFICE'), `tab label WORKER OFFICE (tabs: ${tabs.filter(t => /^[A-Z ]+$/.test(t)).join(' | ')})`)
 
     // texels are exact blocks: corridor tiles x 12..20, y 11..12 (no label, no state layer there)
-    const blocks = await page.evaluate(({ tx0, tx1, ty0, ty1 }) => {
-      const dbg = window.__workerOffice
-      const c = document.querySelector('canvas[role="img"]')
-      const g = c.getContext('2d')
-      const s = dbg.deviceScale, [ox, oy] = dbg.offset
-      const x0 = ox + tx0 * 16 * s, y0 = oy + ty0 * 16 * s, w = (tx1 - tx0 + 1) * 16 * s, h = (ty1 - ty0 + 1) * 16 * s
-      const img = g.getImageData(x0, y0, w, h).data
-      let bad = 0, texels = 0, wrong = 0
-      for (let ty = 0; ty < h / s; ty++) for (let tx = 0; tx < w / s; tx++) {
-        texels++
-        const i0 = ((ty * s) * w + tx * s) * 4
-        for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) {
-          const i = ((ty * s + dy) * w + tx * s + dx) * 4
-          if (img[i] !== img[i0] || img[i + 1] !== img[i0 + 1] || img[i + 2] !== img[i0 + 2]) bad++
-        }
-        const want = dbg.mapTexel(tx0 * 16 + tx, ty0 * 16 + ty)
-        const got = `rgba(${img[i0]},${img[i0 + 1]},${img[i0 + 2]},1)`
-        if (want !== got) wrong++
-      }
-      return { texels, bad, wrong, s }
-    }, { tx0: 12, tx1: 20, ty0: 11, ty1: 12 })
+    const blocks = await page.evaluate(TEXEL_BLOCKS, { tx0: 12, tx1: 20, ty0: 11, ty1: 12 })
     check(blocks.bad === 0 && blocks.wrong === 0, `${blocks.texels} texels drawn as exact ${blocks.s}×${blocks.s} blocks equal to the pre-render (non-uniform pixels ${blocks.bad}, wrong texels ${blocks.wrong})`)
 
     // two-layer pre-render: the finish under an object tile equals the same finish on a plain tile of the same
@@ -222,6 +329,44 @@ try {
     const crop = path.join(OUT, `worker-office-step1-${vp.name}-reception.png`)
     await page.screenshot({ path: crop, clip })
     console.log(`  saved ${crop}`)
+
+    // ── step 2: the slice furniture ─────────────────────────────────────────────────────────────────────────────
+    // the rooms at the page's own scale: north rooms (rows 0-10) and the south ones with the sidewalk (rows 11-21)
+    for (const [part, ty0, th] of [['north-rooms', 0, 11], ['south-rooms', 11, 11]]) {
+      const box = await page.evaluate(([y0, h]) => {
+        const dbg = window.__workerOffice
+        const r = document.querySelector('canvas[role="img"]').getBoundingClientRect()
+        const css = (dev) => dev / dbg.dpr
+        const s = dbg.deviceScale, [ox, oy] = dbg.offset
+        const x = Math.max(r.left, r.left + css(ox)), y = Math.max(r.top, r.top + css(oy + y0 * 16 * s))
+        return { x, y, width: Math.min(css(34 * 16 * s), r.right - x), height: Math.min(css(h * 16 * s), r.bottom - y) }
+      }, [ty0, th])
+      if (box.width > 0 && box.height > 0) {
+        const file = path.join(OUT, `worker-office-step2-${vp.name}-${part}.png`)
+        await page.screenshot({ path: file, clip: box })
+        console.log(`  saved ${file}`)
+      }
+    }
+    if (vp.name === '1440x900-dpr1') {
+      for (const [what, region] of [['records: the 14 north cabinets', { tx0: 10, tx1: 23, ty0: 1, ty1: 1 }], ['work room: desks and task chairs', { tx0: 26, tx1: 31, ty0: 1, ty1: 2 }]]) {
+        const b = await page.evaluate(TEXEL_BLOCKS, region)
+        check(b.bad === 0 && b.wrong === 0, `furniture on screen, ${what}: ${b.texels} texels as exact ${b.s}×${b.s} blocks equal to the pre-render (non-uniform ${b.bad}, wrong ${b.wrong})`)
+      }
+      const art = await page.evaluate(BROWSER_ART)
+      check(art.zone.length === 0, `plan §2 covered zone on Chrome's own canvases: ${Object.keys(art.groups.states).length} state images, no pixel in rows 10-15 or in columns 10-15 of rows 7-9${art.zone.length ? ` — ${art.zone.slice(0, 4).join('; ')}` : ''}`)
+      if (artCheckOk && artPixels) {
+        const cmp = compareArt(art.groups, artPixels)
+        check(cmp.images > 150 && cmp.missing.length === 0 && cmp.maskDiff.length === 0 && cmp.colourDiff.length === 0,
+          `Chrome draws the same art as the software canvas: ${cmp.images} images (tiles, states, props, icons), identical alpha masks, colours within 2 levels (largest difference ${cmp.maxDelta})${cmp.missing.length ? ` — missing ${cmp.missing.slice(0, 3).join(', ')}` : ''}${cmp.maskDiff.length ? ` — masks differ: ${cmp.maskDiff.slice(0, 3).join(', ')}` : ''}${cmp.colourDiff.length ? ` — colours differ: ${cmp.colourDiff.slice(0, 3).join(', ')}` : ''}`)
+      } else {
+        check(false, 'the software-canvas art check ran and wrote its pixels (needed for the comparison)')
+      }
+      const sheet = await page.evaluate(BROWSER_SHEET)
+      const sheetFile = path.join(OUT, 'worker-office-step2-state-sheet-chrome.png')
+      await page.locator('#wo-step2-sheet').screenshot({ path: sheetFile })
+      await page.evaluate(() => document.getElementById('wo-step2-sheet')?.remove())
+      console.log(`  saved ${sheetFile} (${sheet.keys} state images over their tiles, 4×)`)
+    }
 
     // tab switch: away and back — no rebuild, same engine, same camera; hidden while away
     await openTab(page, 'REPORTS')

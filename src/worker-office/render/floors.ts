@@ -1,5 +1,5 @@
 // Floor finishes and ground surfaces of the worker office (plan §1.2, §6.1): the 9 interior finishes, the
-// sidewalk, the street, the planters, the doormat and the door base, plus the door leaves for the state layer.
+// sidewalk, the street, the planters, the doormat and the door base (the door leaves are in stateLayer.ts).
 //
 // Every function draws ONE 16×16 tile at the origin and depends only on its arguments, so a tile canvas can be
 // cached by (finish, base colour, variant). The variant carries the tile's position modulo 4 —
@@ -210,7 +210,8 @@ const WALL_CAP_EDGE = '#6e5c44'
 const ALU = '#8fa1ab'
 
 /** The doorway in the facade, seen from the street: the wall header, the dim hall behind, an aluminium
- *  threshold. side: which jamb this leaf tile carries. The leaves themselves are drawn by doorLeaves(). */
+ *  threshold. side: which jamb this leaf tile carries. The leaves themselves are state, drawn every frame by
+ *  stateLayer.ts doorLeaves(). */
 export function doorBase(g: Ctx, side: 'W' | 'E') {
   px(g, 0, 0, TILE, 4, WALL_CAP)
   px(g, 0, 4, TILE, 1, WALL_CAP_EDGE)
@@ -219,33 +220,4 @@ export function doorBase(g: Ctx, side: 'W' | 'E') {
   px(g, 0, 14, TILE, 2, '#b8bfc6')
   px(g, 0, 15, TILE, 1, '#8a9096')
   px(g, side === 'W' ? 0 : 15, 4, 1, 12, ALU)
-}
-
-/** Glass glints on a leaf, relative to its left edge (texels). Module constants: the leaves are drawn every frame. */
-const LEAF_GLINT_X: readonly number[] = [3, 4, 5, 9, 10]
-const LEAF_GLINT_Y: readonly number[] = [6, 7, 8, 6, 7]
-
-/** State layer: the two sliding glass leaves, in texels, with the world origin at the door's top-left tile.
- *  open = 0 (closed) .. 1 (fully open, each leaf slid into its side pocket). Called every frame: allocates nothing. */
-export function doorLeaves(g: Ctx, x0: number, y0: number, open: number) {
-  const slide = Math.round(Math.max(0, Math.min(1, open)) * 14)
-  for (let i = 0; i < 2; i++) {
-    const dir = i === 0 ? -1 : 1
-    const lx = x0 + i * TILE + (i === 0 ? 1 : 0) + dir * slide
-    const w = 15
-    const clipL = x0 + (i === 0 ? 1 : TILE), clipR = x0 + (i === 0 ? TILE : 2 * TILE - 1)
-    const a = Math.max(lx, clipL), b = Math.min(lx + w, clipR)
-    if (b <= a) continue
-    px(g, a, y0 + 5, b - a, 9, 'rgba(170,214,222,0.42)')
-    px(g, a, y0 + 5, b - a, 1, ALU)
-    px(g, a, y0 + 13, b - a, 1, ALU)
-    if (lx >= clipL) px(g, lx, y0 + 5, 1, 9, ALU)
-    if (lx + w <= clipR) px(g, lx + w - 1, y0 + 5, 1, 9, ALU)
-    const hx = i === 0 ? lx + w - 3 : lx + 2
-    if (hx >= a && hx < b) px(g, hx, y0 + 8, 1, 3, '#dfe4e8')
-    for (let j = 0; j < LEAF_GLINT_X.length; j++) {
-      const sx = lx + LEAF_GLINT_X[j]
-      if (sx >= a && sx < b) px(g, sx, y0 + LEAF_GLINT_Y[j], 1, 1, 'rgba(255,255,255,0.35)')
-    }
-  }
 }

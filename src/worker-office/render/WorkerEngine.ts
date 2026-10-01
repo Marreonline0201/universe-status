@@ -18,7 +18,8 @@
 // back neither rebuilds nor re-fits anything.
 // Checks read the engine's `debug` object (live getters, built once). It is also window.__workerOffice, but only in
 // dev builds (the visual check runs on the dev server) or with ?woDebug in the address.
-import { TILE, doorLeaves } from './floors.ts'
+import { TILE } from './floors.ts'
+import { doorLeaves } from './stateLayer.ts'
 import { type LabelPlacement, type OfficeScene, labelFont, placeLabels, prerenderBuilds, texel } from './prerender.ts'
 import { WheelZoom, fitCamera } from './camera.ts'
 

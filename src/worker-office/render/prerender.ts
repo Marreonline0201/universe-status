@@ -2,18 +2,21 @@
 //   layer 1  the ground: each tile's room finish (from zones[] — also under every object tile), the shell (walls,
 //            windows, openings, the door base) and the ground surfaces (sidewalk, street, planters, doormat);
 //            then the wall and furniture shadows, using the new kind sets below;
-//   layer 2  the objects, on a transparent canvas, so the finish shows around them (step 1: placeholders);
+//   layer 2  the objects, on a transparent canvas, so the finish shows around them: each furniture tile is ONE blit of
+//            its kind's cached art (furniture.ts; pass 1, the vertical slice), and the kinds pass 2 will draw keep
+//            their step-1 placeholders;
 //   light    daylight pools from every run of windows — the north windows AND the facade row — and the floor lamp
 //            glow, each clipped to its own room (light does not pass through walls).
 // Room labels are placed from the zone data (not hard-coded coordinates) and drawn by the engine as crisp text; the
 // engine re-places them for the UI text scale (placeLabels), so a bigger font never pushes one across a wall.
-// The door leaves are state, drawn per frame by the engine (floors.ts doorLeaves).
+// The door leaves are state, drawn per frame by the engine (stateLayer.ts doorLeaves).
 // The page keeps its one scene in map/office.ts (getOfficeScene); this module stays importable from Node.
 import { SURFACE_KINDS, type OfficeMap, type OfficeObject, type Opening, type TileKind, type Zone } from '../map/loadMap.ts'
 import { type Ctx, makeCanvas, px, alpha, lighten } from './paint.ts'
 import { TILE, drawFinish, finishOf, variantOf, planter, doormat, doorBase } from './floors.ts'
 import { wallFace, wallTop, windowInterior, windowExterior, jamb } from './walls.ts'
 import { drawPlaceholder } from './placeholders.ts'
+import { NO_CONTACT_SHADOW, furnitureTile, hasFurnitureArt } from './furniture.ts'
 
 export interface LabelPlacement {
   readonly text: string
@@ -48,8 +51,9 @@ function kindSets(map: OfficeMap) {
   }
   /** Tiles whose ground can take a shadow: everything except the wall runs and the door (glass, in the facade). */
   const receives = (x: number, y: number) => map.inBounds(x, y) && !wallLike(x, y) && map.objectAt(x, y)?.kind !== 'frontDoor'
-  /** Free-standing furniture casts a contact shadow onto the tile south of it. */
-  const castsContact = (o: OfficeObject | null) => o !== null && !o.wallMounted && !SURFACE_KINDS.has(o.kind)
+  /** Free-standing furniture casts a contact shadow onto the tile south of it; seats that lie flat like the floor
+   *  (furniture.ts NO_CONTACT_SHADOW) cast none. */
+  const castsContact = (o: OfficeObject | null) => o !== null && !o.wallMounted && !SURFACE_KINDS.has(o.kind) && !NO_CONTACT_SHADOW.has(o.kind)
   return { wallLike, receives, castsContact }
 }
 
@@ -155,10 +159,16 @@ export function prerenderOffice(map: OfficeMap): OfficeScene {
     if (SURFACE_KINDS.has(o.kind)) continue
     const color = map.legend[o.char].color
     for (let i = 0; i < o.w * o.h; i++) {
-      og.save()
-      og.translate((o.x + (i % o.w)) * TILE, (o.y + Math.floor(i / o.w)) * TILE)
-      drawPlaceholder(og, o, i, color)
-      og.restore()
+      const tx = (o.x + (i % o.w)) * TILE, ty = (o.y + Math.floor(i / o.w)) * TILE
+      const kind = o.tileKinds[i]
+      if (hasFurnitureArt(kind)) {
+        og.drawImage(furnitureTile(kind), tx, ty)
+      } else {
+        og.save()
+        og.translate(tx, ty)
+        drawPlaceholder(og, o, i, color)
+        og.restore()
+      }
     }
   }
 
