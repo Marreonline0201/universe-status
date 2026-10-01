@@ -5,10 +5,12 @@
 // "not run: data absent" and exits 3. The reference output defaults to replay_fetch_read_final_out.json next to it.
 //
 // Python's event loop, kept exactly: one owner per interval [hid, kind, a, b] (kind != ARRIVING, b > a); events in
-// heap order (t, type, i) with end = 0 < start = 1 < pull end = 2; a pull lasts PULL_S = 1.2 s. Every decision —
-// which point, sibling, pool, the wait list, the fetch-then-read reading place, the step-aside, who is served when a
-// place frees — is the book's (assign / endPull / release); this script only feeds it the events and counts. Points
-// are chosen from the helper's last place (the IN leaf for its first), which moves workers but never changes a count.
+// heap order (t, type, i) with end = 0 < start = 1 < pull end = 2; a pull lasts PULL_S = 1.2 s from the change that
+// granted it, and its timer ends that pull by its id. Every decision — which point, sibling, pool, the wait list, the
+// fetch-then-read reading place, the step-aside, who is served when a place frees — is the book's (assign / endPull /
+// release); this script only feeds it the events and counts. A start counts as queued when the book's result says so
+// (read after the call's cascades). Points are chosen from the helper's last place (the IN leaf for its first), which
+// moves workers but never changes a count.
 // The statistics are measured where Python measures them: points in use when an own point is granted (take_point),
 // reading places in use when a pull ends on one (try_take_reading), the wait list when someone joins it, and the busy
 // time / full reading pools on the state before each event. Counts are read from a shadow ledger rebuilt from the
@@ -69,6 +71,7 @@ const readingMembers: Record<Room, readonly string[]> = {
 }
 const shadowCount = (ids: readonly string[]) => ids.reduce((n, id) => n + (shadow.has(id) ? 1 : 0), 0)
 
+const pullOf = new Map<number, number>()                          // interval -> the id of the pull it was granted
 const episodes = new Map<string, number>()
 const bump = (m: Map<string, number>, k: string, by = 1) => m.set(k, (m.get(k) ?? 0) + by)
 const waits: [string, number][] = []
@@ -97,7 +100,7 @@ function apply(changes: readonly Change[], t: number) {
       lastTile.set(ivs[i][0], layout.place(c.to))
       const ws = waitStart.get(i)
       if (ws !== undefined) { waits.push([kind, t - ws]); waitStart.delete(i) }     // a queued owner got a place
-      if (c.role === 'pull' && c.from !== c.to) push([t + PULL_S, 2, i])
+      if (c.role === 'pull') { push([t + PULL_S, 2, i]); pullOf.set(i, c.seq) }   // every pull change starts a pull; its seq is the pull id
       if ((c.role === 'use' || c.role === 'pull') && c.forKind !== null) {         // take_point: an own point granted
         const n = shadowCount(layout.stations.get(c.forKind)!.points)
         if (n > (maxObj.get(c.forKind) ?? 0)) maxObj.set(c.forKind, n)
@@ -132,13 +135,14 @@ while (heap.length > 0) {
     else if (r.how === 'queued') {
       bump(episodes, `${k} -> queued`)
       waitStart.set(i, t)
-      maxQueued = Math.max(maxQueued, book.waiters().filter(w => book.holding(w.owner) === null).length)
+      maxQueued = Math.max(maxQueued, book.waiters().filter(w => book.holding(w.owner)?.role !== 'wait').length)   // queued = waiting on no pool tile
     }
     apply(r.changes, t)
   } else if (type === 2) {
-    if (book.holding(owner(i))?.role !== 'pull') continue
+    const h = book.holding(owner(i))
+    if (h?.role !== 'pull' || h.pull !== pullOf.get(i)) continue
     bump(pulls, k)
-    apply(book.endPull(owner(i)), t)
+    apply(book.endPull(owner(i), h.pull), t)
     if (book.holding(owner(i))?.role === 'readAtShelf') bump(fallback, k)
   } else {
     if (waitStart.has(i)) { bump(neverServed, k); waitStart.delete(i) }

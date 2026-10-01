@@ -7,39 +7,53 @@
 //                                         all facing N, one-to-one with 88 object tiles), each seat's sitFrom tile, the
 //                                         32 place tiles in their §3.2 pools with their poses, the arrival / departure
 //                                         hold orders, the overflow chains, the 120 endpoints, and the grid rules the
-//                                         Path A planner needs (canStep / moves / walked distance).
+//                                         Path A planner needs (canStep / moves / walked distance), on numeric tables
+//                                         built once, so a planner can call them per node without allocating.
 //   new PlaceBook(layout)                 mutable: who holds which place. Every booking goes through it; a place never
 //                                         has two owners and an owner never holds two places. Every call returns the
 //                                         booking changes it caused, cascades included, in order.
 //
 // The policy (plan §4.7, "the observer owns places"; the numbers of §3.4 come from replay_fetch_read.py):
 //   assign(owner, kind, from)
+//     0. STAY (§4.2 "Pre, kind K = the current station"): an owner already booked for this station (its point, a
+//        sibling's point, a reading place after the pull, a pool tile) or already waiting for it: nothing changes.
 //     1. the station's own points: the nearest free one by walked distance (Path A grid steps; a seat = its sitFrom +
-//        one scripted step), plus CROWD_COST tiles per occupied 4-adjacent point of the same kind; ties go to the
-//        declaration order of floorplan.json. Shelves (fetch-then-read) take their point as a PULL.
+//        one scripted step), plus CROWD_COST tiles per occupied 4-adjacent point of the same kind (never on the place
+//        the owner already holds: staying adds no crowding); ties go to the declaration order of floorplan.json.
+//        Shelves (fetch-then-read) take their point as a PULL.
 //     2. else the overflow chain: siblings (their own points only, never their chains), then one pool, whose tile the
 //        worker waits on — it shows its real activity plus "waiting: all N … in use (display limit)".
 //     3. else the worker joins the FIFO wait list of that kind and keeps the place it holds ("waits at its own station
-//        and keeps its reservation", §4.6).
-//   endPull(owner)          fetch-then-read (§4.4): at the end of the pull the worker moves to the nearest free reading
+//        and keeps its reservation", §4.6), PARKED: re-booked for the kind it now waits for, so its label names that
+//        kind, no line or pool cascade moves it, and a pull it was making ends without a reading place.
+//     The result is read from the book AFTER the call's cascades: a queue join can be served at once (step-aside).
+//   endPull(owner, pull)    fetch-then-read (§4.4): at the end of the pull the worker moves to the nearest free reading
 //                           place of the shelf's room (library: the reading ledge, then the table seats, then the aisle
-//                           tiles), else it reads at the shelf point (a "fallback reader").
+//                           tiles), else it reads at the shelf point (a "fallback reader"). The pull is named by its id
+//                           (Holding.pull = the seq of the change that granted it); a stale id is a no-op.
 //   step-aside              event-driven, never on a timer: whenever a puller waits for a shelf kind while one of that
 //                           kind's fallback readers holds a shelf point and a reading place of the room is free, the
 //                           earliest fallback reader moves to that reading place and the puller takes its shelf point.
 //                           It is checked when a reading place frees and when a puller joins the wait list.
 //   serving (every free)    a freed own point goes to the earliest waiter of that kind (FIFO; a waiter on a pool tile
-//                           is promoted from it); a freed pool place goes to the earliest waiter whose chain holds that
-//                           pool and who has no tile in it yet. The front-desk queue is a LINE: it fills front first
-//                           ((16,17), then (16,16)) and moves up when the front frees.
+//                           is promoted from it), else to the earliest waiter whose chain lists that station as a
+//                           sibling; a freed pool place goes to the earliest waiter whose chain holds that pool and who
+//                           has no tile in it yet. The front-desk queue is a LINE: it fills front first ((16,17), then
+//                           (16,16)) and its waiters move up when the front frees (a parked worker does not).
 //   hold(owner, which)      arrival hold: in/out-board spots, then the hold tiles, then the mail corner (§4.6, D10);
 //                           departure hold: the hold tiles. Null when none is free (the worker stays where it is).
-//   reserve / transfer      raw bookings of one named place (snapshot re-sync); refused if another owner holds it.
+//   reserve / transfer      raw bookings of one named place (snapshot re-sync): role 'reserved', off every wait list
+//                           (the observer re-queues with assign); refused, with nothing changed, if another owner holds it.
 //   release / dispose       release frees an owner and serves the waiters; dispose releases everyone and refuses every
 //                           later booking.
+// assign and hold refuse an origin that is neither walkable nor a seat before they change anything.
 import type { ObjectKind, OfficeMap, Tile } from './loadMap.ts'
 
-export type PlaceId = string
+/** A place id: `${objectId}.${n}` for a point, `${pool slug}-${n}` for a place tile. Branded: only the layout makes
+ *  one (layout.placeId() checks a string), so an owner id can never be passed where a place goes. */
+export type PlaceId = string & { readonly __brand: 'PlaceId' }
+/** An owner id: the observer's own key for a worker (its agent id). Any string; every parameter that takes a place
+ *  takes the branded PlaceId, so the two cannot be swapped. */
 export type OwnerId = string
 
 // ── the policy tables ────────────────────────────────────────────────────────────────────────────────────────────
@@ -53,6 +67,24 @@ export const STATION_KINDS = [
 ] as const
 export type StationKind = (typeof STATION_KINDS)[number]
 
+/** Every object kind the hook's classifier emits (office/observer/classify.mjs KINDS = its PRECEDENCE list) -> the
+ *  station a Pre of that kind sends the worker to, or null: STAY (plan §4.2 "Pre, no kind -> STAY, bubble only").
+ *  The in/out board maps to null: plan §4.4 uses it "only as an arrival hold" (per-call unit: none), so a roster look
+ *  (ListAgents) is a STAY. §2 row 2 and §4.3 list ListAgents / inOutBoard as if it were a station; that conflict in
+ *  the plan is the lead's to settle — this table is the one place to change. */
+export const STATION_FOR_KIND: Readonly<Record<string, StationKind | null>> = {
+  printer: 'printer', frontDesk: 'frontDesk', meetingTable: 'meetingTable', benchTerminal: 'benchTerminal', pcDesk: 'pcDesk',
+  postShelf: 'postShelf', shredder: 'shredder', copier: 'copier', bookshelf: 'bookshelf', cardCatalog: 'cardCatalog',
+  pigeonholes: 'pigeonholes', kanbanBoard: 'kanbanBoard', manualsShelf: 'manualsShelf', inOutBoard: null,
+  lectern: 'lectern', historyShelf: 'historyShelf', fileCabinet: 'fileCabinet',
+}
+
+/** The station for a classifier kind; null = STAY (no kind, the in/out board, or a kind the table does not list —
+ *  never a throw from a real event). */
+export function stationForKind(kind: string | null | undefined): StationKind | null {
+  return kind != null && Object.hasOwn(STATION_FOR_KIND, kind) ? STATION_FOR_KIND[kind] : null
+}
+
 export type Room = 'records' | 'library'
 
 /** The fetch-then-read shelves and the room whose reading places they use (replay_fetch_read.py SHELF_ROOM). */
@@ -61,7 +93,7 @@ export const SHELF_ROOM: Readonly<Partial<Record<StationKind, Room>>> = {
 }
 
 /** The reading-place pool of each room. */
-export const READING_POOL: Readonly<Record<Room, string>> = { records: '@records', library: '@library' }
+export const READING_POOL: Readonly<Record<Room, PoolName>> = { records: '@records', library: '@library' }
 
 /** A station's own points, in tiers (the lounge: the sofa first, then the armchairs, §4.6). */
 export const STATION_POINTS: Readonly<Record<StationKind, readonly (readonly ObjectKind[])[]>> = {
@@ -75,8 +107,9 @@ export const STATION_POINTS: Readonly<Record<StationKind, readonly (readonly Obj
 /** Overflow chains = replay_fetch_read.py CHAIN, which is place_s3.py:467-473 for every non-shelf kind. A link is a
  *  sibling station (its own points only, never its chain: chains are flat, so resolving one always terminates) or a
  *  pool, which comes last. The shelves have no chain: fetch-then-read queues a puller (§3.4); their step-3 chains
- *  (reading ledge > reading table > library) became the reading-place order of endPull. */
-export const CHAINS: Readonly<Record<StationKind, readonly string[]>> = {
+ *  (reading ledge > reading table > library) became the reading-place order of endPull. A link that names no station
+ *  and no pool is a type error. */
+export const CHAINS: Readonly<Record<StationKind, readonly ChainLinkName[]>> = {
   fileCabinet: ['@records'],
   historyShelf: [], bookshelf: [], cardCatalog: [], manualsShelf: [],
   lectern: ['historyShelf', '@records'],
@@ -93,13 +126,14 @@ export const CHAINS: Readonly<Record<StationKind, readonly string[]>> = {
   lounge: ['@kitchen'],
 }
 
-/** What a pool tier is made of: the interaction points of an object kind, the place tiles of a floorplan pool, or
- *  (hold orders only) every place of another pool. */
-export type Member = { readonly points: ObjectKind } | { readonly tiles: string } | { readonly pool: string }
+/** What a pool tier is made of: the interaction points of an object kind, or the place tiles of a floorplan pool. */
+export type PoolMember = { readonly points: ObjectKind } | { readonly tiles: string }
+/** A hold-order tier may also take every place of a pool. */
+export type HoldMember = PoolMember | { readonly pool: PoolName }
 
 export interface PoolDef {
   /** Tiers in order of preference; within a tier the nearest free member wins (a LINE: the first free one). */
-  readonly tiers: readonly (readonly Member[])[]
+  readonly tiers: readonly (readonly PoolMember[])[]
   /** A FIFO line: filled front first, moving up when the front frees (the front-desk queue, §3.2 / §4.6). */
   readonly line: boolean
   readonly use: string
@@ -107,7 +141,7 @@ export interface PoolDef {
 
 /** The pools of plan §3.2 under replay_fetch_read.py's names. Every point and place tile has exactly one home: a
  *  station's own points, one of these pools, the in/out-board tier of the arrival hold, or the reserved rack points. */
-export const POOL_DEFS: Readonly<Record<string, PoolDef>> = {
+const POOL_TABLE = {
   '@records': { tiers: [[{ tiles: 'records-west' }, { tiles: 'records-east' }]], line: false,
     use: 'records reading places (fetch-then-read) + fileCabinet / lectern overflow wait' },
   '@library': { tiers: [[{ points: 'readingLedge' }], [{ points: 'readingTable' }], [{ tiles: 'library' }]], line: false,
@@ -122,13 +156,22 @@ export const POOL_DEFS: Readonly<Record<string, PoolDef>> = {
     use: 'lounge overflow: standing WAITING (pager), never touching the appliance' },
   '@servers': { tiers: [[{ tiles: 'servers' }]], line: false,
     use: 'rack overflow wait: unused (no tool maps to the racks in the final tool map, D8)' },
-}
+} as const satisfies Readonly<Record<`@${string}`, PoolDef>>
+/** The pools' names: the only pools a chain, a hold order or a room's reading places can name. */
+export type PoolName = keyof typeof POOL_TABLE
+export const POOL_DEFS: Readonly<Record<PoolName, PoolDef>> = POOL_TABLE
+/** A chain link: a sibling station or a pool. */
+export type ChainLinkName = StationKind | PoolName
+const isPoolName = (link: ChainLinkName): link is PoolName => link.startsWith('@')
 
 /** Arrival hold (§4.6 step 6, D10 = 10 places): the in/out-board spots (flip the magnet), then the hold tiles
  *  (19..22,17), then the mail corner. */
-export const ARRIVAL_HOLD: readonly (readonly Member[])[] = [[{ points: 'inOutBoard' }], [{ pool: '@hold' }], [{ pool: '@mail' }]]
-/** Departure hold after the hand-in (§4.6 "Finishing"): the hold tiles only. */
-export const DEPARTURE_HOLD: readonly (readonly Member[])[] = [[{ pool: '@hold' }]]
+export const ARRIVAL_HOLD: readonly (readonly HoldMember[])[] = [[{ points: 'inOutBoard' }], [{ pool: '@hold' }], [{ pool: '@mail' }]]
+/** Departure hold after the hand-in (§4.6 "Finishing"): the hold tiles only. OPEN (a plan gap, for the owner / lead):
+ *  the arrival hold's second tier is the same 4 tiles, so in an arrival burst hold() returns null for a finisher, who
+ *  then keeps its desk spot until its Stop (p50 10.7 s, cap 90 s) while the mail corner may be free. The plan does
+ *  not say; the decision (e.g. fall back to the mail corner, or arrivals never take the last hold tile) goes here. */
+export const DEPARTURE_HOLD: readonly (readonly HoldMember[])[] = [[{ pool: '@hold' }]]
 /** Points no policy ever assigns (plan §2 row 21: rack points reserved; D8). */
 export const RESERVED_POINT_KINDS: readonly ObjectKind[] = ['serverRack']
 /** Virtual cost, in tiles, per occupied 4-adjacent point of the same kind (plan §4.7 [E]). */
@@ -175,7 +218,9 @@ export interface PlaceTile {
   readonly order: number
 }
 
-export type Place = PlacePoint | PlaceTile
+/** An endpoint (plan §3.3): any place a worker stops at — an interaction point or a place tile. (OfficeMap.places are
+ *  only the 32 floorplan place tiles; PlaceLayout.endpoints are all 120.) */
+export type Endpoint = PlacePoint | PlaceTile
 
 export interface Instance {
   readonly id: string
@@ -190,7 +235,7 @@ export interface Instance {
 }
 
 export interface Pool {
-  readonly name: string
+  readonly name: PoolName
   readonly tiers: readonly (readonly PlaceId[])[]
   readonly line: boolean
   readonly use: string
@@ -206,7 +251,7 @@ export interface Station {
   readonly shelfRoom: Room | null
 }
 
-export type ChainLink = { readonly type: 'sibling'; readonly kind: StationKind } | { readonly type: 'pool'; readonly pool: string }
+export type ChainLink = { readonly type: 'sibling'; readonly kind: StationKind } | { readonly type: 'pool'; readonly pool: PoolName }
 
 export interface PlaceLayout {
   readonly map: OfficeMap
@@ -214,14 +259,16 @@ export interface PlaceLayout {
   readonly points: readonly PlacePoint[]
   readonly tiles: readonly PlaceTile[]
   /** The 120 endpoints of plan §3.3 (88 points + 28 wait / queue tiles + 4 hold tiles): every place a worker stops. */
-  readonly places: readonly Place[]
-  readonly pools: ReadonlyMap<string, Pool>
+  readonly endpoints: readonly Endpoint[]
+  readonly pools: ReadonlyMap<PoolName, Pool>
   readonly stations: ReadonlyMap<StationKind, Station>
   readonly arrivalHold: readonly (readonly PlaceId[])[]
   readonly departureHold: readonly (readonly PlaceId[])[]
   readonly crowdNeighbours: ReadonlyMap<PlaceId, readonly PlaceId[]>
-  place(id: PlaceId): Place
-  placeAt(x: number, y: number): Place | null
+  /** A string as a place id (a snapshot, a test); throws if no endpoint has that id. */
+  placeId(id: string): PlaceId
+  place(id: PlaceId): Endpoint
+  placeAt(x: number, y: number): Endpoint | null
   seatAt(x: number, y: number): PlacePoint | null
   /** The station whose own points include this place, else null. */
   stationOf(id: PlaceId): StationKind | null
@@ -231,8 +278,8 @@ export interface PlaceLayout {
   readingRoomOf(id: PlaceId): Room | null
   /** One grid move (Path A): 4-adjacent; a seat is entered and left ONLY through its own sitFrom tile. */
   canStep(from: Tile, to: Tile): boolean
-  /** The legal moves from a tile, in BFS order (0,1),(0,-1),(1,0),(-1,0). */
-  moves(from: Tile): Tile[]
+  /** The legal moves from a tile, in BFS order (0,1),(0,-1),(1,0),(-1,0): one frozen list per tile, built once. */
+  moves(from: Tile): readonly Tile[]
   /** Walked grid steps from a tile (a seat: its scripted step to sitFrom first) to a place (a seat: its sitFrom, then
    *  one step); Infinity if unreachable. */
   distance(from: Tile, to: PlaceId): number
@@ -261,7 +308,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
       need(useTile !== null, `${o.id} point (${p.x},${p.y}) serves no tile of its object`)
       const seat = p.how === 'sit' ? map.objectAt(p.x, p.y) : null
       need(p.how === 'stand' || seat !== null, `${o.id} seat (${p.x},${p.y}) is on no object`)
-      const id = `${o.id}.${i + 1}`
+      const id = `${o.id}.${i + 1}` as PlaceId
       ids.push(id)
       points.push({
         id, type: 'point', x: p.x, y: p.y, objectId: o.id, kind: o.kind, how: p.how, sitFrom: p.sitFrom,
@@ -283,12 +330,12 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
   const tiles: PlaceTile[] = map.places.map(p => {
     const n = (perPool.get(p.pool) ?? 0) + 1
     perPool.set(p.pool, n)
-    return { id: `${slug(p.pool)}-${n}`, type: 'tile', x: p.x, y: p.y, pool: p.pool, role: p.role, facing: p.facing, pose: p.pose, order: order++ }
+    return { id: `${slug(p.pool)}-${n}` as PlaceId, type: 'tile', x: p.x, y: p.y, pool: p.pool, role: p.role, facing: p.facing, pose: p.pose, order: order++ }
   })
-  const places: Place[] = [...points, ...tiles]
-  const byId = new Map<PlaceId, Place>()
-  const byTile = new Map<string, Place>()
-  for (const p of places) {
+  const endpoints: Endpoint[] = [...points, ...tiles]
+  const byId = new Map<string, Endpoint>()
+  const byTile = new Map<string, Endpoint>()
+  for (const p of endpoints) {
     need(!byId.has(p.id), `place id ${p.id} is not unique`)
     need(!byTile.has(tkey(p.x, p.y)), `two places share the tile (${p.x},${p.y})`)
     byId.set(p.id, p); byTile.set(tkey(p.x, p.y), p)
@@ -297,8 +344,8 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
   // members -> place ids
   const pointsOfKind = (k: ObjectKind) => points.filter(p => p.kind === k).map(p => p.id)
   const tilesOfPool = (n: string) => tiles.filter(t => t.pool === n).map(t => t.id)
-  const pools = new Map<string, Pool>()
-  const resolve = (m: Member, where: string): PlaceId[] => {
+  const pools = new Map<PoolName, Pool>()
+  const resolve = (m: HoldMember, where: string): PlaceId[] => {
     let ids: PlaceId[]
     if ('points' in m) ids = pointsOfKind(m.points)
     else if ('tiles' in m) ids = tilesOfPool(m.tiles)
@@ -306,7 +353,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
     need(ids.length > 0, `${where}: ${JSON.stringify(m)} matches no place`)
     return ids
   }
-  for (const [name, def] of Object.entries(POOL_DEFS)) {
+  for (const [name, def] of Object.entries(POOL_DEFS) as [PoolName, PoolDef][]) {
     need(name.startsWith('@'), `pool ${name} must start with @`)
     for (const tier of def.tiers) for (const m of tier) need(!('pool' in m), `pool ${name} is built from another pool`)
     const tiers = def.tiers.map(t => t.flatMap(m => resolve(m, `pool ${name}`)))
@@ -314,7 +361,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
     need(new Set(members).size === members.length, `pool ${name} lists a place twice`)
     pools.set(name, { name, tiers, line: def.line, use: def.use, members })
   }
-  const holdOrder = (tiers: readonly (readonly Member[])[], what: string) => {
+  const holdOrder = (tiers: readonly (readonly HoldMember[])[], what: string) => {
     const t = tiers.map(tier => tier.flatMap(m => resolve(m, what)))
     need(new Set(t.flat()).size === t.flat().length, `${what} lists a place twice`)
     return t
@@ -331,13 +378,13 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
     CHAINS[kind].forEach((link, i) => {
       need(!seen.has(link), `chain ${kind}: link ${link} repeats (a cycle)`)
       seen.add(link)
-      if (link.startsWith('@')) {
+      if (isPoolName(link)) {
         need(pools.has(link), `chain ${kind}: unknown pool ${link}`)
         need(i === CHAINS[kind].length - 1, `chain ${kind}: pool ${link} is not the last link`)
         chain.push({ type: 'pool', pool: link })
       } else {
         need((STATION_KINDS as readonly string[]).includes(link), `chain ${kind}: unknown station ${link}`)
-        chain.push({ type: 'sibling', kind: link as StationKind })
+        chain.push({ type: 'sibling', kind: link })
       }
     })
     const room = SHELF_ROOM[kind] ?? null
@@ -353,7 +400,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
   for (const p of pools.values()) for (const id of p.members) setHome(id, `pool ${p.name}`)
   for (const id of arrivalHold[0]) if (!home.has(id)) setHome(id, 'arrival hold (in/out board)')
   for (const p of points) if (p.reserved) setHome(p.id, 'reserved')
-  for (const p of places) need(home.has(p.id), `${p.id} at (${p.x},${p.y}) has no home (no station, pool or hold uses it)`)
+  for (const p of endpoints) need(home.has(p.id), `${p.id} at (${p.x},${p.y}) has no home (no station, pool or hold uses it)`)
   for (const t of new Set(map.places.map(p => p.pool))) {
     need([...pools.values()].some(p => POOL_DEFS[p.name].tiers.some(tier => tier.some(m => 'tiles' in m && m.tiles === t))), `floorplan pool ${t} is in no pool`)
   }
@@ -368,7 +415,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
   const poolByPlace = new Map<PlaceId, Pool>()
   for (const p of pools.values()) for (const id of p.members) poolByPlace.set(id, p)
   const roomByPlace = new Map<PlaceId, Room>()
-  for (const [room, pool] of Object.entries(READING_POOL) as [Room, string][]) for (const id of pools.get(pool)?.members ?? []) roomByPlace.set(id, room)
+  for (const [room, pool] of Object.entries(READING_POOL) as [Room, PoolName][]) for (const id of pools.get(pool)?.members ?? []) roomByPlace.set(id, room)
 
   // crowding neighbours: points of the same object kind on a 4-adjacent tile
   const crowdNeighbours = new Map<PlaceId, PlaceId[]>()
@@ -376,58 +423,91 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
     crowdNeighbours.set(p.id, points.filter(q => q !== p && q.kind === p.kind && Math.abs(q.x - p.x) + Math.abs(q.y - p.y) === 1).map(q => q.id))
   }
 
-  // grid rules (Path A): walkable tiles + seats, a seat only through its own sitFrom
-  const seats = new Map(points.filter(p => p.how === 'sit').map(p => [tkey(p.x, p.y), p]))
-  for (const s of seats.values()) {
+  // grid rules (Path A): walkable tiles + seats, a seat only through its own sitFrom. Numeric tables built once: a tile
+  // is the index y * W + x; -1 = off the grid or not an integer tile (never walkable, never a seat, no move).
+  const W = map.width, H = map.height, N = W * H
+  const indexOf = (x: number, y: number) => (Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < W && y < H ? y * W + x : -1)
+  const walk = new Uint8Array(N)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) walk[y * W + x] = map.walkable(x, y) ? 1 : 0
+  const seatList = points.filter(p => p.how === 'sit')
+  const seatIdx = new Int16Array(N).fill(-1)
+  const sitFromIdx = new Int32Array(seatList.length).fill(-1)
+  seatList.forEach((s, k) => {
     need(s.sitFrom !== null && Math.abs(s.sitFrom.x - s.x) + Math.abs(s.sitFrom.y - s.y) === 1 && map.walkable(s.sitFrom.x, s.sitFrom.y),
       `seat ${s.id}: sitFrom is not an adjacent walkable tile`)
     need(!map.walkable(s.x, s.y), `seat ${s.id} is walkable (seats are solid)`)
+    const i = indexOf(s.x, s.y)
+    if (i >= 0) seatIdx[i] = k
+    if (s.sitFrom) sitFromIdx[k] = indexOf(s.sitFrom.x, s.sitFrom.y)
+  })
+  const seatAt = (x: number, y: number) => { const i = indexOf(x, y); return i < 0 || seatIdx[i] < 0 ? null : seatList[seatIdx[i]] }
+  /** One step between two 4-adjacent tile indices. */
+  const stepI = (ia: number, ib: number) => {
+    const sa = seatIdx[ia], sb = seatIdx[ib]
+    if (sa >= 0 && sb >= 0) return false
+    if (sb >= 0) return sitFromIdx[sb] === ia && walk[ia] === 1
+    if (sa >= 0) return sitFromIdx[sa] === ib && walk[ib] === 1
+    return walk[ia] === 1 && walk[ib] === 1
   }
-  const seatAt = (x: number, y: number) => seats.get(tkey(x, y)) ?? null
   const canStep = (a: Tile, b: Tile) => {
     if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) !== 1) return false
-    const sa = seatAt(a.x, a.y), sb = seatAt(b.x, b.y)
-    if (sa && sb) return false
-    if (sb) return sb.sitFrom !== null && sb.sitFrom.x === a.x && sb.sitFrom.y === a.y && map.walkable(a.x, a.y)
-    if (sa) return sa.sitFrom !== null && sa.sitFrom.x === b.x && sa.sitFrom.y === b.y && map.walkable(b.x, b.y)
-    return map.walkable(a.x, a.y) && map.walkable(b.x, b.y)
+    const ia = indexOf(a.x, a.y), ib = indexOf(b.x, b.y)
+    return ia >= 0 && ib >= 0 && stepI(ia, ib)
   }
-  const moves = (a: Tile) => DIRS.map(([dx, dy]) => ({ x: a.x + dx, y: a.y + dy })).filter(b => canStep(a, b))
-  // BFS fields over walkable tiles, one per approach tile (seats are never passed through; moves are symmetric)
-  const W = map.width, H = map.height
-  const fields = new Map<string, Int32Array>()
-  const field = (t: Tile) => {
-    const k = tkey(t.x, t.y)
-    let f = fields.get(k)
+  const NO_MOVES: readonly Tile[] = Object.freeze([])
+  const moveList: (readonly Tile[])[] = new Array<readonly Tile[]>(N)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const out: Tile[] = []
+      for (const [dx, dy] of DIRS) {
+        const j = indexOf(x + dx, y + dy)
+        if (j >= 0 && stepI(y * W + x, j)) out.push(Object.freeze({ x: x + dx, y: y + dy }))
+      }
+      moveList[y * W + x] = out.length > 0 ? Object.freeze(out) : NO_MOVES
+    }
+  }
+  const moves = (a: Tile) => { const i = indexOf(a.x, a.y); return i < 0 ? NO_MOVES : moveList[i] }
+  // BFS fields over walkable tiles, one per approach tile, keyed by its index (seats are never passed through; moves
+  // are symmetric). A walkable tile is never on the border, so its 4 neighbours are on the grid.
+  const STEPS = Int32Array.of(W, -W, 1, -1)
+  const fields: (Int32Array | undefined)[] = new Array<Int32Array | undefined>(N)
+  const field = (ai: number) => {
+    let f = fields[ai]
     if (f) return f
-    f = new Int32Array(W * H).fill(-1)
-    if (map.walkable(t.x, t.y)) {
-      f[t.y * W + t.x] = 0
-      const q: Tile[] = [t]
-      for (let head = 0; head < q.length; head++) {
-        const c = q[head]
-        for (const [dx, dy] of DIRS) {
-          const nx = c.x + dx, ny = c.y + dy
-          if (!map.walkable(nx, ny) || f[ny * W + nx] >= 0) continue
-          f[ny * W + nx] = f[c.y * W + c.x] + 1
-          q.push({ x: nx, y: ny })
+    f = new Int32Array(N).fill(-1)
+    if (walk[ai] === 1) {
+      f[ai] = 0
+      const q = new Int32Array(N)
+      let head = 0, tail = 0
+      q[tail++] = ai
+      while (head < tail) {
+        const c = q[head++]
+        for (let s = 0; s < 4; s++) {
+          const n = c + STEPS[s]
+          if (walk[n] !== 1 || f[n] >= 0) continue
+          f[n] = f[c] + 1
+          q[tail++] = n
         }
       }
     }
-    fields.set(k, f)
+    fields[ai] = f
     return f
   }
+  const approachIdx = new Map<PlaceId, number>()
+  for (const p of endpoints) { const a = p.type === 'point' ? p.approach : p; approachIdx.set(p.id, indexOf(a.x, a.y)) }
   const distance = (from: Tile, to: PlaceId) => {
     const p = placeOf(to)
     if (from.x === p.x && from.y === p.y) return 0
-    const fromSeat = seatAt(from.x, from.y)
-    const start = fromSeat ? fromSeat.sitFrom! : from
-    if (!fromSeat && !map.walkable(from.x, from.y)) throw new Error(`places: distance from a solid tile (${from.x},${from.y})`)
-    const approach = p.type === 'point' ? p.approach : { x: p.x, y: p.y }
-    const d = field(approach)[start.y * W + start.x]
+    const fi = indexOf(from.x, from.y)
+    const fs = fi < 0 ? -1 : seatIdx[fi]
+    if (fs < 0 && (fi < 0 || walk[fi] !== 1)) throw new Error(`places: distance from a solid tile (${from.x},${from.y})`)
+    const start = fs >= 0 ? sitFromIdx[fs] : fi
+    const d = field(approachIdx.get(to)!)[start]
     if (d < 0) return Infinity
-    return d + (fromSeat ? 1 : 0) + (p.type === 'point' && p.how === 'sit' ? 1 : 0)
+    return d + (fs >= 0 ? 1 : 0) + (p.type === 'point' && p.how === 'sit' ? 1 : 0)
   }
+  const placeByIdx: (Endpoint | undefined)[] = new Array<Endpoint | undefined>(N)
+  for (const p of endpoints) { const i = indexOf(p.x, p.y); if (i >= 0) placeByIdx[i] = p }
 
   const expandChain = (kind: StationKind) => {
     const st = stations.get(kind)
@@ -455,9 +535,10 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
   if (problems.length > 0) throw new Error(`places: inconsistent layout (${problems.length}):\n- ${problems.join('\n- ')}`)
 
   return {
-    map, instances: inst, points, tiles, places, pools, stations, arrivalHold, departureHold, crowdNeighbours,
+    map, instances: inst, points, tiles, endpoints, pools, stations, arrivalHold, departureHold, crowdNeighbours,
+    placeId: id => placeOf(id as PlaceId).id,
     place: placeOf,
-    placeAt: (x, y) => byTile.get(tkey(x, y)) ?? null,
+    placeAt: (x, y) => { const i = indexOf(x, y); return i < 0 ? null : placeByIdx[i] ?? null },
     seatAt,
     stationOf: id => stationByPlace.get(id) ?? null,
     poolOf: id => poolByPlace.get(id) ?? null,
@@ -470,25 +551,33 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
 
 /** use: own point; pull: shelf point during the pull; read: reading place after a pull; readAtShelf: reading at the
  *  shelf point (no reading place was free); sibling: a sibling's point; wait: a pool tile (still waiting, FIFO);
- *  hold: arrival / departure hold; reserved: a raw reserve() / transfer() booking. */
-export type Role = 'use' | 'pull' | 'read' | 'readAtShelf' | 'sibling' | 'wait' | 'hold' | 'reserved'
+ *  parked: the place it held when it joined a wait list (kept, re-booked for the kind it waits for; nothing moves it
+ *  until it is served); hold: arrival / departure hold; reserved: a raw reserve() / transfer() booking. */
+export type Role = 'use' | 'pull' | 'read' | 'readAtShelf' | 'sibling' | 'wait' | 'parked' | 'hold' | 'reserved'
 export type Cause = 'assign' | 'pullDone' | 'stepAside' | 'served' | 'moveUp' | 'hold' | 'reserve' | 'transfer' | 'release' | 'dispose'
+
+/** The roles of a booking for its station (forKind): a Pre of that same kind is a STAY (plan §4.2). */
+const STAY_ROLES: ReadonlySet<Role> = new Set<Role>(['use', 'pull', 'read', 'readAtShelf', 'sibling', 'wait', 'parked'])
 
 export interface Holding {
   readonly owner: OwnerId
   readonly place: PlaceId
   readonly role: Role
-  /** The station the owner was sent to (null for holds and raw bookings). */
+  /** The station the owner was sent to (parked: the station it waits for; transfer keeps it); null for holds and
+   *  reserve(). */
   readonly forKind: StationKind | null
   /** Fetch-then-read: the shelf point the item came from (the carried state's key, §4.4). */
   readonly pulledFrom: PlaceId | null
+  /** The pull in progress (role 'pull'): its id = the seq of the change that granted it, which endPull names; else
+   *  null. */
+  readonly pull: number | null
 }
 
 export interface Change {
-  /** Book-wide order of changes. */
+  /** Book-wide order of changes. A change that grants a pull is that pull's id. */
   readonly seq: number
   readonly owner: OwnerId
-  /** The place held before (null: none). Equal to `to` for a role change in place (readAtShelf). */
+  /** The place held before (null: none). Equal to `to` for a booking changed in place (readAtShelf, parked). */
   readonly from: PlaceId | null
   /** The place held after (null: none). */
   readonly to: PlaceId | null
@@ -507,12 +596,14 @@ export interface Waiter {
 }
 
 export interface AssignResult {
-  /** own: the station's point; sibling: a sibling's point; pool: a pool place, still waiting (FIFO); queued: on the
-   *  wait list, keeping whatever it held. */
-  readonly how: 'own' | 'sibling' | 'pool' | 'queued'
+  /** Where the owner stands for this station once the call's cascades are done. own: the station's point; sibling: a
+   *  sibling's point; pool: a pool place, still waiting (FIFO); queued: on the wait list (keeping its place, parked);
+   *  stay: it was already booked for this station or waiting for it (plan §4.2 STAY), nothing changed. */
+  readonly how: 'own' | 'sibling' | 'pool' | 'queued' | 'stay'
+  /** own / sibling / pool: that place; stay: the place it holds (null if none); queued: null. */
   readonly place: PlaceId | null
   /** The sibling station or the pool, else null. */
-  readonly via: string | null
+  readonly via: StationKind | PoolName | null
   readonly changes: readonly Change[]
 }
 
@@ -557,46 +648,39 @@ export class PlaceBook {
   }
 
   // ── policy ──
-  /** Send an owner to a station (plan §4.7). It leaves any wait list it was on; if it was already waiting for this
-   *  same station it keeps its place in the line. */
+  /** Send an owner to a station (plan §4.7; the steps are in the file header). A STAY when it is already booked for
+   *  this station or waits for it; otherwise it leaves any wait list it was on first. */
   assign(owner: OwnerId, kind: StationKind, from: Tile, opts: { fetch?: boolean } = {}): AssignResult {
     this.#begin('assign')
     const st = this.layout.stations.get(kind)
     if (!st) throw new Error(`PlaceBook.assign: ${kind} is not a station`)
+    this.#checkOrigin(from, 'assign')
     const fetch = opts.fetch ?? true
-    const prev = this.#waiters.find(w => w.owner === owner)
-    const keepSeq = prev !== undefined && prev.kind === kind ? prev.seq : null
+    const held = this.#holding.get(owner) ?? null
+    const waiting = this.waiterOf(owner)
+    if (waiting?.kind === kind || (waiting === null && held !== null && held.forKind === kind && STAY_ROLES.has(held.role))) {
+      return { how: 'stay', place: held?.place ?? null, via: null, changes: this.#end() }
+    }
     this.#unwait(owner)
-    const ownRole: Role = st.shelfRoom !== null && fetch ? 'pull' : 'use'
-    for (const tier of st.tiers) {
-      const p = this.#nearestFree(tier, from, owner)
-      if (p !== null) return { how: 'own', place: p, via: null, changes: this.#grant(owner, p, ownRole, kind, null, 'assign') }
+    const target = this.#choose(st, owner, from, fetch)
+    if (target !== null) {
+      if (target.role === 'wait') this.#wait(owner, kind, fetch)
+      this.#grant(owner, target.place, target.role, kind, 'assign')
+    } else {
+      this.#wait(owner, kind, fetch)
+      if (held !== null) this.#move(owner, held.place, 'parked', kind, null, 'assign')     // in place: frees nothing
+      if (st.shelfRoom !== null) this.#stepAsideAll(st.shelfRoom)
     }
-    for (const link of st.chain) {
-      if (link.type === 'sibling') {
-        for (const tier of this.layout.stations.get(link.kind)!.tiers) {
-          const p = this.#nearestFree(tier, from, owner)
-          if (p !== null) return { how: 'sibling', place: p, via: link.kind, changes: this.#grant(owner, p, 'sibling', kind, null, 'assign') }
-        }
-      } else {
-        const p = this.#pickInPool(this.layout.pools.get(link.pool)!, from, owner)
-        if (p !== null) {
-          this.#wait(owner, kind, fetch, keepSeq)
-          return { how: 'pool', place: p, via: link.pool, changes: this.#grant(owner, p, 'wait', kind, null, 'assign') }
-        }
-      }
-    }
-    this.#wait(owner, kind, fetch, keepSeq)
-    if (st.shelfRoom !== null) this.#stepAsideAll(st.shelfRoom)
-    return { how: 'queued', place: null, via: null, changes: this.#end() }
+    return { ...this.#outcome(owner, kind), changes: this.#end() }
   }
 
-  /** Fetch-then-read, at the end of the pull: the nearest free reading place of the shelf's room, else read at the
-   *  shelf point. A no-op unless the owner is pulling (it may have been sent elsewhere during the pull). */
-  endPull(owner: OwnerId): readonly Change[] {
+  /** Fetch-then-read, at the end of the pull named by `pull` (Holding.pull): the nearest free reading place of the
+   *  shelf's room, else read at the shelf point. A no-op unless that pull is still in progress (the owner may have
+   *  been sent elsewhere, or started another pull, since). */
+  endPull(owner: OwnerId, pull: number): readonly Change[] {
     this.#begin('endPull')
     const h = this.#holding.get(owner)
-    if (!h || h.role !== 'pull' || h.forKind === null) return this.#end()
+    if (!h || h.role !== 'pull' || h.pull !== pull || h.forKind === null) return this.#end()
     const room = SHELF_ROOM[h.forKind]!
     const shelf = this.layout.place(h.place)
     const target = this.#pickInPool(this.layout.pools.get(READING_POOL[room])!, shelf, owner)
@@ -615,11 +699,13 @@ export class PlaceBook {
    *  any wait list). */
   hold(owner: OwnerId, which: 'arrival' | 'departure', from: Tile): HoldResult {
     this.#begin('hold')
+    this.#checkOrigin(from, 'hold')
     for (const tier of which === 'arrival' ? this.layout.arrivalHold : this.layout.departureHold) {
       const p = this.#nearestFree(tier, from, owner)
       if (p !== null) {
         this.#unwait(owner)
-        return { place: p, changes: this.#grant(owner, p, 'hold', null, null, 'hold') }
+        this.#grant(owner, p, 'hold', null, 'hold')
+        return { place: p, changes: this.#end() }
       }
     }
     return { place: null, changes: this.#end() }
@@ -634,19 +720,28 @@ export class PlaceBook {
   }
 
   // ── primitives ──
-  /** Book one named free place for an owner that holds nothing (role 'reserved'). Refused (throws) if taken. */
+  /** Book one named free place for an owner that holds nothing (role 'reserved'; a raw booking: the owner leaves any
+   *  wait list). Refused (throws, nothing changed) if another owner holds it. */
   reserve(owner: OwnerId, place: PlaceId): readonly Change[] {
     this.#begin('reserve')
     if (this.#holding.has(owner)) throw new Error(`PlaceBook.reserve: ${owner} already holds ${this.#holding.get(owner)!.place}; use transfer`)
-    return this.#grant(owner, place, 'reserved', null, null, 'reserve')
+    this.#refuseTaken(owner, place, 'reserve')
+    this.#unwait(owner)
+    this.#grant(owner, place, 'reserved', null, 'reserve')
+    return this.#end()
   }
 
-  /** Move an owner's booking to one named free place (role 'reserved'; its station is kept). Refused if taken. */
+  /** Move an owner's booking to one named free place (role 'reserved', its station kept for the label; a raw booking:
+   *  the owner leaves any wait list and is never served away from it — re-queue with assign). Refused (throws,
+   *  nothing changed) if another owner holds it. */
   transfer(owner: OwnerId, place: PlaceId): readonly Change[] {
     this.#begin('transfer')
     const h = this.#holding.get(owner)
     if (!h) throw new Error(`PlaceBook.transfer: ${owner} holds nothing; use reserve`)
-    return this.#grant(owner, place, 'reserved', h.forKind, null, 'transfer')
+    this.#refuseTaken(owner, place, 'transfer')
+    this.#unwait(owner)
+    this.#grant(owner, place, 'reserved', h.forKind, 'transfer')
+    return this.#end()
   }
 
   /** Free everything the owner holds, take it off every list, serve the waiters. */
@@ -677,9 +772,55 @@ export class PlaceBook {
 
   #end(): readonly Change[] { const out = this.#out; this.#out = []; return out }
 
-  #grant(owner: OwnerId, place: PlaceId, role: Role, forKind: StationKind | null, pulledFrom: PlaceId | null, cause: Cause) {
-    this.#settle(this.#move(owner, place, role, forKind, pulledFrom, cause))
-    return this.#end()
+  /** A policy origin must be a tile a worker can stand on: a whole tile, walkable or a seat. Checked before anything
+   *  changes. */
+  #checkOrigin(from: Tile, op: string) {
+    const ok = Number.isInteger(from.x) && Number.isInteger(from.y) &&
+      (this.layout.map.walkable(from.x, from.y) || this.layout.seatAt(from.x, from.y) !== null)
+    if (!ok) throw new Error(`PlaceBook.${op}: the origin (${from.x},${from.y}) is neither a walkable tile nor a seat`)
+  }
+
+  /** A raw booking's refusal, before anything changes: an unknown place, or one another owner holds. */
+  #refuseTaken(owner: OwnerId, place: PlaceId, op: string) {
+    this.layout.place(place)
+    const other = this.#holder.get(place)
+    if (other !== undefined && other !== owner) throw new Error(`PlaceBook.${op}: ${place} is held by ${other}; ${owner} cannot book it`)
+  }
+
+  /** The place assign() books: own points by tier, then the chain (siblings, then the pool's tile to wait on). */
+  #choose(st: Station, owner: OwnerId, from: Tile, fetch: boolean): { place: PlaceId; role: Role } | null {
+    const ownRole: Role = st.shelfRoom !== null && fetch ? 'pull' : 'use'
+    for (const tier of st.tiers) {
+      const p = this.#nearestFree(tier, from, owner)
+      if (p !== null) return { place: p, role: ownRole }
+    }
+    for (const link of st.chain) {
+      if (link.type === 'sibling') {
+        for (const tier of this.layout.stations.get(link.kind)!.tiers) {
+          const p = this.#nearestFree(tier, from, owner)
+          if (p !== null) return { place: p, role: 'sibling' }
+        }
+      } else {
+        const p = this.#pickInPool(this.layout.pools.get(link.pool)!, from, owner)
+        if (p !== null) return { place: p, role: 'wait' }
+      }
+    }
+    return null
+  }
+
+  /** What assign() reports, read from the book after the call's cascades. */
+  #outcome(owner: OwnerId, kind: StationKind): Omit<AssignResult, 'changes'> {
+    const h = this.#holding.get(owner) ?? null
+    if (this.waiterOf(owner)?.kind === kind) {
+      return h !== null && h.role === 'wait' ? { how: 'pool', place: h.place, via: this.layout.poolOf(h.place)?.name ?? null } : { how: 'queued', place: null, via: null }
+    }
+    if (h !== null && h.role === 'sibling') return { how: 'sibling', place: h.place, via: this.layout.stationOf(h.place) }
+    return { how: 'own', place: h?.place ?? null, via: null }
+  }
+
+  /** Book a place and serve whatever that frees. */
+  #grant(owner: OwnerId, place: PlaceId, role: Role, forKind: StationKind | null, cause: Cause) {
+    this.#settle(this.#move(owner, place, role, forKind, null, cause))
   }
 
   /** The one place where bookings change. Returns the place it freed, if any. */
@@ -693,36 +834,36 @@ export class PlaceBook {
     let freed: PlaceId | null = null
     if (old && old.place !== to) { this.#holder.delete(old.place); freed = old.place }
     if (role !== 'readAtShelf') this.#readers = this.#readers.filter(r => r.owner !== owner)
+    const seq = this.#changeSeq++
     if (to !== null && role !== null) {
       this.#holder.set(to, owner)
-      this.#holding.set(owner, { owner, place: to, role, forKind, pulledFrom })
+      this.#holding.set(owner, { owner, place: to, role, forKind, pulledFrom, pull: role === 'pull' ? seq : null })
     } else this.#holding.delete(owner)
-    this.#out.push({ seq: this.#changeSeq++, owner, from: old?.place ?? null, to, role, forKind, cause })
+    this.#out.push({ seq, owner, from: old?.place ?? null, to, role, forKind, cause })
     return freed
   }
 
-  /** Join the wait list (FIFO by seq); `seq` keeps an earlier place in the line. */
-  #wait(owner: OwnerId, kind: StationKind, fetch: boolean, seq: number | null) {
+  /** Join the wait list (FIFO by seq). */
+  #wait(owner: OwnerId, kind: StationKind, fetch: boolean) {
     this.#unwait(owner)
-    const w: Waiter = { owner, kind, seq: seq ?? this.#seq++, fetch }
-    const i = this.#waiters.findIndex(x => x.seq > w.seq)
-    if (i < 0) this.#waiters.push(w)
-    else this.#waiters.splice(i, 0, w)
+    this.#waiters.push({ owner, kind, seq: this.#seq++, fetch })
   }
 
   #unwait(owner: OwnerId) { this.#waiters = this.#waiters.filter(w => w.owner !== owner) }
 
   #isFreeFor(place: PlaceId, owner: OwnerId) { const h = this.#holder.get(place); return h === undefined || h === owner }
 
-  /** Nearest free member by walked distance + crowding; ties to the declaration order (members are in it). */
+  /** Nearest free member by walked distance + crowding; ties to the declaration order (members are in it). The place
+   *  the owner already holds is never charged crowding: staying on it adds none. */
   #nearestFree(members: readonly PlaceId[], from: Tile, owner: OwnerId): PlaceId | null {
+    const mine = this.#holding.get(owner)?.place ?? null
     let best: PlaceId | null = null, bestCost = Infinity
     for (const id of members) {
       if (!this.#isFreeFor(id, owner)) continue
       const p = this.layout.place(id)
       if (p.type === 'point' && p.reserved) continue
       let cost = this.layout.distance(from, id)
-      if (p.type === 'point') {
+      if (p.type === 'point' && id !== mine) {
         for (const n of this.layout.crowdNeighbours.get(id) ?? []) {
           const h = this.#holder.get(n)
           if (h !== undefined && h !== owner) cost += this.crowdCost
@@ -754,8 +895,14 @@ export class PlaceBook {
     }
   }
 
+  /** Whether a station's chain lists another station as a sibling. */
+  #siblingOf(kind: StationKind, station: StationKind) {
+    return this.layout.stations.get(kind)!.chain.some(l => l.type === 'sibling' && l.kind === station)
+  }
+
   /** One free place: step-aside (a reading place), else the earliest waiter of the point's own station (promotion),
-   *  else a line moving up, else the earliest waiter whose chain holds the pool. Returns the next freed place. */
+   *  else the earliest waiter whose chain lists that station as a sibling, else a line moving up, else the earliest
+   *  waiter whose chain holds the pool. Returns the next freed place. */
   #offer(p: PlaceId): PlaceId | null {
     const room = this.layout.readingRoomOf(p)
     if (room !== null) {
@@ -764,11 +911,16 @@ export class PlaceBook {
     }
     const station = this.layout.stationOf(p)
     if (station !== null) {
-      const w = this.#waiters.find(x => x.kind === station)
-      if (w) {
-        this.#unwait(w.owner)
+      const own = this.#waiters.find(x => x.kind === station)
+      if (own) {
+        this.#unwait(own.owner)
         const st = this.layout.stations.get(station)!
-        return this.#move(w.owner, p, st.shelfRoom !== null && w.fetch ? 'pull' : 'use', station, null, 'served')
+        return this.#move(own.owner, p, st.shelfRoom !== null && own.fetch ? 'pull' : 'use', station, null, 'served')
+      }
+      const chained = this.#waiters.find(x => this.#siblingOf(x.kind, station))
+      if (chained) {
+        this.#unwait(chained.owner)
+        return this.#move(chained.owner, p, 'sibling', chained.kind, null, 'served')
       }
     }
     const pool = this.layout.poolOf(p)
@@ -778,7 +930,7 @@ export class PlaceBook {
         for (const behind of pool.members.slice(i + 1)) {
           const o = this.#holder.get(behind)
           const h = o === undefined ? null : this.#holding.get(o)!
-          if (h && h.role === 'wait') return this.#move(h.owner, p, 'wait', h.forKind, null, 'moveUp')
+          if (h && h.role === 'wait' && this.waiterOf(h.owner)?.kind === h.forKind) return this.#move(h.owner, p, 'wait', h.forKind, null, 'moveUp')
         }
       }
       const w = this.#waiters.find(x => {
