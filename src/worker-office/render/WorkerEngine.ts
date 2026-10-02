@@ -50,8 +50,9 @@ const MAX_FRAME_MS = 50
 /** The front door (plan §4.8): opens in 0.4 s for a walker within its sense range, closes in 0.5 s, 1.5 s after the
  *  last one has gone. */
 const DOOR_OPEN_MS = 400, DOOR_CLOSE_MS = 500, DOOR_HOLD_MS = 1500
-/** Text bubbles: a fixed phrase (core/labels.ts) in the UI font, wrapped at this many characters. */
-const BUBBLE_FONT_PX = 11
+/** Text bubbles: a fixed phrase (core/labels.ts) in the UI font at 16 CSS px × the text scale (the old engine's
+ *  drawBubble: "16px base (owner's floor)"), wrapped at BUBBLE_WRAP characters. */
+const BUBBLE_FONT_PX = 16
 const BUBBLE_WRAP = 30
 const BUBBLE_INK = '#e8ecf2'
 const BUBBLE_EDGE = 'rgba(77,159,255,0.55)'

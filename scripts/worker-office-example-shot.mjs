@@ -29,7 +29,7 @@ const SHOTS = [
   { at: 30, name: 'working', min: 3 },
   { at: 47, name: 'pair-arrives', min: 4 },
   { at: 66, name: 'front-desk', min: 2 },
-  { at: 100, name: 'lounge', min: 1 },
+  { at: 112, name: 'lounge', min: 1 },
 ]
 
 function ps(cmd) {
