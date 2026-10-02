@@ -1,47 +1,75 @@
-// Worker office movement core: the traffic check (plan §6.4 "Movement core (Path A)"; lean scope per the owner's
-// budget, decisions.md 2026-10-01 18:18). Run: node scripts/worker-office-traffic-sim.ts [--tuning-only] [--no-mutants]
+// Worker office movement core and the page's worker lifecycle: the traffic check (plan §6.4 "Movement core (Path A)",
+// "Worker lifecycle"; lean scope per the owner's budget, decisions.md 2026-10-01 18:18).
+// Run: node scripts/worker-office-traffic-sim.ts [--tuning-only] [--no-mutants]
 //   --tuning-only  skip the 4 held-out seeds (they are run only once the planner is final)
 //   --no-mutants   skip the mutant runs
 //
-// The REAL observer core (src/worker-office/core/reducer.ts) is fed synthetic spool lines (delivered 300 ms after
-// their timestamp, as the page reads them) and its renderer commands drive the planner the way the page will:
-//   spawn{slot}   -> plan(w, slotTile, slotTile, now)     (a re-entry while the old body still fades: cancel first)
-//   walkTo{place} -> plan(w, null, the place's own tile, now)
-//   leave         -> plan(w, null, EXIT, now)
-//   fade          -> cancel(w)
-// Two scenarios (R, C) send those commands from a script instead, to pin the keep-old-path and cancel paths.
+// The REAL observer core (src/worker-office/core/reducer.ts, with the page's body signals) is fed synthetic spool lines
+// (delivered 300 ms after their timestamp, as the page reads them) through the REAL page lifecycle
+// (src/worker-office/live/world.ts): its commands drive the planner, the bodies drive the beats, and the bodies report
+// back to the core (slotLeft, arrived, blocked: lead rulings 3, 5, 6). The world's own mapping:
+//   spawn{slot}   -> plan(w, slotTile, slotTile, now)     (a re-entry while the old body is still here: cancel first)
+//   slotted{slot} -> the same, for a worker held off screen
+//   walkTo{place} -> plan(w, null, the place's own tile, now), after the beat the plan allows (§4.9 "Page")
+//   leave         -> plan(w, null, EXIT, now), after the exit beat
+//   fade          -> a fade in place, then cancel(w)
+// Two scenarios (R, C) send planner requests from a script instead, to pin the keep-old-path and cancel paths.
 // Frames are STEP_MS / 8 = 39.0625 ms apart, on the planner's step grid: every eighth of a step is sampled.
 //
 // Asserted on every run:
 //   A1 every trip ends on its reserved tile within 60 s of its request (a trip = one plan() call with a new goal; a
 //      newer call supersedes it). At the arrival the drawn position is exactly the goal tile (an exit trip: an exit-lane
-//      tile), and for a place the observer's book still holds that place for the worker. A spawn's trip is the
-//      appearance on its slot. Trips still open at the end of the run count if they are older than 60 s;
+//      tile), and for a place the observer's book still holds that place for the worker. Trips still open at the end of
+//      the run count if they are older than 60 s;
 //   A2 spacing >= 0.69 tiles between any two drawn workers at every sampled instant;
 //   A3 no swaps (two workers exchanging tiles across one step); every move is one legal grid step (layout.canStep:
 //      4-neighbour, a seat entered and left only through its sitFrom tile) and a drawn worker stands on a whole
 //      walkable tile or seat at every step boundary; no booking conflict inside the
 //      planner (stats.conflicts = 0); a cancelled worker holds no booking;
 //   A4 after dispose(): no booking, positionAt null for every worker, plan() refused and books nothing, tick() moves
-//      nothing;
+//      nothing; the world holds no worker and the core no booking;
 //   A5 the same input gives the same run (every run twice: positions, trips and stats digested).
-// Mutants (each a one-line patch of planner.ts, loaded from a temp copy) must each make some check fail.
+// And the four integration rulings (decisions.md 2026-10-01 23:13), on every spool-fed run:
+//   W1 (ruling 3) every body appears exactly on the slot its spawn (or 'slotted') named, and the core never names a
+//      slot while another body still claims it (the page releases a claim only when its body has left the tile and
+//      nobody will cross it);
+//   W2 (ruling 4) at a seat the entry beat never moves the body again: from its arrival to the end of the beat the
+//      drawn frame stands on the seat tile, seated; and the step onto the seat plus the beat stay within the 1.4 s seat
+//      beat × the worker's τ × the largest jitter (1.2);
+//   W3 (ruling 5) every finisher's body stood on its front-desk spot for at least the 1.5 s sign (the hand-in's 0.5 s
+//      comes on top) before the core sent it out, and every fetch-then-read walk to a reading place starts at least
+//      the 1.2 s pull after the body stood on the shelf point;
+//   W4 (ruling 6) the mutual-block scenario M resolves through the watchdog (A1 covers it: without the watchdog both
+//      trips stay open for good).
+// Mutants (each a one-line patch of planner.ts, reducer.ts, world.ts or WorkerSprite.ts, loaded from a temp copy) must
+// each make some check fail; the rulings' four are the failing-first evidence (each restores the behaviour the ruling
+// replaced).
 // Printed per scenario: trips, mid-walk retargets, failed plan attempts, max wait (standing still during a trip),
 // delay p50 / p90 / max against straight walking (the shortest walk on the bare grid, nobody else there), stuck trips.
 // Exit 0 when everything passes, 1 otherwise.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadMap, type Tile } from '../src/worker-office/map/loadMap.ts'
 import { buildPlaceLayout, type PlaceId } from '../src/worker-office/map/places.ts'
-import { ObserverCore } from '../src/worker-office/core/reducer.ts'
+import * as realCore from '../src/worker-office/core/reducer.ts'
 import type { Cmd } from '../src/worker-office/core/messages.ts'
 import * as realPlanner from '../src/worker-office/move/planner.ts'
 import { EXIT, MIN_SPACING, STEP_MS, type BodyPose, type Goal } from '../src/worker-office/move/planner.ts'
+import * as realWorld from '../src/worker-office/live/world.ts'
+import * as realSprite from '../src/worker-office/render/WorkerSprite.ts'
+import { HAND } from '../src/worker-office/render/props.ts'
 
 type PlannerMod = typeof realPlanner
 type Planner = InstanceType<PlannerMod['PathPlanner']>
+type CoreMod = typeof realCore
+type WorldMod = typeof realWorld
+type SpriteMod = typeof realSprite
+type World = InstanceType<WorldMod['WorkerWorld']>
+/** The modules a run uses: the real ones, or one of them patched (a mutant). */
+interface Mods { readonly planner: PlannerMod; readonly core: CoreMod; readonly world: WorldMod; readonly sprite: SpriteMod }
+const REAL: Mods = { planner: realPlanner, core: realCore, world: realWorld, sprite: realSprite }
 
 const args = process.argv.slice(2)
 const TUNING_ONLY = args.includes('--tuning-only')
@@ -49,7 +77,6 @@ const NO_MUTANTS = args.includes('--no-mutants')
 /** --trace <prefix>: print every trip of the scenarios whose name starts with it (for debugging). */
 const TRACE = args.includes('--trace') ? args[args.indexOf('--trace') + 1] : null
 
-const PLANNER_PATH = fileURLToPath(new URL('../src/worker-office/move/planner.ts', import.meta.url))
 const MAP = loadMap(JSON.parse(readFileSync(fileURLToPath(new URL('../src/worker-office/data/floorplan.json', import.meta.url)), 'utf8')))
 const LAYOUT = buildPlaceLayout(MAP)
 const W = MAP.width
@@ -57,7 +84,6 @@ const FRAME = STEP_MS / 8
 const TRIP_LIMIT_MS = 60_000
 const SLOT_TILES: readonly Tile[] = [...MAP.arrivalSlots, ...MAP.arrivalSlotsOverflow]
 const EXIT_SET: ReadonlySet<number> = new Set(MAP.exitLane.map(t => t.y * W + t.x))
-const SLOT_SET: ReadonlySet<number> = new Set(SLOT_TILES.map(t => t.y * W + t.x))
 const T0 = Date.UTC(2026, 9, 1, 16, 0, 0)            // a multiple of 5 s = 16 steps: frames sit on the step grid
 const SA = '11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa', SB = '22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
@@ -191,9 +217,14 @@ interface Trip {
   still: number
 }
 
+/** The fetch-then-read shelves: a walk from one of their points to a reading place ends a pull (ruling 5). */
+const FETCH_SHELVES: ReadonlySet<string> = new Set(['historyShelf', 'bookshelf', 'cardCatalog', 'manualsShelf'])
+const PULL_MS = 1200, SIGN_MS = 1500
+
 class Sim {
+  readonly mods: Mods
   readonly planner: Planner
-  readonly core: ObserverCore | null
+  readonly world: World | null
   readonly trips: Trip[] = []
   readonly open = new Map<string, Trip>()
   readonly bad: string[] = []
@@ -201,9 +232,24 @@ class Sim {
   minGap = Infinity
   frames = 0
   endAt = 0
+  /** W1: slot claims as the page holds them, the slot tile each new body was named, appearance waits (ms). */
+  readonly #claims = new Map<number, string>()
+  readonly #named = new Map<string, { tile: Tile; at: number }>()
+  readonly appearWaits: number[] = []
+  /** W2: seat entries in progress (until the beat ends or the worker moves on), and how many were checked. */
+  readonly #seats = new Map<string, { tile: Tile; until: number }>()
+  seatEntries = 0
+  /** W3: per worker, its last arrival report at a front-desk spot and at a shelf point, and its last target. */
+  readonly #desk = new Map<string, number>()
+  readonly #shelf = new Map<string, { place: PlaceId; at: number }>()
+  readonly #lastTarget = new Map<string, PlaceId>()
+  deskLeaves = 0
+  pullWalks = 0
+  blockedReports = 0
   #digest = 0x811c9dc5
   #prevTiles = new Map<string, number>()
   #pose: BodyPose = { x: 0, y: 0, moving: false, facing: 'W', walked: 0 }
+  #view: ReturnType<SpriteMod['newView']>
   #xs: number[] = []
   #ys: number[] = []
   #ks: string[] = []
@@ -211,9 +257,13 @@ class Sim {
   /** Trips requested before their worker was on the grid: their start is where it appears. */
   #unplaced: Trip[] = []
 
-  constructor(mod: PlannerMod, withCore: boolean) {
-    this.planner = new mod.PathPlanner(LAYOUT)
-    this.core = withCore ? new ObserverCore(LAYOUT) : null
+  constructor(mods: Mods, withCore: boolean, worldOpts: { pendingLimitMs?: number } = {}) {
+    this.mods = mods
+    this.#view = mods.sprite.newView()
+    this.planner = new mods.planner.PathPlanner(LAYOUT)
+    this.world = withCore
+      ? new mods.world.WorkerWorld(LAYOUT, new mods.core.ObserverCore(LAYOUT, { bodySignals: true }), this.planner, { ...worldOpts, trace: this.#trace() })
+      : null
   }
 
   v(tag: string, msg: string) {
@@ -228,6 +278,83 @@ class Sim {
     const s = this.planner.stats
     return `${d.toString(16)}|${this.trips.length}|${s.searches}|${s.failed}|${s.expandedMax}`
   }
+  get core() { return this.world?.core ?? null }
+
+  /** The page's trace: trips from its plan calls, and the W1-W3 checks from its commands and body signals. */
+  #trace(): realWorld.WorldTrace {
+    return {
+      plan: (key, goal, now) => {
+        if (goal.kind === 'exit') this.#request(key, null, EXIT, null, 'exit', now)
+        else if (goal.kind === 'slot') { const t = SLOT_TILES[goal.slot]; this.#request(key, this.planner.state(key) === null ? t : null, t, null, 'appear', now) }
+        else { const p = LAYOUT.place(goal.place); this.#request(key, null, { x: p.x, y: p.y }, goal.place, 'walk', now) }
+      },
+      cancel: (key, now) => this.#cancelled(key, now),
+      command: (c, now) => this.#command(c, now),
+      slotLeft: (key, slot) => { if (this.#claims.get(slot) === key) this.#claims.delete(slot) },
+      arrived: (key, place, now) => {
+        const station = LAYOUT.stationOf(place)
+        if (station === 'frontDesk') this.#desk.set(key, now)
+        if (station !== null && FETCH_SHELVES.has(station)) this.#shelf.set(key, { place, at: now })
+      },
+      entry: (key, place, seat, until, now, beat) => {
+        if (!seat) return
+        const p = LAYOUT.place(place), w = this.world!.workers.get(key)!
+        this.seatEntries++
+        this.#seats.set(key, { tile: { x: p.x, y: p.y }, until })
+        // the seat beat (1.4 s × τ × a jitter of 0.8-1.2, or the fast 0.3 s) includes the planner's step onto the seat:
+        // after the arrival only the rest of it is left (at least 0.15 s of sitting down)
+        const B = realWorld.BEAT
+        const inRange = beat === B.entryFast || (beat >= B.entrySeat * w.tau * 0.8 - 1 && beat <= B.entrySeat * w.tau * 1.2 + 1)
+        if (!inRange || Math.abs(until - now - Math.max(B.entrySeatMin, beat - STEP_MS)) > 0.01) {
+          this.v('W2', `${this.who(key)}'s seat entry at ${place}: beat ${beat.toFixed(0)} ms (τ ${w.tau.toFixed(2)}), ${(until - now).toFixed(0)} ms after the arrival: the step onto the seat (${STEP_MS} ms) must be part of the beat`)
+        }
+      },
+      blocked: () => { this.blockedReports++ },
+    }
+  }
+
+  #command(c: Cmd, now: number) {
+    switch (c.op) {
+      case 'spawn': case 'slotted': {
+        if (c.op === 'spawn') { this.names.set(c.key, c.n); this.#desk.delete(c.key); this.#shelf.delete(c.key); this.#lastTarget.delete(c.key) }
+        if (c.slot < 0) break
+        const holder = this.#claims.get(c.slot)
+        if (holder !== undefined && holder !== c.key) this.v('W1', `slot ${c.slot} named for ${this.who(c.key)} while ${this.who(holder)}'s body still claims it`)
+        this.#claims.set(c.slot, c.key)
+        this.#named.set(c.key, { tile: SLOT_TILES[c.slot], at: now })
+        break
+      }
+      case 'walkTo': {
+        const prev = this.#lastTarget.get(c.key)
+        this.#lastTarget.set(c.key, c.place)
+        if (prev === undefined || LAYOUT.readingRoomOf(c.place) === null) break
+        const st = LAYOUT.stationOf(prev)
+        if (st === null || !FETCH_SHELVES.has(st)) break
+        // a pull's end: the book now has the worker reading what it pulled from that shelf point (a reading place is
+        // also an overflow wait tile for other stations)
+        const h = this.core?.book.holding(c.key)
+        if (h === undefined || h === null || h.role !== 'read' || h.pulledFrom !== prev) break
+        this.pullWalks++
+        const s = this.#shelf.get(c.key)
+        if (s === undefined || s.place !== prev || now - s.at < PULL_MS - 1) {
+          this.v('W3', `${this.who(c.key)} sent from ${prev} to the reading place ${c.place} ${s === undefined || s.place !== prev ? 'before its body ever stood on the shelf point' : `${(now - s.at).toFixed(0)} ms after its body reached the shelf (the pull is ${PULL_MS} ms)`}`)
+        }
+        break
+      }
+      case 'leave': {
+        this.#named.delete(c.key)
+        if (c.reason !== 'finished') break
+        this.deskLeaves++
+        const d = this.#desk.get(c.key)
+        if (d === undefined || now - d < SIGN_MS - 1) {
+          this.v('W3', `${this.who(c.key)} sent out finished ${d === undefined ? 'before its body ever stood on a front-desk spot' : `${(now - d).toFixed(0)} ms after its body reached the desk (the sign alone is ${SIGN_MS} ms)`}`)
+        }
+        break
+      }
+      case 'fade': this.#named.delete(c.key); break
+      default: break
+    }
+  }
 
   run(sc: Scenario): this {
     const lines = [...(sc.lines ?? [])].sort((a, b) => a.ts - b.ts)
@@ -240,41 +367,44 @@ class Sim {
       const now = T0 + f * FRAME
       if (now > endAt) break
       this.frames++
-      if (this.core !== null) {
-        while (li < lines.length && lines[li].ts + 300 <= now) { this.#route(this.core.ingest(lines[li].line, now), now); li++ }
-        this.#route(this.core.tick(now), now)
+      if (this.world !== null) {
+        while (li < lines.length && lines[li].ts + 300 <= now) { this.world.ingest(lines[li].line, now); li++ }
+        this.world.step(now)
+      } else {
+        while (ci < cmds.length && T0 + cmds[ci].t * 1000 <= now) { this.#route([cmds[ci].cmd], now); ci++ }
+        this.planner.tick(now)
       }
-      while (ci < cmds.length && T0 + cmds[ci].t * 1000 <= now) { this.#route([cmds[ci].cmd], now); ci++ }
-      this.planner.tick(now)
       this.#sample(now, f % 8 === 0)
     }
     this.#finish(endAt)
     return this
   }
 
+  /** The scripted scenarios' commands, straight to the planner (no page beats). */
   #route(cmds: readonly Cmd[], now: number) {
     for (const c of cmds) {
       switch (c.op) {
         case 'spawn': {
           this.names.set(c.key, c.n)
-          if (this.planner.state(c.key) !== null) this.#cancel(c.key, now)    // a re-entry while the old body fades
-          if (c.slot < 0) { this.v('A1', `${this.who(c.key)} spawned with no free slot`); break }
+          if (this.planner.state(c.key) !== null) { this.planner.cancel(c.key); this.#cancelled(c.key, now) }
           const s = SLOT_TILES[c.slot]
           this.#request(c.key, s, s, null, 'appear', now)
+          this.planner.plan(c.key, s, s, now)
           break
         }
         case 'walkTo': {
           const p = LAYOUT.place(c.place)
           this.#request(c.key, null, { x: p.x, y: p.y }, c.place, 'walk', now)
+          this.planner.plan(c.key, null, { x: p.x, y: p.y }, now)
           break
         }
-        case 'leave': this.#request(c.key, null, EXIT, null, 'exit', now); break
-        case 'fade': this.#cancel(c.key, now); break
+        case 'fade': this.planner.cancel(c.key); this.#cancelled(c.key, now); break
         default: break
       }
     }
   }
 
+  /** A trip starts: the newest request of a worker supersedes its open trip. */
   #request(key: string, from: Tile | null, goal: Goal, place: PlaceId | null, kind: TripKind, now: number) {
     const before = this.open.get(key)
     let start: number
@@ -285,8 +415,6 @@ class Sim {
       const p = st?.appeared ? this.planner.positionAt(key, boundary) : null
       start = p !== null ? p.y * W + p.x : -1
     }
-    const res = this.planner.plan(key, from, goal, now)
-    if (res.status === 'refused') { this.v('A1', `${this.who(key)}: plan refused`); return }
     if (before !== undefined && before.closed === null) { before.closed = 'superseded'; this.open.delete(key) }
     const trip: Trip = { key, kind, goal, place, at: now, from: start, done: null, closed: null, still: 0 }
     if (start < 0) this.#unplaced.push(trip)
@@ -294,10 +422,9 @@ class Sim {
     this.open.set(key, trip)
   }
 
-  #cancel(key: string, now: number) {
+  #cancelled(key: string, now: number) {
     const t = this.open.get(key)
     if (t !== undefined) { t.closed = 'cancelled'; t.done = now; this.open.delete(key) }
-    this.planner.cancel(key)
     const left = this.planner.bookingCount(key)
     if (left !== 0) this.v('A3', `${this.who(key)} was cancelled but still holds ${left} bookings`)
     if (this.planner.positionAt(key, now) !== null) this.v('A3', `${this.who(key)} was cancelled but is still drawn`)
@@ -313,6 +440,13 @@ class Sim {
       ks.push(key); xs.push(p.x); ys.push(p.y)
       this.#mix(Math.round(p.x * 8)); this.#mix(Math.round(p.y * 8))
       if (p.moving) this.#moving.add(key)
+      // W1: the first sight of a new body is on the slot its spawn named
+      const named = this.#named.get(key)
+      if (named !== undefined) {
+        this.#named.delete(key)
+        this.appearWaits.push(now - named.at)
+        if (Math.round(p.x) !== named.tile.x || Math.round(p.y) !== named.tile.y) this.v('W1', `${this.who(key)} appeared at (${p.x.toFixed(2)},${p.y.toFixed(2)}), not on its named slot (${named.tile.x},${named.tile.y})`)
+      }
     }
     for (const [key, trip] of this.open) if (!this.#moving.has(key)) trip.still += FRAME
     if (this.#unplaced.length > 0) {
@@ -324,6 +458,16 @@ class Sim {
       })
     }
     this.#moving.clear()
+    // W2: a seat entry in progress shows the seated frame on the seat tile, never a step
+    for (const [key, e] of this.#seats) {
+      const w = this.world?.workers.get(key)
+      if (w === undefined || w.phase !== 'entry' || now > e.until) { this.#seats.delete(key); continue }
+      const v = this.mods.sprite.spriteView(w, now, this.#view)
+      if (!v.visible || v.x !== e.tile.x * 16 || v.y !== e.tile.y * 16 - 6 || !HAND[v.pose].seated) {
+        this.v('W2', `${this.who(key)}'s seat entry at (${e.tile.x},${e.tile.y}) draws ${v.pose} at texel (${v.x},${v.y}), ${((now - T0) / 1000).toFixed(3)} s: the frame must stay seated on the seat tile (${e.tile.x * 16},${e.tile.y * 16 - 6})`)
+        this.#seats.delete(key)
+      }
+    }
     // A2 spacing
     for (let a = 0; a < ks.length; a++) {
       for (let b = a + 1; b < ks.length; b++) {
@@ -365,8 +509,8 @@ class Sim {
       if (trip.kind === 'appear' ? !st.appeared : !sameGoal(st.request, trip.goal)) continue
       const at = P.positionAt(key, st.arriveAt)
       const tile = at !== null && Number.isInteger(at.x) && Number.isInteger(at.y) ? at.y * W + at.x : -1
-      const ok = trip.goal === EXIT ? EXIT_SET.has(tile) : trip.kind === 'appear' ? SLOT_SET.has(tile) : tile === trip.goal.y * W + trip.goal.x
-      if (!ok) this.v('A1', `${this.who(key)} arrived at ${at === null ? 'nothing' : `(${at.x},${at.y})`}, not on its goal`)
+      const ok = trip.goal === EXIT ? EXIT_SET.has(tile) : tile === trip.goal.y * W + trip.goal.x
+      if (!ok) this.v(trip.kind === 'appear' ? 'W1' : 'A1', `${this.who(key)} ${trip.kind === 'appear' ? 'appeared' : 'arrived'} at ${at === null ? 'nothing' : `(${at.x},${at.y})`}, not on its ${trip.kind === 'appear' ? 'named slot' : 'goal'}`)
       if (trip.place !== null && this.core !== null && this.core.book.holding(key)?.place !== trip.place) {
         this.v('A1', `${this.who(key)} arrived on ${trip.place}, which the book no longer holds for it`)
       }
@@ -383,8 +527,13 @@ class Sim {
       if (t.closed === null && endAt - t.at > TRIP_LIMIT_MS) this.v('A1', `${this.who(t.key)}'s ${t.kind} trip never ended (requested at +${((t.at - T0) / 1000).toFixed(1)} s)`)
     }
     if (this.planner.stats.conflicts !== 0) this.v('A3', `${this.planner.stats.conflicts} booking conflicts inside the planner`)
-    // A4 dispose
+    // A4 dispose: the world (its core, its planner, its workers) or the planner alone
     const keys = this.planner.workers()
+    if (this.world !== null) {
+      const core = this.world.core
+      this.world.dispose()
+      if (this.world.workers.size !== 0 || core.book.holdings().length !== 0 || core.book.waiters().length !== 0) this.v('A4', 'the world keeps workers, or the core bookings, after dispose()')
+    }
     this.planner.dispose()
     const after = endAt + 1000
     if (this.planner.bookingCount() !== 0) this.v('A4', `${this.planner.bookingCount()} bookings after dispose()`)
@@ -405,13 +554,12 @@ class Sim {
     const done = moves.filter(t => t.closed === 'done' && t.done !== null && t.from >= 0)
     const delays = done.map(t => (t.done! - t.at) / 1000 - Math.max(0, straightSteps(t.from, (t.goal as Tile).y * W + (t.goal as Tile).x)) * STEP_MS / 1000).sort((a, b) => a - b)
     const pct = (q: number) => (delays.length === 0 ? 0 : delays[Math.min(delays.length - 1, Math.floor(q * (delays.length - 1) + 1e-9))])
-    const appears = this.trips.filter(t => t.kind === 'appear' && t.closed === 'done')
     const stuck = this.trips.filter(t => (t.closed === 'done' && t.done! - t.at > TRIP_LIMIT_MS) || (t.closed === null && this.endAt - t.at > TRIP_LIMIT_MS)).length
     return {
       trips: moves.length, done: done.length, superseded: moves.filter(t => t.closed === 'superseded').length,
       p50: pct(0.5), p90: pct(0.9), max: delays.length ? delays[delays.length - 1] : 0,
       maxWait: Math.max(0, ...moves.map(t => t.still / 1000)),
-      maxAppear: Math.max(0, ...appears.map(t => (t.done! - t.at) / 1000)),
+      maxAppear: Math.max(0, ...this.appearWaits) / 1000,
       stuck,
     }
   }
@@ -476,8 +624,8 @@ function s6(): Scenario {
       const exits = sim.trips.filter(t => t.kind === 'exit' && t.closed === 'done').length
       const lastExit = Math.max(0, ...sim.trips.filter(t => t.kind === 'exit' && t.done !== null).map(t => (t.done! - T0) / 1000 - 40))
       return {
-        bad: sent === 6 && exits === 6 ? [] : [`S6 sent to a desk spot ${sent}/6, left ${exits}/6`],
-        line: `sent to a desk spot ${sent}/6, stood on it ${desk}/6 (the others were sent on by the observer's own hand-in timer first: an integration finding), left ${exits}/6, the last one on the exit lane ${lastExit.toFixed(1)} s after the rush`,
+        bad: sent === 6 && exits === 6 && desk === 6 ? [] : [`W3 S6 sent to a desk spot ${sent}/6, stood on it ${desk}/6, left ${exits}/6`],
+        line: `sent to a desk spot ${sent}/6, stood on it ${desk}/6 (ruling 5: the hand-in starts when the body is there), left ${exits}/6, the last one on the exit lane ${lastExit.toFixed(1)} s after the rush`,
       }
     },
   }
@@ -546,9 +694,39 @@ function day(seed: number): Scenario {
   return { name: `day seed ${seed}`, lines: out, until: 300, drain: 90 }
 }
 
+/** M mutual block (ruling 6): A settles at the copier (its only point), B at the shredder (its only point). Then, within
+ *  one beat, A is sent to read (the copier frees), B to the copier (the shredder frees) and A to the shredder: each
+ *  body now stands on the place the other was sent to, so both plans stay pending (keep-old-path) for good. The
+ *  watchdog reports them; the core re-books B on the copier's sibling, the printer, and both get where they are sent.
+ *  Nothing else gives them a new target until 100 s, so without the watchdog A1 fails (trips open over 60 s). */
+function scenarioM(): Scenario {
+  const out: Line[] = []
+  const A = aidOf('m', 1), B = aidOf('m', 2)
+  out.push(L(0, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' }), L(0.2, 'SubagentStart', SA, { aid: B, at: 'workflow-subagent' }))
+  out.push(L(2, 'PreToolUse', SA, { aid: A, k: 'copier', a: 'copy', tu: 'm1' }), L(2.5, 'PostToolBatch', SA, { aid: A, n: 1 }))
+  out.push(L(2.2, 'PreToolUse', SA, { aid: B, k: 'shredder', a: 'delete', tu: 'm2' }), L(2.7, 'PostToolBatch', SA, { aid: B, n: 1 }))
+  out.push(L(20, 'PreToolUse', SA, { aid: A, k: 'fileCabinet', a: 'read', tu: 'm3' }), L(20.05, 'PostToolBatch', SA, { aid: A, n: 1 }))
+  out.push(L(20.1, 'PreToolUse', SA, { aid: B, k: 'copier', a: 'copy', tu: 'm4' }))
+  out.push(L(20.2, 'PreToolUse', SA, { aid: A, k: 'shredder', a: 'delete', tu: 'm5' }))
+  out.push(L(100, 'PostToolBatch', SA, { aid: A, n: 1 }), L(100.2, 'PostToolBatch', SA, { aid: B, n: 1 }))
+  out.push(L(101, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }), L(101.5, 'SubagentStop', SA, { aid: B, at: 'workflow-subagent', bt: [] }))
+  return {
+    name: 'M mutual block (each body on the other\'s place)', lines: out, until: 102, drain: 40,
+    expect: sim => {
+      const st = sim.core?.stats
+      const relocated = st?.relocated ?? 0
+      return {
+        bad: relocated >= 1 && sim.blockedReports >= 1 ? [] : [`W4 the watchdog re-booked ${relocated} (reports ${sim.blockedReports})`],
+        line: `watchdog reports ${sim.blockedReports}, re-bookings ${relocated}, no other place free ${st?.blockedStay ?? 0}`,
+      }
+    },
+  }
+}
+
 // ── running ──────────────────────────────────────────────────────────────────────────────────────────────────────
-function runOnce(mod: PlannerMod, sc: Scenario): { sim: Sim; bad: string[]; line: string | null } {
-  const sim = new Sim(mod, sc.lines !== undefined)
+function runOnce(mods: Mods, sc: Scenario): { sim: Sim; bad: string[]; line: string | null } {
+  let sim: Sim
+  try { sim = new Sim(mods, sc.lines !== undefined) } catch (e) { return { sim: null as unknown as Sim, bad: [`crash ${String(e).split('\n')[0]}`], line: null } }
   try {
     sim.run(sc)
   } catch (e) {
@@ -565,65 +743,105 @@ function report(sc: Scenario, sim: Sim) {
   console.log(`    trips ${m.done}/${m.trips} (${m.superseded} superseded), mid-walk retargets ${s.midWalk}, failed plan attempts ${s.failed}, ` +
     `max wait ${m.maxWait.toFixed(1)} s, delay vs straight walking p50 ${m.p50.toFixed(2)} / p90 ${m.p90.toFixed(2)} / max ${m.max.toFixed(1)} s, ` +
     `stuck ${m.stuck}; min spacing ${sim.minGap === Infinity ? '-' : sim.minGap.toFixed(3)}, slowest appearance ${m.maxAppear.toFixed(2)} s, ` +
-    `slots swapped ${s.slotSwapped}, largest search ${s.expandedMax} states`)
+    `largest search ${s.expandedMax} states`)
+  if (sim.world !== null) {
+    const st = sim.world.core.stats
+    console.log(`    page: appearances on their named slot ${sim.appearWaits.length}, slots released ${st.slotsLeft}, held off screen ${st.slotted}; ` +
+      `arrival reports ${st.arrivals}; seat entries ${sim.seatEntries}; finished exits checked ${sim.deskLeaves}, pull walks checked ${sim.pullWalks}; ` +
+      `watchdog reports ${sim.blockedReports} (re-booked ${st.relocated})`)
+  }
 }
 
-const scenarios: Scenario[] = [s1(), s3(), s6(), scenarioR(), scenarioC()]
+const scenarios: Scenario[] = [s1(), s3(), s6(), scenarioM(), scenarioR(), scenarioC()]
 const tuningDays = TUNING_SEEDS.map(day)
 const heldOutDays = TUNING_ONLY ? [] : HELD_OUT_SEEDS.map(day)
 
-console.log(`worker office traffic check: planner STEP ${STEP_MS} ms, frames every ${FRAME} ms, trip limit ${TRIP_LIMIT_MS / 1000} s, spacing >= ${MIN_SPACING}`)
+console.log(`worker office traffic check: planner STEP ${STEP_MS} ms, frames every ${FRAME} ms, trip limit ${TRIP_LIMIT_MS / 1000} s, spacing >= ${MIN_SPACING}; the page's world with body signals, watchdog ${realWorld.PENDING_LIMIT_MS / 1000} s`)
 for (const [label, list] of [['scenarios', scenarios], ['days (tuning seeds)', tuningDays], ['days (held-out seeds)', heldOutDays]] as const) {
   if (list.length === 0) { console.log(`${label}: skipped (--tuning-only)`); continue }
   console.log(`${label}:`)
   for (const sc of list) {
-    const a = runOnce(realPlanner, sc)
-    report(sc, a.sim)
+    const a = runOnce(REAL, sc)
+    if (a.sim) report(sc, a.sim)
     if (a.line !== null) console.log(`    ${a.line}`)
-    if (TRACE !== null && sc.name.startsWith(TRACE)) {
+    if (TRACE !== null && sc.name.startsWith(TRACE) && a.sim) {
       for (const t of a.sim.trips) {
         const g = t.goal === EXIT ? 'EXIT' : `(${t.goal.x},${t.goal.y})`
         console.log(`      ${a.sim.who(t.key)} ${t.kind} ${t.place ?? g} at +${((t.at - T0) / 1000).toFixed(2)} ${t.closed ?? 'open'}${t.done !== null ? ` +${((t.done - T0) / 1000).toFixed(2)}` : ''} still ${(t.still / 1000).toFixed(2)}`)
       }
     }
     for (const b of a.bad) fail(`${sc.name}: ${b}`)
-    const b2 = runOnce(realPlanner, sc)
-    if (a.sim.digest !== b2.sim.digest) fail(`${sc.name}: A5 two runs of the same input differ (${a.sim.digest} vs ${b2.sim.digest})`)
+    const b2 = runOnce(REAL, sc)
+    if (a.sim && b2.sim && a.sim.digest !== b2.sim.digest) fail(`${sc.name}: A5 two runs of the same input differ (${a.sim.digest} vs ${b2.sim.digest})`)
   }
 }
 
 // ── mutants ──────────────────────────────────────────────────────────────────────────────────────────────────────
-interface Mutant { readonly id: string; readonly from: string; readonly to: string }
+type MutantFile = 'planner' | 'core' | 'world' | 'sprite'
+interface Mutant { readonly id: string; readonly file: MutantFile; readonly from: string; readonly to: string }
+const FILES: Readonly<Record<MutantFile, string>> = {
+  planner: '../src/worker-office/move/planner.ts', core: '../src/worker-office/core/reducer.ts',
+  world: '../src/worker-office/live/world.ts', sprite: '../src/worker-office/render/WorkerSprite.ts',
+}
 const MUTANTS: readonly Mutant[] = [
-  { id: 'M1 keep-old-path removed', from: '      this.#rebookFrom(b, s0)   // keep-old-path (§4.7): the old bookings stand and the old path is walked\n', to: '' },
-  { id: 'M2 a swap allowed', from: '        if (o !== undefined && o !== me && this.#res.get(t1 * N + i) === o) continue\n', to: '' },
-  { id: 'M3 the spacing check one step off', from: '        if (!this.#free(j, t1, me)) continue\n', to: '        if (!this.#free(j, t, me)) continue\n' },
-  { id: 'M4 cancel leaves the bookings', from: '    this.#unbookAll(b)   // cancel: the table forgets every booking of this worker\n', to: '' },
+  // the movement core
+  { id: 'M1 keep-old-path removed', file: 'planner', from: '      this.#rebookFrom(b, s0)   // keep-old-path (§4.7): the old bookings stand and the old path is walked\n', to: '' },
+  { id: 'M2 a swap allowed', file: 'planner', from: '        if (o !== undefined && o !== me && this.#res.get(t1 * N + i) === o) continue\n', to: '' },
+  { id: 'M3 the spacing check one step off', file: 'planner', from: '        if (!this.#free(j, t1, me)) continue\n', to: '        if (!this.#free(j, t, me)) continue\n' },
+  { id: 'M4 cancel leaves the bookings', file: 'planner', from: '    this.#unbookAll(b)   // cancel: the table forgets every booking of this worker\n', to: '' },
+  // the integration rulings (decisions.md 2026-10-01 23:13): each restores what the ruling replaced
+  { id: 'M5 ruling 3: the core frees a slot when its worker books a place, before the body has left it', file: 'core',
+    from: '      if (c.to !== null && !signals) this.#freeSlot(o)\n', to: '      if (c.to !== null) this.#freeSlot(o)\n' },
+  { id: 'M6 ruling 4: the seat entry animates the step onto the seat again', file: 'sprite',
+    from: '  const x = Math.round(w.pos.x * TILE), y = Math.round(w.pos.y * TILE) - FIGURE_LIFT\n',
+    to: "  const x = Math.round(w.pos.x * TILE), y = Math.round(w.pos.y * TILE) - FIGURE_LIFT + (w.phase === 'entry' && w.seat ? Math.round(Math.max(0, 1 - (now - w.arrivedAt) / 400) * TILE) : 0)\n" },
+  { id: 'M7 ruling 4: the whole 1.4 s seat beat after the planner\'s step', file: 'world',
+    from: '    const len = seat ? Math.max(BEAT.entrySeatMin, beat - STEP_MS) : beat\n',
+    to: '    const len = seat ? Math.max(BEAT.entrySeatMin, beat) : beat\n' },
+  { id: 'M8 ruling 5: the hand-in on the observer\'s walk estimate', file: 'core',
+    from: 'o.finArrive = signals ? (o.bodyAt === c.to ? this.#clock : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to)',
+    to: 'o.finArrive = this.#clock + walkMs(this.layout, c.from, c.to)' },
+  { id: 'M9 ruling 5: the pull ends on the observer\'s walk estimate', file: 'core',
+    from: 'const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS',
+    to: 'const at = this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS' },
+  { id: 'M10 ruling 6: no watchdog', file: 'world', from: '    this.pendingLimitMs = opts.pendingLimitMs ?? PENDING_LIMIT_MS\n', to: '    this.pendingLimitMs = Infinity\n' },
 ]
+
+/** A patched copy of one module (the patch asserted to apply once) whose relative imports point at the real files. */
+async function loadPatched(m: Mutant, dir: string, i: number): Promise<Mods> {
+  const path = fileURLToPath(new URL(FILES[m.file], import.meta.url))
+  let src = readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+  const n = src.split(m.from).length - 1
+  if (n !== 1) throw new Error(`${m.id}: the patch applies ${n} times`)
+  src = src.replace(m.from, () => m.to)
+  src = src.replace(/(from\s+|import\s*\(\s*)'(\.{1,2}\/[^']+)'/g, (_, pre: string, spec: string) => `${pre}'${pathToFileURL(resolve(dirname(path), spec)).href}'`)
+  const file = join(dir, `${m.file}-mutant-${i}.ts`)
+  writeFileSync(file, src)
+  const mod: unknown = await import(pathToFileURL(file).href)
+  return { ...REAL, [m.file]: mod } as Mods
+}
+
 if (NO_MUTANTS) console.log('mutants: skipped (--no-mutants)')
 else {
   console.log('mutants (each must make a check fail; run on the scenarios and the tuning days):')
-  const dir = mkdtempSync(join(tmpdir(), 'wo-planner-mutant-'))
-  const src = readFileSync(PLANNER_PATH, 'utf8').replace(/\r\n/g, '\n')
+  const dir = mkdtempSync(join(tmpdir(), 'wo-traffic-mutant-'))
   let caught = 0
   for (const [i, m] of MUTANTS.entries()) {
-    const n = src.split(m.from).length - 1
-    if (n !== 1) { fail(`${m.id}: the patch applies ${n} times`); continue }
-    const file = join(dir, `planner-mutant-${i}.ts`)
-    writeFileSync(file, src.replace(m.from, () => m.to))
-    const mod = await import(pathToFileURL(file).href) as PlannerMod
+    let mods: Mods
+    try { mods = await loadPatched(m, dir, i) } catch (e) { fail(String(e).split('\n')[0]); continue }
     const hits = new Map<string, number>()
     for (const sc of [...scenarios, ...tuningDays]) {
-      for (const b of runOnce(mod, sc).bad) {
+      for (const b of runOnce(mods, sc).bad) {
         if (b.startsWith('...')) continue
         const tag = b.startsWith('crash') ? 'crash' : b.split(' ')[0]
         const where = `${tag}@${sc.name.split(' ')[0] === 'day' ? sc.name.replace('day seed ', 'd') : sc.name.split(' ')[0]}`
         hits.set(where, (hits.get(where) ?? 0) + 1)
       }
     }
-    if (hits.size > 0) caught++
+    const real = [...hits.keys()].filter(k => !k.startsWith('crash@'))
+    if (real.length > 0) caught++
     else fail(`mutant survived: ${m.id}`)
-    console.log(`  ${hits.size > 0 ? 'caught  ' : 'SURVIVED'} ${m.id}: ${[...hits].map(([k, v]) => `${k} x${v}`).join(', ') || 'no failed check'}`)
+    console.log(`  ${real.length > 0 ? 'caught  ' : 'SURVIVED'} ${m.id}: ${[...hits].map(([k, v]) => `${k} x${v}`).join(', ') || 'no failed check'}`)
   }
   rmSync(dir, { recursive: true, force: true })
   console.log(`mutants caught: ${caught} of ${MUTANTS.length}`)

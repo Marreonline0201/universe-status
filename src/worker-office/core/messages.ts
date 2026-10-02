@@ -1,7 +1,7 @@
 // What the observer core says (plan §5.3). Two layers, one stream:
 //   Cmd          the renderer commands, in order: the ONLY thing the reducer emits. The page's worker engine (a later
 //                stage) consumes them; scripts/worker-office-core-replay.ts asserts them exactly.
-//   FeedMessage  plan §5.3's message names, a lossless grouping of the same stream for a feed (toFeedMessages /
+//   FeedMessage  plan §5.3's message names (plus WORKER_SLOT, ruling 3), a lossless grouping of the same stream for a feed (toFeedMessages /
 //                fromFeedMessages are inverses; the replay checks the round trip on every scenario), plus the
 //                WORKERS_SNAPSHOT a page needs on (re)connect ("snap everyone to place", §4.6).
 // Every value is an id from a closed set or a number: worker and session keys are hashes (the page never needs a real
@@ -26,6 +26,9 @@ export type Cmd =
   /** WORKER_ENTER: fade in already walking near sidewalk slot `slot` (index into arrivalSlots then
    *  arrivalSlotsOverflow; -1 = held off screen, a labelled display delay). back = a re-entry with the same look. */
   | { readonly op: 'spawn'; readonly t: number; readonly key: WorkerKey; readonly n: number; readonly seed: number; readonly slot: number; readonly back: boolean }
+  /** WORKER_SLOT (body signals, ruling 3): a worker held off screen (spawn slot -1) now has sidewalk slot `slot`, a
+   *  slot whose last body has left it; it appears there. */
+  | { readonly op: 'slotted'; readonly t: number; readonly key: WorkerKey; readonly slot: number }
   /** Walk (Path A) to a booked place: the observer's booking changed. */
   | { readonly op: 'walkTo'; readonly t: number; readonly key: WorkerKey; readonly place: PlaceId }
   /** The steady pose at the place (a pose ending in 0 with a 1 sibling, e.g. type0, is that 2-frame loop), the
@@ -87,6 +90,7 @@ type IntentOp = 'walkTo' | 'pose' | 'bubble' | 'act'
 export type FeedMessage =
   | { readonly type: 'WORKERS_SNAPSHOT'; readonly t: number; readonly workers: readonly WorkerView[]; readonly objects: ObjectsView; readonly banners: readonly BannerView[] }
   | ({ readonly type: 'WORKER_ENTER' } & Without<CmdOf<'spawn'>, 'op'>)
+  | ({ readonly type: 'WORKER_SLOT' } & Without<CmdOf<'slotted'>, 'op'>)
   | { readonly type: 'WORKER_INTENT'; readonly key: WorkerKey; readonly parts: readonly Without<CmdOf<IntentOp>, 'key'>[] }
   | ({ readonly type: 'WORKER_CALL_END' } & Without<CmdOf<'callEnd'>, 'op'>)
   | ({ readonly type: 'WORKER_EXIT' } & Without<CmdOf<'leave' | 'fade'>, never>)
@@ -112,6 +116,7 @@ export function toFeedMessages(cmds: readonly Cmd[]): FeedMessage[] {
     close()
     switch (c.op) {
       case 'spawn': { const { op: _op, ...rest } = c; out.push({ type: 'WORKER_ENTER', ...rest }); break }
+      case 'slotted': { const { op: _op, ...rest } = c; out.push({ type: 'WORKER_SLOT', ...rest }); break }
       case 'callEnd': { const { op: _op, ...rest } = c; out.push({ type: 'WORKER_CALL_END', ...rest }); break }
       case 'leave': case 'fade': out.push({ type: 'WORKER_EXIT', ...c }); break
       case 'objects': { const { op: _op, ...rest } = c; out.push({ type: 'OBJECTS', ...rest }); break }
@@ -129,6 +134,7 @@ export function fromFeedMessages(msgs: readonly FeedMessage[]): Cmd[] {
     switch (m.type) {
       case 'WORKERS_SNAPSHOT': break
       case 'WORKER_ENTER': { const { type: _t, ...rest } = m; out.push({ op: 'spawn', ...rest }); break }
+      case 'WORKER_SLOT': { const { type: _t, ...rest } = m; out.push({ op: 'slotted', ...rest }); break }
       case 'WORKER_INTENT': for (const p of m.parts) out.push({ ...p, key: m.key } as Cmd); break
       case 'WORKER_CALL_END': { const { type: _t, ...rest } = m; out.push({ op: 'callEnd', ...rest }); break }
       case 'WORKER_EXIT': { const { type: _t, ...rest } = m; out.push(rest); break }

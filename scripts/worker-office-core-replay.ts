@@ -20,6 +20,8 @@
 //      I6  after dispose(): no output, no booking, no waiter, whatever comes in;
 //      I7  determinism: the same input gives the same commands (each scenario runs twice);
 //      I8  the §5.3 feed messages round-trip to the same commands; the snapshot's places = the ledger.
+//    Three scenarios (S14-S16) run the core with the page's BODY SIGNALS (lead rulings 3, 5, 6: slotLeft, arrived,
+//    blocked), sent at scripted times as the page will send them; the others run without (a replay has no bodies).
 // 3. Mutants: each planted change of the core (patched from its source text, each patch asserted to apply exactly
 //    once, loaded from a temp copy) must make at least one check fail; the table names which.
 // 4. The REAL spool (C:/Users/ddogr/.universe-office/spool/events-2026-10-01.jsonl, category-only by construction):
@@ -110,6 +112,24 @@ class Run {
   v(msg: string) { if (this.violations.length < 20) this.violations.push(msg); else if (this.violations.length === 20) this.violations.push('...') }
   ingest(line: string, wall: number) { this.#take(this.core.ingest(line, wall)) }
   tick(wall: number) { this.#take(this.core.tick(wall)) }
+  /** The page's body signals (rulings 3, 5, 6), addressed by ordinal as the scenarios write them. */
+  slotLeft(n: number, slot: number) { this.#take(this.core.slotLeft(this.keyOf(n), slot)) }
+  /** The arrival report for the place the worker was last sent to (or `place`); for a worker that left, any place
+   *  (the core must call it stale). */
+  arrived(n: number, place?: string) {
+    const k = this.keyOf(n)
+    this.#take(this.core.arrived(k, LAYOUT.placeId(place ?? this.ledger.get(k) ?? LAYOUT.endpoints[0].id)))
+  }
+  /** The watchdog's report, from the tile of the place the worker was last sent to (or `tile`, for one that left). */
+  blocked(n: number, tile?: { x: number; y: number }) {
+    const k = this.keyOf(n), sent = this.ledger.get(k)
+    const p = tile ?? LAYOUT.place(LAYOUT.placeId(sent!))
+    this.#take(this.core.blocked(k, { x: p.x, y: p.y }))
+  }
+  keyOf(n: number): string {
+    for (const [k, v] of this.names) if (v === n) return k
+    throw new Error(`no worker #${n}`)
+  }
   /** dispose() is a teardown (no commands): the renderer drops its workers with it, so the ledger does too. */
   dispose() {
     const out = this.core.dispose()
@@ -198,23 +218,32 @@ class Run {
   }
 }
 
-interface PlayOpts { readonly delayMs?: number; readonly tickMs?: number; readonly tailS?: number; readonly core?: Partial<realCore.CoreOptions>; readonly disposeThen?: Line[] }
+/** A page signal sent at a scenario second (before the first line or tick whose wall time reaches it). */
+interface Action { readonly s: number; readonly act: (run: Run) => void }
+interface PlayOpts {
+  readonly delayMs?: number; readonly tickMs?: number; readonly tailS?: number; readonly core?: Partial<realCore.CoreOptions>; readonly disposeThen?: Line[]
+  readonly actions?: readonly Action[]
+}
 
 /** Feed lines in FILE order: line i is read at wall = max(previous wall, ts + delay); a tick every tickMs between
  *  lines and for tailS after the last. A line that is not JSON is read right after the previous one. */
 function play(mod: CoreMod, lines: readonly (Line | string)[], o: PlayOpts = {}): Run {
   const run = new Run(mod, o.core)
   const delay = o.delayMs ?? 300, every = o.tickMs ?? 500
+  const actions = [...(o.actions ?? [])].sort((a, b) => a.s - b.s)
+  let ai = 0
+  const due = (w: number) => { while (ai < actions.length && at(actions[ai].s) <= w) actions[ai++].act(run) }
   let wall = -Infinity
   for (const item of lines) {
     const ts = typeof item === 'string' ? wall : item.ts + delay
     const w = Math.max(wall, ts)
-    if (Number.isFinite(wall)) for (let t = wall + every; t < w; t += every) run.tick(t)
+    if (Number.isFinite(wall)) for (let t = wall + every; t < w; t += every) { due(t); run.tick(t) }
     wall = w
+    due(wall)
     run.ingest(typeof item === 'string' ? item : item.line, wall)
   }
   const end = wall + (o.tailS ?? 5) * 1000
-  for (let t = wall + every; t <= end; t += every) run.tick(t)
+  for (let t = wall + every; t <= end; t += every) { due(t); run.tick(t) }
   run.checkFeed()
   if (o.disposeThen) {
     run.dispose()
@@ -223,13 +252,14 @@ function play(mod: CoreMod, lines: readonly (Line | string)[], o: PlayOpts = {})
   return run
 }
 
-function fmt(run: Run, opts: { objects?: boolean } = {}): string[] {
+function fmt(run: Run, opts: { objects?: boolean; only?: readonly string[] } = {}): string[] {
   const out: string[] = []
   const nm = (k: string) => `#${run.names.get(k) ?? '?'}`
   for (const c of run.cmds) {
     const t = ((c.t - T0) / 1000).toFixed(3)
     switch (c.op) {
       case 'spawn': out.push(`${t} spawn #${c.n} slot${c.slot}${c.back ? ' back' : ''}`); break
+      case 'slotted': out.push(`${t} slotted ${nm(c.key)} slot${c.slot}`); break
       case 'walkTo': out.push(`${t} walkTo ${nm(c.key)} ${c.place}`); break
       case 'pose': out.push(`${t} pose ${nm(c.key)} ${c.pose}${c.prop ? `+${c.prop}` : ''}${c.belt ? '+belt' : ''}${c.filler ? ' filler' : ''}`); break
       case 'bubble': out.push(`${t} bubble ${nm(c.key)} ${c.label}${c.n !== null ? ` n=${c.n}` : ''}${c.st !== null ? ` st=${c.st}` : ''}`); break
@@ -241,7 +271,7 @@ function fmt(run: Run, opts: { objects?: boolean } = {}): string[] {
       case 'banner': out.push(`${t} banner ${c.scope} ${c.label ?? 'clear'}${c.since !== null ? ` since=${((c.since - T0) / 1000).toFixed(3)}` : ''}`); break
     }
   }
-  return out
+  return opts.only ? out.filter(l => opts.only!.includes(l.split(' ')[1])) : out
 }
 
 // ── the scenarios ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -254,6 +284,8 @@ interface Scenario {
   readonly lines: () => (Line | string)[]
   readonly opts?: PlayOpts
   readonly objects?: boolean
+  /** Only these commands go into the golden (the run's invariants still see every command). */
+  readonly only?: readonly string[]
   /** Extra assertions on the run (stats, an equal sequence from another feed order, ...). */
   readonly extra?: (run: Run, mod: CoreMod) => string[]
 }
@@ -493,6 +525,54 @@ S.push(
     },
     opts: { tailS: 30 },
     extra: run => (run.core.stats.exits.finished === 5 ? [] : [`finished ${run.core.stats.exits.finished}`]),
+  },
+)
+
+// ── the page's body signals (lead rulings 3, 5, 6; decisions.md 2026-10-01 23:13) ─────────────────────────────────
+const SIGNALS: Partial<realCore.CoreOptions> = { bodySignals: true }
+const crowd = (n: number, from: number, step: number, tag: string) => Array.from({ length: n }, (_, i) => start(from + i * step, `a${tag}${String(i).padStart(15 - tag.length, '0')}`))
+S.push(
+  {
+    name: 'S14-slots-until-the-body-left',
+    what: 'ruling 3: with body signals a sidewalk slot stays claimed until the page reports its body left it. 31 arrivals in 3 s: slots 0-29, then #31 is held off screen (slot -1); the page reports #1 left slot 0 -> #31 is slotted there; #2 leaves slot 1 (no one waits); a stale report (#3 on slot 0) is ignored; #32 takes slot 1. Then the session ends: everyone leaves, but their bodies are still on the sidewalk, so #33 is held off screen until #5\'s body leaves slot 4.',
+    lines: () => byTs([...crowd(31, 0, 0.1, 's'), ...crowd(1, 7, 0, 't'), sessEnd(8, 'logout'), ...crowd(1, 9, 0, 'u')]),
+    only: ['spawn', 'slotted', 'leave'],
+    opts: {
+      core: SIGNALS, tailS: 6,
+      actions: [{ s: 5, act: r => r.slotLeft(1, 0) }, { s: 6, act: r => { r.slotLeft(2, 1); r.slotLeft(3, 0) } }, { s: 11, act: r => r.slotLeft(5, 4) }],
+    },
+    extra: run => {
+      const st = run.core.stats
+      return st.slotsLeft === 3 && st.slotsStale === 1 && st.slotted === 2 ? [] : [`slotsLeft ${st.slotsLeft} slotsStale ${st.slotsStale} slotted ${st.slotted}`]
+    },
+  },
+  {
+    name: 'S15-beats-start-on-arrival',
+    what: 'ruling 5: with body signals the walk-dependent beats wait for the page. #1 hands in a result form (and stops): it waits at its desk spot, labelled carrying, until the page reports its body there at 8 s; then the hand-in and the sign (2.0 s), then it leaves. #2 pulls a ledger: the pull ends 1.2 s after its arrival report at 4 s, not after the walk estimate; a report for a place it does not hold (3.5 s) is ignored. Without the reports (extra): neither moves on.',
+    lines: () => [start(0, A), start(0.2, B), pre(1, B, 'hist-read', 'h1'), pre(2, A, 'form', 'f1'), batch(2.5, A), sstop(3, A, 'workflow-subagent'), batch(9, B)],
+    opts: {
+      core: SIGNALS, tailS: 8,
+      actions: [{ s: 3.5, act: r => r.arrived(2, 'front-desk.1') }, { s: 4, act: r => r.arrived(2) }, { s: 8, act: r => r.arrived(1) }],
+    },
+    extra: (run, mod) => {
+      const out: string[] = []
+      const st = run.core.stats
+      if (st.arrivals !== 2 || st.arrivalsStale !== 1 || st.exits.finished !== 1) out.push(`arrivals ${st.arrivals} stale ${st.arrivalsStale} finished ${st.exits.finished}`)
+      const silent = play(mod, S.find(x => x.name === 'S15-beats-start-on-arrival')!.lines(), { core: SIGNALS, tailS: 30 })
+      const moved = silent.cmds.filter(c => c.op === 'leave' || (c.op === 'walkTo' && LAYOUT.readingRoomOf(c.place) !== null)).length
+      if (moved !== 0) out.push(`without the arrival reports ${moved} hand-in exits / reading-place walks happened anyway`)
+      return out
+    },
+  },
+  {
+    name: 'S16-watchdog-relocates',
+    what: 'ruling 6: the page\'s watchdog reports #1 blocked on its lectern point: both lectern points are held, so it is re-booked on the chain\'s sibling, a history-shelf point (role sibling, still a lectern user); then #2 is reported blocked: it takes the lectern point #1 left. A report for a worker that left is stale.',
+    lines: () => [start(0, A), start(0.1, B), start(0.2, C, 'workflow-subagent', { sid: SB }), pre(1, A, 'diff', 'd1', { k: 'lectern' }), pre(1.1, B, 'diff', 'd2', { k: 'lectern' }), sessEnd(6, 'logout', SB)],
+    opts: { core: SIGNALS, tailS: 6, actions: [{ s: 4, act: r => r.blocked(1) }, { s: 5, act: r => r.blocked(2) }, { s: 9, act: r => r.blocked(3, { x: 17, y: 19 }) }] },
+    extra: run => {
+      const st = run.core.stats
+      return st.relocated === 2 && st.blockedStale === 1 ? [] : [`relocated ${st.relocated} blockedStale ${st.blockedStale} blockedStay ${st.blockedStay}`]
+    },
   },
 )
 
@@ -1322,6 +1402,121 @@ const EXPECTED: Record<string, string> = {
 19.313 bubble #5 handIn
 19.323 leave #4 finished out
 21.313 leave #5 finished out`,
+  'S14-slots-until-the-body-left': `0.000 spawn #1 slot0
+0.100 spawn #2 slot1
+0.200 spawn #3 slot2
+0.300 spawn #4 slot3
+0.400 spawn #5 slot4
+0.500 spawn #6 slot5
+0.600 spawn #7 slot6
+0.700 spawn #8 slot7
+0.800 spawn #9 slot8
+0.900 spawn #10 slot9
+1.000 spawn #11 slot10
+1.100 spawn #12 slot11
+1.200 spawn #13 slot12
+1.300 spawn #14 slot13
+1.400 spawn #15 slot14
+1.500 spawn #16 slot15
+1.600 spawn #17 slot16
+1.700 spawn #18 slot17
+1.800 spawn #19 slot18
+1.900 spawn #20 slot19
+2.000 spawn #21 slot20
+2.100 spawn #22 slot21
+2.200 spawn #23 slot22
+2.300 spawn #24 slot23
+2.400 spawn #25 slot24
+2.500 spawn #26 slot25
+2.600 spawn #27 slot26
+2.700 spawn #28 slot27
+2.800 spawn #29 slot28
+2.900 spawn #30 slot29
+3.000 spawn #31 slot-1
+3.800 slotted #31 slot0
+7.000 spawn #32 slot1
+8.000 leave #1 sessionEnded out
+8.000 leave #2 sessionEnded out
+8.000 leave #3 sessionEnded out
+8.000 leave #4 sessionEnded out
+8.000 leave #5 sessionEnded out
+8.000 leave #6 sessionEnded out
+8.000 leave #7 sessionEnded out
+8.000 leave #8 sessionEnded out
+8.000 leave #9 sessionEnded out
+8.000 leave #10 sessionEnded out
+8.000 leave #11 sessionEnded out
+8.000 leave #12 sessionEnded out
+8.000 leave #13 sessionEnded out
+8.000 leave #14 sessionEnded out
+8.000 leave #15 sessionEnded out
+8.000 leave #16 sessionEnded out
+8.000 leave #17 sessionEnded out
+8.000 leave #18 sessionEnded out
+8.000 leave #19 sessionEnded out
+8.000 leave #20 sessionEnded out
+8.000 leave #21 sessionEnded out
+8.000 leave #22 sessionEnded out
+8.000 leave #23 sessionEnded out
+8.000 leave #24 sessionEnded out
+8.000 leave #25 sessionEnded out
+8.000 leave #26 sessionEnded out
+8.000 leave #27 sessionEnded out
+8.000 leave #28 sessionEnded out
+8.000 leave #29 sessionEnded out
+8.000 leave #30 sessionEnded out
+8.000 leave #31 sessionEnded out
+8.000 leave #32 sessionEnded out
+9.000 spawn #33 slot-1
+9.800 slotted #33 slot4`,
+  'S15-beats-start-on-arrival': `0.000 spawn #1 slot0
+0.000 walkTo #1 inout-board.1
+0.000 pose #1 standU
+0.000 bubble #1 arrivalHold
+0.200 spawn #2 slot1
+0.200 walkTo #2 inout-board.2
+0.200 pose #2 standU
+0.200 bubble #2 arrivalHold
+1.000 walkTo #2 hist-5.1
+1.000 pose #2 reachU+ledger
+1.000 bubble #2 act:hist-read
+1.000 act #2 in historyShelf hist-read seq1
+2.000 walkTo #1 front-desk.2
+2.000 pose #1 useU0+form
+2.000 bubble #1 carryForm
+2.000 act #1 in frontDesk form seq1
+2.500 act #1 out frontDesk form seq1
+4.000 walkTo #2 records-east-3
+4.000 pose #2 readD+ledger
+6.800 bubble #1 handIn
+8.800 leave #1 finished out
+9.000 bubble #2 between
+9.000 act #2 out historyShelf hist-read seq1`,
+  'S16-watchdog-relocates': `0.000 spawn #1 slot0
+0.000 walkTo #1 inout-board.1
+0.000 pose #1 standU
+0.000 bubble #1 arrivalHold
+0.100 spawn #2 slot1
+0.100 walkTo #2 inout-board.2
+0.100 pose #2 standU
+0.100 bubble #2 arrivalHold
+0.200 spawn #3 slot2
+0.200 walkTo #3 hold-1
+0.200 pose #3 stand
+0.200 bubble #3 arrivalHold
+1.000 walkTo #1 lectern-E.1
+1.000 pose #1 useU0
+1.000 bubble #1 act:diff
+1.000 act #1 in lectern diff seq1
+1.100 walkTo #2 lectern-W.1
+1.100 pose #2 useU0
+1.100 bubble #2 act:diff
+1.100 act #2 in lectern diff seq1
+2.900 walkTo #1 hist-8.1
+2.900 pose #1 standU
+3.900 walkTo #2 lectern-E.1
+5.100 pose #2 readU
+6.000 leave #3 sessionEnded out`,
 }
 
 // ── static checks ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1348,7 +1543,7 @@ function runAll(mod: CoreMod, print: boolean): string[] {
       r1 = play(mod, sc.lines(), { ...sc.opts, disposeThen: sc.lines().slice(0, 3).filter((x): x is Line => typeof x !== 'string') })
       r2 = play(mod, sc.lines(), sc.opts)
     } catch (e) { bad.push(`${sc.name}: crash ${String(e).split('\n')[0]}`); continue }
-    const got = fmt(r1, { objects: sc.objects })
+    const got = fmt(r1, { objects: sc.objects, only: sc.only })
     if (print && PRINT_DIR) writeFileSync(join(PRINT_DIR, `${sc.name}.txt`), `${got.join('\n')}\n`)
     for (const v of r1.violations) bad.push(`${sc.name}: ${v}`)
     for (const v of r2.violations) bad.push(`${sc.name} (run 2): ${v}`)
@@ -1412,6 +1607,16 @@ const MUTANTS: Mutant[] = [
   { id: 'M27 feed intents merged across workers', file: 'messages.ts', why: 'I8',
     from: 'if (intent === null || intent.key !== c.key || intent.ops.has(c.op))', to: 'if (intent === null || intent.ops.has(c.op))' },
   { id: 'M29 a move keeps the place it left', file: 'reducer.ts', why: 'I1', from: '      o.place = c.to\n', to: '      o.place = c.from ?? c.to\n' },
+  { id: 'M30 a slot freed on booking even with body signals (ruling 3)', file: 'reducer.ts', why: 'S14',
+    from: '      if (c.to !== null && !signals) this.#freeSlot(o)\n', to: '      if (c.to !== null) this.#freeSlot(o)\n' },
+  { id: 'M31 the hand-in on the walk estimate even with body signals (ruling 5)', file: 'reducer.ts', why: 'S15',
+    from: 'o.finArrive = signals ? (o.bodyAt === c.to ? this.#clock : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to)',
+    to: 'o.finArrive = this.#clock + walkMs(this.layout, c.from, c.to)' },
+  { id: 'M32 the pull ends on the walk estimate even with body signals (ruling 5)', file: 'reducer.ts', why: 'S15',
+    from: 'const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS',
+    to: 'const at = this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS' },
+  { id: 'M33 a blocked report re-books nothing (ruling 6)', file: 'reducer.ts', why: 'S16',
+    from: '    const res = this.#book.relocate(key, at, w.place)\n', to: '    const res: { place: PlaceId | null; changes: readonly Change[] } = { place: null, changes: [] }\n' },
   { id: 'M28 commands for workers that left', file: 'reducer.ts', why: 'I5',
     from: "      if (w.phase === 'gone') continue\n      const v = this.#view(w)\n      const p = w.sent", to: '      const v = this.#view(w)\n      const p = w.sent' },
 ]

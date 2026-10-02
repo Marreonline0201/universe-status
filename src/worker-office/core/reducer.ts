@@ -7,7 +7,20 @@
 //   core.drain()                 release every held record (the end of a replay)
 //   core.snapshot()              WORKERS_SNAPSHOT, for a page that (re)connects: snap, never replay walks
 //   core.dispose()               release everything; every later call is a no-op
+//   core.slotLeft / arrived / blocked   the page's body signals (options.bodySignals, below)
 // Each call returns the commands it caused, in order (messages.ts Cmd).
+//
+// BODY SIGNALS (lead rulings 3, 5 and 6, decisions.md 2026-10-01 23:13). The page owns the bodies (move/planner.ts);
+// with options.bodySignals it tells the core three things, each applied at the core's own clock:
+//   - slotLeft(key, slot): the body that stood on a sidewalk slot has left it and no other body will cross it. A slot
+//     stays claimed until then, so a spawn's slot always names a clear tile; a worker spawned with slot -1 (every slot
+//     claimed: held off screen) gets the first slot freed, as a 'slotted' command (ruling 3);
+//   - arrived(key, place, at): the body stands on the place it was last sent to, since `at`. The walk-dependent beats
+//     are timed from then: the end of a pull (1.2 s later), the hand-in and the sign-out at the front desk (ruling 5);
+//   - blocked(key, tile): the page's watchdog found the body unable to reach its place for too long (a mutual block);
+//     the core re-books it on another free place of the same use (PlaceBook.relocate) and sends it there (ruling 6).
+// Without body signals (a replay, which has no bodies) a slot is released when its worker books a place, and those beats
+// run on the walk estimate (core/places.ts walkMs). blocked() works in both modes.
 //
 // CLOCK. Records are released by the reorder buffer (reorder.ts: a 500 ms timestamp watermark plus a 1.0 s
 // wall-clock quiet flush). The core's clock is the release frontier: before a record is applied, every deadline up to
@@ -53,6 +66,7 @@
 //   - SessionEnd clear / resume removes nobody; every other reason (an absent one included) makes that session's
 //     workers leave.
 import { ACTIVITY_BY_ID, ACTIVITY_ID, rank, resolveAtStation } from '../../../office/observer/classify.mjs'
+import type { Tile } from '../map/loadMap.ts'
 import { PlaceBook, SHELF_ROOM, stationForKind, type Change, type PlaceId, type PlaceLayout, type Role, type StationKind } from '../map/places.ts'
 import type { PoseName, PropId } from '../render/props.ts'
 import { activityLabel, type LabelId } from './labels.ts'
@@ -80,6 +94,9 @@ export interface CoreOptions {
   /** Helpers hand back with SubagentHandback (auto mode). Off: a background helper's stop reads "waiting or finished
    *  (no hand-back signal in this mode)" (§4.6). */
   readonly handbackMode: boolean
+  /** The page reports its bodies: slotLeft, arrived (see BODY SIGNALS above). Off: slots and walk-dependent beats run
+   *  on the observer's own estimate (a replay without bodies). */
+  readonly bodySignals?: boolean
   readonly watermarkMs?: number
   readonly quietFlushMs?: number
 }
@@ -170,11 +187,13 @@ interface Worker {
   actSeq: number
   result: { at: number; seq: number; place: PlaceId | null; fail: boolean; intr: boolean; tus: Set<string> } | null
   fgCheck: { at: number; call: string } | null
+  /** The pull in progress: its id (PlaceBook pull id) and when it ends (Infinity: its body has not arrived yet). */
   pull: { id: number; at: number } | null
   // finishing
   fin: Fin | null
   finStep: 'printing' | 'carry' | 'handIn' | null
-  /** The estimated arrival at the desk spot (walkMs); the hand-in starts then. */
+  /** The arrival at the desk spot (the walk estimate, or the page's report: Infinity until it comes); the hand-in
+   *  starts then. */
   finArrive: number | null
   finAt: number | null
   stopSeen: boolean
@@ -192,6 +211,8 @@ interface Worker {
   listed: boolean
   absent: number
   slot: number | null
+  /** Body signals: the place the page last reported the body standing on (cleared when the booking moves away). */
+  bodyAt: PlaceId | null
   sent: Sent | null
   queued: Cmd[]
 }
@@ -223,6 +244,17 @@ export interface CoreStats {
   sessionEndRemoved: number
   afterDispose: number
   maxInside: number
+  /** Body signals: slots released / reports for a slot not held / held-off-screen workers given a slot; arrival reports
+   *  (and stale ones, for a place the worker no longer holds); watchdog re-bookings (and the requests with no other free
+   *  place, and stale ones). */
+  slotsLeft: number
+  slotsStale: number
+  slotted: number
+  arrivals: number
+  arrivalsStale: number
+  relocated: number
+  blockedStay: number
+  blockedStale: number
   exits: Record<ExitReason, number>
   phaseEntries: Record<string, number>
   /** Worker-time per display state: inCall, between1, between2 (§4.5 stages), and the other phases. */
@@ -234,6 +266,7 @@ const newStats = (): CoreStats => ({
   created: 0, reentries: 0, phantom: 0, handbackFirst: 0, internalStart: 0, internalPre: 0, startInside: 0,
   stopUnknown: 0, stopUngated: 0, stopInFlight: 0, batchNoOpen: 0, failureUnmatched: 0, snapshots: 0,
   sessionEndKept: 0, sessionEndRemoved: 0, afterDispose: 0, maxInside: 0,
+  slotsLeft: 0, slotsStale: 0, slotted: 0, arrivals: 0, arrivalsStale: 0, relocated: 0, blockedStay: 0, blockedStale: 0,
   exits: { finished: 0, finishedInferred: 0, evicted: 0, signOffCap: 0, waitCap: 0, sessionEnded: 0, officeCleared: 0 },
   phaseEntries: {}, dispMs: {},
 })
@@ -254,6 +287,8 @@ export class ObserverCore {
   #sessions = new Map<string, Session>()
   #nextN = 1
   #slots: (WorkerKey | null)[]
+  /** Body signals: workers spawned with slot -1, in spawn order (they get the next slot freed). */
+  #slotWaiters: WorkerKey[] = []
   /** Children seen as background (an async launch, a task-list entry) before they were workers. */
   #bgIds = new Set<string>()
   #outStack = 0
@@ -312,8 +347,76 @@ export class ObserverCore {
     this.#disposed = true
     this.#book.dispose()
     for (const w of this.#byKey.values()) if (w.phase !== 'gone') this.#gone(w)
+    this.#slotWaiters = []
+    this.#slots.fill(null)
     this.#out = []
     return []
+  }
+
+  // ── the page's body signals (BODY SIGNALS in the header) ─────────────────────────────────────────────────────────
+  /** Ruling 3: the body that stood on sidewalk slot `slot` has left it, and no other body will cross it. The claim ends;
+   *  the slot goes to the first worker held off screen ('slotted'). A report for a slot the worker does not hold is
+   *  ignored (counted). */
+  slotLeft(key: WorkerKey, slot: number): Cmd[] {
+    if (this.#disposed) { this.stats.afterDispose++; return [] }
+    if (!Number.isInteger(slot) || slot < 0 || slot >= this.#slots.length || this.#slots[slot] !== key) { this.stats.slotsStale++; return [] }
+    this.#slots[slot] = null
+    const w = this.#byKey.get(key)
+    if (w !== undefined && w.slot === slot) w.slot = null
+    this.stats.slotsLeft++
+    this.#serveSlots()
+    this.#flush()
+    return this.#take()
+  }
+
+  /** Ruling 5: the worker's body stands on `place` since `at` (the page's clock; default: now). The end of a pull and
+   *  the front desk's hand-in / sign-out are timed from then, never from before the core's own clock (time does not go
+   *  back), so they never run shorter than their nominal length after the body arrived; the core's clock trails the
+   *  page by its reorder window, so they are seen up to about a second later, like every other core event. A report
+   *  for a place the worker no longer holds is stale: ignored (counted). */
+  arrived(key: WorkerKey, place: PlaceId, at?: number): Cmd[] {
+    if (this.#disposed) { this.stats.afterDispose++; return [] }
+    const w = this.#byKey.get(key)
+    if (w === undefined || w.phase === 'gone' || w.place !== place) { this.stats.arrivalsStale++; return [] }
+    this.stats.arrivals++
+    w.bodyAt = place
+    const since = Math.max(this.#clock, at ?? this.#clock)
+    const h = this.#book.holding(key)
+    if (w.pull !== null && w.pull.at === Infinity && h !== null && h.role === 'pull' && h.place === place) w.pull.at = since + PULL_MS
+    if (w.finStep === 'carry' && w.finArrive === Infinity && h !== null && h.role === 'use' && h.forKind === 'frontDesk' && h.place === place) w.finArrive = since
+    this.#advance(this.#clock)
+    this.#flush()
+    return this.#take()
+  }
+
+  /** Ruling 6: the page's watchdog found the worker's body unable to reach its place for too long (`at`: the tile the
+   *  body stands on). Re-book it on another free place of the same use (PlaceBook.relocate) and send it there. Nothing
+   *  changes when no other place is free: the page asks again later. */
+  blocked(key: WorkerKey, at: Tile): Cmd[] {
+    if (this.#disposed) { this.stats.afterDispose++; return [] }
+    const w = this.#byKey.get(key)
+    if (w === undefined || w.phase === 'gone' || w.place === null) { this.stats.blockedStale++; return [] }
+    const res = this.#book.relocate(key, at, w.place)
+    if (res.place === null) { this.stats.blockedStay++; return [] }
+    this.stats.relocated++
+    this.#applyChanges(res.changes)
+    this.#flush()
+    return this.#take()
+  }
+
+  /** Free slots to the workers held off screen, first spawned first. */
+  #serveSlots() {
+    while (this.#slotWaiters.length > 0) {
+      const i = this.#slots.indexOf(null)
+      if (i < 0) return
+      const key = this.#slotWaiters.shift()!
+      const w = this.#byKey.get(key)
+      if (w === undefined || w.phase === 'gone' || w.slot !== null) continue
+      this.#slots[i] = key
+      w.slot = i
+      this.stats.slotted++
+      this.#emit({ op: 'slotted', t: this.#clock, key, slot: i })
+    }
   }
 
   /** WORKERS_SNAPSHOT (§5.3): what a page snaps to on (re)connect. */
@@ -520,7 +623,7 @@ export class ObserverCore {
         place: null, role: null, forKind: null, station: null, activity: 'none', sub: 'unit', hadCall: false, calls: new Map(), inFlight: 0,
         batchKind: null, unitBg: false, callStart: this.#clock, gapStart: null, actSeq: 0, result: null, fgCheck: null, pull: null, fin: null,
         finStep: null, finArrive: null, finAt: null, stopSeen: false, handedIn: false, holdOutCapAt: null, bgJob: null, gated: false, graceAt: null,
-        holdFailed: false, sLast: s.S, ovQ: 0, listed: false, absent: 0, slot: null, sent: null, queued: [],
+        holdFailed: false, sLast: s.S, ovQ: 0, listed: false, absent: 0, slot: null, bodyAt: null, sent: null, queued: [],
       }
       this.#byAid.set(aid, w)
       this.#byKey.set(w.key, w)
@@ -536,6 +639,7 @@ export class ObserverCore {
     this.stats.maxInside = Math.max(this.stats.maxInside, this.#inside)
     this.#setPhase(w, 'arriving')
     w.slot = this.#claimSlot(w.key)
+    if (w.slot === null && this.options.bodySignals) this.#slotWaiters.push(w.key)
     this.#emit({ op: 'spawn', t: this.#clock, key: w.key, n: w.n, seed: w.seed, slot: w.slot ?? -1, back })
     return w
   }
@@ -643,28 +747,37 @@ export class ObserverCore {
     return res.how
   }
 
-  /** Learn every booking change (the acting worker's and the cascades': served, moved up, stepped aside, pulls). */
+  /** Learn every booking change (the acting worker's and the cascades': served, moved up, stepped aside, pulls). With
+   *  body signals a slot stays claimed (ruling 3) and the pull's end and the desk arrival wait for the page's report
+   *  (ruling 5), unless the body already stands there; without, they run on the walk estimate. */
   #applyChanges(changes: readonly Change[]) {
+    const signals = this.options.bodySignals === true
     for (const c of changes) {
       const o = this.#byKey.get(c.owner)
       if (o === undefined) continue
       o.place = c.to
       o.role = c.role
       o.forKind = c.forKind
-      if (c.to !== null) this.#freeSlot(o)
-      if (c.role === 'pull' && c.to !== null) o.pull = { id: c.seq, at: this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS }
-      else if (o.pull !== null) o.pull = null
+      if (o.bodyAt !== c.to) o.bodyAt = null
+      if (c.to !== null && !signals) this.#freeSlot(o)
+      if (c.role === 'pull' && c.to !== null) {
+        const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS
+        o.pull = { id: c.seq, at }
+      } else if (o.pull !== null) o.pull = null
       if (o.fin !== null && o.finStep === 'carry' && o.finArrive === null && c.to !== null && c.role === 'use' && c.forKind === 'frontDesk') {
-        o.finArrive = this.#clock + walkMs(this.layout, c.from, c.to)
+        o.finArrive = signals ? (o.bodyAt === c.to ? this.#clock : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to)
       }
     }
   }
 
-  /** A finisher already standing at its desk spot (assign was a STAY): the hand-in starts now. */
+  /** A finisher already booked on its desk spot (assign was a STAY): the hand-in starts now (with body signals: once
+   *  its body is reported there). */
   #finAtDesk(w: Worker) {
     if (w.finStep !== 'carry' || w.finArrive !== null) return
     const h = this.#book.holding(w.key)
-    if (h !== null && h.role === 'use' && h.forKind === 'frontDesk') this.#arriveFire(w)
+    if (h === null || h.role !== 'use' || h.forKind !== 'frontDesk') return
+    if (this.options.bodySignals && w.bodyAt !== h.place) { w.finArrive = Infinity; return }
+    this.#arriveFire(w)
   }
 
   /** At the desk spot: hand in and sign (0.5 + 1.5 s), or sign out (1.5 s). */
@@ -917,7 +1030,8 @@ export class ObserverCore {
   #gone(w: Worker) {
     this.#accountDisp(w, 'gone')
     this.#setPhase(w, 'gone')
-    this.#freeSlot(w)
+    if (!this.options.bodySignals) this.#freeSlot(w)   // with body signals the claim lasts until the body has left
+    this.#slotWaiters = this.#slotWaiters.filter(k => k !== w.key)
     w.sess.inside--
     this.#inside--
     if (w.sess.inside === 0) this.#bannerClear(w.sess)
@@ -926,6 +1040,7 @@ export class ObserverCore {
     w.gapStart = null; w.result = null; w.fgCheck = null; w.pull = null
     w.fin = null; w.finStep = null; w.finArrive = null; w.finAt = null; w.stopSeen = false; w.handedIn = false; w.holdOutCapAt = null
     w.bgJob = null; w.gated = false; w.graceAt = null; w.holdFailed = false; w.ovQ = 0; w.listed = false; w.absent = 0
+    w.bodyAt = null
     w.sent = null
     w.queued = []
   }

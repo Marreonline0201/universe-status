@@ -1068,6 +1068,78 @@ function checkHolds(M: Mod, map: OfficeMap): string[] {
   return F.list
 }
 
+// ── E5. relocate: the page's watchdog re-books a blocked owner (lead ruling 6) ──────────────────────────────────────
+function checkRelocate(M: Mod, map: OfficeMap): string[] {
+  const F = new Fails()
+  const L = M.buildPlaceLayout(map)
+  const IN = map.door.inLeaf
+  const points = (k: Parameters<typeof L.stations.get>[0]) => L.stations.get(k)!.points
+  {
+    const b = new M.PlaceBook(L)
+    const a = b.assign('A', 'lectern', IN).place!
+    const other = points('lectern').find(p => p !== a)!
+    const r = b.relocate('A', IN, a)
+    F.eq('E11 a lectern point: relocate takes the other lectern point; the first is free again; cause relocate',
+      [r.place, b.holding('A')?.place, b.holding('A')?.role, b.holding('A')?.forKind, b.isFree(a), brief(r.changes)],
+      [other, other, 'use', 'lectern', true, [`A ${a}>${other} use relocate`]])
+    F.eq('E11 the avoided place is only out of the choice during the call: a later assign can take it', b.assign('B', 'lectern', IN).place, a)
+  }
+  {
+    const b = new M.PlaceBook(L)
+    const a = b.assign('A', 'lectern', IN).place!
+    b.assign('B', 'lectern', IN)
+    const r = b.relocate('A', IN, a)
+    F.eq('E11 both lecterns held: the chain, a sibling history-shelf point (role sibling, still for the lectern)',
+      [r.place !== null && L.stationOf(r.place) === 'historyShelf', b.holding('A')?.role, b.holding('A')?.forKind, b.isFree(a)], [true, 'sibling', 'lectern', true])
+  }
+  {
+    const b = new M.PlaceBook(L)
+    for (const o of ['A', 'B', 'C']) b.assign(o, 'kanbanBoard', IN)
+    const a = b.holding('A')!.place
+    const before = JSON.stringify([b.holdings(), b.waiters()])
+    const r = b.relocate('A', IN, a)
+    F.eq('E11 every kanban point held, only a meeting pool tile free: no relocation (a pool tile would serve the point straight back); nothing changes',
+      [r.place, r.changes.length, JSON.stringify([b.holdings(), b.waiters()]) === before], [null, 0, true])
+  }
+  {
+    const b = new M.PlaceBook(L)
+    for (const o of ['A', 'B', 'C', 'D']) b.assign(o, 'kanbanBoard', IN)
+    const d = b.holding('D')!.place
+    const r = b.relocate('D', IN, d)
+    F.eq('E11 a waiter on a pool tile takes another tile of its pool and stays on the wait list',
+      [r.place !== null && L.poolOf(r.place)?.name, b.holding('D')?.role, b.waiterOf('D')?.kind, b.isFree(d)], ['@meeting', 'wait', 'kanbanBoard', true])
+  }
+  {
+    const b = new M.PlaceBook(L)
+    const h1 = b.hold('A', 'arrival', IN).place!
+    const r = b.relocate('A', IN, h1)
+    F.eq('E11 an arrival hold on the in/out board: the other board spot', [h1, r.place, b.holding('A')?.role], ['inout-board.1', 'inout-board.2', 'hold'])
+    const b2 = new M.PlaceBook(L)
+    b2.hold('B', 'arrival', IN); b2.hold('C', 'arrival', IN)
+    const d = b2.hold('A', 'departure', { x: 15, y: 17 }).place!
+    const r2 = b2.relocate('A', { x: 15, y: 17 }, d)
+    F.eq('E11 a departure hold: another hold tile, never the board', [d, r2.place], ['hold-1', 'hold-2'])
+  }
+  {
+    const b = new M.PlaceBook(L)
+    b.assign('A', 'bookshelf', IN)
+    endPullOf(b, 'A')
+    const h = b.holding('A')!
+    const r = b.relocate('A', IN, h.place)
+    F.eq('E11 a reading place: another reading place of its room, the pulled-from shelf kept',
+      [h.role, r.place !== null && L.readingRoomOf(r.place), b.holding('A')?.role, b.holding('A')?.pulledFrom, r.place !== h.place], ['read', 'library', 'read', h.pulledFrom, true])
+  }
+  {
+    const b = new M.PlaceBook(L)
+    const a = b.assign('A', 'lectern', IN).place!
+    const other = points('lectern').find(p => p !== a)!
+    F.eq('E11 relocate of a place the owner does not hold, or for an owner holding nothing: no change',
+      [b.relocate('A', IN, other).changes.length, b.relocate('Z', IN, a).changes.length, b.holding('A')?.place], [0, 0, a])
+    F.eq('E11 a bad origin is refused before anything changes', [threw(() => b.relocate('A', { x: 0, y: 0 }, a)), b.holding('A')?.place], [true, a])
+  }
+  return F.list
+}
+
 function checkDispose(M: Mod, map: OfficeMap): string[] {
   const F = new Fails()
   const L = M.buildPlaceLayout(map)
@@ -1219,6 +1291,7 @@ const CHECKS: [string, string, Check][] = [
   ['E2', 'queues: front-desk line, parked workers, chains, FIFO, crowding, lounge, STAY', checkQueues],
   ['E3', 'arrival / departure holds', checkHolds],
   ['E4', 'dispose, raw bookings and refusals', checkDispose],
+  ['E5', 'relocate: the watchdog re-books a blocked owner (ruling 6)', checkRelocate],
   ['F', 'overflow chains terminate (no cycles)', checkChains],
   ['G', 'classifier kinds: a station or STAY', checkClassifierKinds],
 ]
@@ -1376,6 +1449,11 @@ const MUTANTS: { name: string; check: string; patches: [string, string][] }[] = 
     ["    this.#refuseTaken(owner, place, 'transfer')\n    this.#unwait(owner)\n", "    this.#refuseTaken(owner, place, 'transfer')\n"]] },
   { name: 'reserve keeps the owner on its wait list', check: 'D', patches: [
     ["    this.#refuseTaken(owner, place, 'reserve')\n    this.#unwait(owner)\n", "    this.#refuseTaken(owner, place, 'reserve')\n"]] },
+  // relocate (the watchdog's re-booking, ruling 6)
+  { name: 'relocate keeps the avoided place in the choice (the owner is "moved" onto the place it is blocked from)', check: 'E5', patches: [
+    ['    if (place === this.#avoid) return false\n', '']] },
+  { name: 'relocate accepts a pool tile for a station holder (it joins the wait list and is served the point straight back)', check: 'E5', patches: [
+    ["    if (target !== null && target.role === 'wait' && h.role !== 'wait') target = null\n", '']] },
   // the classifier's kinds
   { name: 'a roster look (inOutBoard) sends the worker to a station', check: 'G', patches: [
     ["pigeonholes: 'pigeonholes', kanbanBoard: 'kanbanBoard', manualsShelf: 'manualsShelf', inOutBoard: null,",
@@ -1419,4 +1497,4 @@ try {
 console.log(`mutants caught: ${caught} of ${MUTANTS.length + 1}`)
 if (caught !== MUTANTS.length + 1) failures++
 if (failures > 0) { console.error(`${failures} failure(s)`); process.exit(1) }
-console.log('ALL PASS — places.ts: counts, C3 + grid queries, place-tile rules, invariants, fetch-then-read, queues, holds, dispose, chains, classifier kinds')
+console.log('ALL PASS — places.ts: counts, C3 + grid queries, place-tile rules, invariants, fetch-then-read, queues, holds, relocate, dispose, chains, classifier kinds')

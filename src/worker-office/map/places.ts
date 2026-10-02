@@ -46,6 +46,9 @@
 //                           order. Null when none is free (the worker stays where it is, keeping what it holds).
 //   reserve / transfer      raw bookings of one named place (snapshot re-sync): role 'reserved', off every wait list
 //                           (the observer re-queues with assign); refused, with nothing changed, if another owner holds it.
+//   relocate(owner, from, avoid)  the page's watchdog (lead ruling 6, decisions.md 2026-10-01 23:13): the owner's body
+//                           cannot reach the place it holds (a mutual block); it is booked on another free place of the
+//                           same use, `avoid` taken out of the choice, and `avoid` is offered on as any freed place.
 //   release / dispose       release frees an owner and serves the waiters; dispose releases everyone and refuses every
 //                           later booking.
 // assign and hold refuse an origin that is neither walkable nor a seat before they change anything.
@@ -559,7 +562,7 @@ export function buildPlaceLayout(map: OfficeMap): PlaceLayout {
  *  parked: the place it held when it joined a wait list (kept, re-booked for the kind it waits for; nothing moves it
  *  until it is served); hold: arrival / departure hold; reserved: a raw reserve() / transfer() booking. */
 export type Role = 'use' | 'pull' | 'read' | 'readAtShelf' | 'sibling' | 'wait' | 'parked' | 'hold' | 'reserved'
-export type Cause = 'assign' | 'pullDone' | 'stepAside' | 'served' | 'moveUp' | 'hold' | 'reserve' | 'transfer' | 'release' | 'dispose'
+export type Cause = 'assign' | 'pullDone' | 'stepAside' | 'served' | 'moveUp' | 'hold' | 'reserve' | 'transfer' | 'relocate' | 'release' | 'dispose'
 
 /** The roles of a booking for its station (forKind): a Pre of that same kind is a STAY (plan §4.2). */
 const STAY_ROLES: ReadonlySet<Role> = new Set<Role>(['use', 'pull', 'read', 'readAtShelf', 'sibling', 'wait', 'parked'])
@@ -630,6 +633,8 @@ export class PlaceBook {
   #changeSeq = 0
   #disposed = false
   #out: Change[] = []
+  /** relocate(): the place taken out of the choice while it picks (never free for anyone). */
+  #avoid: PlaceId | null = null
 
   constructor(layout: PlaceLayout, opts: { crowdCost?: number } = {}) {
     this.layout = layout
@@ -750,6 +755,48 @@ export class PlaceBook {
     return this.#end()
   }
 
+  /** The page's watchdog (lead ruling 6, decisions.md 2026-10-01 23:13): the owner's body has not been able to reach
+   *  `avoid`, the place it holds, for too long (two bodies each standing on the place the other was sent to: a mutual
+   *  block the planner cannot solve). Book it on another free place of the same use, nearest to `from` (where its
+   *  body stands), with `avoid` taken out of the choice: a station booking (use, pull, sibling, a pool tile) runs the
+   *  policy again (own points, then the chain); a reading place takes another reading place of its room; a hold takes
+   *  another place of its hold order (an in/out-board spot: the arrival order; else the departure order, which never
+   *  sends anyone to the board). `avoid` is then offered to the waiters as any freed place. Nothing changes when the
+   *  owner does not hold `avoid`, when its role has no alternative (parked, reading at the shelf, a raw reservation),
+   *  or when no other place is free (a pool tile counts only for an owner already waiting on one). A bad origin is
+   *  refused first. */
+  relocate(owner: OwnerId, from: Tile, avoid: PlaceId): HoldResult {
+    this.#begin('relocate')
+    this.#checkOrigin(from, 'relocate')
+    const h = this.#holding.get(owner)
+    if (!h || h.place !== avoid) return { place: null, changes: this.#end() }
+    const waiter = this.waiterOf(owner)
+    let target: { place: PlaceId; role: Role } | null = null
+    this.#avoid = avoid
+    try {
+      if ((h.role === 'use' || h.role === 'pull' || h.role === 'sibling' || h.role === 'wait') && h.forKind !== null) {
+        target = this.#choose(this.layout.stations.get(h.forKind)!, owner, from, h.role === 'pull' || (waiter?.fetch ?? false))
+      } else if (h.role === 'read' && h.forKind !== null && SHELF_ROOM[h.forKind] !== undefined) {
+        const p = this.#pickInPool(this.layout.pools.get(READING_POOL[SHELF_ROOM[h.forKind]!])!, from, owner)
+        if (p !== null) target = { place: p, role: 'read' }
+      } else if (h.role === 'hold') {
+        const order = this.layout.arrivalHold[0].includes(avoid) ? this.layout.arrivalHold : this.layout.departureHold
+        for (const tier of order) {
+          const p = this.#nearestFree(tier, from, owner)
+          if (p !== null) { target = { place: p, role: 'hold' }; break }
+        }
+      }
+    } finally { this.#avoid = null }
+    // a pool tile is an alternative only for an owner already waiting on one: anyone else would join the wait list and
+    // be served `avoid` straight back
+    if (target !== null && target.role === 'wait' && h.role !== 'wait') target = null
+    if (target === null) return { place: null, changes: this.#end() }
+    if (target.role !== 'wait') this.#unwait(owner)
+    else if (waiter === null || waiter.kind !== h.forKind) this.#wait(owner, h.forKind!, waiter?.fetch ?? false)
+    this.#settle(this.#move(owner, target.place, target.role, h.forKind, target.role === 'read' ? h.pulledFrom : null, 'relocate'))
+    return { place: target.place, changes: this.#end() }
+  }
+
   /** Free everything the owner holds, take it off every list, serve the waiters. */
   release(owner: OwnerId): readonly Change[] {
     if (this.#disposed) return []
@@ -857,7 +904,11 @@ export class PlaceBook {
 
   #unwait(owner: OwnerId) { this.#waiters = this.#waiters.filter(w => w.owner !== owner) }
 
-  #isFreeFor(place: PlaceId, owner: OwnerId) { const h = this.#holder.get(place); return h === undefined || h === owner }
+  #isFreeFor(place: PlaceId, owner: OwnerId) {
+    if (place === this.#avoid) return false
+    const h = this.#holder.get(place)
+    return h === undefined || h === owner
+  }
 
   /** Nearest free member by walked distance + crowding; ties to the declaration order (members are in it). The place
    *  the owner already holds is never charged crowding: staying on it adds none. */

@@ -12,9 +12,10 @@
 //   p.tick(now)                    every frame: appearances, retries, the end of exit fades, compaction
 //   p.positionAt(w, t, out?)       where to draw it, interpolated along grid edges; null = not on the grid
 //   p.cancel(w) / p.dispose()      drop one worker / everything; nothing is booked and nothing moves after dispose()
-// The renderer draws a worker only where positionAt says: an arrival may be put on another slot than the spawn command
-// names (a slot still in use), and it is not drawn before it appears. Its fade-in is drawn on that tile; a pre-roll
-// from tiles further east would not be covered by the bookings.
+//   p.isClear(tile, now)           nobody stands on the tile or will cross it from now on (the page's slot-left signal)
+// The renderer draws a worker only where positionAt says: an arrival appears on exactly the slot its spawn command
+// names, and is not drawn before it appears. Its fade-in is drawn on that tile; a pre-roll from tiles further east
+// would not be covered by the bookings.
 //
 // THE MODEL (§4.7 "The page owns bodies: Path A"):
 //   - Time is cut into steps of one tile at the one walking speed: STEP_MS = 312.5 ms (3.2 tiles/s, every worker).
@@ -35,11 +36,12 @@
 //     case is a worker stepping into a tile that another leaves at a right angle); the traffic check asserts 0.69.
 //
 // WHAT THE PROOF DOES NOT COVER (§3.3) and how this file handles it:
-//   - arrivals start on sidewalk slots, which are not endpoints. A new worker appears on its slot only once nobody
-//     else will stand on or pass that tile again (a slot still in use is swapped for the first free one, see
-//     #tryAppear); arrival trips leave the sidewalk at least 0.4 s apart (§4.6 step 4,
-//     critic 1's release cadence); a slot worker boxed in by the slot workers in front of it fails to plan and
-//     retries until they have gone ("front to back", §4.6 step 3);
+//   - arrivals start on sidewalk slots, which are not endpoints. A new worker appears on the slot its spawn names only
+//     once nobody else will stand on or pass that tile again; until then it waits off the grid (the observer keeps a
+//     slot claimed until the page reports, through isClear, that its body has left it and no body will cross it:
+//     lead ruling 3, decisions.md 2026-10-01 23:13, so the slot named is the real tile). Arrival trips leave the
+//     sidewalk at least 0.4 s apart (§4.6 step 4, critic 1's release cadence); a slot worker boxed in by the slot
+//     workers in front of it fails to plan and retries until they have gone ("front to back", §4.6 step 3);
 //   - departures end on the exit lane (not endpoints): the goal is the westmost lane tile free for the whole fade;
 //   - mid-walk retargets start from the tile the worker is on at the next step boundary, with keep-old-path.
 //   For these the evidence is measured, not proven: scripts/worker-office-traffic-sim.ts.
@@ -141,10 +143,8 @@ export interface PlannerStats {
   expandedMax: number
   /** Attempts that found no trajectory (the keep-old-path rule applied). */
   failed: number
-  /** Arrivals that could not appear at once (their tile, and every sidewalk slot, was still in use). */
+  /** Arrivals that could not appear at once (their tile was still in use, or about to be crossed). */
   appearDelayed: number
-  /** Arrivals put on another sidewalk slot than the one requested (it was still in use). */
-  slotSwapped: number
   /** Calls refused after dispose(), or for an unknown worker without `from`. */
   refused: number
   /** Bookings that collided with another worker's (never, if the rules hold; the traffic check asserts 0). */
@@ -189,7 +189,7 @@ export class PathPlanner {
   readonly horizonSteps: number
   readonly releaseGapMs: number
   readonly exitFadeMs: number
-  readonly stats: PlannerStats = { plans: 0, midWalk: 0, searches: 0, expandedMax: 0, failed: 0, appearDelayed: 0, slotSwapped: 0, refused: 0, conflicts: 0 }
+  readonly stats: PlannerStats = { plans: 0, midWalk: 0, searches: 0, expandedMax: 0, failed: 0, appearDelayed: 0, refused: 0, conflicts: 0 }
 
   // the grid, built once
   readonly #W: number
@@ -209,9 +209,6 @@ export class PathPlanner {
   readonly #exitTerm: Float32Array
   readonly #exitField: Float32Array
   readonly #fadeSteps: number
-  /** The sidewalk slots in their order (the arrival slots front to back, then the overflow). */
-  readonly #slots: Int32Array
-  readonly #slotMask: Uint8Array
   readonly #fields = new Map<number, Float32Array>()
 
   // the reservation table: (step * N + tile) -> body id; rests per tile
@@ -294,9 +291,6 @@ export class PathPlanner {
     }
     if (map.exitLane.length === 0) problems.push('the map has no exit lane')
     if (problems.length > 0) throw new Error(`PathPlanner: the layout breaks Path A's rules:\n- ${problems.join('\n- ')}`)
-    this.#slots = Int32Array.from([...map.arrivalSlots, ...map.arrivalSlotsOverflow], t => t.y * W + t.x)
-    this.#slotMask = new Uint8Array(N)
-    for (const i of this.#slots) this.#slotMask[i] = 1
     // the exit lane: a goal set with a terminal cost that prefers its west end
     this.#exitMask = new Uint8Array(N)
     this.#exitTerm = new Float32Array(N)
@@ -462,6 +456,14 @@ export class PathPlanner {
       goal: b.appeared ? { x: end % W, y: (end / W) | 0 } : null,
       arriveAt: b.appeared ? this.#msOf(b.arriveStep) : null, leaving: b.leaving,
     }
+  }
+
+  /** Nobody stands on the tile and nobody will cross it, from the step `now` falls in on (no rest, no booking). The
+   *  page's signal that a sidewalk slot's body has left it (lead ruling 3). False after dispose(). */
+  isClear(tile: Tile, now: number): boolean {
+    if (this.#disposed) return false
+    const i = this.#checkTile(tile, 'the tile')
+    return this.#goalFree(i, this.#floorStep(now), Infinity, -1)
   }
 
   /** Bookings in the table: (tile, step) pairs plus rests, of one worker or of everyone. */
@@ -782,23 +784,11 @@ export class PathPlanner {
     this.#version++
   }
 
-  /** Appear on its tile at the next step boundary if nobody else will stand on it or pass it from then on. A sidewalk
-   *  slot still in use (the observer frees a slot claim as soon as its worker books a place, before the body has
-   *  walked off it, so a burst gets the same slot index again and again) is swapped for the first free slot in slot
-   *  order: a burst spreads over the sidewalk front to back, as §4.6 pictures it. A spawn's goal follows the swap. */
+  /** Appear on its tile at the next step boundary if nobody else will stand on it or pass it from then on; otherwise
+   *  stay off the grid and let tick() retry. Never another tile: the spawn names the real slot (lead ruling 3). */
   #tryAppear(b: Body, now: number): boolean {
     const s = this.#ceilStep(now)
-    let tile = b.appearTile
-    if (!this.#goalFree(tile, s, Infinity, b.id)) {
-      if (this.#slotMask[tile] !== 1) return false
-      tile = -1
-      for (const k of this.#slots) if (this.#goalFree(k, s, Infinity, b.id)) { tile = k; break }
-      if (tile < 0) return false
-      const g = b.req?.goal
-      if (g !== undefined && g !== EXIT && g.y * this.#W + g.x === b.appearTile) b.req = { goal: { x: tile % this.#W, y: (tile / this.#W) | 0 }, at: b.req!.at }
-      b.appearTile = tile
-      this.stats.slotSwapped++
-    }
+    if (!this.#goalFree(b.appearTile, s, Infinity, b.id)) return false
     b.appeared = true
     b.appearStep = s
     b.path = [b.appearTile]
