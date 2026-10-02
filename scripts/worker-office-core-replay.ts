@@ -24,12 +24,12 @@
 //    blocked), sent at scripted times as the page will send them; the others run without (a replay has no bodies).
 // 3. Mutants: each planted change of the core (patched from its source text, each patch asserted to apply exactly
 //    once, loaded from a temp copy) must make at least one check fail; the table names which.
-// 4. The REAL spool (C:/Users/ddogr/.universe-office/spool/events-2026-10-01.jsonl, category-only by construction):
+// 4. The REAL spool (<home>/.universe-office/spool/events-2026-10-01.jsonl, <home> = os.homedir(); category-only by construction):
 //    read locally, never copied; replayed twice (determinism) with every invariant; prints COUNTS ONLY. Absent:
 //    "not run: data absent", exit 3.
 // Exit: 0 all pass; 1 a failure; 3 the real spool is absent (synthetic checks passed).
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
@@ -48,7 +48,7 @@ type Core = InstanceType<CoreMod['ObserverCore']>
 const args = process.argv.slice(2)
 const NO_REAL = args.includes('--no-real')
 const PRINT_DIR = args.includes('--print') ? args[args.indexOf('--print') + 1] : null
-const SPOOL = 'C:/Users/ddogr/.universe-office/spool/events-2026-10-01.jsonl'
+const SPOOL = join(homedir(), '.universe-office', 'spool', 'events-2026-10-01.jsonl')
 
 const MAP = loadMap(JSON.parse(readFileSync(fileURLToPath(new URL('../src/worker-office/data/floorplan.json', import.meta.url)), 'utf8')))
 const LAYOUT: PlaceLayout = buildPlaceLayout(MAP)

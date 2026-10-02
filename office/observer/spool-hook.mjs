@@ -60,11 +60,12 @@
 // SubagentStop's bt describes the PARENT session's background tasks (hooks.md SubagentStop input), never the
 // stopping subagent's own.
 //
-// <home> = UNIVERSE_OFFICE_HOME (absolute path; tests) or C:/Users/ddogr/.universe-office. The installed copy
+// <home> = UNIVERSE_OFFICE_HOME (absolute path; tests) or .universe-office in the user's home folder (os.homedir()). The installed copy
 // lives in <home>/bin/ next to classify.mjs (office/observer/install-hook.mjs puts both there).
 import { openSync, writeSync, closeSync, mkdirSync, fstatSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 // ---- silence and exit 0, before anything else can go wrong
 process.emitWarning = () => {};
@@ -74,7 +75,7 @@ process.on('unhandledRejection', quit);
 
 const VERSION = 1;
 const TS = Math.floor(Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : Date.now());
-const DEFAULT_HOME = 'C:/Users/ddogr/.universe-office';
+const DEFAULT_HOME = join(homedir(), '.universe-office');
 const MAX_STDIN = 32 * 1024 * 1024;
 const MAX_VALUES = 100_000;       // '{' '[' ',' outside strings; more is not parsed (memory: see step 3 above)
 const STDIN_DEADLINE_MS = 5000;

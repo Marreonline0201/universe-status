@@ -6,7 +6,7 @@
 // Copies classify.mjs and spool-hook.mjs from this folder to <home>/bin/ and creates <home>/spool/. It also applies the
 // spool's retention (plan section 5.2: day files more than 7 days old are deleted, as the hook does when it starts a
 // new day file); only events-YYYY-MM-DD.jsonl names in <home>/spool/ are touched.
-// <home> = UNIVERSE_OFFICE_HOME (absolute path) or C:/Users/ddogr/.universe-office.
+// <home> = UNIVERSE_OFFICE_HOME (absolute path) or .universe-office in the user's home folder (os.homedir()).
 //  - Idempotent: a file whose bytes already match is left alone ("unchanged").
 //  - Atomic per file: each copy is written to a temp name and renamed over the old one, so a hook that fires during
 //    an update loads either the old file or the new one, never half of one. The classifier goes first; a hook that
@@ -25,9 +25,9 @@ import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 
-const HOME = process.env.UNIVERSE_OFFICE_HOME || 'C:/Users/ddogr/.universe-office';
+const HOME = process.env.UNIVERSE_OFFICE_HOME || join(homedir(), '.universe-office');
 const SRC = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HOME, 'bin');
 const SPOOL = join(HOME, 'spool');

@@ -72,7 +72,7 @@
       }
     ]
   },
-  "vaultMirrorDir": "C:/Users/ddogr/ObsidianVault/universe-brain/research",
+  "vaultMirrorDir": "~/ObsidianVault/universe-brain/research",
   "publicShare": {
     "allowedOrigins": [
       "https://universe-status.vercel.app",

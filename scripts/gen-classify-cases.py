@@ -2,10 +2,10 @@
 # (office/observer/classify.mjs). Every expected value in the fixture is the OUTPUT OF THE PYTHON REFERENCE
 # (classify_final.py, which imports classify_s3.py), run here; nothing is typed by hand except the inputs.
 #
-#   python scripts/gen-classify-cases.py [path/to/classify_final.py]
+#   python scripts/gen-classify-cases.py path/to/classify_final.py
 #
-# Default reference path = the F11 copy of the planning scratchpad's classify_final.py (session 944994c0, see the
-# worker-office plan, Appendix B): scratchpad/o5-s4s0/ref/classify_final.py is the original (office/plan/, sha256
+# The reference path is required: the F11 copy of the planning scratchpad's classify_final.py (see the worker-office
+# plan, Appendix B): scratchpad/o5-s4s0/ref/classify_final.py is the original (office/plan/, sha256
 # e72fe25d..., left unchanged) with ONE change, the lead's ruling F11 of 2026-10-01: inOutBoard ranks below every
 # station kind in PRECEDENCE (a ListAgents 'roster look' never hides a real call in the same batch; alone it is still
 # inOutBoard, a STAY at the observer). Like the original it loads ../../office-place-s3/classify_s3.py.
@@ -33,9 +33,9 @@
 import hashlib, json, os, pathlib, platform, re, sys, unicodedata, importlib.util
 
 HERE = pathlib.Path(__file__).resolve().parent
-DEFAULT_REF = pathlib.Path(r'C:/Users/ddogr/AppData/Local/Temp/claude/C--Users-ddogr-OneDrive-Desktop-Questions/'
-                           r'944994c0-d7e9-4be1-a2a7-032471f945b2/scratchpad/o5-s4s0/ref/classify_final.py')
-REF = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_REF
+if len(sys.argv) != 2:
+    sys.exit('usage: python scripts/gen-classify-cases.py path/to/classify_final.py (the reference: see the header)')
+REF = pathlib.Path(sys.argv[1]).resolve()
 OUT = HERE.parent / 'office' / 'observer' / 'classify-cases.json'
 
 for k in ('CF_GIT_RELABEL', 'CF_SHELL_PREC', 'CF_BATCH_PREC'):       # the reference's decomposition toggles

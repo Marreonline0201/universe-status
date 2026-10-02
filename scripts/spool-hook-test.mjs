@@ -4,7 +4,7 @@
 //
 // Everything runs against a temp UNIVERSE_OFFICE_HOME: the suite installs the hook there with install-hook.mjs and
 // fires the INSTALLED copy (<temp>/home/bin/spool-hook.mjs), the way Claude Code will. The real home
-// (C:/Users/ddogr/.universe-office) must be exactly as before afterwards (checked). One hook process at a time,
+// (.universe-office in the user's home folder, os.homedir()) must be exactly as before afterwards (checked). One hook process at a time,
 // except the concurrency test (8 at once, after a free-RAM check).
 // Checked for every firing: exit code 0, stdout and stderr empty, the exact number of new spool lines, keys a subset
 // of the allowlist (in allowlist order), every value's format and length, ts inside the spawn window.
@@ -27,7 +27,7 @@
 // same line apart from ts). validate() checks that no line carries run, dur, cpu or rss, on every line of the suite.
 import { spawnSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, statSync, existsSync, rmSync, copyFileSync } from 'node:fs';
-import { tmpdir, freemem } from 'node:os';
+import { tmpdir, freemem, homedir } from 'node:os';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -37,7 +37,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // WO_OBSERVER_DIR: test the observer CODE of another folder (classify.mjs, spool-hook.mjs, install-hook.mjs) against
 // this repo's fixture: used to run this suite against planted hook mutants and against an older hook.
 const OBS = process.env.WO_OBSERVER_DIR ? resolve(process.env.WO_OBSERVER_DIR) : join(ROOT, 'office', 'observer');
-const REAL_HOME = 'C:/Users/ddogr/.universe-office';
+const REAL_HOME = join(homedir(), '.universe-office');
 const KEEP = process.argv.includes('--keep');
 const C = await import(pathToFileURL(join(OBS, 'classify.mjs')).href);
 const FIXTURE = JSON.parse(readFileSync(join(ROOT, 'office', 'observer', 'classify-cases.json'), 'utf8'));
@@ -60,7 +60,8 @@ function realHomeSnapshot() {
 }
 const realBefore = realHomeSnapshot();
 const hookSrc = readFileSync(join(OBS, 'spool-hook.mjs'), 'utf8');
-ok(hookSrc.includes(`const DEFAULT_HOME = '${REAL_HOME}';`), 'the hook default home is the folder this suite guards');
+ok(hookSrc.includes("const DEFAULT_HOME = join(homedir(), '.universe-office');") && REAL_HOME === join(homedir(), '.universe-office'),
+  'the hook default home is the folder this suite guards (both .universe-office in os.homedir())');
 async function waitForRam(minGb, what) {
   for (let i = 0; i < 24; i++) {
     const gb = freemem() / 2 ** 30;
@@ -210,7 +211,7 @@ function exact(rec, want, what) {
 // ------------------------------------------------------------------------------------------------ payloads
 const MARK = 'ZZCANARYZZ';
 const txt = (f) => `${MARK}-${f} secret text with spaces`;
-const path = (f) => `C:/Users/ddogr/${MARK}/${f}/id_rsa`;
+const path = (f) => `C:/Users/someone/${MARK}/${f}/id_rsa`;
 const url = (f) => `https://${MARK}.example.com/${f}?token=sk-${MARK}`;
 const cmd = (f) => `cat ${path(f)} && curl -s "${url(f)}" > C:/${MARK}/out.txt`;
 const SID = 'f3b1c2d4-0000-4000-8000-00000000c0de';

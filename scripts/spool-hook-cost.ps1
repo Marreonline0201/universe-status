@@ -70,12 +70,12 @@ function New-Psi([string]$script) {
 
 # realistic PreToolUse from a helper (about 0.8 KB, a multi-step shell command)
 $payload = (@{
-  session_id = '944994c0-d7e9-4be1-a2a7-032471f945b2'
-  transcript_path = 'C:\Users\ddogr\.claude\projects\C--Users-ddogr-OneDrive-Desktop-Questions\944994c0-d7e9-4be1-a2a7-032471f945b2.jsonl'
-  cwd = 'C:\Users\ddogr\OneDrive\Desktop\Questions\universe-status'
+  session_id = '00000000-0000-4000-8000-0000000c0571'
+  transcript_path = 'C:\Users\someone\.claude\projects\C--work-example\00000000-0000-4000-8000-0000000c0571.jsonl'
+  cwd = 'C:\work\example'
   permission_mode = 'default'
   hook_event_name = 'PreToolUse'
-  agent_id = 'agent-a8451ad399c9231e2'
+  agent_id = 'agent-a0123456789abcdef'
   agent_type = 'workflow-subagent'
   tool_name = 'Bash'
   tool_input = @{
@@ -89,13 +89,13 @@ $payload = (@{
 # worst case the classifier still runs on: a 65,534-char chain of PowerShell assignments, just under the hook's
 # 65,536-char classification cap (each `$a =` level was one more re-tokenisation before the nesting bound)
 $capPayload = (@{
-  session_id = '944994c0-d7e9-4be1-a2a7-032471f945b2'; hook_event_name = 'PreToolUse'; agent_id = 'agent-a8451ad399c9231e2'
+  session_id = '00000000-0000-4000-8000-0000000c0571'; hook_event_name = 'PreToolUse'; agent_id = 'agent-a0123456789abcdef'
   tool_name = 'Bash'; tool_input = @{ command = ('$a = ' * 13106) + 'rm x' }; tool_use_id = 'toolu_cap'
 } | ConvertTo-Json -Compress -Depth 5)
 # the largest payload IN BYTES the hook parses: a valid PostToolBatch just under the 32 MB stdin cap (one Read call
 # whose tool_response is about 32 MB of text); a bigger stdin is a parse_error record without being parsed. Not the
 # most memory one firing can take: see the header (values, not bytes)
-$bigPrefix = '{"session_id":"944994c0-d7e9-4be1-a2a7-032471f945b2","hook_event_name":"PostToolBatch","agent_id":"agent-a8451ad399c9231e2","tool_calls":[{"tool_name":"Read","tool_input":{"file_path":"C:/x/big.txt"},"tool_use_id":"toolu_big","tool_response":"'
+$bigPrefix = '{"session_id":"00000000-0000-4000-8000-0000000c0571","hook_event_name":"PostToolBatch","agent_id":"agent-a0123456789abcdef","tool_calls":[{"tool_name":"Read","tool_input":{"file_path":"C:/x/big.txt"},"tool_use_id":"toolu_big","tool_response":"'
 $bigSuffix = '"}]}'
 $bigPayload = $bigPrefix + ('x' * (32MB - 1024 - $bigPrefix.Length - $bigSuffix.Length)) + $bigSuffix
 

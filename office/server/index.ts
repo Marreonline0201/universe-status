@@ -1,6 +1,7 @@
 // Office server boot: roster + scheduler + watcher + auto-commit + WebSocket.
 // Everything lives and dies with this process (SIGINT kills all agent sessions).
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -223,7 +224,9 @@ export async function startOffice(opts: { mock?: boolean } = {}) {
     log,
   )
 
-  const vaultMirror = cfg.vaultMirrorDir ? new VaultMirror(paths, cfg.vaultMirrorDir, log) : null
+  // a leading ~ is the user's home folder (the config names no user)
+  const vaultDir = cfg.vaultMirrorDir?.replace(/^~(?=$|[\\/])/, os.homedir())
+  const vaultMirror = vaultDir ? new VaultMirror(paths, vaultDir, log) : null
   vaultMirror?.sweep()
 
   const watcher = startWatcher(paths, {
