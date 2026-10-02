@@ -725,9 +725,10 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
       let sampled = 0, matched = 0
       const misses: string[] = []
       const stray: string[] = []
+      const covered: string[] = []
       for (let i = 0; i < 160 && snap().feed === 'example'; i++) {
         frames(9)
-        const d0 = canvas.ctx.draws.length
+        const d0 = canvas.ctx.draws.length, f0 = canvas.ctx.fills.length
         frames(1)
         const d = snap()
         seen = Math.max(seen, d.workers)
@@ -741,13 +742,22 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
           const [x, y] = name.split('@')[1].split(',').map(Number)
           const k = drawn.findIndex((r, j) => !used.has(j) && set.has(r.src) && r.x === ox + x * 16 * s && r.y === oy + y * 16 * s && r.w === 16 * s && r.h === 16 * s)
           if (k < 0) misses.push(`${name} at ${d.feedSeconds.toFixed(1)} s`)
-          else { used.add(k); matched++ }
+          else {
+            used.add(k); matched++
+            // its art rows (0-9 of the tile, plan §2) stay in view: the holder's own bubble (centred on the holder's
+            // column, which is the object's) is not painted over them; another worker's wide text bubble passing by may be
+            const r = drawn[k], art = { x: r.x, y: r.y, w: r.w, h: (r.h * 10) / 16 }
+            const over = canvas.ctx.fills.slice(f0).find(f => f.seq > r.seq && overlap(f, art) && Math.abs(f.x + f.w / 2 - (r.x + r.w / 2)) < r.w / 2)
+            if (over !== undefined) covered.push(`${name} under ${over.style} at ${d.feedSeconds.toFixed(1)} s`)
+          }
         }
         drawn.forEach((r, j) => { if (!used.has(j) && stateCanvases.has(r.src)) stray.push(`${stateCanvases.get(r.src)} at ${d.feedSeconds.toFixed(1)} s`) })
       }
       const want = ['fileCabinet|drawerOpen', 'fileCabinet|folderOut', 'historyShelf|ledgerOut', 'lectern|compare', 'pcDesk|on', 'pcDesk|typing',
         'benchTerminal|running', 'benchTerminal|output', 'frontDeskW|onPhone', 'printer|printing', 'frontDeskE|handIn', 'frontDeskW|signing']
       const absent = want.filter(k => !kinds.has(k))
+      ok(covered.length === 0 && matched > 50,
+        `object states stay in view: over none of the ${matched} drawn states does its holder's bubble cover the art rows (0-9; a worker's bubble rises above the object it uses)${covered.length ? ` — covered: ${covered.length}, e.g. ${covered.slice(0, 3).join('; ')}` : ''}`)
       ok(sampled > 50 && misses.length === 0 && stray.length === 0 && absent.length === 0,
         `object states drawn: ${matched} of ${sampled} derived states blitted as their own frame over their tile in sampled frames of the example (${kinds.size} kinds, among them ${want.length} the example must show)` +
         `${misses.length ? ` — not drawn: ${misses.slice(0, 3).join('; ')}` : ''}${stray.length ? ` — drawn without being derived: ${stray.slice(0, 3).join('; ')}` : ''}${absent.length ? ` — never seen: ${absent.join(', ')}` : ''}`)

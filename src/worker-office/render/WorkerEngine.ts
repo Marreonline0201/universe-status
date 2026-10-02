@@ -606,6 +606,7 @@ export class WorkerEngine {
       if (!v) { v = newView(); this.views.set(w.key, v) }
       spriteView(w, now, v)
       if (v.prop === 'ledger' || v.prop === 'book') v.propColour = this.objects?.carriedColour(w.key) ?? null
+      v.bubbleLift = this.usesObject(w) ? TILE : 0
       if (v.visible) order.push({ key: w.key, v, w })
     }
     if (this.views.size > world.workers.size) for (const k of [...this.views.keys()]) if (!world.workers.has(k)) { this.views.delete(k); this.sets.delete(k) }
@@ -627,6 +628,14 @@ export class WorkerEngine {
     if (texts.length > 0) this.drawTextBubbles(texts)
   }
 
+  /** The worker stands at an object's interaction point (entry, settled or exit there): its bubble goes above the
+   *  object, so the object's state art stays in view (SpriteView.bubbleLift). */
+  private usesObject(w: WorkerState): boolean {
+    if (!w.onGrid || w.goal === null || w.goal.kind !== 'place') return false
+    if (w.phase !== 'entry' && w.phase !== 'settled' && w.phase !== 'exit') return false
+    return this.world!.layout.place(w.goal.place).type === 'point'
+  }
+
   /** The text bubbles to show: the newest label changes first (within TEXT_BUBBLE_MS; never ICON_ONLY labels), at most
    *  MAX_TEXT_BUBBLES, each placed over its worker's head in device pixels and skipped when it would overlap one
    *  already placed (that worker keeps its icon). */
@@ -644,7 +653,7 @@ export class WorkerEngine {
       let width = 0
       for (const l of lines) width = Math.max(width, ctx.measureText(l).width)
       const bw = Math.ceil(width) + 2 * pad, bh = lines.length * lh + 2 * pad
-      const cx = this.offX + (v.x + 8) * s, top = this.offY + (v.y - 2) * s - bh
+      const cx = this.offX + (v.x + 8) * s, top = this.offY + (v.y - v.bubbleLift - 2) * s - bh
       const x = Math.round(Math.min(Math.max(cx - bw / 2, 0), this.bw - bw)), y = Math.round(Math.max(top, 0))
       if (out.some(b => x < b.x + b.w + gap && b.x < x + bw + gap && y < b.y + b.h + gap && b.y < y + bh + gap)) continue
       out.push({ key, alpha: v.alpha, lines, x, y, w: bw, h: bh, pad, lh })

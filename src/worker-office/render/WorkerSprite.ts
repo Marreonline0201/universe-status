@@ -89,11 +89,15 @@ export interface SpriteView {
   dotX: number
   dotY: number
   dotR: number
+  /** How far its bubble is raised (texels): a worker using an object stands south of it, and the object's state art
+   *  (rows 0-9 of the object tile, plan §2) lies exactly where a bubble over its head would go, so the engine raises
+   *  that worker's bubble one tile, over the wall or floor beyond the object. 0: over the head. */
+  bubbleLift: number
 }
 
 export const newView = (): SpriteView => ({
   visible: false, pose: 'stand', x: 0, y: 0, depth: 0, alpha: 1, shadow: false, prop: null, propView: null, propColour: null, propX: 0, propY: 0,
-  propBehind: false, belt: false, beltX: 0, beltY: 0, dot: 'idle', dotX: 0, dotY: 0, dotR: 1.5,
+  propBehind: false, belt: false, beltX: 0, beltY: 0, dot: 'idle', dotX: 0, dotY: 0, dotR: 1.5, bubbleLift: 0,
 })
 
 /** The frame a worker shows at `now`. */
@@ -207,7 +211,7 @@ export const bubbleText = (w: WorkerState): string => labelText(w.label, { n: w.
 
 /** Icon bubbles over the heads (world texels: a 9×9 dark box with the 7×7 icon, centred above the frame). */
 export function drawIconBubble(g: Ctx, v: SpriteView, icon: IconId) {
-  const bx = v.x + Math.floor((FIGURE - ICON_SIZE - 2) / 2), by = v.y - ICON_SIZE - 3
+  const bx = v.x + Math.floor((FIGURE - ICON_SIZE - 2) / 2), by = v.y - v.bubbleLift - ICON_SIZE - 3
   g.globalAlpha = v.alpha
   g.fillStyle = BUBBLE_BG
   g.fillRect(bx, by, ICON_SIZE + 2, ICON_SIZE + 2)
