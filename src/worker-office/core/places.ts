@@ -21,6 +21,8 @@ export const PULL_MS = 1200
 /** Front desk: slide the paper into OUT, then sign the book (§4.8 hand-in / sign). */
 export const HAND_IN_MS = 500
 export const SIGN_MS = 1500
+/** Printer: collect and square the pages before carrying them to the front desk (§4.4 printer exit, §4.8 collect). */
+export const COLLECT_MS = 800
 
 const FLOOR_POSE: Readonly<Record<string, PoseName>> = {
   useU: 'useU0', standD: 'stand', standU: 'standU', standL: 'standL', standR: 'standR', reachU: 'reachU', readU: 'readU',

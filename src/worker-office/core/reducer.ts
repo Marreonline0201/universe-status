@@ -16,7 +16,8 @@
 //     stays claimed until then, so a spawn's slot always names a clear tile; a worker spawned with slot -1 (every slot
 //     claimed: held off screen) gets the first slot freed, as a 'slotted' command (ruling 3);
 //   - arrived(key, place, at): the body stands on the place it was last sent to, since `at`. The walk-dependent beats
-//     are timed from then: the end of a pull (1.2 s later), the hand-in and the sign-out at the front desk (ruling 5);
+//     are timed from then: the end of a pull (1.2 s later), the printer's collect (0.8 s later), the hand-in and the
+//     sign-out at the front desk (ruling 5);
 //   - blocked(key, tile): the page's watchdog found the body unable to reach its place for too long (a mutual block);
 //     the core re-books it on another free place of the same use (PlaceBook.relocate) and sends it there (ruling 6).
 // Without body signals (a replay, which has no bodies) a slot is released when its worker books a place, and those beats
@@ -47,7 +48,9 @@
 //     only the label changes;
 //   - a Batch drops its in-flight count to 0 (probe 2: never subtract n) and starts the gap: stage 1, then stage 2 at
 //     10 s (labelled filler, §4.5). Bench and desk calls get a result 1.0 s after the Batch (§4.5);
-//   - the hand-back (Pre SubagentHandback -> printer; its Post -> carry the printout to the front desk), the result
+//   - the hand-back (Pre SubagentHandback -> printer; after its Post, once the body stands at its printing place, the
+//     0.8 s collect, then carry the printout to the front desk: a Post that comes before the walk ends never skips the
+//     printer, like the pull, §4.4 printer row), the result
 //     form (Pre StructuredOutput -> front desk) and the sign-out (a finished worker that never handed in) end at the
 //     desk; after the hand-in a worker without its stop waits on a departure hold (hold tiles, then the mail corner)
 //     for at most 90 s (§4.6);
@@ -71,7 +74,7 @@ import { PlaceBook, SHELF_ROOM, stationForKind, type Change, type PlaceId, type 
 import type { PoseName, PropId } from '../render/props.ts'
 import { activityLabel, type LabelId } from './labels.ts'
 import type { BannerView, CallResult, Cmd, ExitReason, FeedMessage, ObjectsView, SessionKey, WorkerKey, WorkerView } from './messages.ts'
-import { HAND_IN_MS, PULL_MS, SIGN_MS, isSeat, originOf, placePose, stance, walkMs, type FrontPose, type Stance, type Sub } from './places.ts'
+import { COLLECT_MS, HAND_IN_MS, PULL_MS, SIGN_MS, isSeat, originOf, placePose, stance, walkMs, type FrontPose, type Stance, type Sub } from './places.ts'
 import { Reorder, parseRecord, type BtEntry, type SpoolRecord } from './reorder.ts'
 
 // This module is the core's entry point: the §5.3 feed helpers come with it.
@@ -191,7 +194,11 @@ interface Worker {
   pull: { id: number; at: number } | null
   // finishing
   fin: Fin | null
-  finStep: 'printing' | 'carry' | 'handIn' | null
+  finStep: 'printing' | 'collect' | 'carry' | 'handIn' | null
+  /** The hand-back's collect at its printing place: when the carry starts (Infinity: its body is not there yet). */
+  collectAt: number | null
+  /** Without body signals: when the walk estimate has the body at its printing place. */
+  printEta: number | null
   /** The arrival at the desk spot (the walk estimate, or the page's report: Infinity until it comes); the hand-in
    *  starts then. */
   finArrive: number | null
@@ -383,6 +390,7 @@ export class ObserverCore {
     const since = Math.max(this.#clock, at ?? this.#clock)
     const h = this.#book.holding(key)
     if (w.pull !== null && w.pull.at === Infinity && h !== null && h.role === 'pull' && h.place === place) w.pull.at = since + PULL_MS
+    if (w.finStep === 'collect' && w.collectAt === Infinity && h !== null && h.place === place) w.collectAt = since + COLLECT_MS
     if (w.finStep === 'carry' && w.finArrive === Infinity && h !== null && h.role === 'use' && h.forKind === 'frontDesk' && h.place === place) w.finArrive = since
     this.#advance(this.#clock)
     this.#flush()
@@ -479,6 +487,7 @@ export class ObserverCore {
     if (w.result) take(w.result.at, () => this.#resultFire(w))
     if (w.fgCheck) take(w.fgCheck.at, () => this.#fgFire(w))
     if (w.pull) take(w.pull.at, () => this.#pullFire(w))
+    take(w.collectAt, () => this.#collectFire(w))
     take(w.finArrive, () => this.#arriveFire(w))
     take(w.finAt, () => this.#finFire(w))
     take(w.graceAt, () => this.#graceFire(w))
@@ -622,7 +631,7 @@ export class ObserverCore {
         at: null, helper: this.#bgIds.has(aid) ? 'background' : null, phase: 'gone', phaseSince: this.#clock, disp: 'gone', dispSince: this.#clock,
         place: null, role: null, forKind: null, station: null, activity: 'none', sub: 'unit', hadCall: false, calls: new Map(), inFlight: 0,
         batchKind: null, unitBg: false, callStart: this.#clock, gapStart: null, actSeq: 0, result: null, fgCheck: null, pull: null, fin: null,
-        finStep: null, finArrive: null, finAt: null, stopSeen: false, handedIn: false, holdOutCapAt: null, bgJob: null, gated: false, graceAt: null,
+        finStep: null, collectAt: null, printEta: null, finArrive: null, finAt: null, stopSeen: false, handedIn: false, holdOutCapAt: null, bgJob: null, gated: false, graceAt: null,
         holdFailed: false, sLast: s.S, ovQ: 0, listed: false, absent: 0, slot: null, bodyAt: null, sent: null, queued: [],
       }
       this.#byAid.set(aid, w)
@@ -760,6 +769,11 @@ export class ObserverCore {
       o.forKind = c.forKind
       if (o.bodyAt !== c.to) o.bodyAt = null
       if (c.to !== null && !signals) this.#freeSlot(o)
+      if (o.fin === 'report' && (o.finStep === 'printing' || o.finStep === 'collect') && c.to !== null) {
+        const eta = signals ? null : this.#clock + walkMs(this.layout, c.from, c.to)
+        o.printEta = eta
+        if (o.finStep === 'collect') o.collectAt = signals ? (o.bodyAt === c.to ? this.#clock + COLLECT_MS : Infinity) : eta! + COLLECT_MS
+      }
       if (c.role === 'pull' && c.to !== null) {
         const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS
         o.pull = { id: c.seq, at }
@@ -819,7 +833,7 @@ export class ObserverCore {
   }
 
   #cancelFin(w: Worker) {
-    w.fin = null; w.finStep = null; w.finArrive = null; w.finAt = null; w.holdOutCapAt = null; w.stopSeen = false
+    w.fin = null; w.finStep = null; w.collectAt = null; w.printEta = null; w.finArrive = null; w.finAt = null; w.holdOutCapAt = null; w.stopSeen = false
   }
 
   #onBatch(aid: string, s: Session) {
@@ -882,6 +896,22 @@ export class ObserverCore {
     this.#act(w, true)
   }
 
+  /** When the collect after the hand-back's Post ends (§4.4 printer: collect and square the pages, 0.8 s): 0.8 s after
+   *  the body stands at its printing place (the printer, a sibling's point, a wait tile, or where it waits parked),
+   *  Infinity until the page reports it there (body signals); without, after the walk estimate. */
+  #collectStart(w: Worker): number {
+    if (this.options.bodySignals) return w.place === null || w.bodyAt === w.place ? this.#clock + COLLECT_MS : Infinity
+    return Math.max(this.#clock, w.printEta ?? this.#clock) + COLLECT_MS
+  }
+
+  /** The collect is over: carry the printout to the front desk. */
+  #collectFire(w: Worker) {
+    w.collectAt = null
+    if (w.fin !== 'report' || w.finStep !== 'collect') return
+    w.finStep = 'carry'
+    if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)
+  }
+
   #pullFire(w: Worker) {
     const p = w.pull
     w.pull = null
@@ -895,8 +925,8 @@ export class ObserverCore {
       if (w === null) return
       this.#touch(w, s)
       if (w.fin === 'report' && w.finStep === 'printing') {
-        w.finStep = 'carry'
-        if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)
+        w.finStep = 'collect'
+        w.collectAt = this.#collectStart(w)
       }
       return
     }
@@ -1038,7 +1068,7 @@ export class ObserverCore {
     w.place = null; w.role = null; w.forKind = null; w.station = null
     w.activity = 'none'; w.sub = 'unit'; w.hadCall = false; w.calls.clear(); w.inFlight = 0; w.batchKind = null; w.unitBg = false
     w.gapStart = null; w.result = null; w.fgCheck = null; w.pull = null
-    w.fin = null; w.finStep = null; w.finArrive = null; w.finAt = null; w.stopSeen = false; w.handedIn = false; w.holdOutCapAt = null
+    w.fin = null; w.finStep = null; w.collectAt = null; w.printEta = null; w.finArrive = null; w.finAt = null; w.stopSeen = false; w.handedIn = false; w.holdOutCapAt = null
     w.bgJob = null; w.gated = false; w.graceAt = null; w.holdFailed = false; w.ovQ = 0; w.listed = false; w.absent = 0
     w.bodyAt = null
     w.sent = null
@@ -1144,7 +1174,7 @@ export class ObserverCore {
         if (w.role !== 'wait' && w.role !== 'parked' && place !== null) pose = w.finStep === 'printing' ? 'standU' : 'useU0'
         prop = w.fin === 'form' ? 'form' : w.fin === 'report' && w.finStep !== 'printing' ? 'printout' : null
         if (waitingFor !== null) label = 'finishQueue'
-        else if (w.finStep === 'printing') label = 'act:report'
+        else if (w.finStep === 'printing' || w.finStep === 'collect') label = 'act:report'
         else if (w.fin === 'signout') label = 'signOut'
         else if (w.finStep === 'handIn') label = 'handIn'                   // at the desk spot (after the walk ETA)
         else label = w.fin === 'form' ? 'carryForm' : 'carryReport'

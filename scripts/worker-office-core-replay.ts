@@ -303,7 +303,7 @@ const S: Scenario[] = [
   },
   {
     name: 'S1b-handback-background',
-    what: '§4.2/§4.6: a background helper (main\'s async launch, ch) launches a bg shell (pager), hands back (printer -> carry -> desk -> departure hold) and leaves on its stop: Finishing wins over the background pause. The main thread draws nothing.',
+    what: '§4.2/§4.6: a background helper (main\'s async launch, ch) launches a bg shell (pager), hands back (printer -> collect -> carry -> desk -> departure hold) and leaves on its stop: Finishing wins over the background pause. The main thread draws nothing. Its hand-back (1 s) is shorter than its walk to the printer (5.9 s on the estimate): the carry still starts only at the printer, 0.8 s after the body is there (§4.4 printer row), not at the Post.',
     lines: () => [
       pre(40, undefined, 'helper-bg', 'm1'), start(40.1, B, 'general-purpose'), postAgent(40.2, undefined, 'async_launched', B, 'm1'),
       pre(41, B, 'run', 'u1', { bg: true }), batch(41.5, B), pre(45, B, 'report', 'u2'), postReport(46, B, 'u2'), batch(46.2, B),
@@ -653,14 +653,14 @@ const EXPECTED: Record<string, string> = {
 45.000 walkTo #1 printer.1
 45.000 bubble #1 act:report
 45.000 act #1 in printer report seq2
-46.000 walkTo #1 front-desk.2
 46.000 pose #1 useU0+printout+belt
-46.000 bubble #1 carryReport
-46.200 act #1 out frontDesk report seq2
-48.500 bubble #1 handIn
-50.500 walkTo #1 hold-1
-50.500 pose #1 stand+belt
-50.500 bubble #1 handedIn
+46.200 act #1 out printer report seq2
+51.737 walkTo #1 front-desk.2
+51.737 bubble #1 carryReport
+54.237 bubble #1 handIn
+56.237 walkTo #1 hold-1
+56.237 pose #1 stand+belt
+56.237 bubble #1 handedIn
 60.000 leave #1 finished out`,
   'S1c-signout-and-cap': `0.000 spawn #1 slot0
 0.000 walkTo #1 inout-board.1
@@ -1615,6 +1615,7 @@ const MUTANTS: Mutant[] = [
   { id: 'M32 the pull ends on the walk estimate even with body signals (ruling 5)', file: 'reducer.ts', why: 'S15',
     from: 'const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS',
     to: 'const at = this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS' },
+  { id: 'M34 the hand-back skips the printer: the carry starts at the Post', file: 'reducer.ts', why: 'S1b', from: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'collect'\n        w.collectAt = this.#collectStart(w)\n      }\n", to: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'carry'\n        if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)\n      }\n" },
   { id: 'M33 a blocked report re-books nothing (ruling 6)', file: 'reducer.ts', why: 'S16',
     from: '    const res = this.#book.relocate(key, at, w.place)\n', to: '    const res: { place: PlaceId | null; changes: readonly Change[] } = { place: null, changes: [] }\n' },
   { id: 'M28 commands for workers that left', file: 'reducer.ts', why: 'I5',

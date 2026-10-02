@@ -40,7 +40,9 @@
 //      comes on top) before the core sent it out, and every fetch-then-read walk to a reading place starts at least
 //      the 1.2 s pull after the body stood on the shelf point;
 //   W4 (ruling 6) the mutual-block scenario M resolves through the watchdog (A1 covers it: without the watchdog both
-//      trips stay open for good).
+//      trips stay open for good);
+//   W5 (§4.4 printer row) a hand-back never skips the printer: the walk that carries the printout to the front desk
+//      starts at least the 0.8 s collect after the body stood on its printing place, however soon the Post came.
 // Mutants (each a one-line patch of planner.ts, reducer.ts, world.ts or WorkerSprite.ts, loaded from a temp copy) must
 // each make some check fail; the rulings' four are the failing-first evidence (each restores the behaviour the ruling
 // replaced).
@@ -226,7 +228,7 @@ interface Trip {
 
 /** The fetch-then-read shelves: a walk from one of their points to a reading place ends a pull (ruling 5). */
 const FETCH_SHELVES: ReadonlySet<string> = new Set(['historyShelf', 'bookshelf', 'cardCatalog', 'manualsShelf'])
-const PULL_MS = 1200, SIGN_MS = 1500
+const PULL_MS = 1200, SIGN_MS = 1500, COLLECT_MS = 800
 
 class Sim {
   readonly mods: Mods
@@ -250,6 +252,10 @@ class Sim {
   readonly #desk = new Map<string, number>()
   readonly #shelf = new Map<string, { place: PlaceId; at: number }>()
   readonly #lastTarget = new Map<string, PlaceId>()
+  /** W5: workers in a hand-back (after its act 'report'), and each worker's last arrival report (place, time). */
+  readonly #handback = new Set<string>()
+  readonly #lastArrival = new Map<string, { place: PlaceId; at: number }>()
+  handbackCarries = 0
   deskLeaves = 0
   pullWalks = 0
   blockedReports = 0
@@ -299,6 +305,7 @@ class Sim {
       command: (c, now) => this.#command(c, now),
       slotLeft: (key, slot) => { if (this.#claims.get(slot) === key) this.#claims.delete(slot) },
       arrived: (key, place, now) => {
+        this.#lastArrival.set(key, { place, at: now })
         const station = LAYOUT.stationOf(place)
         if (station === 'frontDesk') this.#desk.set(key, now)
         if (station !== null && FETCH_SHELVES.has(station)) this.#shelf.set(key, { place, at: now })
@@ -323,7 +330,7 @@ class Sim {
   #command(c: Cmd, now: number) {
     switch (c.op) {
       case 'spawn': case 'slotted': {
-        if (c.op === 'spawn') { this.names.set(c.key, c.n); this.#desk.delete(c.key); this.#shelf.delete(c.key); this.#lastTarget.delete(c.key) }
+        if (c.op === 'spawn') { this.names.set(c.key, c.n); this.#desk.delete(c.key); this.#shelf.delete(c.key); this.#lastTarget.delete(c.key); this.#handback.delete(c.key); this.#lastArrival.delete(c.key) }
         if (c.slot < 0) break
         const holder = this.#claims.get(c.slot)
         if (holder !== undefined && holder !== c.key) this.v('W1', `slot ${c.slot} named for ${this.who(c.key)} while ${this.who(holder)}'s body still claims it`)
@@ -331,9 +338,21 @@ class Sim {
         this.#named.set(c.key, { tile: SLOT_TILES[c.slot], at: now })
         break
       }
+      case 'act':
+        if (c.inCall && c.activity === 'report') this.#handback.add(c.key)
+        break
       case 'walkTo': {
         const prev = this.#lastTarget.get(c.key)
         this.#lastTarget.set(c.key, c.place)
+        // W5: the carry of a hand-back (its first walk to the front desk) starts after the collect at the printing place
+        const desk = LAYOUT.stationOf(c.place) === 'frontDesk' || LAYOUT.poolOf(c.place)?.name === '@frontq'
+        if (desk && this.#handback.delete(c.key)) {
+          this.handbackCarries++
+          const a = this.#lastArrival.get(c.key)
+          if (prev === undefined || a === undefined || a.place !== prev || now - a.at < COLLECT_MS - 1) {
+            this.v('W5', `${this.who(c.key)} sent to carry its report to ${c.place} ${a === undefined || a.place !== prev ? `before its body ever stood on its printing place ${prev ?? '(none)'}` : `${(now - a.at).toFixed(0)} ms after its body reached ${prev} (the collect is ${COLLECT_MS} ms)`}`)
+          }
+        }
         if (prev === undefined || LAYOUT.readingRoomOf(c.place) === null) break
         const st = LAYOUT.stationOf(prev)
         if (st === null || !FETCH_SHELVES.has(st)) break
@@ -754,7 +773,7 @@ function report(sc: Scenario, sim: Sim) {
   if (sim.world !== null) {
     const st = sim.world.core.stats
     console.log(`    page: appearances on their named slot ${sim.appearWaits.length}, slots released ${st.slotsLeft}, held off screen ${st.slotted}; ` +
-      `arrival reports ${st.arrivals}; seat entries ${sim.seatEntries}; finished exits checked ${sim.deskLeaves}, pull walks checked ${sim.pullWalks}; ` +
+      `arrival reports ${st.arrivals}; seat entries ${sim.seatEntries}; finished exits checked ${sim.deskLeaves}, pull walks checked ${sim.pullWalks}, hand-back carries checked ${sim.handbackCarries}; ` +
       `watchdog reports ${sim.blockedReports} (re-booked ${st.relocated})`)
   }
 }
@@ -856,6 +875,13 @@ function objectCases(): ObjCase[] {
     ...objHelper(B, [['fetch', 'bookshelf', 3, 30]], 50, 'cabinet', 64, 0.4),
     ...objHelper(C, [['fetch', 'bookshelf', 5, 26]], 50, 'cabinet', 64, 0.6),
   ]
+  /** A hand-back whose Post comes 0.5 s after its Pre, long before the walk to the printer ends. */
+  const quickHandback = (): Line[] => [
+    L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' }),
+    L(1, 'PreToolUse', SA, { aid: A, k: 'fileCabinet', a: 'read', tu: 'q0' }), L(3, 'PostToolBatch', SA, { aid: A, n: 1 }),
+    L(12, 'PreToolUse', SA, { aid: A, k: 'printer', a: 'report', tu: 'q1' }), L(12.5, 'PostToolUse', SA, { aid: A, k: 'printer', a: 'report', tu: 'q1' }),
+    L(12.6, 'PostToolBatch', SA, { aid: A, n: 1 }), L(30, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }),
+  ]
   const deskEnd = (end: 'form' | 'report' | 'stop'): Line[] => {
     const out: Line[] = [L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' })]
     out.push(L(1, 'PreToolUse', SA, { aid: A, k: 'fileCabinet', a: 'read', tu: 'd0' }), L(3, 'PostToolBatch', SA, { aid: A, n: 1 }))
@@ -914,6 +940,8 @@ function objectCases(): ObjCase[] {
     // the printer: "sheets rise from Pre to Post"; "collect and square the pages (0.8 s), carry them"
     { id: 'O15', what: 'printer, hand-back: the sheets rise from the Pre to the Post, then the pages wait in the tray until the worker walks off with them', kind: 'printer', mode: 'printer', lines: deskEnd('report'),
       expect: { unit: { allow: ['printing'], need: ['printing'] }, post: { allow: ['done'], need: ['done'] }, gone: none } },
+    { id: 'O15b', what: 'printer, a hand-back shorter than the walk (Post 0.5 s after the Pre): the worker still walks to the printer and collects the pages there (they wait in the tray) before carrying them to the front desk', kind: 'printer', mode: 'printer', lines: quickHandback(),
+      expect: { post: { allow: ['done'], need: ['done'] }, gone: none } },
     // the front desk: "slide the paper into OUT (0.5 s) and sign the book (1.5 s)"; sign-out; "Ticket: drop a slip into IN
     // (0.5 s)"; "AskUserQuestion: lift the handset until the next event"
     { id: 'O16', what: 'front desk, result form: the paper slides into OUT (the E half)', kind: 'frontDesk', tile: 'E', mode: 'desk', lines: deskEnd('form'),
@@ -1089,6 +1117,7 @@ const OBJECT_MUTANTS: readonly Mutant[] = [
   { id: 'OM23 the cradle stays full while the worker is on the phone', file: 'objects', from: "        if (pose === 'phoneU') { this.#show(w, p, 'frontDeskW', 'onPhone', now); return }\n", to: '' },
   { id: 'OM24 the old stance: AskUserQuestion stands with its back turned (standU), no handset', file: 'core', from: '    return stance({ kind, activity: w.activity, sub, role: w.role,', to: "    if (w.activity === 'ask') return { pose: 'standU', prop: null }\n    return stance({ kind, activity: w.activity, sub, role: w.role," },
   { id: 'OM25 no magnet flip at the arrival hold', file: 'objects', from: '    return t < 0 || t >= FLIP_MS ? null :', to: '    return true ? null :' },
+  { id: 'OM27 the hand-back skips the printer: the carry starts at the Post', file: 'core', from: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'collect'\n        w.collectAt = this.#collectStart(w)\n      }\n", to: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'carry'\n        if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)\n      }\n" },
   { id: 'OM26 point states for a body still walking to the point', file: 'objects', from: '    if (!w.onGrid || w.leaving !== null || !AT.has(w.phase) || w.goal === null', to: '    if (!w.onGrid || w.leaving !== null || w.goal === null' },
 ]
 
@@ -1357,6 +1386,7 @@ const MUTANTS: readonly Mutant[] = [
     from: 'const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS',
     to: 'const at = this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS' },
   { id: 'M10 ruling 6: no watchdog', file: 'world', from: '    this.pendingLimitMs = opts.pendingLimitMs ?? PENDING_LIMIT_MS\n', to: '    this.pendingLimitMs = Infinity\n' },
+  { id: 'M11 the hand-back skips the printer: the carry starts at the Post', file: 'core', from: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'collect'\n        w.collectAt = this.#collectStart(w)\n      }\n", to: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'carry'\n        if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)\n      }\n" },
 ]
 
 /** A patched copy of one module (the patch asserted to apply once) whose relative imports point at the real files. */
