@@ -31,9 +31,14 @@
 //      mutant: a backrest pixel on row 7
 //   F. no contact shadow under seats: no seat casts one in the pre-render (the floor south of every chair is the bare
 //      finish, while south of a lectern it is not), and every seated pose draws none (props.ts HAND);
-//   G. props: the slice's 8 props, every view drawn; every pose of the hand table (plan §2 frames + assets.ts) holds
-//      every prop view inside the 16×16 figure cell. PROVISIONAL: the anchors are measured on today's assets.ts
-//      figure, whose look the owner has not settled; they and this section are re-derived with the new figure;
+//   G. the worker figures (D14 (a), approved: frames.json round 3, ported to figures.ts) and the hand table re-derived
+//      on them: 31 frames (plan §2 + assets.ts + phoneU), each 16×16 known symbols, standing frames on the sole line,
+//      seated frames clear of the backrest rows, no hole behind a corner texel, the west profiles mirroring the east
+//      ones; every ramp drawn on strict canvases, every texel its symbol's colour, rendered once; looks from the seed;
+//      the palette rules (hair vs skin 12 dE76, darkbrown's highlight); the status dot clear of every frame
+//      (mutant: the old dot); every prop view a hand shows touches a holding hand texel without covering it
+//      (mutants: readD without its narrow anchor, watchU's round-2 anchor); belts; the port's readD fix lets every held
+//      volume reach 3:1 on one hand for every skin (mutant: the grid before the fix);
 //   H. icons: every activity the real classifier (office/observer/classify.mjs) sends to a slice object has an icon;
 //      every icon is a valid 7×7 map, distinct, and readable on the dark bubble (contrast measured);
 //   I. pixel-art discipline: all furniture, state, prop and icon art is drawn on STRICT canvases (whole texels, solid
@@ -65,6 +70,8 @@ const L = await import('../src/worker-office/map/loadMap.ts')
 const F = await import('../src/worker-office/render/furniture.ts')
 const S = await import('../src/worker-office/render/stateLayer.ts')
 const P = await import('../src/worker-office/render/props.ts')
+const FG = await import('../src/worker-office/render/figures.ts')
+const PAL = await import('../src/worker-office/render/palette.ts')
 const I = await import('../src/worker-office/render/icons.ts')
 const pre = await import('../src/worker-office/render/prerender.ts')
 const floors = await import('../src/worker-office/render/floors.ts')
@@ -123,10 +130,11 @@ const REQUIRED: readonly (readonly [string, string, string])[] = [
 const STATELESS = ['sofaN', 'armchairN', 'taskChairN', 'woodChairN']
 /** Plan §2 "Props" for the slice. */
 const SLICE_PROPS = ['folder', 'ledger', 'book', 'callSlip', 'printout', 'form', 'ticket', 'pager']
-/** Plan §2 "New figure frames" + today's frames (assets.ts CharFrame); seated ones per their names. */
+/** Plan §2 "New figure frames" + today's frames (assets.ts CharFrame) + the handset frame (F8); seated ones per their
+ *  names. */
 const PLAN_POSES = ['stand', 'walkD0', 'walkD1', 'walkU0', 'walkU1', 'walkL0', 'walkL1', 'walkR0', 'walkR1', 'sit', 'type0', 'type1',
   'standU', 'useU0', 'useU1', 'reachU', 'readU', 'watchU', 'sitBack', 'readD', 'ponderD', 'armsD', 'standL', 'standR',
-  'passD', 'passU', 'passL', 'passR', 'sitBackLean', 'sitBackNotepad']
+  'passD', 'passU', 'passL', 'passR', 'sitBackLean', 'sitBackNotepad', 'phoneU']
 const SEATED_POSES = ['sit', 'type0', 'type1', 'sitBack', 'sitBackLean', 'sitBackNotepad']
 
 // ── pixel helpers ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -555,34 +563,190 @@ ok(lecterns.length === 2 && lecterns.every(o => southStrip(floorLayer, o.x, o.y)
 const seatedBad = (P.POSES as readonly string[]).filter(p => P.drawsContactShadow(p as never) === SEATED_POSES.includes(p))
 ok(seatedBad.length === 0, `plan §6.2: the ${SEATED_POSES.length} seated poses draw no contact shadow, the other ${P.POSES.length - SEATED_POSES.length} do${seatedBad.length ? ` — wrong: ${seatedBad.join(', ')}` : ''}`)
 
-// ── G. props and the hand table ──────────────────────────────────────────────────────────────────────────────────
-console.log('G. props, and the hand anchors — PROVISIONAL: measured on today\'s assets.ts figure, whose look the owner has not settled (re-derive with the new figure); no figure is drawn in this pass')
+// ── G. the worker figures, props and the hand table ──────────────────────────────────────────────────────────────
+console.log('G. the worker figures (D14 (a), frames.json round 3) and the hand table re-derived on them')
 ok(JSON.stringify([...P.PROP_IDS].sort()) === JSON.stringify([...SLICE_PROPS].sort()), `the slice's ${SLICE_PROPS.length} props: ${P.PROP_IDS.join(', ')}`)
-ok(JSON.stringify([...P.POSES].sort()) === JSON.stringify([...PLAN_POSES].sort()) && PLAN_POSES.every(p => P.HAND[p as never]), `the hand table covers all ${PLAN_POSES.length} figure frames (plan §2 + assets.ts)`)
-const outOfCell: string[] = []
-let placements = 0
-for (const pose of P.POSES) {
-  const h = P.HAND[pose]
-  for (const id of P.PROP_IDS) {
-    if (h.hand) {
-      const a = P.PROP_ART[id][h.hand.view]
-      if (a) {
-        placements++
-        const x0 = h.hand.x - a.gripX, y0 = h.hand.y - a.gripY
-        if (x0 < 0 || y0 < 0 || x0 + a.w > T || y0 + a.h > T) outOfCell.push(`${pose}/${id}/${h.hand.view}`)
+type Pose = (typeof P.POSES)[number]
+type Hands = typeof P.HAND
+ok(JSON.stringify([...P.POSES].sort()) === JSON.stringify([...PLAN_POSES].sort()) && PLAN_POSES.every(p => P.HAND[p as Pose] && FG.FRAMES[p as Pose] && FG.DOTS[p as Pose]),
+  `the ${PLAN_POSES.length} figure frames (plan §2 + assets.ts + the handset frame phoneU): a grid, a dot and a hand-table row each`)
+/** frames.json "palette_symbols". */
+const FIGURE_SYMBOLS = new Set('.1234H567eSabcdCpqrsRxykK')
+const CORNERS = new Set('HCSR')
+const opaqueAt = (rows: readonly string[], x: number, y: number) => x >= 0 && y >= 0 && x < T && y < T && rows[y][x] !== '.'
+{
+  const bad: string[] = []
+  for (const p of P.POSES) {
+    const rows = FG.FRAMES[p]
+    if (rows.length !== T || rows.some(r => r.length !== T)) { bad.push(`${p}: not 16×16`); continue }
+    const odd = [...new Set(rows.join(''))].filter(c => !FIGURE_SYMBOLS.has(c))
+    if (odd.length) bad.push(`${p}: unknown symbols ${odd.join('')}`)
+    const seated = SEATED_POSES.includes(p)
+    if (P.HAND[p].seated !== seated) bad.push(`${p}: hand table says seated ${P.HAND[p].seated}`)
+    if (seated && rows[14] + rows[15] !== '.'.repeat(2 * T)) bad.push(`${p}: seated, but rows 14-15 are not empty (the backrest must show)`)
+    if (!seated && !/[xy]/.test(rows[15])) bad.push(`${p}: no shoe on row 15 (the sole line)`)
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      if (!CORNERS.has(rows[y][x])) continue
+      const nb = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => (opaqueAt(rows, x + dx, y + dy) ? rows[y + dy][x + dx] : '.'))
+      if (nb.every(c => c !== '.' && !CORNERS.has(c))) bad.push(`${p}: a hole at (${x},${y})`)
+    }
+  }
+  for (const [w, e] of [['standL', 'standR'], ['walkL0', 'walkR0'], ['walkL1', 'walkR1'], ['passL', 'passR']] as const) {
+    const rw = FG.FRAMES[w], re = FG.FRAMES[e]
+    let diff = 0
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) if (opaqueAt(rw, x, y) !== opaqueAt(re, 16 - x, y)) diff++
+    if (diff) bad.push(`${w} is not the x -> 16 - x mirror of ${e} (${diff} texels)`)
+  }
+  ok(bad.length === 0, `every frame: 16×16 known symbols; the ${P.POSES.length - SEATED_POSES.length} standing frames on the sole line (a shoe on row 15), the ${SEATED_POSES.length} seated ones clear of rows 14-15; no hole behind a corner texel; the four west profiles mirror the east ones${bad.length ? ` — ${bad.slice(0, 3).join('; ')}` : ''}`)
+}
+{
+  // every ramp in at least one look; every frame of each drawn on strict canvases; every texel the colour of its symbol
+  const SK = Object.keys(PAL.FIGURE_SKIN) as (keyof typeof PAL.FIGURE_SKIN)[], HA = Object.keys(PAL.FIGURE_HAIR) as (keyof typeof PAL.FIGURE_HAIR)[]
+  const SH = Object.keys(PAL.FIGURE_SHIRT) as (keyof typeof PAL.FIGURE_SHIRT)[], TR = Object.keys(PAL.FIGURE_TROUSERS) as (keyof typeof PAL.FIGURE_TROUSERS)[]
+  const SO = Object.keys(PAL.FIGURE_SHOES) as (keyof typeof PAL.FIGURE_SHOES)[]
+  const looks = range(Math.max(SK.length, HA.length, SH.length, TR.length, SO.length)).map(i => ({ skin: SK[i % SK.length], hair: HA[i % HA.length], shirt: SH[i % SH.length], trousers: TR[i % TR.length], shoes: SO[i % SO.length] }))
+  const n0 = FG.figureRenders()
+  const thrown: string[] = [], wrong: string[] = []
+  for (const l of looks) {
+    const pal = FG.figurePalette(l)
+    for (const p of P.POSES) {
+      let img: Canvas
+      try { img = asCanvas(FG.figureSet(l).image(p)) } catch (e) { thrown.push(`${p}: ${String(e).slice(0, 100)}`); continue }
+      const rows = FG.FRAMES[p]
+      for (let y = 0; y < T && wrong.length < 4; y++) for (let x = 0; x < T; x++) {
+        const ch = rows[y][x], got = img.at(x, y)
+        const want = ch === '.' ? [0, 0, 0, 0] : parseColor(pal[ch])
+        if (got.some((v, i) => Math.abs(v - want[i]) > (i < 3 && want[3] < 255 ? 1 : 0))) { wrong.push(`${FG.lookKey(l)} ${p} (${x},${y}) ${ch}`); break }
       }
     }
   }
-  if (h.belt) {
-    const a = P.PROP_ART.pager.belt!
-    placements++
-    if (h.belt.x - a.gripX < 0 || h.belt.y - a.gripY < 0 || h.belt.x - a.gripX + a.w > T || h.belt.y - a.gripY + a.h > T) outOfCell.push(`${pose}/pager/belt`)
+  const drawn = FG.figureRenders() - n0
+  const cached = looks.every(l => P.POSES.every(p => FG.figureSet(l).image(p) === FG.figureSet(l).image(p))) && FG.figureRenders() - n0 === drawn
+  ok(thrown.length === 0 && wrong.length === 0 && drawn === looks.length * P.POSES.length && cached,
+    `${looks.length} looks cover all ${SK.length} skin, ${HA.length} hair, ${SH.length} shirt, ${TR.length} trouser and ${SO.length} shoe ramps: ${drawn} frames drawn on strict canvases, every texel its symbol's colour (corners at alpha 120/255), each rendered once${thrown.length ? ` — threw: ${thrown.slice(0, 2).join('; ')}` : ''}${wrong.length ? ` — wrong: ${wrong.join('; ')}` : ''}`)
+  const seen = { skin: new Set<string>(), hair: new Set<string>(), shirt: new Set<string>() }
+  for (let s = 0; s < 4000; s++) { const l = FG.lookOf(Math.imul(s, 0x9e3779b1) >>> 0); seen.skin.add(l.skin); seen.hair.add(l.hair); seen.shirt.add(l.shirt) }
+  ok(seen.skin.size === SK.length && seen.hair.size === HA.length && seen.shirt.size === SH.length && JSON.stringify(FG.lookOf(12345)) === JSON.stringify(FG.lookOf(12345)),
+    `lookOf(seed): the same seed gives the same look; 4000 seeds reach every skin, hair and shirt (${FG.LOOK_COUNT} looks in all)`)
+  // the palette rules of the frame set (fig_checks.py 8 and 10)
+  const lab = (c: string) => {
+    const [r, g, b] = parseColor(c).slice(0, 3).map(v => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4 })
+    const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116)
+    const X = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047), Y = f(0.2126 * r + 0.7152 * g + 0.0722 * b), Z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883)
+    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)]
   }
+  const de = (a: string, b: string) => { const p = lab(a), q = lab(b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) }
+  let worst = Infinity, pair = ''
+  for (const h of HA) for (const s of SK) { const d = de(PAL.FIGURE_HAIR[h]['3'], PAL.FIGURE_SKIN[s]['6']); if (d < worst) { worst = d; pair = `${h} on ${s}` } }
+  ok(worst >= 12 && PAL.FIGURE_HAIR.darkbrown['4'] === '#8c6f58', `ramps: every hair mid tone at least 12 dE76 from every skin mid tone (nearest ${pair}, ${worst.toFixed(1)}), darkbrown keeps the approved highlight #8c6f58`)
 }
-ok(placements > 100 && outOfCell.length === 0, `${placements} prop placements (pose × prop view) all inside the 16×16 figure cell (provisional anchors, today's figure geometry)${outOfCell.length ? ` — out: ${outOfCell.slice(0, 4).join(', ')}` : ''}`)
-const viewsUsed = new Set(P.POSES.flatMap(p => (P.HAND[p].hand ? [P.HAND[p].hand!.view] : [])))
-ok(['folder', 'ledger', 'book'].every(id => [...viewsUsed].every(v => P.PROP_ART[id as never][v])) && !!P.PROP_ART.pager.belt,
-  `the carried volumes (folder, ledger, book) have every view the hand table uses (${[...viewsUsed].join(', ')}); the pager clips to the belt`)
+{
+  // the status dot (fig_checks.py 3): neither the core (r) nor the glow (r + 1) touches the figure; the glow's gap to it
+  // is positive (a tangent glow anti-aliases onto it) and at most 1.25 texels (a badge, not adrift); it stays below row 0
+  const near = (rows: readonly string[], cx: number, cy: number) => {
+    let best = Infinity
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      if (rows[y][x] === '.') continue
+      const qx = Math.min(Math.max(cx, x), x + 1), qy = Math.min(Math.max(cy, y), y + 1)
+      best = Math.min(best, Math.hypot(qx - cx, qy - cy))
+    }
+    return best
+  }
+  const dotFaults = (dot: (p: Pose) => { x: number; y: number; r: number }) => P.POSES.flatMap(p => {
+    const d = dot(p), gap = near(FG.FRAMES[p], d.x, d.y) - (d.r + 1)
+    return gap <= 0.01 || gap > 1.25 || d.y - d.r - 1 < -1e-9 ? [`${p} gap ${gap.toFixed(2)}`] : []
+  })
+  const bad = dotFaults(p => FG.DOTS[p])
+  const gaps = P.POSES.map(p => near(FG.FRAMES[p], FG.DOTS[p].x, FG.DOTS[p].y) - FG.DOTS[p].r - 1)
+  ok(bad.length === 0, `the status dot clears every frame: glow gap ${Math.min(...gaps).toFixed(2)}..${Math.max(...gaps).toFixed(2)} texels, never above row 0${bad.length ? ` — ${bad.slice(0, 3).join('; ')}` : ''}`)
+  const old = dotFaults(() => ({ x: 13, y: 0, r: 2 }))
+  ok(old.some(f => f.startsWith('reachU')) && old.length > 20, `MUTANT the old engine's dot (13, 0) r 2: caught on ${old.length} frames (reachU's raised hand among them)`)
+}
+/** fig_checks.py 5: every props.ts view a frame's hand can show, at its anchor for that view's width, touches a hand
+ *  texel that holds it (carry) without covering it. armsD's item is pinned under the arm, behind the figure (by eye). */
+function anchorFaults(hands: Hands): string[] {
+  const out: string[] = []
+  for (const p of P.POSES) {
+    const h = hands[p].hand
+    if (h === null || h.layer !== 'front' || h.heldBy === 'arm') continue
+    for (const id of P.PROP_IDS) {
+      const a = P.PROP_ART[id][h.view]
+      if (!a) continue
+      const anc = P.propAnchor(h, a.w)
+      const carry = h.narrow !== undefined && anc === h.narrow ? h.narrow.carry : hands[p].carry
+      const x0 = anc.x - a.gripX, y0 = anc.y - a.gripY
+      const inBox = (x: number, y: number) => x >= x0 && x < x0 + a.w && y >= y0 && y < y0 + a.h
+      const touch = carry.filter(([x, y]) => !inBox(x, y) && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inBox(x + dx, y + dy)))
+      if (touch.length === 0) out.push(`${p}/${id}`)
+    }
+  }
+  return out
+}
+{
+  let pairs = 0
+  for (const p of P.POSES) { const h = P.HAND[p].hand; if (h && h.layer === 'front' && h.heldBy !== 'arm') pairs += P.PROP_IDS.filter(id => P.PROP_ART[id][h.view]).length }
+  const bad = anchorFaults(P.HAND)
+  ok(pairs > 100 && bad.length === 0, `${pairs} (frame, prop view) pairs: each item touches a holding hand texel without covering it (props are not clipped to the cell: reachU holds its volume above row 0)${bad.length ? ` — ${bad.slice(0, 4).join(', ')}` : ''}`)
+  const noNarrow = { ...P.HAND, readD: { ...P.HAND.readD, hand: { ...P.HAND.readD.hand!, narrow: undefined } } } as Hands
+  const m1 = anchorFaults(noNarrow).sort().join(', ')
+  ok(m1 === 'readD/callSlip, readD/pager, readD/ticket', `MUTANT readD without its narrow anchor: caught, exactly ${m1 || 'nothing'}`)
+  const watch3 = { ...P.HAND, watchU: { ...P.HAND.watchU, hand: { ...P.HAND.watchU.hand!, x: 3 } } } as Hands
+  ok(anchorFaults(watch3).some(f => f.startsWith('watchU/')), 'MUTANT watchU at its round-2 anchor (3, 11), where the item hides the hand: caught')
+  const belts = P.POSES.flatMap(p => {
+    const b = P.HAND[p].belt, rows = FG.FRAMES[p]
+    if (b === null) return P.HAND[p].seated ? [] : [`${p}: standing without a belt anchor`]
+    if (P.HAND[p].seated) return [`${p}: seated with a belt anchor`]
+    let d = Infinity
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) if (rows[y][x] !== '.') d = Math.min(d, Math.abs(b.x - x) + Math.abs(b.y - y))
+    return d <= 1 ? [] : [`${p}: belt ${d} texels from the figure`]
+  })
+  ok(belts.length === 0 && P.HAND.armsD.hand?.layer === 'behind', `every standing frame clips the pager on or next to the figure, no seated one does; armsD pins its item behind the figure${belts.length ? ` — ${belts.slice(0, 3).join('; ')}` : ''}`)
+}
+{
+  // the port's one change (the art director's should-fix): readD's left hand lit, 5 -> 6 at (5, 8) and (5, 9), so a
+  // held volume reaches 3:1 on one whole hand for every skin ramp (hand_contrast.md "readD: the one-hand reading": per
+  // hand, its weakest texel against the item texel it touches)
+  const rd = FG.FRAMES.readD
+  const hand = P.HAND.readD.hand!
+  const SK = Object.keys(PAL.FIGURE_SKIN) as (keyof typeof PAL.FIGURE_SKIN)[]
+  const vols: [string, 'ledger' | 'book', string][] = [
+    ...PAL.LEDGER_COLOURS.map((c, i) => [`ledger ${i}`, 'ledger', c] as [string, 'ledger', string]),
+    ...Object.entries(PAL.BOOK_COLOURS).map(([n, c]) => [`book ${n}`, 'book', c] as [string, 'book', string]),
+  ]
+  const oneHand = (rows: readonly string[]): string[] => {
+    const out: string[] = []
+    for (const [name, id, colour] of vols) {
+      const a = P.PROP_ART[id].held!
+      const [item, g] = pixelCanvas(a.w, a.h)
+      a.draw(asCtx(g), colour)
+      const anc = P.propAnchor(hand, a.w), x0 = anc.x - a.gripX, y0 = anc.y - a.gripY
+      for (const s of SK) {
+        const handMin = (side: (x: number) => boolean) => {
+          let m = Infinity
+          for (const [x, y] of P.HAND.readD.carry) {
+            if (!side(x)) continue
+            const tone = (PAL.FIGURE_SKIN[s] as Record<string, string>)[rows[y][x]]
+            if (tone === undefined) continue
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+              const ix = x + dx - x0, iy = y + dy - y0
+              if (ix < 0 || iy < 0 || ix >= a.w || iy >= a.h || item.at(ix, iy)[3] === 0) continue
+              m = Math.min(m, contrast(parseColor(tone), item.at(ix, iy)))
+            }
+          }
+          return m
+        }
+        if (Math.max(handMin(x => x < 8), handMin(x => x >= 8)) < 3) out.push(`${name} × ${s}`)
+      }
+    }
+    return out
+  }
+  const fails = oneHand(rd)
+  ok(rd[8][5] === '6' && rd[9][5] === '6' && fails.length === 0,
+    `readD's left hand is lit (5 -> 6 at (5,8) and (5,9)): all ${vols.length} held volumes (4 ledger, 8 book bindings) reach 3:1 on one hand for all ${SK.length} skin ramps${fails.length ? ` — under: ${fails.slice(0, 4).join(', ')}` : ''}`)
+  const before = rd.map((r, y) => (y === 8 || y === 9 ? `${r.slice(0, 5)}5${r.slice(6)}` : r))
+  const old = oneHand(before)
+  ok(old.length > 0 && old.every(f => /mustard|tan/.test(f)), `MUTANT the approved grid before the fix (hand tone 5): caught on ${old.join(', ')}`)
+}
 
 // ── H. icons ─────────────────────────────────────────────────────────────────────────────────────────────────────
 console.log('H. bubble icons for every slice activity')
@@ -780,8 +944,8 @@ const literals = (src: string) => [...codeOnly(src).matchAll(LITERAL)].map(m => 
 const derived = (src: string) => [...codeOnly(src).matchAll(DERIVED)].map(m => m[0])
 const RENDER_DIR = `${ROOT}src/worker-office/render`
 const PALETTE_FILE = resolve(RENDER_DIR, 'palette.ts')
-/** The art files the palette header names: tiles-*.ts, stateLayer.ts, props.ts, icons.ts, furniture.ts. */
-const ART_FILES = readdirSync(RENDER_DIR).filter(f => /^tiles-.+\.ts$/.test(f) || ['stateLayer.ts', 'props.ts', 'icons.ts', 'furniture.ts'].includes(f)).sort()
+/** The art files the palette header names: tiles-*.ts, stateLayer.ts, props.ts, icons.ts, furniture.ts, figures.ts. */
+const ART_FILES = readdirSync(RENDER_DIR).filter(f => /^tiles-.+\.ts$/.test(f) || ['stateLayer.ts', 'props.ts', 'icons.ts', 'furniture.ts', 'figures.ts'].includes(f)).sort()
 {
   const lit: string[] = [], der: string[] = []
   for (const f of ART_FILES) {
@@ -789,7 +953,7 @@ const ART_FILES = readdirSync(RENDER_DIR).filter(f => /^tiles-.+\.ts$/.test(f) |
     lit.push(...literals(src).map(h => `${f} ${h}`))
     der.push(...derived(src).map(h => `${f} ${h}`))
   }
-  ok(ART_FILES.length === 9 && lit.length === 0 && der.length === 0,
+  ok(ART_FILES.length === 10 && lit.length === 0 && der.length === 0,
     `${ART_FILES.length} art files (${ART_FILES.join(', ')}) hold no colour literal outside comments and derive no shade${lit.length ? ` — literals: ${lit.slice(0, 4).join(', ')}${lit.length > 4 ? ` (+${lit.length - 4})` : ''}` : ''}${der.length ? ` — derived: ${der.slice(0, 4).join(', ')}` : ''}`)
   const sl = readFileSync(`${RENDER_DIR}/stateLayer.ts`, 'utf8')
   const base = literals(sl).length, baseD = derived(sl).length

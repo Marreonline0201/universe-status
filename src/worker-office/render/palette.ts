@@ -1,19 +1,21 @@
 // Palette tokens of the worker office furniture (plan §6.2 "the palette tokens").
 //
-// Three sources, nothing invented without a name:
+// Four sources, nothing invented without a name:
 //   1. the existing office art (src/office-render/assets.ts:15-58), copied by value so the new building keeps the
 //      old one's materials;
 //   2. the step-2 object catalogue's proposed tokens (office-objects/catalog-s2: mock.py and the catalogue notes);
 //   3. the legend colours of floorplan.json, which are each kind's representative colour (the step-1 placeholders
-//      were drawn in them); the art uses them as the kind's main material.
-// Shades are derived once, here, with mix / lighten / darken (paint.ts), never per draw. The art files (tiles-*.ts,
-// stateLayer.ts, props.ts, icons.ts, furniture.ts) hold no colour literal and derive no shade, and every token here
-// is used (by the art, or by another token): scripts/worker-office-art-check.ts scans for all three.
+//      were drawn in them); the art uses them as the kind's main material;
+//   4. the worker figures' approved ramps (D14 (a), the frame set's frames.json, round 3), at the end of this file.
+// Shades are derived once, here, with mix / lighten / darken / alpha (paint.ts), never per draw. The art files
+// (tiles-*.ts, stateLayer.ts, props.ts, icons.ts, furniture.ts, figures.ts) hold no colour literal and derive no shade,
+// and every token here is used (by the art, or by another token): scripts/worker-office-art-check.ts scans for all
+// three.
 // Not copied: assets.ts MONITOR_GLOW (#bfe3ff), the old desk's baked glow patch. The lit screen here is
 // shade.screenLit, paler, because it carries 1 px lines of text and the red / green result line (plan §4.5): WCAG
 // contrast of line / red / green 2.9 / 3.7 / 2.0 : 1 on screenLit against 2.6 / 3.4 / 1.8 : 1 on MONITOR_GLOW.
 // Nor COUNTER_TOP: the kitchen counter is pass 2.
-import { mix, lighten, darken } from './paint.ts'
+import { mix, lighten, darken, alpha } from './paint.ts'
 
 // ── 1. existing office tokens (assets.ts) ────────────────────────────────────────────────────────────────────────
 export const DESK_TOP = '#8a6a4a'        // light-oak desk
@@ -240,3 +242,70 @@ export const BINDING_SHADE: ReadonlyMap<string, string> = new Map<string, string
   ...Object.values(BOOK_COLOURS).map(c => [c, darken(c, 0.3)] as [string, string]),
   ...LEDGER_COLOURS.map(c => [c, shade.ledgerSpine] as [string, string]),
 ])
+
+// ── 4. worker figures (D14 (a), approved 2026-10-01: frames.json "ramps", round 3) ──────────────────────────────────
+// The approved values are COPIED, not re-derived: the ramp builder that made them (scratch office/figs/fig_art.py, the
+// sample's maths) rounds half to even, paint.ts mix() rounds half up, so a re-derivation could miss an approved colour
+// by one level. Derivation rules, for a new base: light = mix(base, #fff0d0, t), shadow / outline = mix(base, #1d1838,
+// t), skin shadow = mix(base, #3a1410, 0.33), eye = mix(base, #120a0a, 0.82) (frames.json "ramps.derive"). Every look
+// is a swap of these ramps; the frame grids (figures.ts) never change. Skins: assets.ts SKINS + fair, olive, tan,
+// deepest; hair: assets.ts HAIRS + chestnut, auburn, white; the sample's 8 shirts; assets.ts trousers + 3; 2 shoes.
+/** Skin ramps: 7 light, 6 mid (the base), 5 shadow, e eye / brow / lid. */
+export const FIGURE_SKIN = {
+  fair: { '7': '#f9ddc5', '6': '#f7d6c1', '5': '#b99687', e: '#3b2f2b' },
+  light: { '7': '#f5d1ac', '6': '#f2c6a0', '5': '#b58b70', e: '#3a2c25' },
+  olive: { '7': '#dbb892', '6': '#cfa47c', '5': '#9e7458', e: '#34261f' },
+  medium: { '7': '#e3b582', '6': '#d9a066', '5': '#a5724a', e: '#36251b' },
+  tan: { '7': '#cb9e71', '6': '#b98150', '5': '#8f5d3b', e: '#301f17' },
+  brown: { '7': '#bc8b65', '6': '#a5673f', '5': '#824c2f', e: '#2c1b14' },
+  deep: { '7': '#9d7556', '6': '#7a4a2b', '5': '#653822', e: '#251610' },
+  deepest: { '7': '#786359', '6': '#49312f', '5': '#442725', e: '#1c1111' },
+} as const
+/** Hair ramps: 4 light (a cool sheen on black and the red-browns), 3 mid (the base), 2 shadow, 1 outline. */
+export const FIGURE_HAIR = {
+  black: { '4': '#43454c', '3': '#2b2b2b', '2': '#27252f', '1': '#232033' },
+  darkbrown: { '4': '#8c6f58', '3': '#5a3825', '2': '#482e2b', '1': '#372530' },
+  chestnut: { '4': '#734846', '3': '#6c2f23', '2': '#542829', '1': '#3e222f' },
+  auburn: { '4': '#955c4c', '3': '#9a4a2c', '2': '#743b30', '1': '#522d33' },
+  blond: { '4': '#d9b95a', '3': '#c9a227', '2': '#95792c', '1': '#655231' },
+  grey: { '4': '#ada99f', '3': '#8a8a8a', '2': '#696871', '1': '#4b485a' },
+  white: { '4': '#ddd6c6', '3': '#cfcbc2', '2': '#9a9599', '1': '#686372' },
+  crimson: { '4': '#c97171', '3': '#b23a48', '2': '#853043', '1': '#5c263f' },
+  blue: { '4': '#75879f', '3': '#3a5a8a', '2': '#314671', '1': '#29345a' },
+} as const
+/** Shirt ramps (the sample's eight muted shirts): d light, c mid (the base), b shadow, a outline. */
+export const FIGURE_SHIRT = {
+  teal: { d: '#6d968d', c: '#3f7a78', b: '#355f66', a: '#2c4455' },
+  brick: { d: '#b77360', c: '#a04c3c', b: '#7b3d3b', a: '#582f3a' },
+  plum: { d: '#977186', c: '#76496e', b: '#5d3b5f', a: '#452e50' },
+  mustard: { d: '#c9a861', c: '#b8913e', b: '#8d6f3c', a: '#634e3b' },
+  slate: { d: '#75809c', c: '#4a5d8c', b: '#3d4a74', a: '#31375e' },
+  sage: { d: '#9eaf82', c: '#7f9a6a', b: '#64765c', a: '#49524e' },
+  rose: { d: '#cfa298', c: '#c08a86', b: '#926a70', a: '#664b5b' },
+  oat: { d: '#e0d2b2', c: '#d6c8a8', b: '#a29789', a: '#70676a' },
+} as const
+/** Trouser ramps: s light, r mid (the base), q shadow, p outline. */
+export const FIGURE_TROUSERS = {
+  navy: { s: '#505961', r: '#33404f', q: '#2b3247', p: '#1e2231' },
+  charcoal: { s: '#595658', r: '#3e3d44', q: '#323040', p: '#22212c' },
+  denim: { s: '#586d84', r: '#3d5878', q: '#324262', p: '#222d43' },
+  khaki: { s: '#9a8967', r: '#8a7856', q: '#64564c', p: '#453b34' },
+} as const
+/** Shoe ramps: y light, x dark (the base). */
+export const FIGURE_SHOES = {
+  black: { y: '#33343e', x: '#11162a' },
+  brown: { y: '#513f31', x: '#3b2619' },
+} as const
+/** The corner texels (manual anti-aliasing: H, C, S, R) are a ramp's shadow tone at alpha 120/255 (frames.json
+ *  "ramps.corners"), so they blend with any floor. Derived once, per ramp. */
+const corners = <K extends string, T extends string>(ramps: Readonly<Record<K, Readonly<Record<T, string>>>>, tone: T): Readonly<Record<K, string>> =>
+  Object.fromEntries(Object.entries<Readonly<Record<T, string>>>(ramps).map(([k, r]) => [k, alpha(r[tone], 120 / 255)])) as Record<K, string>
+export const FIGURE_CORNER = {
+  hair: corners(FIGURE_HAIR, '2'),
+  skin: corners(FIGURE_SKIN, '5'),
+  shirt: corners(FIGURE_SHIRT, 'b'),
+  trousers: corners(FIGURE_TROUSERS, 'q'),
+} as const
+/** The worker's contact shadow at full cover (OfficeEngine.ts:449-452: an ellipse of radii 5 × 2 texels): each texel
+ *  takes this colour at the share of it the ellipse covers (figures.ts shadowImage). */
+export const FIGURE_SHADOW = 'rgba(10,6,2,0.30)'
