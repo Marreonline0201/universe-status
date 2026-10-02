@@ -477,8 +477,8 @@ const S: Scenario[] = [
 S.push(
   {
     name: 'S2b-late-beyond-window',
-    what: 'probe 7: a record written 5 s after a later one (beyond the 500 ms watermark and the 1.0 s flush) is applied late, at the clock, and counted; time never goes back.',
-    lines: () => [start(0, A), pre(1, A, 'read', 'v1'), batch(2, A), pre(10, A, 'write', 'v2'), start(5, B), batch(11, A)],
+    what: 'probe 7: a record written 8 s after a later one (beyond the 500 ms watermark and the 1.0 s flush), after the stage-2 filler at 12 s went out, is applied late, at the clock (12.8 s), and counted; time never goes back.',
+    lines: () => [start(0, A), pre(1, A, 'read', 'v1'), batch(2, A), pre(14, A, 'write', 'v2'), start(6, B), batch(15, A)],
     extra: run => (run.core.stats.late === 1 ? [] : [`late ${run.core.stats.late}`]),
   },
   {
@@ -1212,18 +1212,19 @@ const EXPECTED: Record<string, string> = {
 1.000 act #1 in fileCabinet read seq1
 2.000 bubble #1 between
 2.000 act #1 out fileCabinet read seq1
-8.800 spawn #2 slot0
-8.800 walkTo #2 inout-board.1
-8.800 pose #2 standU
-8.800 bubble #2 arrivalHold
-10.000 walkTo #1 desk-1.1
-10.000 pose #1 type0
-10.000 bubble #1 act:write
-10.000 act #1 in pcDesk write seq2
-11.000 pose #1 sitBack
-11.000 bubble #1 between
-11.000 act #1 out pcDesk write seq2
-12.000 callEnd #1 ok seq2 desk-1.1`,
+12.000 pose #1 armsD+folder filler
+12.800 spawn #2 slot0
+12.800 walkTo #2 inout-board.1
+12.800 pose #2 standU
+12.800 bubble #2 arrivalHold
+14.000 walkTo #1 desk-1.1
+14.000 pose #1 type0
+14.000 bubble #1 act:write
+14.000 act #1 in pcDesk write seq2
+15.000 pose #1 sitBack
+15.000 bubble #1 between
+15.000 act #1 out pcDesk write seq2
+16.000 callEnd #1 ok seq2 desk-1.1`,
   'S13-front-desk-rush': `0.000 spawn #1 slot0
 0.000 walkTo #1 inout-board.1
 0.000 pose #1 standU
@@ -1410,6 +1411,7 @@ const MUTANTS: Mutant[] = [
     from: '    if (w.handedIn || w.fin !== null) { this.#finished(w); return }                 // §4.6 Finishing wins\n', to: '' },
   { id: 'M27 feed intents merged across workers', file: 'messages.ts', why: 'I8',
     from: 'if (intent === null || intent.key !== c.key || intent.ops.has(c.op))', to: 'if (intent === null || intent.ops.has(c.op))' },
+  { id: 'M29 a move keeps the place it left', file: 'reducer.ts', why: 'I1', from: '      o.place = c.to\n', to: '      o.place = c.from ?? c.to\n' },
   { id: 'M28 commands for workers that left', file: 'reducer.ts', why: 'I5',
     from: "      if (w.phase === 'gone') continue\n      const v = this.#view(w)\n      const p = w.sent", to: '      const v = this.#view(w)\n      const p = w.sent' },
 ]
@@ -1493,15 +1495,34 @@ const realBad = runAll(realCore, true)
 for (const b of realBad) fail(b)
 console.log(`scenarios: ${S.length} (each run twice, plus a dispose run); failed checks ${realBad.length}`)
 
+/** The check a failed-check string belongs to: an invariant (I4 split into pose / label / other), or the golden
+ *  sequence, a scenario's extra assertion, a crash. */
+function tagOf(b: string): string {
+  const v = b.slice(b.indexOf(': ') + 2)
+  if (v.startsWith('crash')) return 'crash'
+  if (v.startsWith('sequence differs') || v.startsWith('no golden')) return 'golden'
+  const m = /^I(\d)( pose| label)?/.exec(v)
+  if (m) return m[1] === '4' && m[2] ? `I4-${m[2].trim()}` : `I${m[1]}`
+  return 'extra'
+}
+/** Every invariant check must be shown able to fail: some mutant must trip it. */
+const REQUIRED = ['I0', 'I1', 'I2', 'I3', 'I4-pose', 'I4-label', 'I5', 'I6', 'I7', 'I8']
+const tripped = new Map<string, string[]>(REQUIRED.map(t => [t, []]))
 let caught = 0
 for (const m of MUTANTS) {
   let bad: string[]
   try { bad = runAll(await loadMutant(m), false) } catch (e) { fail(`${m.id}: ${String(e).split('\n')[0]}`); continue }
+  const tags = [...new Set(bad.map(tagOf))].sort()
+  for (const t of tags) tripped.get(t)?.push(m.id.split(' ')[0])
   if (bad.length > 0) caught++
   else fail(`mutant survived: ${m.id}`)
-  console.log(`  ${bad.length > 0 ? 'caught  ' : 'SURVIVED'} ${m.id} (target ${m.why}): ${bad.length} checks, e.g. ${bad[0] ?? '-'}`)
+  console.log(`  ${bad.length > 0 ? 'caught  ' : 'SURVIVED'} ${m.id} (target ${m.why}): ${bad.length} failed checks [${tags.join(' ')}]`)
 }
-console.log(`mutants: ${caught} / ${MUTANTS.length} caught`)
+console.log(`mutants: ${caught} / ${MUTANTS.length} caught; each invariant check and the mutants that trip it:`)
+for (const [t, ms] of tripped) {
+  ok(ms.length > 0, `no mutant trips the invariant check ${t}`)
+  console.log(`  ${t}: ${ms.length > 0 ? ms.join(', ') : 'NONE'}`)
+}
 for (const d of tempDirs) rmSync(d, { recursive: true, force: true })
 
 let exit = failures > 0 ? 1 : 0
