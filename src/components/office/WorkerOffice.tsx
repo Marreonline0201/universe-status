@@ -196,10 +196,11 @@ function WorkerOfficeView({ active }: { active: boolean }) {
           <div data-wo="live-state" role="status" style={{ color: WO.text }}>{LIVE_STATE[live.state]}</div>
           {live.folder !== null && live.state !== 'idle' && <div>folder: {live.folder}</div>}
           {live.detail !== '' && <div>{live.detail}</div>}
-          {(live.state === 'idle' || live.state === 'reconnect') && (
+          {live.state !== 'unsupported' && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
               {live.state === 'reconnect' && <Button wo="live-reconnect" label="Reconnect" onClick={live.reconnect} />}
-              <Button wo="live-connect" label="Connect log folder" onClick={live.connect} />
+              {(live.state === 'idle' || live.state === 'reconnect') && <Button wo="live-connect" label="Connect log folder" onClick={live.connect} />}
+              {live.folder !== null && <Button wo="live-forget" label="Forget folder" onClick={live.forget} />}
             </div>
           )}
           <div style={{ color: WO.faint, marginTop: 6, lineHeight: 1.5 }}>

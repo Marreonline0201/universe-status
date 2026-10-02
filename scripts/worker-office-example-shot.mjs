@@ -15,7 +15,10 @@
 //   handle, its Web Worker reads the folder through File System Access, the office snaps to the backlog and follows
 //   lines appended later. Not run: the real picker and Chrome's permission prompt (they need a person), and the read of
 //   the kept handle on a later visit (headless Chrome 153 under Playwright crashes when it reads an OPFS handle back
-//   from IndexedDB, even on a bare page). The stand-in is removed at the end. Console errors are reported. PNGs go to
+//   from IndexedDB, even on a bare page). The stand-in is removed at the end. Before it, a folder that is not the log
+//   folder must be refused with nothing stored (security review L2); after it, "Forget folder" must stop reading and
+//   leave no stored handle (the stored keys are counted with getAllKeys, which reads no handle back).
+//   WO_SHOT_LIVE_ONLY=1 skips the example's shots. Console errors are reported. PNGs go to
 //   scripts/out/ (git-ignored). Exit 1 on a failed check.
 import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -93,8 +96,9 @@ try {
   check(before.banner === NO_FEED && before.workers === 0 && before.feed === 'none', `before the example: the note "${before.banner}", ${before.workers} workers`)
   await page.screenshot({ path: path.join(OUT, 'worker-office-example-0-before.png') })
 
-  await page.click('[data-wo="example"]')
-  for (const s of SHOTS) {
+  const LIVE_ONLY = process.env.WO_SHOT_LIVE_ONLY === '1'
+  if (!LIVE_ONLY) await page.click('[data-wo="example"]')
+  for (const s of LIVE_ONLY ? [] : SHOTS) {
     await page.waitForFunction(at => (window.__workerOffice?.feedSeconds ?? 0) >= at, s.at, { timeout: (s.at + 30) * 1000 })
     const st = await state(page)
     const file = path.join(OUT, `worker-office-example-${s.at}s-${s.name}.png`)
@@ -104,7 +108,7 @@ try {
     console.log(`       object states: ${kinds(st.objects)}`)
     console.log(`       at tiles (#worker): ${st.objects.join(' ') || '-'}`)
   }
-  await page.click('[data-wo="example"]')
+  if (!LIVE_ONLY) await page.click('[data-wo="example"]')
   await page.waitForTimeout(800)
   const after = await state(page)
   check(after.banner === NO_FEED && after.workers === 0 && after.feed === 'none' && after.live === 'not connected',
@@ -127,6 +131,25 @@ try {
     // the picker returns the stand-in (the owner picks the real spool folder here)
     window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('wo-spool-standin')
   }, backlog)
+  const storedKeys = () => page.evaluate(() => new Promise(res => {
+    const o = indexedDB.open('universe-worker-office', 1)
+    o.onupgradeneeded = () => o.result.createObjectStore('handles')
+    o.onerror = () => res(-1)
+    o.onsuccess = () => { const r = o.result.transaction('handles').objectStore('handles').getAllKeys(); r.onsuccess = () => { o.result.close(); res(r.result.length) }; r.onerror = () => { o.result.close(); res(-1) } }
+  }))
+  // a folder that is not the log folder (no day files, no spool child, not named spool): refused, nothing stored
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory()
+    await root.getDirectoryHandle('wo-not-the-log', { create: true })
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('wo-not-the-log')
+  })
+  await page.click('[data-wo="live-connect"]')
+  await page.waitForTimeout(1500)
+  const refused = await page.evaluate(() => ({ live: document.querySelector('[data-wo="live-state"]')?.textContent ?? '', text: document.querySelector('[data-wo="live"]')?.textContent ?? '', feed: window.__workerOffice.feed }))
+  const keys0 = await storedKeys()
+  check(refused.live === 'not connected' && refused.text.includes('not the log folder') && refused.feed === 'none' && keys0 === 0,
+    `a wrong folder is refused: "${refused.live}", the reason shown: ${refused.text.includes('not the log folder')}, feed ${refused.feed}, ${keys0} stored handles`)
+  await page.evaluate(() => { window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('wo-spool-standin') })
   const live0 = await page.evaluate(() => document.querySelector('[data-wo="live-state"]')?.textContent ?? '')
   check(live0 === 'not connected', `before connecting: the live feed says "${live0}"`)
   await page.click('[data-wo="live-connect"]')
@@ -159,9 +182,18 @@ try {
   check(l2.feed === 'live' && l2.liveLines === backlog.length + later.length && followMs < 2500 && l2.liveSnaps.length === 1,
     `live: ${later.length} lines appended to the file came in ${followMs} ms (the 500 ms poll), ${l2.liveLines} lines in all, no other snap, ${l2.workers} workers -> ${path.relative(ROOT, f2)}`)
   console.log(`       object states: ${kinds(l2.objects)}`)
+  // Forget folder: reading stops, the kept handle is deleted
+  const keys1 = await storedKeys()
+  await page.click('[data-wo="live-forget"]')
+  await page.waitForTimeout(1500)
+  const forgot = await state(page)
+  const keys2 = await storedKeys()
+  check(keys1 === 1 && forgot.live === 'not connected' && forgot.feed === 'none' && keys2 === 0 && forgot.workers === 0,
+    `Forget folder: ${keys1} stored handle before, ${keys2} after; the live feed "${forgot.live}", feed ${forgot.feed}, ${forgot.workers} workers`)
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory()
     await root.removeEntry('wo-spool-standin', { recursive: true })
+    await root.removeEntry('wo-not-the-log', { recursive: true })
     await new Promise(res => { const r = indexedDB.deleteDatabase('universe-worker-office'); r.onsuccess = r.onerror = r.onblocked = () => res(true) })
   })
   check(errors.length === 0, `no page errors or console errors${errors.length ? `: ${errors.slice(0, 3).join(' | ')}` : ''}`)

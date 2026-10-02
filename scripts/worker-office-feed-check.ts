@@ -243,11 +243,41 @@ await checks(realTail, true)
 
 // F9 privacy: only reading
 {
-  const files = ['spoolTail.ts', 'fsaDir.ts', 'reader.ts', 'fsaReader.worker.ts', 'useWorkerFeed.ts']
+  const files = ['spoolTail.ts', 'fsaDir.ts', 'reader.ts', 'fsaReader.worker.ts', 'useWorkerFeed.ts', 'spoolFolder.ts']
   const src = files.map(n => [n, readFileSync(fileURLToPath(new URL(`../src/worker-office/feed/${n}`, import.meta.url)), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')] as const)
   const banned = [/\bfetch\s*\(/, /XMLHttpRequest/, /WebSocket/, /EventSource/, /sendBeacon/, /\bimport\s*\(/, /createWritable/, /removeEntry/, /create\s*:\s*true/, /\bmove\s*\(/, /navigator\./, /localStorage/]
   const hits = src.flatMap(([n, s]) => banned.filter(b => b.test(s)).map(b => `${n}: ${b}`))
   ok(hits.length === 0, `F9 the feed only reads: no network API, no file write, delete or create in ${files.join(', ')}${hits.length ? ` — found ${hits.join('; ')}` : ''}`)
+}
+
+// F10 the folder check (security review L2): only a folder named spool, or one that already holds day files, is kept;
+// a folder with a spool child keeps the child (even an empty one); any other folder is refused with a reason, and the
+// tab stores nothing for it (useWorkerFeed.ts saves only an accepted choice)
+{
+  const { chooseSpoolFolder } = await import('../src/worker-office/feed/spoolFolder.ts')
+  type D = { readonly name: string; keys(): AsyncIterable<string>; getDirectoryHandle(n: string): Promise<D> }
+  const dir = (name: string, files: readonly string[], kids: Readonly<Record<string, D>> = {}): D => ({
+    name,
+    async *keys() { for (const f of files) yield f; for (const k of Object.keys(kids)) yield k },
+    async getDirectoryHandle(n: string) { const k = kids[n]; if (k === undefined) throw new DOMException(`${n} not found`, 'NotFoundError'); return k },
+  })
+  const day = 'events-2026-10-02.jsonl'
+  const emptySpool = dir('spool', []), fullSpool = dir('spool', [day])
+  const cases: [string, D, D | null][] = [
+    ['a folder named spool, still empty: kept', emptySpool, emptySpool],
+    ['a folder named logs that holds day files: kept', dir('logs', ['notes.txt', day]), null],
+    ['.universe-office with an EMPTY spool child: the child is kept', dir('.universe-office', ['bin'], { spool: emptySpool }), emptySpool],
+    ['.universe-office with a spool child that holds day files: the child', dir('.universe-office', [], { spool: fullSpool }), fullSpool],
+    ['Documents (no day files, no spool child; events-notes.jsonl is no day file): refused', dir('Documents', ['notes.txt', 'events-notes.jsonl']), null],
+    ['the home folder (a .universe-office child, no spool child): refused', dir('ddx', [], { '.universe-office': dir('.universe-office', []) }), null],
+  ]
+  cases[1][2] = cases[1][1]
+  const bad: string[] = []
+  for (const [what, picked, want] of cases) {
+    const c = await chooseSpoolFolder(picked)
+    if (want === null ? c.ok || c.reason.length < 20 : !c.ok || c.dir !== want) bad.push(`${what}: got ${c.ok ? `kept ${c.dir === picked ? 'the picked folder' : `its child ${c.dir.name}`}` : 'refused'}`)
+  }
+  ok(bad.length === 0, `F10 the folder check: ${cases.length - bad.length} of ${cases.length} picks decided as the review says (kept: named spool or holding day files; a spool child, even empty; else refused with a reason)${bad.length ? ` — wrong: ${bad.join('; ')}` : ''}`)
 }
 
 if (!NO_MUTANTS) {

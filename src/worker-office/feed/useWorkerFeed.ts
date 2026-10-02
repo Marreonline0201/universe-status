@@ -11,9 +11,12 @@
 //   reconnect    reconnect needed: a folder is remembered (IndexedDB) but this visit has no permission yet (Chrome asks
 //                again on later visits unless the owner chose to allow on every visit); "Reconnect" asks with one click
 //   paused       the example plays; live reading stops and starts again (a reconnect: backlog and snap) after it
-// The folder handle is kept in IndexedDB (this origin only), never its contents.
+// The folder handle is kept in IndexedDB (this origin only), never its contents. Only the spool folder is kept
+// (feed/spoolFolder.ts, security review L2): a folder named spool or holding day files, or the spool child of the one
+// picked; any other folder is refused and nothing is stored. "Forget folder" deletes the kept handle and stops reading.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReaderMsg } from './reader.ts'
+import { chooseSpoolFolder, type DirLike } from './spoolFolder.ts'
 
 export type LiveState = 'unsupported' | 'idle' | 'connecting' | 'live' | 'reconnect' | 'paused'
 
@@ -39,6 +42,8 @@ export interface WorkerFeed {
   pause(): void
   /** Read again after the example (a reconnect: the backlog, then a snap). */
   resume(): void
+  /** Stop reading and delete the kept folder handle (nothing of the folder is remembered). */
+  forget(): void
 }
 
 // ── File System Access parts that TypeScript's DOM library does not declare ───────────────────────────────────────
@@ -55,20 +60,7 @@ const picker = (): DirectoryPicker | null => {
 const permission = (h: FileSystemDirectoryHandle) => h as unknown as PermissionHandle
 const errName = (e: unknown): string => (typeof e === 'object' && e !== null && 'name' in e ? String((e as { name: unknown }).name) : '')
 
-const DAY_FILE = /^events-\d{4}-\d{2}-\d{2}\.jsonl$/
-async function hasDayFiles(h: FileSystemDirectoryHandle): Promise<boolean> {
-  for await (const name of (h as unknown as { keys(): AsyncIterable<string> }).keys()) if (DAY_FILE.test(name)) return true
-  return false
-}
-/** The spool folder: the picked one, or its 'spool' child when the owner picked .universe-office itself. */
-async function spoolFolder(h: FileSystemDirectoryHandle): Promise<FileSystemDirectoryHandle> {
-  if (await hasDayFiles(h).catch(() => false)) return h
-  try {
-    const s = await h.getDirectoryHandle('spool')
-    if (await hasDayFiles(s)) return s
-  } catch { /* no spool child: keep the picked folder (today's file may not exist yet) */ }
-  return h
-}
+const asDir = (h: FileSystemDirectoryHandle) => h as unknown as DirLike & FileSystemDirectoryHandle
 
 // ── the remembered folder (IndexedDB, this origin only) ───────────────────────────────────────────────────────────
 const DB = 'universe-worker-office', STORE = 'handles', KEY = 'spool'
@@ -90,6 +82,7 @@ function idb<T>(mode: IDBTransactionMode, op: (s: IDBObjectStore) => IDBRequest<
 }
 const loadHandle = () => idb<FileSystemDirectoryHandle | undefined>('readonly', s => s.get(KEY) as IDBRequest<FileSystemDirectoryHandle | undefined>)
 const saveHandle = (h: FileSystemDirectoryHandle) => idb('readwrite', s => s.put(h, KEY))
+const deleteHandle = () => idb('readwrite', s => s.delete(KEY))
 
 export function useWorkerFeed(sink: LiveSink): WorkerFeed {
   const sinkRef = useRef(sink)
@@ -155,7 +148,9 @@ export function useWorkerFeed(sink: LiveSink): WorkerFeed {
     const pick = picker()
     if (pick === null) return
     pick({ id: 'worker-office-spool', mode: 'read' }).then(async picked => {
-      const h = await spoolFolder(picked)
+      const choice = await chooseSpoolFolder(asDir(picked))
+      if (!choice.ok) { setDetail(choice.reason); return }               // refused: nothing stored, nothing read
+      const h = choice.dir
       await saveHandle(h).catch(() => { /* not remembered: the next visit asks for the folder again */ })
       start(h)
     }, e => { if (errName(e) !== 'AbortError') setDetail(`the folder could not be opened: ${errName(e) || String(e)}`) })
@@ -182,5 +177,18 @@ export function useWorkerFeed(sink: LiveSink): WorkerFeed {
     if (h !== null) start(h)
   }, [start])
 
-  return { state, folder, detail, connect, reconnect, pause, resume }
+  const forget = useCallback(() => {
+    const reading = workerRef.current !== null
+    stopWorker()
+    if (reading) sinkRef.current.stop()
+    handleRef.current = null
+    setFolder(null)
+    setState(picker() ? 'idle' : 'unsupported')
+    deleteHandle().then(
+      () => setDetail('the folder is forgotten: nothing of it is kept or read'),
+      () => setDetail('the folder could not be forgotten (browser storage refused): clear this site\'s data to remove it'),
+    )
+  }, [stopWorker])
+
+  return { state, folder, detail, connect, reconnect, pause, resume, forget }
 }
