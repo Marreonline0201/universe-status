@@ -15,6 +15,7 @@
     "test:worker-office-map": "node scripts/worker-office-map-check.ts && node scripts/worker-office-walk-smoke.ts && node scripts/worker-office-render-check.ts && node scripts/worker-office-places-check.ts",
     "test:worker-office-art": "node scripts/worker-office-art-check.ts",
     "check:worker-office-visual": "node scripts/worker-office-visual-check.mjs",
+    "check:worker-office-example": "node scripts/worker-office-example-shot.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc -v && node node_modules/typescript/bin/tsc -p tsconfig.app.json --noEmit"
   },
   "dependencies": {

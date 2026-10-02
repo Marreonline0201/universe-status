@@ -1,4 +1,6 @@
-// Canvas host of the worker office (plan §6.1). Step 1 draws the building with ZERO workers; step 4 adds them.
+// Canvas host of the worker office (plan §6.1, §6.4). It draws the building, and the workers of a feed: today only the
+// EXAMPLE feed (live/example.ts, labelled as an example by the tab); the live feed comes later and plays through the same
+// path (live/world.ts: the observer core -> the Path A planner -> the bodies and their beats).
 //
 // Pixel rules:
 //   - the backing store is the canvas's device-pixel content box (ResizeObserver 'device-pixel-content-box'),
@@ -8,20 +10,32 @@
 //     engine's fractional fit zoom of ~2.01 blurred and unevened the pixel art, OfficeEngine.ts:211-224);
 //   - the fit is camera.ts fitCamera: the largest whole scale that fits, below the DOM overlay when there is room
 //     for it (setTopInset).
-// Drawing happens only when something changes (nothing animates yet). A resize redraws at once: setting the canvas
-// size clears it, and a ResizeObserver callback runs after the frame's animation callbacks and before its paint,
-// so a redraw left to the next frame would show a blank map for every step of a sidebar drag or window resize.
-// draw() allocates nothing.
+// Drawing happens only when something changes, or every animation frame while a feed plays or workers are inside. A
+// resize redraws at once: setting the canvas size clears it, and a ResizeObserver callback runs after the frame's
+// animation callbacks and before its paint, so a redraw left to the next frame would show a blank map for every step of
+// a sidebar drag or window resize. With no feed, draw() allocates nothing; with workers it sorts a few small arrays.
+// WORKERS (plan §4.7 "one simulation clock"): one sim clock drives the feed, the observer core, the planner and the
+// drawing; each frame advances it by the frame's time, at most 50 ms. While the tab is hidden nothing runs and the clock
+// stands still, so the workers carry on where they were when it is shown again (the engine survives tab switches).
+// Workers are drawn in texel space at the engine's integer scale (exact texel blocks), in the painter's order of their
+// feet, over the room labels; then their bubbles: an icon each, the newest labels as text (at most 4, plan §4.8).
 // Input: drag to pan; the wheel and a two-finger pinch zoom in whole steps; double-click fits. With keyboard focus
 // on the canvas: arrow keys pan, + and - zoom, 0 fits.
 // Lifecycle: built once per page; while its tab is hidden it stops drawing and ignores the 0×0 resize, so coming
-// back neither rebuilds nor re-fits anything.
+// back neither rebuilds nor re-fits anything. destroy() disposes the feed's world (core, planner, workers).
 // Checks read the engine's `debug` object (live getters, built once). It is also window.__workerOffice, but only in
 // dev builds (the visual check runs on the dev server) or with ?woDebug in the address.
 import { TILE } from './floors.ts'
-import { doorLeaves } from './stateLayer.ts'
+import { DOOR_SLIDE_MAX, doorLeaves, drawInTray, drawMagnets, drawOutStack, type MagnetState } from './stateLayer.ts'
 import { type LabelPlacement, type OfficeScene, labelFont, placeLabels, prerenderBuilds, texel } from './prerender.ts'
 import { WheelZoom, fitCamera } from './camera.ts'
+import { figureSet, lookOf, type FigureSet } from './figures.ts'
+import { MAX_TEXT_BUBBLES, TEXT_BUBBLE_MS, bubbleText, drawIconBubble, drawWorker, iconOf, newView, spriteView, type SpriteView } from './WorkerSprite.ts'
+import type { PlaceLayout } from '../map/places.ts'
+import { ObserverCore } from '../core/reducer.ts'
+import { PathPlanner } from '../move/planner.ts'
+import { WorkerWorld, type WorkerState } from '../live/world.ts'
+import { ExamplePlayer } from '../live/example.ts'
 
 const VOID = '#05070f'          // the app chrome around the building
 const MAX_SCALE = 12
@@ -31,6 +45,21 @@ const PINCH_STEP = 1.25
 const KEY_PAN_TILES = 2
 const LABEL_INK = 'rgba(244,238,226,0.82)'
 const LABEL_SHADOW = 'rgba(0,0,0,0.65)'
+/** The sim clock advances at most this much per frame (plan §4.7, OfficeEngine.ts:344). */
+const MAX_FRAME_MS = 50
+/** The front door (plan §4.8): opens in 0.4 s for a walker within its sense range, closes in 0.5 s, 1.5 s after the
+ *  last one has gone. */
+const DOOR_OPEN_MS = 400, DOOR_CLOSE_MS = 500, DOOR_HOLD_MS = 1500
+/** Text bubbles: a fixed phrase (core/labels.ts) in the UI font, wrapped at this many characters. */
+const BUBBLE_FONT_PX = 11
+const BUBBLE_WRAP = 30
+const BUBBLE_INK = '#e8ecf2'
+const BUBBLE_EDGE = 'rgba(77,159,255,0.55)'
+
+/** What the tab shows about the feed (WorkerOffice.tsx). */
+export type FeedState = 'none' | 'example'
+export interface WorkerLine { readonly n: number; readonly text: string }
+export interface FeedSummary { readonly feed: FeedState; readonly workers: number; readonly lines: readonly WorkerLine[]; readonly seconds: number }
 
 /** Read-only state for automated checks (engine.debug; window.__workerOffice where exposed). */
 export interface WorkerOfficeDebug {
@@ -54,6 +83,10 @@ export interface WorkerOfficeDebug {
   readonly draws: number
   readonly labels: readonly string[]
   readonly workers: number
+  /** the feed playing ('none' or 'example'), its sim time in s, the figure frames drawn this frame */
+  readonly feed: FeedState
+  readonly feedSeconds: number
+  readonly figuresDrawn: number
   readonly floorTexel: (x: number, y: number) => string
   readonly mapTexel: (x: number, y: number) => string
 }
@@ -98,6 +131,22 @@ export class WorkerEngine {
   private drag: { id: number; x: number; y: number; offX: number; offY: number } | null = null
   private pinchDist = 0
   private readonly wheel = new WheelZoom()
+  // the feed's workers (null: no feed)
+  private world: WorkerWorld | null = null
+  private player: ExamplePlayer | null = null
+  private feed: FeedState = 'none'
+  private sim = Date.now()
+  private lastFrame: number | null = null
+  private loop = 0
+  private figuresDrawn = 0
+  private readonly views = new Map<string, SpriteView>()
+  private readonly sets = new Map<string, FigureSet>()
+  private readonly order: { key: string; v: SpriteView; w: WorkerState }[] = []
+  private readonly magnetStates: MagnetState[] = []
+  private doorOpen = 0
+  private doorClearAt = -Infinity
+  private readonly boardOrigin: [number, number] | null
+  private readonly deskOrigin: [number, number] | null
 
   constructor(canvas: HTMLCanvasElement, scene: OfficeScene) {
     engines++
@@ -108,6 +157,9 @@ export class WorkerEngine {
     this.scene = scene
     this.worldW = scene.map.width * TILE
     this.worldH = scene.map.height * TILE
+    const board = scene.map.objects.find(o => o.kind === 'inOutBoard'), desk = scene.map.objects.find(o => o.kind === 'frontDesk')
+    this.boardOrigin = board ? [board.x * TILE, board.y * TILE] : null
+    this.deskOrigin = desk ? [(desk.x + 1) * TILE, desk.y * TILE] : null   // the E tile: the IN tray and the OUT stack
     this.relabel()
     this.ro = new ResizeObserver(entries => { const e = entries[entries.length - 1]; if (e) this.onResize(e) })
     try { this.ro.observe(canvas, { box: 'device-pixel-content-box' }) } catch { this.ro.observe(canvas) }
@@ -129,6 +181,13 @@ export class WorkerEngine {
     this.active = false
     cancelAnimationFrame(this.raf)
     this.raf = 0
+    cancelAnimationFrame(this.loop)
+    this.loop = 0
+    this.world?.dispose()
+    this.world = null
+    this.player = null
+    this.views.clear()
+    this.sets.clear()
     this.ro.disconnect()
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
@@ -143,12 +202,82 @@ export class WorkerEngine {
     if (w.__workerOffice === this.debug) delete w.__workerOffice
   }
 
-  /** The tab is showing (draw) or hidden (draw nothing; keep the world as it is). */
+  /** The tab is showing (draw) or hidden (draw nothing; keep the world as it is: its clock stands still). */
   setActive(active: boolean) {
     if (this.destroyed) return
     this.active = active
-    if (active) this.requestDraw()
-    else { cancelAnimationFrame(this.raf); this.raf = 0 }
+    if (active) { this.requestDraw(); this.startLoop() }
+    else { cancelAnimationFrame(this.raf); this.raf = 0; cancelAnimationFrame(this.loop); this.loop = 0; this.lastFrame = null }
+  }
+
+  // ── the feed ─────────────────────────────────────────────────────────────────────────────────────────────────────
+  /** Play the EXAMPLE feed (synthetic events, never the owner's spool) through a new world: the observer core with the
+   *  page's body signals, the Path A planner, the bodies. A feed already playing is disposed first. */
+  playExample(layout: PlaceLayout) {
+    if (this.destroyed) return
+    this.stopFeed()
+    this.world = new WorkerWorld(layout, new ObserverCore(layout, { bodySignals: true }), new PathPlanner(layout))
+    this.player = new ExamplePlayer(this.sim)
+    this.feed = 'example'
+    this.startLoop()
+  }
+
+  /** Stop the feed: its world (core, planner, workers) is disposed and the building is empty again. */
+  stopFeed() {
+    this.world?.dispose()
+    this.world = null
+    this.player = null
+    this.feed = 'none'
+    this.views.clear()
+    this.doorOpen = 0
+    this.requestDraw()
+  }
+
+  /** The feed, the workers inside and their labels (fixed phrases), for the tab's room key. */
+  summary(): FeedSummary {
+    const lines: WorkerLine[] = []
+    if (this.world) for (const w of this.world.workers.values()) lines.push({ n: w.n, text: w.onGrid ? bubbleText(w) : 'arrived: waiting outside (display limit)' })
+    lines.sort((a, b) => a.n - b.n)
+    return { feed: this.feed, workers: lines.length, lines, seconds: this.player ? Math.max(0, (this.sim - this.player.base) / 1000) : 0 }
+  }
+
+  private startLoop() {
+    if (this.loop || !this.active || this.destroyed || this.world === null) return
+    this.loop = requestAnimationFrame(this.frame)
+  }
+
+  /** One animation frame of a feed: advance the one sim clock, step the world, draw. Ends when the feed is over and the
+   *  building is empty (the tab shows the no-feed note again). */
+  private frame = (ts?: number) => {
+    this.loop = 0
+    if (!this.active || this.destroyed || this.world === null) return
+    const t = typeof ts === 'number' && Number.isFinite(ts) ? ts : performance.now()
+    const dt = this.lastFrame === null ? 0 : Math.min(MAX_FRAME_MS, Math.max(0, t - this.lastFrame))
+    this.lastFrame = t
+    this.sim += dt
+    const world = this.world, sim = this.sim
+    this.player?.deliver(sim, line => world.ingest(line, sim))
+    world.step(sim)
+    this.stepDoor(dt)
+    this.drawNow()
+    if (this.player !== null && this.player.done && world.workers.size === 0) { this.stopFeed(); return }
+    this.loop = requestAnimationFrame(this.frame)
+  }
+
+  /** The door opens only for a real walker within its sense range (plan §1.2). */
+  private stepDoor(dt: number) {
+    const d = this.scene.map.door
+    let near = false
+    if (this.world) {
+      for (const w of this.world.workers.values()) {
+        if (!w.onGrid) continue
+        const dx = Math.max(0, d.x - w.pos.x, w.pos.x - (d.x + d.w - 1)), dy = Math.abs(w.pos.y - d.y)
+        if (Math.max(dx, dy) <= d.senseTiles) { near = true; break }
+      }
+    }
+    if (near) this.doorClearAt = this.sim
+    const opening = near || this.sim - this.doorClearAt < DOOR_HOLD_MS
+    this.doorOpen = Math.min(1, Math.max(0, this.doorOpen + (opening ? dt / DOOR_OPEN_MS : -dt / DOOR_CLOSE_MS)))
   }
 
   /** Global UI text scale (SettingsContext): the room labels are placed again for it. */
@@ -335,10 +464,11 @@ export class WorkerEngine {
     ctx.drawImage(scene.layer, this.offX, this.offY, this.worldW * s, this.worldH * s)
 
     ctx.setTransform(s, 0, 0, s, this.offX, this.offY)
-    // state layer: the front door stays shut — it opens only for a real worker within 2 tiles (plan §1.2),
-    // and step 1 has none
+    // layers drawn from the observer's data: the in/out board's magnets, the front desk's OUT stack and IN tray
+    if (this.world) this.drawObjects()
+    // the front door opens only for a real walker within its sense range (plan §1.2); shut with nobody near
     const door = scene.map.door
-    doorLeaves(ctx, door.x * TILE, door.y * TILE, 0)
+    doorLeaves(ctx, door.x * TILE, door.y * TILE, Math.round(this.doorOpen * DOOR_SLIDE_MAX) / DOOR_SLIDE_MAX)
 
     // room labels (placed from the zones for this text scale); crisp text at the integer scale
     ctx.textBaseline = 'middle'
@@ -354,8 +484,98 @@ export class WorkerEngine {
       ctx.fillText(labels[i].text, labels[i].x, labels[i].y)
     }
     ctx.shadowColor = 'transparent'
+    if (this.world) this.drawWorkers()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     this.draws++
+  }
+
+  private drawObjects() {
+    const { ctx } = this
+    const o = this.world!.objects
+    if (this.boardOrigin) {
+      const states = this.magnetStates
+      states.length = 0
+      for (const n of o.magnets) {
+        let st: MagnetState = 'waiting'
+        for (const w of this.world!.workers.values()) {
+          if (w.n !== n) continue
+          st = w.label === 'quiet' || w.label === 'suspect' || w.label === 'stuck' ? 'stale' : w.inCall ? 'working' : 'waiting'
+          break
+        }
+        states.push(st)
+      }
+      drawMagnets(ctx, this.boardOrigin[0], this.boardOrigin[1], states)
+    }
+    if (this.deskOrigin) {
+      drawOutStack(ctx, this.deskOrigin[0], this.deskOrigin[1], o.outStack)
+      drawInTray(ctx, this.deskOrigin[0], this.deskOrigin[1], o.inTray)
+    }
+  }
+
+  /** The workers, feet first to last (the painter's order), their icon bubbles, then the newest labels as text. */
+  private drawWorkers() {
+    const { ctx } = this
+    const world = this.world!, now = this.sim
+    const order = this.order
+    order.length = 0
+    for (const w of world.workers.values()) {
+      let v = this.views.get(w.key)
+      if (!v) { v = newView(); this.views.set(w.key, v) }
+      spriteView(w, now, v)
+      if (v.visible) order.push({ key: w.key, v, w })
+    }
+    if (this.views.size > world.workers.size) for (const k of [...this.views.keys()]) if (!world.workers.has(k)) { this.views.delete(k); this.sets.delete(k) }
+    order.sort((a, b) => a.v.depth - b.v.depth || a.w.n - b.w.n)
+    ctx.imageSmoothingEnabled = false
+    for (const e of order) {
+      let set = this.sets.get(e.key)
+      if (!set) { set = figureSet(lookOf(e.w.seed)); this.sets.set(e.key, set) }
+      drawWorker(ctx, e.v, set)
+    }
+    this.figuresDrawn = order.length
+    // bubbles: the newest labels as text (at most 4), an icon for every other worker that has one
+    let texts = 0
+    const byNew = order.slice().sort((a, b) => b.w.labelAt - a.w.labelAt)
+    const text = new Set<string>()
+    for (const e of byNew) {
+      if (texts >= MAX_TEXT_BUBBLES || now - e.w.labelAt > TEXT_BUBBLE_MS) break
+      text.add(e.key)
+      texts++
+    }
+    for (const e of order) {
+      if (text.has(e.key)) continue
+      const icon = iconOf(e.w)
+      if (icon !== null) drawIconBubble(ctx, e.v, icon)
+    }
+    if (texts > 0) this.drawTextBubbles(byNew.slice(0, texts))
+  }
+
+  /** Text bubbles in device pixels (crisp at any scale), over each worker's head. */
+  private drawTextBubbles(list: readonly { v: SpriteView; w: WorkerState }[]) {
+    const { ctx } = this
+    const s = this.scale, k = this.devicePerCss()
+    const fpx = Math.round(BUBBLE_FONT_PX * this.fontScale * k)
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.font = `${fpx}px ${LABEL_FONT_FAMILY}`
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'left'
+    const pad = Math.round(4 * k), lh = Math.round(fpx * 1.25)
+    for (const { v, w } of list) {
+      const lines = wrap(`#${w.n} ${bubbleText(w)}`, BUBBLE_WRAP)
+      let width = 0
+      for (const l of lines) width = Math.max(width, ctx.measureText(l).width)
+      const bw = Math.ceil(width) + 2 * pad, bh = lines.length * lh + 2 * pad
+      const cx = this.offX + (v.x + 8) * s, top = this.offY + (v.y - 2) * s - bh
+      const bx = Math.round(Math.min(Math.max(cx - bw / 2, 0), this.bw - bw)), by = Math.round(Math.max(top, 0))
+      ctx.globalAlpha = v.alpha
+      ctx.fillStyle = BUBBLE_EDGE
+      ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2)
+      ctx.fillStyle = BUBBLE_BG_DOM
+      ctx.fillRect(bx, by, bw, bh)
+      ctx.fillStyle = BUBBLE_INK
+      lines.forEach((l, i) => ctx.fillText(l, bx + pad, by + pad + i * lh))
+    }
+    ctx.globalAlpha = 1
   }
 
   /** The debug object: live getters over the engine, built once (reading it costs nothing per frame). */
@@ -376,7 +596,10 @@ export class WorkerEngine {
       fontScale: () => this.fontScale,
       draws: () => this.draws,
       labels: () => this.labelTexts,
-      workers: () => 0,
+      workers: () => this.world?.onScreen ?? 0,
+      feed: () => this.feed,
+      feedSeconds: () => (this.player ? Math.max(0, (this.sim - this.player.base) / 1000) : 0),
+      figuresDrawn: () => this.figuresDrawn,
     }
     const dbg = {
       floorTexel: (x: number, y: number) => texel(this.scene.floorLayer, x, y),
@@ -385,4 +608,20 @@ export class WorkerEngine {
     for (const k of Object.keys(read) as (keyof DebugState)[]) Object.defineProperty(dbg, k, { get: read[k], enumerable: true })
     return Object.freeze(dbg)
   }
+}
+
+const LABEL_FONT_FAMILY = '"IBM Plex Mono", monospace'
+/** The bubble behind the text (the icons' bubble, OfficeEngine.ts drawBubble). */
+const BUBBLE_BG_DOM = 'rgba(8,12,24,0.92)'
+
+/** Wrap a phrase at word boundaries to lines of at most `max` characters (a longer word stands alone). */
+function wrap(text: string, max: number): string[] {
+  const out: string[] = []
+  let line = ''
+  for (const word of text.split(' ')) {
+    if (line.length > 0 && line.length + 1 + word.length > max) { out.push(line); line = word }
+    else line = line.length > 0 ? `${line} ${word}` : word
+  }
+  if (line.length > 0) out.push(line)
+  return out
 }

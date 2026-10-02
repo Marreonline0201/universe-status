@@ -15,7 +15,9 @@
 //     ResizeObserver callback; a hidden tab draws nothing; the wheel zooms in whole steps (none on a horizontal
 //     swipe, no runaway on touchpad deltas); two-finger pinch; keyboard pan, zoom and fit; labels re-placed for every
 //     UI text scale up to FONT_MAX without crossing a wall, a doorway or furniture; the debug object is built once
-//     and exposed only in dev builds or with ?woDebug; destroy();
+//     and exposed only in dev builds or with ?woDebug; destroy(); with the EXAMPLE feed: one sim clock (50 ms cap per
+//     frame), figures blitted as exact texel blocks, a hidden tab stands still and goes on when shown, the feed ends by
+//     itself, stopFeed() empties the building;
 //   the tab's DOM colours: every text colour meets WCAG AA (4.5:1) on its background in the worst case, and
 //     WorkerOffice.tsx takes all its colours from workerOfficeTheme.ts.
 // Every assertion prints its own line, so running this against older code lists what is missing instead of
@@ -27,6 +29,7 @@ import * as pre from '../src/worker-office/render/prerender.ts'
 import { drawFinish, variantOf, type FinishId } from '../src/worker-office/render/floors.ts'
 import { hasFurnitureArt } from '../src/worker-office/render/furniture.ts'
 import { WorkerEngine, type WorkerOfficeDebug } from '../src/worker-office/render/WorkerEngine.ts'
+import { buildPlaceLayout } from '../src/worker-office/map/places.ts'
 
 const file = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 
@@ -664,6 +667,59 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
   e2.setActive(true); e2.setFontScale(2)
   ok(globalDebug() === undefined && api2.debug?.active === false && rafQueue.size === 0, 'destroy(): window.__workerOffice removed, inactive, and nothing more is scheduled')
   delete G.location
+}
+
+// ── a feed: the EXAMPLE plays through the real core, planner and figures (live/world.ts, live/example.ts) ───────
+{
+  console.log('engine with a feed (the EXAMPLE: synthetic events)')
+  const layout = buildPlaceLayout(map)
+  type FeedApi = { playExample?: (l: unknown) => void; stopFeed?: () => void }
+  const fapi = engine as unknown as FeedApi
+  ok(typeof fapi.playExample === 'function' && typeof fapi.stopFeed === 'function', 'engine.playExample(layout) / stopFeed(): the tab\'s example control')
+  if (fapi.playExample && fapi.stopFeed) {
+    let t = 1000
+    /** n animation frames, each `dt` ms after the last (the browser passes the frame's timestamp). */
+    const frames = (n: number, dt = 50) => { for (let i = 0; i < n; i++) { const q = rafQueue; rafQueue = new Map(); t += dt; for (const cb of q.values()) (cb as (ts: number) => void)(t) } }
+    engine.setActive(true); resize(1134, 864, 1)
+    fapi.playExample(layout)
+    const d0 = canvas.ctx.draws.length
+    frames(401)                                        // the first frame starts the clock; then 20 s at 50 ms per frame
+    const mid = snap()
+    const figDraws = canvas.ctx.draws.slice(d0).filter(d => d.src.width === 16 && d.src.height === 16)
+    const offGrid = figDraws.filter(d => !Number.isInteger(d.x) || !Number.isInteger(d.y) || d.w !== 16 * mid.deviceScale || d.h !== 16 * mid.deviceScale)
+    ok(mid.feed === 'example' && mid.workers > 0 && mid.figuresDrawn > 0 && Math.abs(mid.feedSeconds - 20) < 1e-6,
+      `the example plays on one sim clock: after 400 frames of 50 ms it is at ${mid.feedSeconds.toFixed(2)} s, ${mid.workers} workers on screen, ${mid.figuresDrawn} figures drawn in the last frame`)
+    ok(figDraws.length > 100 && offGrid.length === 0,
+      `${figDraws.length} figure frames blitted, each at whole device pixels and 16 texels × the integer scale ${mid.deviceScale}: exact texel blocks${offGrid.length ? ` — off the grid: ${offGrid.length}` : ''}`)
+    frames(1, 3000)
+    ok(Math.abs(snap().feedSeconds - mid.feedSeconds - 0.05) < 1e-6, `a 3 s frame advances the clock by the 50 ms cap only (${(snap().feedSeconds - mid.feedSeconds).toFixed(3)} s)`)
+    // hidden: nothing runs and the clock stands still; shown again: it carries on where it was (no rebuild, no jump)
+    const before = snap()
+    engine.setActive(false); sendResize(canvas, 0, 0, 1)
+    frames(100)
+    const hidden = snap()
+    ok(rafQueue.size === 0 && hidden.feedSeconds === before.feedSeconds && hidden.workers === before.workers && hidden.draws === before.draws,
+      `hidden: no frame is scheduled, nothing is drawn, the sim clock stands still at ${hidden.feedSeconds.toFixed(2)} s with ${hidden.workers} workers`)
+    engine.setActive(true); sendResize(canvas, 1134, 864, 1)   // shown (the observer repaints; no timestampless frame)
+    frames(1, 60_000)
+    frames(20)
+    const shown = snap()
+    ok(Math.abs(shown.feedSeconds - hidden.feedSeconds - 1) < 1e-6 && shown.prerenders === 1 && shown.engines === 2 && shown.feed === 'example',
+      `shown again after a minute away: it goes on from ${hidden.feedSeconds.toFixed(2)} s to ${shown.feedSeconds.toFixed(2)} s in 20 frames (no catch-up jump, no rebuild)`)
+    // to the end: everyone leaves and the feed ends by itself
+    let seen = shown.workers
+    for (let i = 0; i < 80 && snap().feed === 'example'; i++) { frames(50); seen = Math.max(seen, snap().workers) }
+    const end = snap()
+    ok(end.feed === 'none' && end.workers === 0 && seen >= 4,
+      `the example ends by itself (feed ${end.feed}, ${end.workers} workers, up to ${seen} on screen at once): every worker left`)
+    // stop mid-way, and destroy while playing: everything goes
+    fapi.playExample(layout)
+    frames(301)
+    const playing = snap().workers
+    fapi.stopFeed()
+    flush()
+    ok(playing > 0 && snap().workers === 0 && snap().feed === 'none', `stopFeed(): the ${playing} workers are gone at once, no feed`)
+  }
 }
 
 ok(st().engines === 2 && st().prerenders === 1 && st().workers === 0, `two engines in this check, pre-rendered once, zero workers (engines ${st().engines}, prerenders ${st().prerenders})`)

@@ -21,6 +21,14 @@ export const WO = {
   bannerText: '#cfd8e8',
   bannerBg: 'rgba(14,20,34,0.9)',
   bannerEdge: 'rgba(138,151,184,0.45)',
+  /** the EXAMPLE note while the synthetic example plays: amber, so it never reads as the live note */
+  exampleText: '#ffe08a',
+  exampleBg: 'rgba(38,26,4,0.94)',
+  exampleEdge: 'rgba(250,176,5,0.6)',
+  /** the Play / Stop example button */
+  buttonText: '#e6eefc',
+  buttonBg: 'rgba(22,44,78,0.95)',
+  buttonEdge: 'rgba(116,192,252,0.5)',
 } as const
 
 /** Every text colour of the tab with the background it sits on: [what, text colour, background]. */
@@ -30,4 +38,6 @@ export const WO_TEXT_ON: readonly (readonly [what: string, text: string, backgro
   ['map facts line', WO.faint, WO.sidebarBg],
   ['WORKERS chip', WO.chipText, WO.chipBg],
   ['no-live-feed note', WO.bannerText, WO.bannerBg],
+  ['example note', WO.exampleText, WO.exampleBg],
+  ['example button', WO.buttonText, WO.buttonBg],
 ]

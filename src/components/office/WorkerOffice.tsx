@@ -1,7 +1,9 @@
-// WORKER OFFICE tab (plan §6.1). The building from floorplan.json, drawn by WorkerEngine. Step 1: the interior
-// with ZERO workers and no feed. This tab reads no office server and starts nothing (the app shell's own sockets
-// belong to App.tsx, kept by plan §5.3); live workers will exist only on the owner's computer (plan §6.6), so the
-// public page always shows the empty building with a note.
+// WORKER OFFICE tab (plan §6.1, §6.4). The building from floorplan.json, drawn by WorkerEngine. This tab reads no
+// office server and starts nothing (the app shell's own sockets belong to App.tsx, kept by plan §5.3); live workers will
+// exist only on the owner's computer (plan §6.6), so the page shows the empty building with the no-live-feed note.
+// "Play example" plays a SYNTHETIC spool (live/example.ts: made-up helpers, never the owner's) through the same observer
+// core, planner and figures as live data, and the note says EXAMPLE while it plays; when it ends (or Stop) the note is
+// the no-live-feed one again.
 //
 // The tab stays mounted once opened (App.tsx toggles `display`), so the engine and its pre-render are built once
 // and survive tab switches; `active` only pauses drawing while the tab is hidden.
@@ -11,14 +13,18 @@
 // note and the error in this tab only; the rest of the site keeps working.
 // Colours come from workerOfficeTheme.ts (WCAG AA, checked by scripts/worker-office-render-check.ts).
 import { Component, type ErrorInfo, type ReactNode, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
-import { WorkerEngine } from '../../worker-office/render/WorkerEngine'
-import { getOfficeMap, getOfficeScene } from '../../worker-office/map/office'
+import { WorkerEngine, type FeedSummary } from '../../worker-office/render/WorkerEngine'
+import { getOfficeMap, getOfficeScene, getPlaceLayout } from '../../worker-office/map/office'
 import { ResizeHandle } from '../common/ResizeHandle'
 import { useSettings } from '../../settings/SettingsContext'
 import { WO } from './workerOfficeTheme'
 
 const MONO = '"IBM Plex Mono", monospace'
 const NO_FEED = "No live feed — live only on the owner's computer"
+const EXAMPLE_NOTE = 'EXAMPLE — synthetic events, not live data'
+/** How often the room key reads the engine's workers while a feed plays. */
+const SUMMARY_MS = 500
+const NO_SUMMARY: FeedSummary = { feed: 'none', workers: 0, lines: [], seconds: 0 }
 const SIDEBAR_W_KEY = 'universe-worker-office-sidebar-w'
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 560
@@ -65,6 +71,8 @@ function WorkerOfficeView({ active }: { active: boolean }) {
   const helpId = useId()
   const keyId = useId()
   const map = getOfficeMap()   // throws on a bad floorplan: the boundary below catches it
+  const [summary, setSummary] = useState<FeedSummary>(NO_SUMMARY)
+  const playing = summary.feed !== 'none'
 
   useEffect(() => {
     const engine = new WorkerEngine(canvasRef.current!, getOfficeScene())
@@ -72,6 +80,14 @@ function WorkerOfficeView({ active }: { active: boolean }) {
     return () => { engine.destroy(); engineRef.current = null }
   }, [])
   useEffect(() => { engineRef.current?.setActive(active) }, [active])
+  // while a feed plays and the tab shows, read the workers for the key (the engine's clock stands still when hidden)
+  useEffect(() => {
+    if (!active || !playing) return
+    const id = window.setInterval(() => { const e = engineRef.current; if (e) setSummary(e.summary()) }, SUMMARY_MS)
+    return () => window.clearInterval(id)
+  }, [active, playing])
+  const playExample = () => { const e = engineRef.current; if (!e) return; e.playExample(getPlaceLayout()); setSummary(e.summary()) }
+  const stopExample = () => { const e = engineRef.current; if (!e) return; e.stopFeed(); setSummary(e.summary()) }
   useEffect(() => { engineRef.current?.setFontScale(fontScale) }, [fontScale])
   useEffect(() => { try { localStorage.setItem(SIDEBAR_W_KEY, String(sidebarWidth)) } catch { /* storage off */ } }, [sidebarWidth])
   // the overlay band over the top of the map: measured whenever its size changes (text scale, wrapping)
@@ -90,7 +106,7 @@ function WorkerOfficeView({ active }: { active: boolean }) {
   }, [])
 
   const topZones = map.zones.filter(z => z.parent === null)
-  const workers = 0
+  const workers = summary.workers
 
   return (
     <div style={{ display: 'flex', flexDirection: narrow ? 'column' : 'row', height: '100%', fontFamily: MONO, color: WO.text }}>
@@ -113,7 +129,7 @@ function WorkerOfficeView({ active }: { active: boolean }) {
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
         }}>
           <div style={{ alignSelf: 'flex-start' }}><Chip label={`WORKERS ${workers}`} /></div>
-          <Banner />
+          <Banner example={playing} />
         </div>
       </div>
 
@@ -126,8 +142,36 @@ function WorkerOfficeView({ active }: { active: boolean }) {
         overflowY: 'auto', background: WO.sidebarBg, padding: 12, fontSize: 'calc(10.5px * var(--font-scale, 1))',
       }}>
         <SectionTitle text="WORKERS" />
-        <div style={{ color: WO.muted, lineHeight: 1.6, marginBottom: 14 }}>
-          None on screen. A worker appears only for a real helper event, and only on the owner's computer.
+        {playing ? (
+          <div data-wo="workers" style={{ color: WO.muted, lineHeight: 1.6, marginBottom: 10 }}>
+            <div style={{ color: WO.exampleText, background: WO.exampleBg, padding: '2px 6px', borderRadius: 3, marginBottom: 6 }}>
+              {EXAMPLE_NOTE} · {Math.floor(summary.seconds)} s
+            </div>
+            {summary.lines.length === 0 ? <div>None inside yet.</div> : (
+              <ul aria-label="Workers in the example" style={{ listStyle: 'none' }}>
+                {summary.lines.map(l => <li key={l.n}><span style={{ color: WO.text }}>#{l.n}</span> {l.text}</li>)}
+              </ul>
+            )}
+          </div>
+        ) : (
+          <div style={{ color: WO.muted, lineHeight: 1.6, marginBottom: 10 }}>
+            None on screen. A worker appears only for a real helper event, and only on the owner's computer.
+          </div>
+        )}
+        <button
+          type="button"
+          data-wo="example"
+          onClick={playing ? stopExample : playExample}
+          aria-pressed={playing}
+          style={{
+            fontFamily: MONO, fontSize: 'calc(10px * var(--font-scale, 1))', letterSpacing: 1, padding: '4px 10px', marginBottom: 14,
+            borderRadius: 3, cursor: 'pointer', color: WO.buttonText, background: WO.buttonBg, border: `1px solid ${WO.buttonEdge}`,
+          }}
+        >
+          {playing ? 'Stop example' : 'Play example'}
+        </button>
+        <div style={{ color: WO.faint, lineHeight: 1.5, marginBottom: 14 }}>
+          The example plays made-up helpers through the same office logic; it is never live data.
         </div>
         <SectionTitle text="ROOMS" />
         <ul id={keyId} aria-label="Rooms and their floors" style={{ listStyle: 'none' }}>
@@ -152,14 +196,15 @@ function WorkerOfficeView({ active }: { active: boolean }) {
   )
 }
 
-function Banner() {
+function Banner({ example = false }: { example?: boolean }) {
   return (
-    <div data-wo="banner" style={{
-      maxWidth: '100%', padding: '7px 16px', borderRadius: 4, background: WO.bannerBg, border: `1px solid ${WO.bannerEdge}`,
-      color: WO.bannerText, fontSize: 'calc(12px * var(--font-scale, 1))', letterSpacing: 1, lineHeight: 1.35,
+    <div data-wo="banner" role="status" style={{
+      maxWidth: '100%', padding: '7px 16px', borderRadius: 4,
+      background: example ? WO.exampleBg : WO.bannerBg, border: `1px solid ${example ? WO.exampleEdge : WO.bannerEdge}`,
+      color: example ? WO.exampleText : WO.bannerText, fontSize: 'calc(12px * var(--font-scale, 1))', letterSpacing: 1, lineHeight: 1.35,
       textAlign: 'center', whiteSpace: 'normal', overflowWrap: 'anywhere',
     }}>
-      {NO_FEED}
+      {example ? EXAMPLE_NOTE : NO_FEED}
     </div>
   )
 }
