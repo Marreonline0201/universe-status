@@ -53,6 +53,16 @@ const QUIET_LABELS: ReadonlySet<LabelId> = new Set<LabelId>(['quiet', 'suspect',
 const takenThere = (pose: PoseName, prop: PropId | null) =>
   prop === 'folder' || (pose === 'reachU' && (prop === 'ledger' || prop === 'book')) || (pose === 'useU0' && prop === 'callSlip')
 
+/** The prop a worker's hands show at `now` (null: none): the call's own during the per-call unit's minimum, the one it
+ *  held when its exit beat began, nothing on the way to a place where the item is taken, else the core's prop. The
+ *  object states (live/objects.ts) read the same answer, so a shelf's gap and the volume in the hand never disagree. */
+export function heldProp(w: WorkerState, now: number): PropId | null {
+  if (w.phase === 'settled' && now < w.unitUntil && w.unitPose !== null) return w.unitProp
+  if (w.phase === 'exit' && w.exitPose !== null) return w.exitProp
+  if ((w.phase === 'walking' || w.phase === 'appearing') && takenThere(w.pose, w.prop)) return null
+  return w.prop
+}
+
 /** What one worker shows this frame (world texels; filled in place, no allocation per frame). */
 export interface SpriteView {
   visible: boolean
@@ -66,6 +76,9 @@ export interface SpriteView {
   shadow: boolean
   prop: PropId | null
   propView: PropView | null
+  /** The binding of a carried ledger or book: the colour of the shelf slot it was pulled from (live/objects.ts), so
+   *  the volume in the hand matches the gap it left; null: the prop's default colour. Set by the engine. */
+  propColour: string | null
   propX: number
   propY: number
   propBehind: boolean
@@ -79,7 +92,7 @@ export interface SpriteView {
 }
 
 export const newView = (): SpriteView => ({
-  visible: false, pose: 'stand', x: 0, y: 0, depth: 0, alpha: 1, shadow: false, prop: null, propView: null, propX: 0, propY: 0,
+  visible: false, pose: 'stand', x: 0, y: 0, depth: 0, alpha: 1, shadow: false, prop: null, propView: null, propColour: null, propX: 0, propY: 0,
   propBehind: false, belt: false, beltX: 0, beltY: 0, dot: 'idle', dotX: 0, dotY: 0, dotR: 1.5,
 })
 
@@ -122,13 +135,11 @@ export function spriteView(w: WorkerState, now: number, v: SpriteView): SpriteVi
   if (w.fadeAt !== null) a = Math.min(a, Math.max(0, 1 - (now - w.fadeAt) / BEAT.fade))
   v.alpha = a
   v.shadow = drawsContactShadow(pose)
-  const inUnit = w.phase === 'settled' && now < w.unitUntil && w.unitPose !== null
-  const walking = w.phase === 'walking' || w.phase === 'appearing'
-  const prop = inUnit ? w.unitProp : w.phase === 'exit' && w.exitPose !== null ? w.exitProp
-    : walking && takenThere(w.pose, w.prop) ? null : w.prop
+  const prop = heldProp(w, now)
   const hands = HAND[pose]
   v.prop = null
   v.propView = null
+  v.propColour = null
   if (prop !== null && hands.hand !== null) {
     const art = PROP_ART[prop][hands.hand.view]
     if (art !== undefined) {
@@ -159,9 +170,9 @@ export function drawWorker(g: Ctx, v: SpriteView, set: FigureSet) {
   if (!v.visible || v.alpha <= 0) return
   g.globalAlpha = v.alpha
   if (v.shadow) g.drawImage(shadowImage(), v.x + SHADOW_X0, v.y + SHADOW_Y0)
-  if (v.prop !== null && v.propView !== null && v.propBehind) g.drawImage(propImage(v.prop, v.propView, PROP_DEFAULT_COLOUR[v.prop]), v.propX, v.propY)
+  if (v.prop !== null && v.propView !== null && v.propBehind) g.drawImage(propImage(v.prop, v.propView, v.propColour ?? PROP_DEFAULT_COLOUR[v.prop]), v.propX, v.propY)
   g.drawImage(set.image(v.pose), v.x, v.y)
-  if (v.prop !== null && v.propView !== null && !v.propBehind) g.drawImage(propImage(v.prop, v.propView, PROP_DEFAULT_COLOUR[v.prop]), v.propX, v.propY)
+  if (v.prop !== null && v.propView !== null && !v.propBehind) g.drawImage(propImage(v.prop, v.propView, v.propColour ?? PROP_DEFAULT_COLOUR[v.prop]), v.propX, v.propY)
   if (v.belt) g.drawImage(propImage('pager', 'belt'), v.beltX, v.beltY)
   // the status dot: a soft glow at r + 1 and the core at r, beside the head (never over it: art check G)
   g.fillStyle = DOT_COLOUR[v.dot]

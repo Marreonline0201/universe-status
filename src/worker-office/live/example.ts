@@ -8,8 +8,9 @@
 //      fails, then passes after a fix), thinks long enough for stage 2, hands back its report (printer -> front desk);
 //   #2 reads the history (fetch-then-read: pull a ledger, read at a records reading place), compares versions at a
 //      lectern, reads a book in the library, looks something up in the card catalog, writes, hands in a result form;
-//   #3 reads, runs a long program (the watching pose), types a long edit (the long-call pose), then stops without a
-//      hand-in: it signs out at the front desk;
+//   #3 reads, asks the owner a question (the front desk's handset: the phoneU frame, the cradle empty until the answer),
+//      runs a long program (the watching pose), types a long edit (the long-call pose), then stops without a hand-in:
+//      it signs out at the front desk;
 //   #4 and #5 arrive together and work side by side;
 //   #6 is a background helper: it starts a background shell (a pager on its belt), stops while it runs (paused, then
 //      waiting on the lounge sofa with its pager), resumes, and hands back.
@@ -19,9 +20,12 @@ const aid = (n: number) => `a0e8a${n.toString(16).padStart(12, '0')}`
 /** The classifier's object kind of each activity used here. */
 const KIND: Readonly<Record<string, string>> = {
   read: 'fileCabinet', search: 'fileCabinet', write: 'pcDesk', run: 'benchTerminal', 'hist-read': 'historyShelf', diff: 'lectern',
-  fetch: 'bookshelf', websearch: 'cardCatalog', report: 'printer', form: 'frontDesk', 'helper-bg': 'frontDesk',
+  fetch: 'bookshelf', websearch: 'cardCatalog', report: 'printer', form: 'frontDesk', 'helper-bg': 'frontDesk', ask: 'frontDesk',
 }
 
+/** A hand-back is "being checked" from its Pre to its Post (plan §4.2): long enough here for the walk to the printer,
+ *  so the sheets are seen rising (a Post that comes first sends the worker straight on to the front desk). */
+const HANDBACK_S = 12
 /** One record: its hook time (ms after the example starts) and its fields (without v and ts). */
 export interface ExampleRecord { readonly at: number; readonly rec: Readonly<Record<string, unknown>> }
 
@@ -46,9 +50,9 @@ function helper(out: ExampleRecord[], n: number, t0: number, steps: readonly Ste
   if (end === 'report') {
     const tu = `${a.slice(-4)}r`
     put(t, { ev: 'PreToolUse', aid: a, k: 'printer', a: 'report', tu })
-    put(t + 2, { ev: 'PostToolUse', aid: a, k: 'printer', a: 'report', tu })
-    put(t + 2.2, { ev: 'PostToolBatch', aid: a, n: 1 })
-    t += 2.2
+    put(t + HANDBACK_S, { ev: 'PostToolUse', aid: a, k: 'printer', a: 'report', tu })
+    put(t + HANDBACK_S + 0.2, { ev: 'PostToolBatch', aid: a, n: 1 })
+    t += HANDBACK_S + 0.2
   } else if (end === 'form') {
     put(t, { ev: 'PreToolUse', aid: a, k: 'frontDesk', a: 'form', tu: `${a.slice(-4)}f` })
     put(t + 0.5, { ev: 'PostToolBatch', aid: a, n: 1 })
@@ -69,7 +73,7 @@ export function exampleRecords(): ExampleRecord[] {
   helper(out, 2, 6, [
     ['hist-read', 6, 2.5], ['diff', 4, 3], ['fetch', 6, 3], ['websearch', 3, 2.5], ['write', 4, 4],
   ], 'form', { hold: 3 })
-  helper(out, 3, 14, [['read', 3, 2], ['run', 7, 2], ['read', 2, 2], ['write', 9, 3], ['read', 1, 14]], 'stop', { hold: 2 })
+  helper(out, 3, 14, [['read', 3, 2], ['ask', 12, 2], ['run', 7, 2], ['read', 2, 2], ['write', 9, 3], ['read', 1, 14]], 'stop', { hold: 2 })
   helper(out, 4, 40, [['read', 2, 2], ['hist-read', 5, 2], ['run', 3, 3], ['read', 1.5, 2]], 'report')
   helper(out, 5, 40.05, [['read', 2, 2.2], ['read', 2, 1.5], ['write', 4, 3], ['run', 2.5, 3]], 'form', { hold: 3 })
   // #6, a background helper launched by the main session (whose records draw nobody): a background shell, a stop
@@ -86,8 +90,8 @@ export function exampleRecords(): ExampleRecord[] {
   put6(80, { ev: 'SubagentStop', at: 'general-purpose' })
   put6(118, { ev: 'PreToolUse', k: 'fileCabinet', a: 'read', tu: 'b6c2' }); put6(120, { ev: 'PostToolBatch', n: 1 })
   put6(123, { ev: 'PreToolUse', k: 'printer', a: 'report', tu: 'b6r' })
-  put6(125, { ev: 'PostToolUse', k: 'printer', a: 'report', tu: 'b6r' }); put6(125.2, { ev: 'PostToolBatch', n: 1 })
-  put6(131, { ev: 'SubagentStop', at: 'general-purpose' })
+  put6(123 + HANDBACK_S, { ev: 'PostToolUse', k: 'printer', a: 'report', tu: 'b6r' }); put6(123.2 + HANDBACK_S, { ev: 'PostToolBatch', n: 1 })
+  put6(129 + HANDBACK_S, { ev: 'SubagentStop', at: 'general-purpose' })
   return out.sort((x, y) => x.at - y.at)
 }
 

@@ -30,6 +30,8 @@ import { drawFinish, variantOf, type FinishId } from '../src/worker-office/rende
 import { hasFurnitureArt } from '../src/worker-office/render/furniture.ts'
 import { WorkerEngine, type WorkerOfficeDebug } from '../src/worker-office/render/WorkerEngine.ts'
 import { buildPlaceLayout } from '../src/worker-office/map/places.ts'
+import { STATE_ART, stateFrames } from '../src/worker-office/render/stateLayer.ts'
+import type { ObjectTileKind } from '../src/worker-office/map/loadMap.ts'
 
 const file = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 
@@ -706,8 +708,49 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
     const shown = snap()
     ok(Math.abs(shown.feedSeconds - hidden.feedSeconds - 1) < 1e-6 && shown.prerenders === 1 && shown.engines === 2 && shown.feed === 'example',
       `shown again after a minute away: it goes on from ${hidden.feedSeconds.toFixed(2)} s to ${shown.feedSeconds.toFixed(2)} s in 20 frames (no catch-up jump, no rebuild)`)
-    // to the end: everyone leaves and the feed ends by itself
     let seen = shown.workers
+    // object states (plan §4.4; live/objects.ts): every state the engine derives is BLITTED, as one of that state's own
+    // cached frames, exactly over its object tile (16 texels × the integer scale at the camera offset); no other state
+    // frame is drawn; sampled over the example until it ends
+    {
+      const stateCanvases = new Map<unknown, string>()
+      for (const a of STATE_ART) for (const c of stateFrames(a.tile, a.state)) stateCanvases.set(c, `${a.tile}|${a.state}`)
+      const frameSet = (name: string) => {
+        const [tile, state] = name.split('@')[0].split('|')
+        return new Set<unknown>(stateFrames(tile as ObjectTileKind, state))
+      }
+      const kinds = new Set<string>()
+      let sampled = 0, matched = 0
+      const misses: string[] = []
+      const stray: string[] = []
+      for (let i = 0; i < 160 && snap().feed === 'example'; i++) {
+        frames(9)
+        const d0 = canvas.ctx.draws.length
+        frames(1)
+        const d = snap()
+        seen = Math.max(seen, d.workers)
+        const drawn = canvas.ctx.draws.slice(d0)
+        const s = d.deviceScale, [ox, oy] = d.offset
+        const used = new Set<number>()
+        for (const name of d.objectStates) {
+          sampled++
+          kinds.add(name.split('@')[0])
+          const set = frameSet(name)
+          const [x, y] = name.split('@')[1].split(',').map(Number)
+          const k = drawn.findIndex((r, j) => !used.has(j) && set.has(r.src) && r.x === ox + x * 16 * s && r.y === oy + y * 16 * s && r.w === 16 * s && r.h === 16 * s)
+          if (k < 0) misses.push(`${name} at ${d.feedSeconds.toFixed(1)} s`)
+          else { used.add(k); matched++ }
+        }
+        drawn.forEach((r, j) => { if (!used.has(j) && stateCanvases.has(r.src)) stray.push(`${stateCanvases.get(r.src)} at ${d.feedSeconds.toFixed(1)} s`) })
+      }
+      const want = ['fileCabinet|drawerOpen', 'fileCabinet|folderOut', 'historyShelf|ledgerOut', 'lectern|compare', 'pcDesk|on', 'pcDesk|typing',
+        'benchTerminal|running', 'benchTerminal|output', 'frontDeskW|onPhone', 'printer|printing', 'frontDeskE|handIn', 'frontDeskW|signing']
+      const absent = want.filter(k => !kinds.has(k))
+      ok(sampled > 50 && misses.length === 0 && stray.length === 0 && absent.length === 0,
+        `object states drawn: ${matched} of ${sampled} derived states blitted as their own frame over their tile in sampled frames of the example (${kinds.size} kinds, among them ${want.length} the example must show)` +
+        `${misses.length ? ` — not drawn: ${misses.slice(0, 3).join('; ')}` : ''}${stray.length ? ` — drawn without being derived: ${stray.slice(0, 3).join('; ')}` : ''}${absent.length ? ` — never seen: ${absent.join(', ')}` : ''}`)
+    }
+    // to the end: everyone leaves and the feed ends by itself
     for (let i = 0; i < 80 && snap().feed === 'example'; i++) { frames(50); seen = Math.max(seen, snap().workers) }
     const end = snap()
     ok(end.feed === 'none' && end.workers === 0 && seen >= 4,

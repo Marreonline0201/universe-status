@@ -353,6 +353,9 @@ export const STATE_ART: readonly StateArt[] = [
   }, { phases: 6, fps: 6 }),
   art('benchTerminal', 'ok', 'benchTerminal', 'call-end', g => { termLines(g, 0, 4); statusBar(g, LAMP_GREEN_ON); lampOn(g, 'green') }),
   art('benchTerminal', 'fail', 'benchTerminal', 'call-end', g => { termLines(g, 0, 4); statusBar(g, LAMP_RED_ON); lampOn(g, 'red') }),
+  // stage 1 of a gap at the bench (§4.4 "standU, reading the output"): the call's output stays on the screen once its
+  // result lamp (2 s, §4.5) is off; stage 2 puts the screen back to ready
+  art('benchTerminal', 'output', 'benchTerminal', 'call-end', g => termLines(g, 0, 4)),
   art('benchTerminal', 'stopped', 'benchTerminal', 'event', (g, _v, p) => { if (p === 0) lampOn(g, 'red') }, { phases: 2, fps: 4, base: 'ready' }),
   art('benchTerminal', 'watching', 'benchTerminal', 'event', (g, _v, p) => { if (p === 0) lampOn(g, 'blue') }, { phases: 2, fps: 4, base: 'ready' }),
 
@@ -485,6 +488,13 @@ function frameOf(a: StateArt, f: number): HTMLCanvasElement {
   renders++
   list[f] = c
   return c
+}
+
+/** One cached frame of a state (frame = variant * phases + phase), rendered on first use. The engine draws the object
+ *  states through this every frame: a lookup, no allocation. Throws for a frame the state does not have. */
+export function stateFrame(a: StateArt, frame: number): HTMLCanvasElement {
+  if (!Number.isInteger(frame) || frame < 0 || frame >= a.variants * a.phases) throw new Error(`${a.tile}|${a.state} has no frame ${frame}`)
+  return frameOf(a, frame)
 }
 
 /** Every frame of a state, indexed frame = variant * phases + phase. Resolve it ONCE (when a worker's state changes)

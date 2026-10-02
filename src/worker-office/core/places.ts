@@ -121,7 +121,7 @@ export function stance(s: StanceInput): Stance {
       return { pose: 'standU', prop: null }
     case 'frontDesk':
       if (inCall) {
-        if (activity === 'ask') return { pose: 'standU', prop: null }   // the handset frame is F8 (pass 2)
+        if (activity === 'ask') return { pose: 'phoneU', prop: null }   // §4.4: the handset lifted until the next event (F8)
         return { pose: 'useU0', prop: activity === 'helper-bg' ? 'ticket' : null }
       }
       return sub === 'stage1' ? { pose: 'standU', prop: null } : stage2

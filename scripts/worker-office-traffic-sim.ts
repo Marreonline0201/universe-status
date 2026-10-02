@@ -59,21 +59,26 @@ import * as realPlanner from '../src/worker-office/move/planner.ts'
 import { EXIT, MIN_SPACING, STEP_MS, type BodyPose, type Goal } from '../src/worker-office/move/planner.ts'
 import * as realWorld from '../src/worker-office/live/world.ts'
 import * as realSprite from '../src/worker-office/render/WorkerSprite.ts'
+import * as realObjects from '../src/worker-office/live/objects.ts'
 import { HAND } from '../src/worker-office/render/props.ts'
+import { ExamplePlayer } from '../src/worker-office/live/example.ts'
 
 type PlannerMod = typeof realPlanner
 type Planner = InstanceType<PlannerMod['PathPlanner']>
 type CoreMod = typeof realCore
 type WorldMod = typeof realWorld
 type SpriteMod = typeof realSprite
+type ObjectsMod = typeof realObjects
 type World = InstanceType<WorldMod['WorkerWorld']>
 /** The modules a run uses: the real ones, or one of them patched (a mutant). */
-interface Mods { readonly planner: PlannerMod; readonly core: CoreMod; readonly world: WorldMod; readonly sprite: SpriteMod }
-const REAL: Mods = { planner: realPlanner, core: realCore, world: realWorld, sprite: realSprite }
+interface Mods { readonly planner: PlannerMod; readonly core: CoreMod; readonly world: WorldMod; readonly sprite: SpriteMod; readonly objects: ObjectsMod }
+const REAL: Mods = { planner: realPlanner, core: realCore, world: realWorld, sprite: realSprite, objects: realObjects }
 
 const args = process.argv.slice(2)
 const TUNING_ONLY = args.includes('--tuning-only')
 const NO_MUTANTS = args.includes('--no-mutants')
+/** --objects-only: only the object-state section (plan §4.4) and its mutants. */
+const OBJECTS_ONLY = args.includes('--objects-only')
 /** --trace <prefix>: print every trip of the scenarios whose name starts with it (for debugging). */
 const TRACE = args.includes('--trace') ? args[args.indexOf('--trace') + 1] : null
 
@@ -757,7 +762,7 @@ const tuningDays = TUNING_SEEDS.map(day)
 const heldOutDays = TUNING_ONLY ? [] : HELD_OUT_SEEDS.map(day)
 
 console.log(`worker office traffic check: planner STEP ${STEP_MS} ms, frames every ${FRAME} ms, trip limit ${TRIP_LIMIT_MS / 1000} s, spacing >= ${MIN_SPACING}; the page's world with body signals, watchdog ${realWorld.PENDING_LIMIT_MS / 1000} s`)
-for (const [label, list] of [['scenarios', scenarios], ['days (tuning seeds)', tuningDays], ['days (held-out seeds)', heldOutDays]] as const) {
+for (const [label, list] of (OBJECTS_ONLY ? [] : [['scenarios', scenarios], ['days (tuning seeds)', tuningDays], ['days (held-out seeds)', heldOutDays]] as const)) {
   if (list.length === 0) { console.log(`${label}: skipped (--tuning-only)`); continue }
   console.log(`${label}:`)
   for (const sc of list) {
@@ -776,12 +781,322 @@ for (const [label, list] of [['scenarios', scenarios], ['days (tuning seeds)', t
   }
 }
 
+// ── object states (plan §4.4 "Per-object action scripts", "State keys"; live/objects.ts) ────────────────────────────
+// One helper (two or three for the reading places) goes through the REAL core and world; every frame the object states
+// are derived as the engine derives them. The expectations below are written from §4.4's TEXT, not from the module:
+// for each action, what its object shows at entry, in the call, between calls (stage 1, stage 2), and that it is back
+// at rest once the worker has walked off (a far call takes it away; then it stops and leaves). The windows are read from
+// the subject's own state: at the point (its body on the place it was sent to), in the call, and so on. Each check
+// must see its window at least once, and every check is shown able to fail by a mutant below (OBJECT_MUTANTS).
+//   O0  no point state without its holder's body on that point; no carried gap unless its carrier's hands show the
+//       volume it pulled (also over the whole EXAMPLE);
+//   O20 everything back at rest at the end: no layer, and no carried slot still remembered;
+//   O1-O21 the actions (the table in objectCases).
+type ObjectsInst = InstanceType<ObjectsMod['ObjectStates']>
+type Win = 'entry' | 'unit' | 'stage1' | 'stage2' | 'exit' | 'gone' | 'post' | 'read' | 'readStage2' | 'pullAt' | 'board' | 'boardAfter' | 'desk'
+interface Expect { readonly allow?: readonly (string | null)[]; readonly need?: readonly (string | null)[] }
+interface ObjCase {
+  readonly id: string
+  readonly what: string
+  readonly lines: readonly Line[]
+  /** The worker observed (its ordinal); default #1. */
+  readonly subject?: number
+  /** The object kind whose point the subject uses. */
+  readonly kind: string
+  /** Which tile is read: the point's own tile (a carried case: the shelf's), or the front desk's fixed W / E tile. */
+  readonly tile?: 'use' | 'W' | 'E'
+  /** How a frame's window is read: point (entry, unit, stage1, stage2, exit, gone), carried (pullAt, read, readStage2,
+   *  gone), desk (desk, gone), printer (unit, post, gone). Default point. */
+  readonly mode?: 'point' | 'carried' | 'desk' | 'printer'
+  /** Windows count only from this many seconds after T0 (the call under test), and before `before` s. */
+  readonly after?: number
+  readonly before?: number
+  readonly expect: Partial<Record<Win, Expect>>
+  /** Extra per-frame checks (the pose of the phone call, the magnet flip). */
+  readonly extra?: (o: ObjObs) => { readonly win: string; readonly value: string | null } | null
+  readonly extraExpect?: Readonly<Record<string, Expect>>
+}
+interface ObjObs {
+  readonly t: number
+  readonly w: realWorld.WorkerState
+  readonly at: realObjects.ObjLayer['place'] | null
+  readonly pose: string
+  readonly flip: string | null
+}
+
+const OBJ_FAR_BENCH = (aid: string, t: number, n: number): Line[] => [
+  L(t, 'PreToolUse', SA, { aid, k: 'benchTerminal', a: 'run', tu: `${aid}.far${n}` }), L(t + 1, 'PostToolBatch', SA, { aid, n: 1 }),
+]
+const OBJ_FAR_CABINET = (aid: string, t: number, n: number): Line[] => [
+  L(t, 'PreToolUse', SA, { aid, k: 'fileCabinet', a: 'read', tu: `${aid}.far${n}` }), L(t + 1, 'PostToolBatch', SA, { aid, n: 1 }),
+]
+/** One helper: Start at `start` s, its calls [activity, kind, Pre s, length s, extra], a far call, a stop. */
+function objHelper(aid: string, calls: readonly (readonly [string, string, number, number, Record<string, unknown>?])[], far: number, farTo: 'bench' | 'cabinet', end: number, start = 0.2): Line[] {
+  const out: Line[] = [L(start, 'SubagentStart', SA, { aid, at: 'workflow-subagent' })]
+  calls.forEach(([a, k, t, len, x], i) => {
+    const tu = `${aid}.${i}`
+    out.push(L(t, 'PreToolUse', SA, { aid, k, a, tu, ...(x ?? {}) }))
+    if (x?.fail === true) out.push(L(t + len - 0.05, 'PostToolUseFailure', SA, { aid, tu, intr: false }))
+    out.push(L(t + len, 'PostToolBatch', SA, { aid, n: 1 }))
+  })
+  out.push(...(farTo === 'bench' ? OBJ_FAR_BENCH(aid, far, 0) : OBJ_FAR_CABINET(aid, far, 0)))
+  out.push(L(end, 'SubagentStop', SA, { aid, at: 'workflow-subagent', bt: [] }))
+  return out
+}
+
+function objectCases(): ObjCase[] {
+  const A = aidOf('o', 1), B = aidOf('o', 2), C = aidOf('o', 3)
+  const point = (kind: string, act: string, len: number, farTo: 'bench' | 'cabinet' = 'bench') => objHelper(A, [[act, kind, 1, len]], 1 + len + 16, farTo, 1 + len + 30)
+  const again = (kind: string, act: string, len: number, x: Record<string, unknown> = {}, farTo: 'bench' | 'cabinet' = 'cabinet') =>
+    objHelper(A, [[act === 'watch' || act === 'stop' ? 'run' : act, kind, 1, 1.5], [act, kind, 14, len, x]], 14 + len + 16, farTo, 14 + len + 30)
+  const fetch3 = (): Line[] => [
+    ...objHelper(A, [['fetch', 'bookshelf', 1, 30]], 50, 'cabinet', 64, 0.2),
+    ...objHelper(B, [['fetch', 'bookshelf', 3, 30]], 50, 'cabinet', 64, 0.4),
+    ...objHelper(C, [['fetch', 'bookshelf', 5, 26]], 50, 'cabinet', 64, 0.6),
+  ]
+  const deskEnd = (end: 'form' | 'report' | 'stop'): Line[] => {
+    const out: Line[] = [L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' })]
+    out.push(L(1, 'PreToolUse', SA, { aid: A, k: 'fileCabinet', a: 'read', tu: 'd0' }), L(3, 'PostToolBatch', SA, { aid: A, n: 1 }))
+    if (end === 'form') out.push(L(5, 'PreToolUse', SA, { aid: A, k: 'frontDesk', a: 'form', tu: 'd1' }), L(5.5, 'PostToolBatch', SA, { aid: A, n: 1 }), L(30, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }))
+    if (end === 'report') out.push(L(5, 'PreToolUse', SA, { aid: A, k: 'printer', a: 'report', tu: 'd1' }), L(25, 'PostToolUse', SA, { aid: A, k: 'printer', a: 'report', tu: 'd1' }), L(25.2, 'PostToolBatch', SA, { aid: A, n: 1 }), L(45, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }))
+    if (end === 'stop') out.push(L(8, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }))
+    return out
+  }
+  const ticket = (): Line[] => [
+    L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' }),
+    L(1, 'PreToolUse', SA, { aid: A, k: 'frontDesk', a: 'helper-bg', tu: 't1' }),
+    L(1.3, 'PostToolUse', SA, { aid: A, k: 'frontDesk', a: 'helper-bg', tu: 't1', st: 'async_launched', ch: aidOf('o', 9) }),
+    L(1.4, 'PostToolBatch', SA, { aid: A, n: 1 }),
+    ...OBJ_FAR_BENCH(A, 30, 0), L(44, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] }),
+  ]
+  const hold = (): Line[] => [L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' }), ...OBJ_FAR_BENCH(A, 20, 0), L(34, 'SubagentStop', SA, { aid: A, at: 'workflow-subagent', bt: [] })]
+  const none: Expect = { allow: [null], need: [null] }
+  return [
+    // the file cabinet: §4.4 "the TOP drawer opens"; Read "lift a manila folder"; Grep "flick the tabs"; Glob/list "a glint
+    // runs across the folder tops"; stage 1 "readU, holding the folder"; stage 2 "drawer shut"
+    { id: 'O1', what: 'file cabinet, read: the drawer opens, the folder is lifted (its gap), held at stage 1, the drawer shut at stage 2', kind: 'fileCabinet', lines: point('fileCabinet', 'read', 12),
+      expect: { entry: { allow: ['drawerOpen'] }, unit: { allow: ['folderOut'], need: ['folderOut'] }, stage1: { allow: ['folderOut'], need: ['folderOut'] }, stage2: none, gone: none } },
+    { id: 'O2', what: 'file cabinet, search: the tabs flick (leafing)', kind: 'fileCabinet', lines: point('fileCabinet', 'search', 12),
+      expect: { unit: { allow: ['leafing'], need: ['leafing'] }, stage1: { allow: ['folderOut'], need: ['folderOut'] }, stage2: none, gone: none } },
+    { id: 'O3', what: 'file cabinet, list: a glint across the folder tops (scanning)', kind: 'fileCabinet', lines: point('fileCabinet', 'list', 12),
+      expect: { unit: { allow: ['scanning'], need: ['scanning'] }, stage2: none, gone: none } },
+    // the lectern: "two ledgers open, lamp on"; "pages turning"; stage 2 "the two ledgers close; the lamp stays on"
+    { id: 'O4', what: 'lectern, diff: ledgers open under the lamp, pages turn in the call, closed at stage 2 with the lamp still on', kind: 'lectern', lines: point('lectern', 'diff', 12),
+      expect: { entry: { allow: ['compare'] }, unit: { allow: ['turning'], need: ['turning'] }, stage1: { allow: ['compare'], need: ['compare'] }, stage2: { allow: ['lampOn'], need: ['lampOn'] }, gone: none } },
+    // the PC desk: "type0/1 ... After 4 s in one call: sitBack watching"; "the monitor stays on (presence)"; §4.5 results
+    { id: 'O5', what: 'PC desk, write: the screen on, typing while the hands are on the keys (not after 4 s in one call), the green result line for 2 s, on at stage 2', kind: 'pcDesk', after: 14.3, lines: again('pcDesk', 'write', 10),
+      expect: { unit: { allow: ['typing', 'on'], need: ['typing', 'on'] }, stage1: { allow: ['ok', 'on'], need: ['ok', 'on'] }, stage2: { allow: ['on'], need: ['on'] }, gone: none } },
+    // the bench: "wake the screen"; "amber lamp blinks while in flight"; §4.5 "green, 2 s" / "red, 2 s"; stage 1 "reading
+    // the output"; stage 2 "screen back to ready"; Monitor "blue lamp blinks twice"; TaskStop "red flashes"
+    { id: 'O6', what: 'bench, run: running in the call, the green lamp for 2 s, the output kept at stage 1, ready at stage 2', kind: 'benchTerminal', after: 14.3, lines: again('benchTerminal', 'run', 8),
+      expect: { unit: { allow: ['running'], need: ['running'] }, stage1: { allow: ['ok', 'output'], need: ['ok', 'output'] }, stage2: { allow: ['ready'], need: ['ready'] }, gone: none } },
+    { id: 'O7', what: 'bench, a failed run: the red lamp for 2 s, then the output', kind: 'benchTerminal', after: 14.3, lines: again('benchTerminal', 'run', 8, { fail: true }),
+      expect: { unit: { allow: ['running'], need: ['running'] }, stage1: { allow: ['fail', 'output'], need: ['fail', 'output'] }, gone: none } },
+    { id: 'O8', what: 'bench, Monitor: the blue lamp blinks (about two blinks), then ready', kind: 'benchTerminal', after: 14.3, lines: again('benchTerminal', 'watch', 6),
+      expect: { unit: { allow: ['watching', 'ready'], need: ['watching', 'ready'] }, gone: none } },
+    { id: 'O9', what: 'bench, TaskStop: the red lamp flashes, then ready', kind: 'benchTerminal', after: 14.3, lines: again('benchTerminal', 'stop', 6),
+      expect: { unit: { allow: ['stopped', 'ready'], need: ['stopped', 'ready'] }, gone: none } },
+    // fetch-then-read: "reachU, pull a ledger (1.2 s), then walk to the nearest free records reading place"; carried
+    // states "are released only when the carrier's prop is released. So walking to a reading place does not close the gap"
+    { id: 'O10', what: 'history shelf, read: the pulled ledger leaves a gap that stays while it is read at a reading place (stage 1 and 2 too) and refills when the worker moves on', kind: 'historyShelf', mode: 'carried', lines: point('historyShelf', 'hist-read', 16),
+      expect: { pullAt: { allow: ['ledgerOut'], need: ['ledgerOut'] }, read: { allow: ['ledgerOut'], need: ['ledgerOut'] }, readStage2: { allow: ['ledgerOut'], need: ['ledgerOut'] }, gone: none } },
+    { id: 'O11', what: 'bookshelf, fetch: the book\'s gap stays while it is read; the reading ledge shows the papers spread', kind: 'readingLedge', lines: fetch3(),
+      expect: { unit: { allow: ['spread'], need: ['spread'] }, stage2: { allow: ['spread'], need: ['spread'] }, gone: none } },
+    { id: 'O12', what: 'reading table (the third reader): the lamp on and the book open; at stage 2 the book closed, the lamp on', kind: 'readingTable', subject: 3, lines: fetch3(),
+      expect: { unit: { allow: ['openBook'], need: ['openBook'] }, stage2: { allow: ['lampOn'], need: ['lampOn'] }, gone: none } },
+    { id: 'O13', what: 'bookshelf gap: kept from the pull through the reading, back when the reader leaves', kind: 'bookshelf', mode: 'carried', lines: fetch3(),
+      expect: { pullAt: { allow: ['bookOut'], need: ['bookOut'] }, read: { allow: ['bookOut'], need: ['bookOut'] }, gone: none } },
+    // the card catalog: "useU, pull a small drawer"; "flick cards (1.2 s), jot a call slip"; "push the drawer before leaving"
+    { id: 'O14', what: 'card catalog, websearch: a drawer out, the cards flip in the call, the drawer pushed in as the worker leaves', kind: 'cardCatalog', lines: point('cardCatalog', 'websearch', 12, 'cabinet'),
+      expect: { entry: { allow: ['drawerOut'] }, unit: { allow: ['flipping'], need: ['flipping'] }, exit: { allow: ['drawerOut'], need: ['drawerOut'] }, gone: none } },
+    // the printer: "sheets rise from Pre to Post"; "collect and square the pages (0.8 s), carry them"
+    { id: 'O15', what: 'printer, hand-back: the sheets rise from the Pre to the Post, then the pages wait in the tray until the worker walks off with them', kind: 'printer', mode: 'printer', lines: deskEnd('report'),
+      expect: { unit: { allow: ['printing'], need: ['printing'] }, post: { allow: ['done'], need: ['done'] }, gone: none } },
+    // the front desk: "slide the paper into OUT (0.5 s) and sign the book (1.5 s)"; sign-out; "Ticket: drop a slip into IN
+    // (0.5 s)"; "AskUserQuestion: lift the handset until the next event"
+    { id: 'O16', what: 'front desk, result form: the paper slides into OUT (the E half)', kind: 'frontDesk', tile: 'E', mode: 'desk', lines: deskEnd('form'),
+      expect: { desk: { allow: ['handIn', null], need: ['handIn'] }, gone: none } },
+    { id: 'O16b', what: 'front desk, result form: then the book is signed (the W half)', kind: 'frontDesk', tile: 'W', mode: 'desk', lines: deskEnd('form'),
+      expect: { desk: { allow: ['signing', null], need: ['signing'] }, gone: none } },
+    { id: 'O17', what: 'front desk, sign-out (a stop without a hand-in): the book is signed (the W half)', kind: 'frontDesk', tile: 'W', mode: 'desk', lines: deskEnd('stop'),
+      expect: { desk: { allow: ['signing', null], need: ['signing'] } } },
+    { id: 'O18', what: 'front desk, a background helper\'s ticket: the slip drops into IN (E half) for 0.5 s when the launcher gets there', kind: 'frontDesk', tile: 'E', mode: 'desk', lines: ticket(),
+      expect: { desk: { allow: ['ticket', null], need: ['ticket', null] }, gone: none } },
+    { id: 'O19', what: 'front desk, AskUserQuestion: the handset frame (phoneU) and the empty cradle (W tile) in the call; the handset back and the cradle full after it', kind: 'frontDesk', tile: 'W', before: 45, lines: objHelper(A, [['ask', 'frontDesk', 1, 16]], 33, 'bench', 47),
+      expect: { unit: { allow: ['onPhone'], need: ['onPhone'] }, stage1: none, gone: none },
+      extra: o => (o.at === null || o.w.phase !== 'settled' ? null : { win: o.w.inCall ? 'callPose' : o.t >= o.w.unitUntil ? 'afterPose' : 'between', value: o.pose }),
+      extraExpect: { callPose: { allow: ['phoneU'], need: ['phoneU'] }, afterPose: { allow: ['standU', 'ponderD', 'armsD'], need: ['standU'] } } },
+    // the in/out board: "flip its own magnet (0.5 s), then stand 'reading the job ticket'"
+    { id: 'O21', what: 'in/out board, arrival hold: the worker\'s own magnet flips (edge-on, then its back) for 0.5 s, then shows its colour', kind: 'inOutBoard', lines: hold(),
+      expect: {}, extra: o => (o.at === null ? null : { win: o.t - o.w.arrivedAt < 500 ? 'board' : 'boardAfter', value: o.flip }),
+      extraExpect: { board: { allow: ['flip0', 'flip1'], need: ['flip0', 'flip1'] }, boardAfter: { allow: [null], need: [null] } } },
+  ]
+}
+
+/** The window of one frame for a case, or null. */
+function objWindow(c: ObjCase, o: ObjObs, left: number | null, book: { role: string } | null): Win | null {
+  const w = o.w
+  if (c.after !== undefined && o.t < T0 + c.after * 1000) return null
+  if (c.before !== undefined && o.t >= T0 + c.before * 1000) return null
+  const gone = left !== null && o.t - left > 1500
+  switch (c.mode ?? 'point') {
+    case 'carried':
+      if (o.at !== null) return w.phase === 'settled' || w.phase === 'entry' ? 'pullAt' : null
+      if (book !== null && book.role === 'read' && w.phase === 'settled') return w.filler ? 'readStage2' : w.inCall ? 'read' : null
+      return gone && w.phase === 'settled' && book !== null && book.role === 'use' ? 'gone' : null
+    case 'desk':
+      if (o.at === null) return gone ? 'gone' : null
+      return w.phase === 'settled' ? 'desk' : null
+    case 'printer':
+      if (o.at === null) return gone ? 'gone' : null
+      return w.prop === 'printout' ? 'post' : w.phase === 'settled' && w.inCall ? 'unit' : null
+    default:
+      break
+  }
+  if (o.at === null) return gone ? 'gone' : null
+  if (w.phase === 'entry') return 'entry'
+  if (w.phase === 'exit') return 'exit'
+  if (w.phase !== 'settled') return null
+  if (w.inCall) return 'unit'
+  if (o.t < w.unitUntil) return null
+  return w.filler ? 'stage2' : 'stage1'
+}
+
+/** Run one case (or the EXAMPLE, c = null) with the given modules: the failed checks, keyed by check id. */
+function runObjectCase(mods: Mods, c: ObjCase | null): Map<string, string[]> {
+  const bad = new Map<string, string[]>()
+  const fail = (id: string, msg: string) => { const l = bad.get(id) ?? []; if (l.length < 3) l.push(msg); bad.set(id, l) }
+  const world = new mods.world.WorkerWorld(LAYOUT, new mods.core.ObserverCore(LAYOUT, { bodySignals: true }), new mods.planner.PathPlanner(LAYOUT))
+  const objs: ObjectsInst = new mods.objects.ObjectStates(LAYOUT)
+  const book = (k: string) => world.core.book.holding(k)
+  const lines = c === null ? [] : [...c.lines].sort((a, b) => a.ts - b.ts)
+  const player = c === null ? new ExamplePlayer(T0) : null
+  const end = c === null ? T0 + (player!.length + 60_000) : lines[lines.length - 1].ts + 30_000
+  const seen = new Map<string, Set<string | null>>()
+  const note = (win: string, v: string | null, e: Expect | undefined) => {
+    if (e === undefined) return
+    let s = seen.get(win)
+    if (!s) seen.set(win, (s = new Set()))
+    s.add(v)
+    if (e.allow !== undefined && !e.allow.includes(v)) fail(c!.id, `${win}: shows ${v ?? 'nothing'} at ${((now - T0) / 1000).toFixed(2)} s (allowed: ${e.allow.map(x => x ?? 'nothing').join(', ')})`)
+  }
+  let usedAt: realObjects.ObjLayer['place'] | null = null
+  let tileX = -1, tileY = -1, left: number | null = null
+  let li = 0, now = T0
+  for (; now <= end; now += 50) {
+    if (player !== null) player.deliver(now, l => world.ingest(l, now))
+    while (li < lines.length && lines[li].ts + 300 <= now) { world.ingest(lines[li].line, now); li++ }
+    world.step(now)
+    objs.update(world.workers.values(), now, book)
+    // O0: every layer has its holder where it says
+    for (let i = 0; i < objs.count; i++) {
+      const l = objs.layers[i]
+      const w = world.workers.get(l.key)
+      if (w === undefined) { fail('O0', `${l.art.tile}|${l.art.state} for a worker the world no longer has`); continue }
+      if (l.carried) {
+        const vol = l.art.state === 'ledgerOut' ? 'ledger' : 'book'
+        if (mods.sprite.heldProp(w, now) !== vol || w.leaving !== null) fail('O0', `#${w.n}'s gap ${l.art.state} shows while its hands hold ${mods.sprite.heldProp(w, now) ?? 'nothing'}${w.leaving ? ' (leaving)' : ''}`)
+      } else if (!w.onGrid || w.goal === null || w.goal.kind !== 'place' || w.goal.place !== l.place || !['entry', 'settled', 'exit'].includes(w.phase)) {
+        fail('O0', `${l.art.tile}|${l.art.state} at ${l.place} while #${w.n} is ${w.phase}${w.goal?.kind === 'place' ? ` for ${w.goal.place}` : ''} at +${((now - T0) / 1000).toFixed(2)} s`)
+      }
+    }
+    if (c === null) continue
+    // the subject
+    let w: realWorld.WorkerState | undefined
+    for (const x of world.workers.values()) if (x.n === (c.subject ?? 1)) w = x
+    if (w === undefined) continue
+    let at: realObjects.ObjLayer['place'] | null = null
+    if (w.onGrid && w.goal?.kind === 'place' && ['entry', 'settled', 'exit'].includes(w.phase)) {
+      const p = LAYOUT.place(w.goal.place)
+      if (p.type === 'point' && p.kind === c.kind) {
+        at = p.id
+        if (usedAt === null) {
+          usedAt = p.id
+          const inst = LAYOUT.instances.find(i => i.id === p.objectId)!
+          const t = c.tile === 'W' || c.tile === 'E' ? inst.tiles.find(t => MAP.tiles[t.y][t.x] === `frontDesk${c.tile}`)! : p.useTile
+          tileX = t.x; tileY = t.y
+        }
+      }
+    }
+    if (usedAt !== null && at === null && left === null) left = now
+    if (at !== null) left = null
+    if (usedAt === null) continue
+    let top: string | null = null
+    for (let i = 0; i < objs.count; i++) {
+      const l = objs.layers[i]
+      if (l.x === tileX && l.y === tileY && l.carried === (c.mode === 'carried')) top = l.art.state
+    }
+    const o: ObjObs = { t: now, w, at, pose: mods.sprite.poseOf(w, now), flip: objs.flipOf(w, now) }
+    const win = objWindow(c, o, left, book(w.key))
+    if (win !== null) note(win, top, c.expect[win])
+    const ex = (c.after === undefined || now >= T0 + c.after * 1000) && (c.before === undefined || now < T0 + c.before * 1000) ? c.extra?.(o) : null
+    if (ex) note(ex.win, ex.value, c.extraExpect?.[ex.win])
+  }
+  if (c !== null) {
+    if (tileX < 0) fail(c.id, `the subject never stood on a ${c.kind} point`)
+    for (const [win, e] of [...Object.entries(c.expect), ...Object.entries(c.extraExpect ?? {})] as [string, Expect][]) {
+      const s = seen.get(win)
+      if (s === undefined) { fail(c.id, `the window ${win} never came`); continue }
+      for (const v of e.need ?? []) if (!s.has(v)) fail(c.id, `${win}: never shows ${v ?? 'nothing'} (seen: ${[...s].map(x => x ?? 'nothing').join(', ')})`)
+    }
+  }
+  // O20: at the end everyone has left and nothing is left showing, nor remembered
+  if (world.workers.size === 0) {
+    objs.update(world.workers.values(), now, book)
+    if (objs.count !== 0 || objs.carriedSlots !== 0) fail('O20', `${objs.count} object layers and ${objs.carriedSlots} carried slots left after everyone left${c ? ` (${c.id})` : ' (example)'}`)
+  } else fail(c?.id ?? 'O20', `${world.workers.size} workers still inside at the end${c ? ` (${c.id})` : ' (example)'}`)
+  world.dispose()
+  return bad
+}
+
+function runObjectChecks(mods: Mods): Map<string, string[]> {
+  const all = new Map<string, string[]>()
+  for (const c of [...objectCases(), null]) {
+    let bad: Map<string, string[]>
+    try { bad = runObjectCase(mods, c) } catch (e) { bad = new Map([['crash', [String(e).split('\n')[0]]]]) }
+    for (const [k, v] of bad) all.set(k, [...(all.get(k) ?? []), ...v])
+  }
+  return all
+}
+
+/** Each check of the object section, and a planted change that must make it fail. */
+const OBJECT_MUTANTS: readonly Mutant[] = [
+  { id: 'OM1 a read leaves no folder gap (the drawer only)', file: 'objects', from: "        else if (settled && held === 'folder') s = 'folderOut'\n", to: '' },
+  { id: 'OM2 a search scans instead of leafing', file: 'objects', from: "        if (inUnit && act === 'search') s = 'leafing'\n", to: "        if (inUnit && act === 'search') s = 'scanning'\n" },
+  { id: 'OM3 a list shows no glint', file: 'objects', from: "        else if (inUnit && act === 'list') s = 'scanning'\n", to: '' },
+  { id: 'OM4 the drawer stays open at stage 2', file: 'objects', from: "        if (stage2) return\n        let s = 'drawerOpen'\n", to: "        let s = 'drawerOpen'\n" },
+  { id: 'OM5 the lectern\'s ledgers stay open at stage 2', file: 'objects', from: "inUnit ? 'turning' : (entry || settled) && !stage2 ? 'compare' : 'lampOn'", to: "inUnit ? 'turning' : (entry || settled) ? 'compare' : 'lampOn'" },
+  { id: 'OM6 the lectern\'s pages never turn', file: 'objects', from: "inUnit ? 'turning' : (entry || settled) && !stage2 ? 'compare'", to: "false ? 'turning' : (entry || settled) && !stage2 ? 'compare'" },
+  { id: 'OM7 the desk types for the whole call, not only while the hands are on the keys', file: 'objects', from: "settled && (pose === 'type0' || pose === 'type1') ? 'typing'", to: "inUnit ? 'typing'" },
+  { id: 'OM8 a call result never goes off (no 2 s limit)', file: 'objects', from: '&& now - w.callEnd.at < RESULT_MS ?', to: '?' },
+  { id: 'OM9 the bench forgets the output at stage 1', file: 'objects', from: "w.callEnd.place === p.id) s = 'output'", to: "w.callEnd.place === p.id) s = 'ready'" },
+  { id: 'OM10 the bench shows no result lamp', file: 'objects', from: '        } else if (settled && result !== null) s = result\n', to: '        }\n' },
+  { id: 'OM11 the Monitor lamp blinks for the whole call', file: 'objects', from: "now - w.actAt < BLINKS_MS ? 'watching' : 'ready'", to: "'watching'" },
+  { id: 'OM12 the stop lamp flashes for the whole call', file: 'objects', from: "now - w.actAt < BLINKS_MS ? 'stopped' : 'ready'", to: "'stopped'" },
+  { id: 'OM13 the gap closes on the walk to the reading place', file: 'objects', from: "    if (h.role === 'read' || h.role === 'readAtShelf') return h.pulledFrom\n", to: '' },
+  { id: 'OM14 a carried gap is never given back', file: 'objects', from: '      if (w === null || this.#shelfOf(w, book) !== c.place || heldProp(w, now) !== c.prop) this.#carry.delete(key)\n', to: '' },
+  { id: 'OM15 no papers on the reading ledge', file: 'objects', from: "        this.#show(w, p, tile, 'spread', now)\n", to: '' },
+  { id: 'OM16 the reading table\'s book stays open at stage 2', file: 'objects', from: "(entry || settled) && !stage2 ? 'openBook' : 'lampOn'", to: "(entry || settled) ? 'openBook' : 'lampOn'" },
+  { id: 'OM17 the catalog\'s cards never flip', file: 'objects', from: "inUnit && act === 'websearch' ? 'flipping'", to: "false ? 'flipping'" },
+  { id: 'OM18 no pages wait in the printer tray', file: 'objects', from: "        if (w.prop === 'printout') this.#show(w, p, tile, 'done', now)\n        else ", to: '        ' },
+  { id: 'OM19 no sheets rise while printing', file: 'objects', from: "        else if (inUnit && act === 'report') this.#show(w, p, tile, 'printing', now)\n", to: '' },
+  { id: 'OM20 the hand-in drawn on the wrong half (no OUT tray there)', file: 'objects', from: "this.#show(w, p, 'frontDeskE', 'handIn'", to: "this.#show(w, p, 'frontDeskW', 'handIn'" },
+  { id: 'OM20b a hand-in is never signed for', file: 'objects', from: "          else if (t < HAND_IN_MS + SIGN_MS) this.#show(w, p, 'frontDeskW', 'signing', now, t0 + HAND_IN_MS)\n", to: '' },
+  { id: 'OM21 a sign-out signs nothing', file: 'objects', from: "          if (now - ready < SIGN_MS) this.#show(w, p, 'frontDeskW', 'signing', now, ready)\n", to: '' },
+  { id: 'OM22 no ticket drops into IN', file: 'objects', from: '          if (now - t0 < TICKET_MS)', to: '          if (now - t0 < 0)' },
+  { id: 'OM23 the cradle stays full while the worker is on the phone', file: 'objects', from: "        if (pose === 'phoneU') { this.#show(w, p, 'frontDeskW', 'onPhone', now); return }\n", to: '' },
+  { id: 'OM24 the old stance: AskUserQuestion stands with its back turned (standU), no handset', file: 'core', from: '    return stance({ kind, activity: w.activity, sub, role: w.role,', to: "    if (w.activity === 'ask') return { pose: 'standU', prop: null }\n    return stance({ kind, activity: w.activity, sub, role: w.role," },
+  { id: 'OM25 no magnet flip at the arrival hold', file: 'objects', from: '    return t < 0 || t >= FLIP_MS ? null :', to: '    return true ? null :' },
+  { id: 'OM26 point states for a body still walking to the point', file: 'objects', from: '    if (!w.onGrid || w.leaving !== null || !AT.has(w.phase) || w.goal === null', to: '    if (!w.onGrid || w.leaving !== null || w.goal === null' },
+]
+
 // ── mutants ──────────────────────────────────────────────────────────────────────────────────────────────────────
-type MutantFile = 'planner' | 'core' | 'world' | 'sprite'
+type MutantFile = 'planner' | 'core' | 'world' | 'sprite' | 'objects'
 interface Mutant { readonly id: string; readonly file: MutantFile; readonly from: string; readonly to: string }
 const FILES: Readonly<Record<MutantFile, string>> = {
   planner: '../src/worker-office/move/planner.ts', core: '../src/worker-office/core/reducer.ts',
   world: '../src/worker-office/live/world.ts', sprite: '../src/worker-office/render/WorkerSprite.ts',
+  objects: '../src/worker-office/live/objects.ts',
 }
 const MUTANTS: readonly Mutant[] = [
   // the movement core
@@ -821,7 +1136,7 @@ async function loadPatched(m: Mutant, dir: string, i: number): Promise<Mods> {
   return { ...REAL, [m.file]: mod } as Mods
 }
 
-if (NO_MUTANTS) console.log('mutants: skipped (--no-mutants)')
+if (NO_MUTANTS || OBJECTS_ONLY) console.log(`movement mutants: skipped (${NO_MUTANTS ? '--no-mutants' : '--objects-only'})`)
 else {
   console.log('mutants (each must make a check fail; run on the scenarios and the tuning days):')
   const dir = mkdtempSync(join(tmpdir(), 'wo-traffic-mutant-'))
@@ -845,6 +1160,48 @@ else {
   }
   rmSync(dir, { recursive: true, force: true })
   console.log(`mutants caught: ${caught} of ${MUTANTS.length}`)
+}
+
+// ── object states: the run, then each check shown able to fail ─────────────────────────────────────────────────
+{
+  const cases = objectCases()
+  const checks = [...cases.map(c => c.id), 'O0', 'O20']
+  console.log(`object states (plan §4.4; live/objects.ts): ${cases.length} action cases and the EXAMPLE through the real core and world, every 50 ms`)
+  const real = runObjectChecks(REAL)
+  for (const c of cases) {
+    const b = real.get(c.id)
+    console.log(`  ${b ? 'FAIL' : 'ok  '} ${c.id} ${c.what}`)
+    for (const m of b ?? []) fail(`${c.id}: ${m}`)
+  }
+  for (const id of ['O0', 'O20', 'crash']) {
+    const b = real.get(id)
+    if (id !== 'crash') console.log(`  ${b ? 'FAIL' : 'ok  '} ${id} ${id === 'O0' ? 'no point state without its holder on the point, no gap without its carrier (all cases and the EXAMPLE)' : 'everything back at rest at the end: no layer, no carried slot remembered'}`)
+    for (const m of b ?? []) fail(`${id}: ${m}`)
+  }
+  if (NO_MUTANTS) console.log('object mutants: skipped (--no-mutants)')
+  else {
+    console.log('object mutants (each must make a check fail; each check must be failed by one):')
+    const dir = mkdtempSync(join(tmpdir(), 'wo-objects-mutant-'))
+    const trippedBy = new Map<string, string[]>()
+    let caught = 0
+    for (const [i, m] of OBJECT_MUTANTS.entries()) {
+      let mods: Mods
+      try { mods = await loadPatched(m, dir, 100 + i) } catch (e) { fail(String(e).split('\n')[0]); continue }
+      const bad = runObjectChecks(mods)
+      const hit = [...bad.keys()].filter(k => k !== 'crash')
+      for (const k of hit) trippedBy.set(k, [...(trippedBy.get(k) ?? []), m.id.split(' ')[0]])
+      if (hit.length > 0) caught++
+      else fail(`object mutant survived: ${m.id}${bad.has('crash') ? ` (crashed: ${bad.get('crash')![0]})` : ''}`)
+      console.log(`  ${hit.length > 0 ? 'caught  ' : 'SURVIVED'} ${m.id}: ${hit.join(', ') || 'no check failed'}`)
+    }
+    rmSync(dir, { recursive: true, force: true })
+    console.log(`object mutants caught: ${caught} of ${OBJECT_MUTANTS.length}; each check and the mutants that fail it:`)
+    for (const id of checks) {
+      const by = trippedBy.get(id) ?? []
+      console.log(`  ${by.length > 0 ? 'shown able to fail' : 'NEVER FAILED     '} ${id} <- ${by.join(', ') || '-'}`)
+      if (by.length === 0) fail(`no object mutant fails the check ${id}`)
+    }
+  }
 }
 
 console.log(failures === 0 ? 'ALL PASS' : `FAILED (${failures})`)

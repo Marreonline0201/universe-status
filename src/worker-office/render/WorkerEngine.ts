@@ -26,7 +26,7 @@
 // Checks read the engine's `debug` object (live getters, built once). It is also window.__workerOffice, but only in
 // dev builds (the visual check runs on the dev server) or with ?woDebug in the address.
 import { TILE } from './floors.ts'
-import { DOOR_SLIDE_MAX, doorLeaves, drawInTray, drawMagnets, drawOutStack, type MagnetState } from './stateLayer.ts'
+import { DOOR_SLIDE_MAX, doorLeaves, drawInTray, drawMagnets, drawOutStack, stateFrame, type MagnetState } from './stateLayer.ts'
 import { type LabelPlacement, type OfficeScene, labelFont, placeLabels, prerenderBuilds, texel } from './prerender.ts'
 import { WheelZoom, fitCamera } from './camera.ts'
 import { figureSet, lookOf, type FigureSet } from './figures.ts'
@@ -36,6 +36,7 @@ import { ObserverCore } from '../core/reducer.ts'
 import { PathPlanner } from '../move/planner.ts'
 import { WorkerWorld, type WorkerState } from '../live/world.ts'
 import { ExamplePlayer } from '../live/example.ts'
+import { ObjectStates, type BookLookup } from '../live/objects.ts'
 
 const VOID = '#05070f'          // the app chrome around the building
 const MAX_SCALE = 12
@@ -91,6 +92,8 @@ export interface WorkerOfficeDebug {
   readonly feed: FeedState
   readonly feedSeconds: number
   readonly figuresDrawn: number
+  /** The object states drawn in the last frame (live/objects.ts), as `tile|state@x,y` (checks, screenshots). */
+  readonly objectStates: readonly string[]
   readonly floorTexel: (x: number, y: number) => string
   readonly mapTexel: (x: number, y: number) => string
 }
@@ -147,6 +150,9 @@ export class WorkerEngine {
   private readonly sets = new Map<string, FigureSet>()
   private readonly order: { key: string; v: SpriteView; w: WorkerState }[] = []
   private readonly magnetStates: MagnetState[] = []
+  /** The object states of the feed's workers (null: no feed), and the observer's bookings they read. */
+  private objects: ObjectStates | null = null
+  private readonly bookOf: BookLookup = key => this.world?.core.book.holding(key) ?? null
   private doorOpen = 0
   private doorClearAt = -Infinity
   private readonly boardOrigin: [number, number] | null
@@ -221,6 +227,7 @@ export class WorkerEngine {
     if (this.destroyed) return
     this.stopFeed()
     this.world = new WorkerWorld(layout, new ObserverCore(layout, { bodySignals: true }), new PathPlanner(layout))
+    this.objects = new ObjectStates(layout)
     this.player = new ExamplePlayer(this.sim)
     this.feed = 'example'
     this.startLoop()
@@ -230,6 +237,7 @@ export class WorkerEngine {
   stopFeed() {
     this.world?.dispose()
     this.world = null
+    this.objects = null
     this.player = null
     this.feed = 'none'
     this.views.clear()
@@ -493,17 +501,21 @@ export class WorkerEngine {
     this.draws++
   }
 
+  /** The observer's aggregates (magnets with their arrival-hold flips, the OUT stack, the IN tray), then what each
+   *  worker's use does to its object (live/objects.ts: carried gaps, then each point's state over its bases). */
   private drawObjects() {
     const { ctx } = this
-    const o = this.world!.objects
+    const world = this.world!, objs = this.objects!
+    const o = world.objects
+    objs.update(world.workers.values(), this.sim, this.bookOf)
     if (this.boardOrigin) {
       const states = this.magnetStates
       states.length = 0
       for (const n of o.magnets) {
         let st: MagnetState = 'waiting'
-        for (const w of this.world!.workers.values()) {
+        for (const w of world.workers.values()) {
           if (w.n !== n) continue
-          st = w.label === 'quiet' || w.label === 'suspect' || w.label === 'stuck' ? 'stale' : w.inCall ? 'working' : 'waiting'
+          st = objs.flipOf(w, this.sim) ?? (w.label === 'quiet' || w.label === 'suspect' || w.label === 'stuck' ? 'stale' : w.inCall ? 'working' : 'waiting')
           break
         }
         states.push(st)
@@ -513,6 +525,10 @@ export class WorkerEngine {
     if (this.deskOrigin) {
       drawOutStack(ctx, this.deskOrigin[0], this.deskOrigin[1], o.outStack)
       drawInTray(ctx, this.deskOrigin[0], this.deskOrigin[1], o.inTray)
+    }
+    for (let i = 0; i < objs.count; i++) {
+      const l = objs.layers[i]
+      ctx.drawImage(stateFrame(l.art, l.frame), l.x * TILE, l.y * TILE)
     }
   }
 
@@ -526,6 +542,7 @@ export class WorkerEngine {
       let v = this.views.get(w.key)
       if (!v) { v = newView(); this.views.set(w.key, v) }
       spriteView(w, now, v)
+      if (v.prop === 'ledger' || v.prop === 'book') v.propColour = this.objects?.carriedColour(w.key) ?? null
       if (v.visible) order.push({ key: w.key, v, w })
     }
     if (this.views.size > world.workers.size) for (const k of [...this.views.keys()]) if (!world.workers.has(k)) { this.views.delete(k); this.sets.delete(k) }
@@ -612,6 +629,12 @@ export class WorkerEngine {
       feed: () => this.feed,
       feedSeconds: () => (this.player ? Math.max(0, (this.sim - this.player.base) / 1000) : 0),
       figuresDrawn: () => this.figuresDrawn,
+      objectStates: () => {
+        const o = this.objects
+        const out: string[] = []
+        if (o !== null) for (let i = 0; i < o.count; i++) { const l = o.layers[i]; out.push(`${l.art.tile}|${l.art.state}@${l.x},${l.y}`) }
+        return out
+      },
     }
     const dbg = {
       floorTexel: (x: number, y: number) => texel(this.scene.floorLayer, x, y),

@@ -81,7 +81,8 @@ export interface WorkerState {
   kind: StationKind | null
   activity: string
   actAt: number
-  callEnd: { readonly result: CallResult; readonly at: number } | null
+  /** The last bench / desk call result (§4.5), when it came and where the call ran (it shows there, live/objects.ts). */
+  callEnd: { readonly result: CallResult; readonly at: number; readonly place: PlaceId | null } | null
   /** The body: its phase, the goal the planner was last given, the end of a timed beat. */
   phase: BodyPhase
   goal: Goal | null
@@ -274,7 +275,7 @@ export class WorkerWorld {
         }
         case 'callEnd': {
           const w = this.workers.get(c.key)
-          if (w !== undefined) w.callEnd = { result: c.result, at: this.#now }
+          if (w !== undefined) w.callEnd = { result: c.result, at: this.#now, place: c.place }
           break
         }
         case 'objects':
