@@ -62,7 +62,7 @@
 //
 // <home> = UNIVERSE_OFFICE_HOME (absolute path; tests) or C:/Users/ddogr/.universe-office. The installed copy
 // lives in <home>/bin/ next to classify.mjs (office/observer/install-hook.mjs puts both there).
-import { openSync, writeSync, closeSync, mkdirSync } from 'node:fs';
+import { openSync, writeSync, closeSync, mkdirSync, fstatSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -272,9 +272,30 @@ function dayStamp(ms) {
   const d = new Date(ms);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
+/** Append one line; true when this firing created the day file (it was empty when opened). */
 function writeOnce(file, buf) {
   const fd = openSync(file, 'a');                                  // O_APPEND: the OS places each write at the end
-  try { writeSync(fd, buf, 0, buf.length); } finally { closeSync(fd); }
+  try {
+    const created = fstatSync(fd).size === 0;
+    writeSync(fd, buf, 0, buf.length);
+    return created;
+  } finally { closeSync(fd); }
+}
+// Spool retention (plan section 5.2: daily files, 7 days). Only when a firing has just created the new day's file (the
+// first event of a day), never on an ordinary firing: day files dated more than KEEP_DAYS calendar days before that day
+// are deleted. Only names of the form events-YYYY-MM-DD.jsonl in the spool folder are touched; any error is swallowed
+// (the hook stays silent). office/observer/install-hook.mjs prunes the same way when it installs.
+const KEEP_DAYS = 7;
+const DAY_FILE = /^events-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+function prune(dir, ms) {
+  const d = new Date(ms);
+  const cutoff = dayStamp(new Date(d.getFullYear(), d.getMonth(), d.getDate() - KEEP_DAYS, 12).getTime());
+  let names;
+  try { names = readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    const m = DAY_FILE.exec(name);
+    if (m && m[1] < cutoff) { try { unlinkSync(join(dir, name)); } catch { /* another firing got it, or it is open */ } }
+  }
 }
 function append(rec) {
   let line = JSON.stringify(rec);
@@ -289,13 +310,15 @@ function append(rec) {
   const buf = Buffer.from(line + '\n', 'utf8');                    // ASCII by construction
   const dir = join(HOME, 'spool');
   const file = join(dir, `events-${dayStamp(rec.ts)}.jsonl`);
+  let created = false;
   try {
-    writeOnce(file, buf);
+    created = writeOnce(file, buf);
   } catch (e) {
     if (e && e.code === 'ENOENT') {
-      try { mkdirSync(dir, { recursive: true }); writeOnce(file, buf); } catch { /* give up silently */ }
+      try { mkdirSync(dir, { recursive: true }); created = writeOnce(file, buf); } catch { /* give up silently */ }
     }
   }
+  if (created) prune(dir, rec.ts);
 }
 
 // ---------------------------------------------------------------------------------------------- main

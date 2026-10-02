@@ -3,7 +3,9 @@
 //   node office/observer/install-hook.mjs              install or update, then self-check the installed copy
 //   node office/observer/install-hook.mjs --no-check   install or update only
 //
-// Copies classify.mjs and spool-hook.mjs from this folder to <home>/bin/ and creates <home>/spool/.
+// Copies classify.mjs and spool-hook.mjs from this folder to <home>/bin/ and creates <home>/spool/. It also applies the
+// spool's retention (plan section 5.2: day files more than 7 days old are deleted, as the hook does when it starts a
+// new day file); only events-YYYY-MM-DD.jsonl names in <home>/spool/ are touched.
 // <home> = UNIVERSE_OFFICE_HOME (absolute path) or C:/Users/ddogr/.universe-office.
 //  - Idempotent: a file whose bytes already match is left alone ("unchanged").
 //  - Atomic per file: each copy is written to a temp name and renamed over the old one, so a hook that fires during
@@ -40,6 +42,22 @@ function renameWithRetry(from, to) {
       sleep(100);                                    // a scanner or a starting hook holds the file for a moment
     }
   }
+}
+
+// the spool's retention: the hook's own rule (spool-hook.mjs prune), at install time
+const KEEP_DAYS = 7;
+const DAY_FILE = /^events-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+const pad2 = (n) => String(n).padStart(2, '0');
+const dayStamp = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+function prune() {
+  const d = new Date();
+  const cutoff = dayStamp(new Date(d.getFullYear(), d.getMonth(), d.getDate() - KEEP_DAYS, 12));
+  const gone = [];
+  for (const name of readdirSync(SPOOL)) {
+    const m = DAY_FILE.exec(name);
+    if (m && m[1] < cutoff) { try { unlinkSync(join(SPOOL, name)); gone.push(name); } catch { /* in use: next time */ } }
+  }
+  return gone;
 }
 
 function install() {
@@ -99,7 +117,9 @@ function selfCheck() {
 }
 
 const rows = install();
+const pruned = prune();
 console.log(`worker-office hook installed in ${BIN} (spool: ${SPOOL})`);
+console.log(`  spool retention: ${KEEP_DAYS} days; ${pruned.length} older day file(s) deleted`);
 for (const [f, state, h] of rows) console.log(`  ${f.padEnd(16)} ${state.padEnd(10)} sha256 ${h.slice(0, 16)}`);
 if (!process.argv.includes('--no-check')) {
   const problems = selfCheck();

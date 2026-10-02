@@ -997,6 +997,37 @@ try {
     ok(lines > 100, 'privacy scan covered the whole suite');
   }
 
+  section('spool retention (plan 5.2: 7 days): pruned only when a firing starts a new day file, and at install');
+  {
+    const RH = join(TMP, 'retention-home');
+    const inst = () => spawnSync(process.execPath, [join(OBS, 'install-hook.mjs')], { env: childEnv(RH), timeout: 60000, windowsHide: true });
+    const r0 = inst();
+    ok(r0.status === 0, `retention: install into its own temp home (exit ${r0.status})`);
+    const sp = join(RH, 'spool');
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const dayOf = (offset) => { const d = new Date(); const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + offset, 12); return `events-${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}.jsonl`; };
+    const plant = (name) => writeFileSync(join(sp, name), '{"v":1,"ts":0,"ev":"other"}\n');
+    const old = [dayOf(-30), dayOf(-8)], kept = [dayOf(-7), dayOf(-1), 'notes.txt', 'events-notes.jsonl'];
+    for (const n of [...old, ...kept]) plant(n);
+    const today = dayOf(0);
+    ok(!existsSync(join(sp, today)), 'retention: no day file for today yet');
+    const payload = (tu) => JSON.stringify({ session_id: 's-retention', hook_event_name: 'PreToolUse', agent_id: 'agent-retention', agent_type: 'workflow-subagent', tool_name: 'Read', tool_input: { file_path: 'x.ts' }, tool_use_id: tu });
+    const r1 = fire(RH, payload('toolu_ret1'));
+    assertSilent(r1, 'retention: the firing that starts the day file');
+    const after1 = readdirSync(sp);
+    ok(existsSync(join(sp, today)), 'retention: the firing created today\'s day file');
+    ok(old.every((n) => !after1.includes(n)), `retention: the day files more than 7 days old are deleted when the day file starts (left: ${old.filter((n) => after1.includes(n)).join(', ') || 'none'})`);
+    ok(kept.every((n) => after1.includes(n)), `retention: 7 days back, yesterday and every other name are kept (missing: ${kept.filter((n) => !after1.includes(n)).join(', ') || 'none'})`);
+    const late = dayOf(-9);
+    plant(late);
+    const r2 = fire(RH, payload('toolu_ret2'));
+    assertSilent(r2, 'retention: an ordinary firing');
+    ok(existsSync(join(sp, late)), 'retention: an ordinary firing (the day file exists) deletes nothing');
+    const r3 = inst();
+    ok(r3.status === 0 && !existsSync(join(sp, late)) && kept.every((n) => existsSync(join(sp, n))) && existsSync(join(sp, today)),
+      `retention: install-hook prunes too (the 9-day-old file ${existsSync(join(sp, late)) ? 'is still there' : 'is gone'}, the others kept; exit ${r3.status})`);
+  }
+
   section('temp home layout');
   ok(isDeepStrictEqual(readdirSync(HOME).sort(), ['bin', 'spool']), `home holds only bin/ and spool/ (${readdirSync(HOME)})`);
   ok(isDeepStrictEqual(readdirSync(join(HOME, 'bin')).sort(), ['classify.mjs', 'spool-hook.mjs']), 'bin/ holds only the two hook files');
