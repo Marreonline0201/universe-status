@@ -46,10 +46,12 @@ const DOT_GLOW_ALPHA = 0.3
 export type DotState = 'working' | 'idle' | 'offline'
 const DOT_COLOUR: Readonly<Record<DotState, string>> = { working: STATUS_WORKING, idle: STATUS_IDLE, offline: STATUS_OFFLINE }
 const QUIET_LABELS: ReadonlySet<LabelId> = new Set<LabelId>(['quiet', 'suspect', 'stuck'])
-/** A fetch-then-read pull's pose at the shelf (reachU with a volume, the card catalog's useU0 with a call slip): the
- *  item is pulled there, so it is not in the hand on the way. */
-const isPull = (pose: PoseName, prop: PropId | null) =>
-  (pose === 'reachU' && (prop === 'ledger' || prop === 'book')) || (pose === 'useU0' && prop === 'callSlip')
+/** Items that are taken at the place the worker walks to, so its hand is empty on the way: a fetch-then-read pull
+ *  (reachU with a volume, the card catalog's useU0 with a call slip), and a file cabinet's folder, which is lifted from
+ *  the drawer and never leaves the cabinet (plan §4.4). What a worker does carry on a walk: a pulled volume or slip to
+ *  its reading place, the printout and the result form to the front desk. */
+const takenThere = (pose: PoseName, prop: PropId | null) =>
+  prop === 'folder' || (pose === 'reachU' && (prop === 'ledger' || prop === 'book')) || (pose === 'useU0' && prop === 'callSlip')
 
 /** What one worker shows this frame (world texels; filled in place, no allocation per frame). */
 export interface SpriteView {
@@ -123,7 +125,7 @@ export function spriteView(w: WorkerState, now: number, v: SpriteView): SpriteVi
   const inUnit = w.phase === 'settled' && now < w.unitUntil && w.unitPose !== null
   const walking = w.phase === 'walking' || w.phase === 'appearing'
   const prop = inUnit ? w.unitProp : w.phase === 'exit' && w.exitPose !== null ? w.exitProp
-    : walking && isPull(w.pose, w.prop) ? null : w.prop
+    : walking && takenThere(w.pose, w.prop) ? null : w.prop
   const hands = HAND[pose]
   v.prop = null
   v.propView = null
