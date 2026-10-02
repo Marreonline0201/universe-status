@@ -60,6 +60,7 @@ import { EXIT, MIN_SPACING, STEP_MS, type BodyPose, type Goal } from '../src/wor
 import * as realWorld from '../src/worker-office/live/world.ts'
 import * as realSprite from '../src/worker-office/render/WorkerSprite.ts'
 import * as realObjects from '../src/worker-office/live/objects.ts'
+import * as realFeed from '../src/worker-office/live/liveFeed.ts'
 import { HAND } from '../src/worker-office/render/props.ts'
 import { ExamplePlayer } from '../src/worker-office/live/example.ts'
 
@@ -71,14 +72,15 @@ type SpriteMod = typeof realSprite
 type ObjectsMod = typeof realObjects
 type World = InstanceType<WorldMod['WorkerWorld']>
 /** The modules a run uses: the real ones, or one of them patched (a mutant). */
-interface Mods { readonly planner: PlannerMod; readonly core: CoreMod; readonly world: WorldMod; readonly sprite: SpriteMod; readonly objects: ObjectsMod }
-const REAL: Mods = { planner: realPlanner, core: realCore, world: realWorld, sprite: realSprite, objects: realObjects }
+interface Mods { readonly planner: PlannerMod; readonly core: CoreMod; readonly world: WorldMod; readonly sprite: SpriteMod; readonly objects: ObjectsMod; readonly feed: typeof realFeed }
+const REAL: Mods = { planner: realPlanner, core: realCore, world: realWorld, sprite: realSprite, objects: realObjects, feed: realFeed }
 
 const args = process.argv.slice(2)
 const TUNING_ONLY = args.includes('--tuning-only')
 const NO_MUTANTS = args.includes('--no-mutants')
-/** --objects-only: only the object-state section (plan §4.4) and its mutants. */
-const OBJECTS_ONLY = args.includes('--objects-only')
+/** --objects-only: only the object-state section (plan §4.4) and its mutants; --snap-only: only the snap section. */
+const SNAP_ONLY = args.includes('--snap-only')
+const OBJECTS_ONLY = args.includes('--objects-only') || SNAP_ONLY
 /** --trace <prefix>: print every trip of the scenarios whose name starts with it (for debugging). */
 const TRACE = args.includes('--trace') ? args[args.indexOf('--trace') + 1] : null
 
@@ -1090,13 +1092,248 @@ const OBJECT_MUTANTS: readonly Mutant[] = [
   { id: 'OM26 point states for a body still walking to the point', file: 'objects', from: '    if (!w.onGrid || w.leaving !== null || !AT.has(w.phase) || w.goal === null', to: '    if (!w.onGrid || w.leaving !== null || w.goal === null' },
 ]
 
+// ── the §4.6 snap (live/world.ts snap, live/liveFeed.ts) ─────────────────────────────────────────────────────────
+// The live feed on a fake wall clock: a reader pushes each line 300 ms after its timestamp, also while the page is
+// hidden (no frames run then); the page's frames run every 1000/60 ms of wall time, or slower (jank).
+//   S1  on return the sim clock IS the wall clock (the first frame back);
+//   S1b under jank (frames every 120 ms: the 50 ms cap falls behind) the lag never passes SNAP_LAG_MS + one frame:
+//       the feed snaps ('behind') and the clock is the wall again;
+//   S2  the backlog (every line read while hidden) is applied at the snap: the core read exactly those lines, a helper
+//       that arrived while hidden is inside, one that came and went while hidden is not;
+//   S2b no walk of the backlog is replayed: the snap plans exactly one trip per body it re-places;
+//   S3  right after the snap every body stands where the core's book has it (a seat: on its sitFrom, then exactly
+//       one step onto the seat);
+//   S4  the arrivals are reported again: a worker that was walking to a shelf when the tab hid gets its pull (then a
+//       reading place); a finisher that was walking to the front desk hands in and leaves;
+//   S5a a worker with no place yet stands on its own sidewalk slot after the snap;
+//   S5b at the end of the snap frame every slot claim belongs to a body standing on that slot;
+//   S5c the workers held off screen get a slot and appear;
+//   S6  a (re)connect: nothing runs until the reader has caught up, then one snap carries the whole backlog.
+type FeedMod = typeof realFeed
+type FeedInst = InstanceType<FeedMod['LiveFeed']>
+
+function snapLines(): Line[] {
+  const A = aidOf('n', 1), B = aidOf('n', 2), C = aidOf('n', 3), D = aidOf('n', 4), E = aidOf('n', 5), F = aidOf('n', 6)
+  const st = (s: number, aid: string) => L(s, 'SubagentStart', SA, { aid, at: 'workflow-subagent' })
+  const pre = (s: number, aid: string, k: string, a: string, tu: string) => L(s, 'PreToolUse', SA, { aid, k, a, tu })
+  const batch = (s: number, aid: string) => L(s, 'PostToolBatch', SA, { aid, n: 1 })
+  const stop = (s: number, aid: string) => L(s, 'SubagentStop', SA, { aid, at: 'workflow-subagent', bt: [] })
+  return [
+    // A: a pull at the history shelf, still walking there when the tab hides (3 s)
+    st(0.2, A), pre(1, A, 'historyShelf', 'hist-read', 'a1'), batch(40, A),
+    // B: a result form; walking to the front desk when the tab hides; its stop comes while hidden
+    st(0.3, B), pre(0.5, B, 'frontDesk', 'form', 'b1'), batch(1, B), stop(8, B),
+    // C: a write at a desk seat (re-placed through its sitFrom)
+    st(0.4, C), pre(1, C, 'pcDesk', 'write', 'c1'), batch(80, C),
+    // F: at a file cabinet before the hide; sent to the bench while hidden (a walk the backlog must not replay)
+    st(0.5, F), pre(0.6, F, 'fileCabinet', 'read', 'f1'), batch(1.5, F), pre(20, F, 'benchTerminal', 'run', 'f2'), batch(70, F),
+    // D arrives while hidden and stays; E comes and goes while hidden
+    st(20, D), pre(21, D, 'fileCabinet', 'read', 'd1'), batch(90, D),
+    st(10, E), pre(11, E, 'fileCabinet', 'read', 'e1'), batch(12, E), stop(13, E),
+  ]
+}
+
+/** 32 arrivals at once and no tool call: 30 slots (2 held off screen), 10 arrival holds, 20 waiting on their slots. */
+function slotLines(): Line[] {
+  const out: Line[] = []
+  for (let k = 0; k < 32; k++) out.push(L(1 + k * 0.001, 'SubagentStart', SA, { aid: aidOf('q', k), at: 'workflow-subagent' }))
+  for (let k = 0; k < 32; k++) out.push(L(40 + k * 0.05, 'PreToolUse', SA, { aid: aidOf('q', k), k: 'fileCabinet', a: 'read', tu: `q${k}` }))
+  return out
+}
+
+function runSnap(mods: Mods): Map<string, string[]> {
+  const bad = new Map<string, string[]>()
+  const fail = (id: string, msg: string) => { const l = bad.get(id) ?? []; if (l.length < 3) l.push(msg); bad.set(id, l) }
+  const tileOf = (w: realWorld.WorkerState, planner: Planner, t: number) => planner.positionAt(w.key, t)
+  const mk = () => {
+    const planner = new mods.planner.PathPlanner(LAYOUT)
+    let plans = 0
+    const world = new mods.world.WorkerWorld(LAYOUT, new mods.core.ObserverCore(LAYOUT, { bodySignals: true }), planner, { trace: { plan: () => { plans++ } } })
+    let wall = T0
+    const feed: FeedInst = new mods.feed.LiveFeed(world, () => wall)
+    return { planner, world, feed, setWall: (t: number) => { wall = t }, plans: () => plans }
+  }
+  const nByAid = (world: World, aid: string) => {
+    for (const w of world.workers.values()) if (w.key === `w${realCore.hash32(aid).toString(16).padStart(8, '0')}`) return w
+    return undefined
+  }
+
+  // ── SN1: hidden from 3 s to 63 s ──
+  try {
+    const { planner, world, feed, setWall, plans } = mk()
+    const lines = [...snapLines()].sort((a, b) => a.ts - b.ts)
+    let li = 0, wall = T0
+    const read = () => { const out: string[] = []; while (li < lines.length && lines[li].ts + 300 <= wall) out.push(lines[li++].line); if (out.length) feed.push(out) }
+    feed.caughtUp()
+    const tick = (to: number, frameMs: number, frames: boolean) => {
+      for (; wall + frameMs <= to + 1e-9;) { wall += frameMs; setWall(wall); read(); if (frames) feed.frame() }
+      wall = to; setWall(wall); read()
+    }
+    tick(T0 + 3000, 1000 / 60, true)
+    const A = aidOf('n', 1), B = aidOf('n', 2), D = aidOf('n', 4), E = aidOf('n', 5), F = aidOf('n', 6)
+    const wA0 = nByAid(world, A), wB0 = nByAid(world, B), wF0 = nByAid(world, F)
+    if (!wA0 || wA0.phase !== 'walking' || !wB0 || wB0.phase !== 'walking' || !wF0) fail('S4', `setup: at the hide A is ${wA0?.phase}, B ${wB0?.phase} (both must still be walking)`)
+    tick(T0 + 63_000, 1000 / 60, false)                       // hidden: the reader reads on, no frame runs
+    const linesBefore = world.core.stats.lines, queued = feed.queued
+    feed.requestSnap('return')
+    const plansBefore = plans()
+    wall += 1000 / 60; setWall(wall); read(); feed.frame()     // the first frame back
+    const now = wall
+    // S1
+    if (feed.sim !== now) fail('S1', `the first frame back: sim ${feed.sim - T0} ms, wall ${now - T0} ms`)
+    // S2
+    if (world.core.stats.lines - linesBefore !== queued || queued === 0) fail('S2', `the core read ${world.core.stats.lines - linesBefore} lines at the snap; ${queued} were read while hidden`)
+    if (nByAid(world, D) === undefined) fail('S2', 'D, which arrived while hidden, is not inside after the snap')
+    if (nByAid(world, E) !== undefined) fail('S2', 'E, which came and went while hidden, is inside after the snap')
+    // S2b
+    const replaced = [...world.workers.values()].filter(w => w.phase !== 'offscreen').length
+    if (plans() - plansBefore !== replaced) fail('S2b', `the snap planned ${plans() - plansBefore} trips for ${replaced} re-placed bodies (a backlog walk was replayed)`)
+    // S3: where the book has them (a seat: on its sitFrom now, on the seat one step later)
+    const seatWalk = new Map<string, number>()
+    for (const w of world.workers.values()) {
+      const h = world.core.book.holding(w.key)
+      if (h === null) continue
+      const p = LAYOUT.place(h.place)
+      const seat = p.type === 'point' && p.how === 'sit'
+      const want = seat && p.type === 'point' ? p.sitFrom! : { x: p.x, y: p.y }
+      if (w.pos.x !== want.x || w.pos.y !== want.y || w.pos.moving) fail('S3', `#${w.n} is drawn at (${w.pos.x},${w.pos.y}) after the snap, its booked ${h.place} is at (${want.x},${want.y})${seat ? ' (sitFrom)' : ''}`)
+      if (seat) seatWalk.set(w.key, w.pos.walked)
+    }
+    if (seatWalk.size === 0) fail('S3', 'setup: nobody sits after the snap (C must)')
+    tick(now + 1500, 1000 / 60, true)
+    for (const w of world.workers.values()) {
+      const h = world.core.book.holding(w.key)
+      if (h === null) continue
+      const p = LAYOUT.place(h.place)
+      const at = tileOf(w, planner, wall)
+      if (at === null || at.x !== p.x || at.y !== p.y || at.moving) fail('S3', `#${w.n} is not on its booked ${h.place} 1.5 s after the snap (at ${at ? `(${at.x.toFixed(2)},${at.y.toFixed(2)})` : 'nothing'})`)
+      const steps = seatWalk.has(w.key) ? 1 : 0
+      if (at !== null && at.walked !== steps) fail('S3', `#${w.n} walked ${at.walked} steps since the snap (${steps === 1 ? 'one, from its sitFrom onto its seat' : 'none'})`)
+    }
+    // S4: A's pull ends (a reading place), B hands in and leaves
+    tick(now + 6000, 1000 / 60, true)
+    const wA = nByAid(world, A), hA = wA ? world.core.book.holding(wA.key) : null
+    if (hA === null || (hA.role !== 'read' && hA.role !== 'readAtShelf')) fail('S4', `A is ${hA?.role ?? 'nowhere'} 6 s after the snap: its pull never ended (its arrival at the shelf was not reported)`)
+    const wB = nByAid(world, B)
+    if (wB !== undefined && wB.leaving === null) fail('S4', `B, which was walking to the front desk at the hide, has not handed in and been sent out 6 s after the snap (${wB.label})`)
+  } catch (e) { fail('S1', `crash ${String(e).split('\n')[0]}`) }
+
+  // ── SN2: jank: frames every 120 ms of wall time ──
+  try {
+    const { feed, setWall } = mk()
+    const lines = [...snapLines()].sort((a, b) => a.ts - b.ts)
+    let li = 0, wall = T0, maxLag = 0
+    feed.caughtUp()
+    for (let f = 0; f < 200; f++) {
+      wall += 120; setWall(wall)
+      const out: string[] = []
+      while (li < lines.length && lines[li].ts + 300 <= wall) out.push(lines[li++].line)
+      if (out.length) feed.push(out)
+      feed.frame()
+      maxLag = Math.max(maxLag, wall - feed.sim)
+    }
+    const behind = feed.snaps.filter(s => s.why === 'behind')
+    if (behind.length === 0 || maxLag > realFeed.SNAP_LAG_MS + 120) fail('S1b', `jank (120 ms frames): ${behind.length} 'behind' snaps, the largest lag ${maxLag.toFixed(0)} ms (limit ${realFeed.SNAP_LAG_MS} + one frame)`)
+    if (behind.some(s => s.lag <= realFeed.SNAP_LAG_MS)) fail('S1b', 'a behind snap without a lag over the limit')
+  } catch (e) { fail('S1b', `crash ${String(e).split('\n')[0]}`) }
+
+  // ── SN3: connect: the backlog first, then one snap ──
+  try {
+    const { world, feed, setWall } = mk()
+    const lines = [...snapLines()].sort((a, b) => a.ts - b.ts)
+    let wall = T0 + 60_000
+    setWall(wall)
+    const early = lines.filter(l => l.ts + 300 <= wall).map(l => l.line)
+    feed.push(early.slice(0, 5))
+    for (let f = 0; f < 30; f++) { wall += 1000 / 60; setWall(wall); feed.frame() }   // reading: nothing may run yet
+    const ranEarly = world.core.stats.lines
+    feed.push(early.slice(5))
+    feed.caughtUp()
+    wall += 1000 / 60; setWall(wall); feed.frame()
+    const s0 = feed.snaps[0]
+    if (ranEarly !== 0 || s0 === undefined || s0.why !== 'connect' || s0.lines !== early.length || world.core.stats.lines !== early.length) {
+      fail('S6', `before catching up the core read ${ranEarly} lines; the first snap ${s0 ? `('${s0.why}') carried ${s0.lines} of ${early.length}` : 'never came'}`)
+    }
+    const torn = world.core.stats.torn + world.core.stats.shape
+    const inside = [aidOf('n', 1), aidOf('n', 3), aidOf('n', 4), aidOf('n', 6)].filter(a => nByAid(world, a) !== undefined).length
+    if (torn !== 0 || inside !== 4 || nByAid(world, aidOf('n', 5)) !== undefined) fail('S6', `after the connect snap: ${torn} unreadable lines, ${inside} of the 4 helpers still working at 60 s inside (E, gone by then, ${nByAid(world, aidOf('n', 5)) ? 'inside' : 'not inside'})`)
+  } catch (e) { fail('S6', `crash ${String(e).split('\n')[0]}`) }
+
+  // ── SN4: slots: 32 arrivals, hidden from 2 s to 30 s ──
+  try {
+    const { planner, world, feed, setWall } = mk()
+    const lines = [...slotLines()].sort((a, b) => a.ts - b.ts)
+    let li = 0, wall = T0
+    feed.caughtUp()
+    const step = (to: number, frames: boolean) => {
+      for (; wall + 1000 / 60 <= to + 1e-9;) {
+        wall += 1000 / 60; setWall(wall)
+        const out: string[] = []
+        while (li < lines.length && lines[li].ts + 300 <= wall) out.push(lines[li++].line)
+        if (out.length) feed.push(out)
+        if (frames) feed.frame()
+      }
+    }
+    step(T0 + 2800, true)
+    const held0 = [...world.workers.values()].filter(w => w.phase === 'offscreen').map(w => w.key)
+    if (held0.length !== 2) fail('S5c', `setup: ${held0.length} workers held off screen before the hide (2 expected)`)
+    step(T0 + 30_000, false)
+    feed.requestSnap('return')
+    wall += 1000 / 60; setWall(wall); feed.frame()
+    const now = wall
+    // S5b: claims right after the snap frame (the world's claims are private: read them through the core's slot view)
+    let waiting = 0
+    for (const w of world.workers.values()) {
+      if (w.place !== null || w.phase === 'offscreen') continue
+      waiting++
+      const g = w.goal
+      if (g === null || g.kind !== 'slot') { fail('S5a', `#${w.n} has no place and is not put back on a slot (goal ${g?.kind ?? 'none'}, ${w.phase})`); continue }
+      const t = SLOT_TILES[g.slot]
+      if (w.pos.x !== t.x || w.pos.y !== t.y) fail('S5a', `#${w.n} is drawn at (${w.pos.x},${w.pos.y}), not on its slot (${t.x},${t.y})`)
+    }
+    if (waiting === 0) fail('S5a', 'setup: nobody without a place after the snap')
+    const slotsOk = (when: string) => {
+      for (const w of world.workers.values()) {
+        const s = world.slotClaimOf(w.key)
+        if (s === null) continue
+        const t = SLOT_TILES[s], at = planner.positionAt(w.key, wall)
+        const standing = (at !== null && at.x === t.x && at.y === t.y) || (at === null && w.pos.x === t.x && w.pos.y === t.y && w.goal?.kind === 'slot')
+        if (!standing) fail('S5b', `${when}: #${w.n} still claims slot ${s} but stands at ${at ? `(${at.x},${at.y})` : `(${w.pos.x},${w.pos.y}) (not yet on the grid)`}`)
+      }
+    }
+    slotsOk('the snap frame')
+    step(now + 3000, true)
+    for (const k of held0) {
+      const w = world.workers.get(k)
+      if (w === undefined || !w.onGrid || w.phase === 'offscreen') fail('S5c', `#${w?.n ?? '?'}, held off screen before the hide, has not appeared 3 s after the snap (${w?.phase ?? 'gone'})`)
+    }
+    step(T0 + 75_000, true)
+    const notIn = [...world.workers.values()].filter(w => world.core.book.holding(w.key)?.forKind !== 'fileCabinet' && world.core.book.waiterOf(w.key) === null)
+    if (notIn.length > 0) fail('S5c', `${notIn.length} workers are neither at nor waiting for a file cabinet 35 s after their call`)
+  } catch (e) { fail('S5a', `crash ${String(e).split('\n')[0]}`) }
+  return bad
+}
+
+const SNAP_MUTANTS: readonly Mutant[] = [
+  { id: 'SM1 the snap leaves the clock behind the wall', file: 'feed', from: '      this.#sim = Math.max(this.#sim, wall)\n      const backlog', to: '      const backlog' },
+  { id: 'SM2 the backlog is dropped at the snap', file: 'feed', from: '      this.world.snap(this.#sim, backlog)\n', to: '      this.world.snap(this.#sim, [])\n' },
+  { id: 'SM3 the backlog\'s walks are replayed', file: 'world', from: '          if (this.#snapping) { this.#teleport(w, c.place); break }\n', to: '          if (this.#snapping) this.#teleport(w, c.place)\n' },
+  { id: 'SM4 no re-placing: the bodies keep their old walks', file: 'world', from: '    this.#replace()\n    this.step(now)\n', to: '    this.step(now)\n' },
+  { id: 'SM5 a seat re-placed on its own tile, not through its sitFrom', file: 'world', from: '        const from = seat && p.type === \'point\' ? p.sitFrom! : { x: p.x, y: p.y }\n', to: '        const from = { x: p.x, y: p.y }\n' },
+  { id: 'SM6 a re-placed body counts as settled: its arrival is not reported again', file: 'world', from: "        w.phase = 'appearing'\n        this.#plan(w, { kind: 'place', place: w.place }, { x: p.x, y: p.y }, from)\n", to: "        w.phase = 'settled'\n        this.#plan(w, { kind: 'place', place: w.place }, { x: p.x, y: p.y }, from)\n" },
+  { id: 'SM7 a worker without a place is not put back on its slot', file: 'world', from: '      } else if (slot !== null) {\n', to: '      } else if (slot === -2) {\n' },
+  { id: 'SM8 the claims of re-placed bodies are kept until their next step', file: 'world', from: '        this.#putBody(w, from, now)\n        this.#leaveSlots(w.key)\n', to: '        this.#putBody(w, from, now)\n' },
+  { id: 'SM9 no snap when the clock trails the wall', file: 'feed', from: '    if (this.#snapWhy !== null || lag > SNAP_LAG_MS) {\n', to: '    if (this.#snapWhy !== null) {\n' },
+  { id: 'SM10 the office runs before the reader has caught up', file: 'feed', from: '    if (!this.#ready || this.world.disposed) return 0\n', to: '    if (this.world.disposed) return 0\n' },
+]
+
 // ── mutants ──────────────────────────────────────────────────────────────────────────────────────────────────────
-type MutantFile = 'planner' | 'core' | 'world' | 'sprite' | 'objects'
+type MutantFile = 'planner' | 'core' | 'world' | 'sprite' | 'objects' | 'feed'
 interface Mutant { readonly id: string; readonly file: MutantFile; readonly from: string; readonly to: string }
 const FILES: Readonly<Record<MutantFile, string>> = {
   planner: '../src/worker-office/move/planner.ts', core: '../src/worker-office/core/reducer.ts',
   world: '../src/worker-office/live/world.ts', sprite: '../src/worker-office/render/WorkerSprite.ts',
-  objects: '../src/worker-office/live/objects.ts',
+  objects: '../src/worker-office/live/objects.ts', feed: '../src/worker-office/live/liveFeed.ts',
 }
 const MUTANTS: readonly Mutant[] = [
   // the movement core
@@ -1163,7 +1400,7 @@ else {
 }
 
 // ── object states: the run, then each check shown able to fail ─────────────────────────────────────────────────
-{
+if (!SNAP_ONLY) {
   const cases = objectCases()
   const checks = [...cases.map(c => c.id), 'O0', 'O20']
   console.log(`object states (plan §4.4; live/objects.ts): ${cases.length} action cases and the EXAMPLE through the real core and world, every 50 ms`)
@@ -1200,6 +1437,42 @@ else {
       const by = trippedBy.get(id) ?? []
       console.log(`  ${by.length > 0 ? 'shown able to fail' : 'NEVER FAILED     '} ${id} <- ${by.join(', ') || '-'}`)
       if (by.length === 0) fail(`no object mutant fails the check ${id}`)
+    }
+  }
+}
+
+// ── the snap: the run, then each check shown able to fail ─────────────────────────────────────────────────────
+{
+  const checks = ['S1', 'S1b', 'S2', 'S2b', 'S3', 'S4', 'S5a', 'S5b', 'S5c', 'S6']
+  console.log(`the §4.6 snap (live/world.ts snap, live/liveFeed.ts): hidden 60 s, jank, a reconnect, 32 arrivals; the live clock follows a fake wall clock (cap ${realFeed.MAX_FRAME_MS} ms a frame, snap beyond ${realFeed.SNAP_LAG_MS} ms behind)`)
+  const real = runSnap(REAL)
+  for (const id of checks) {
+    const b = real.get(id)
+    console.log(`  ${b ? 'FAIL' : 'ok  '} ${id}`)
+    for (const m of b ?? []) fail(`${id}: ${m}`)
+  }
+  if (NO_MUTANTS) console.log('snap mutants: skipped (--no-mutants)')
+  else {
+    console.log('snap mutants (each must make a check fail; each check must be failed by one):')
+    const dir = mkdtempSync(join(tmpdir(), 'wo-snap-mutant-'))
+    const trippedBy = new Map<string, string[]>()
+    let caught = 0
+    for (const [i, m] of SNAP_MUTANTS.entries()) {
+      let mods: Mods
+      try { mods = await loadPatched(m, dir, 200 + i) } catch (e) { fail(String(e).split('\n')[0]); continue }
+      const bad = runSnap(mods)
+      const hit = [...bad.keys()]
+      for (const k of hit) trippedBy.set(k, [...(trippedBy.get(k) ?? []), m.id.split(' ')[0]])
+      if (hit.length > 0) caught++
+      else fail(`snap mutant survived: ${m.id}`)
+      console.log(`  ${hit.length > 0 ? 'caught  ' : 'SURVIVED'} ${m.id}: ${hit.map(k => `${k}${(bad.get(k)?.[0] ?? '').startsWith('crash') ? ' (crash)' : ''}`).join(', ') || 'no check failed'}`)
+    }
+    rmSync(dir, { recursive: true, force: true })
+    console.log(`snap mutants caught: ${caught} of ${SNAP_MUTANTS.length}; each check and the mutants that fail it:`)
+    for (const id of checks) {
+      const by = trippedBy.get(id) ?? []
+      console.log(`  ${by.length > 0 ? 'shown able to fail' : 'NEVER FAILED     '} ${id} <- ${by.join(', ') || '-'}`)
+      if (by.length === 0) fail(`no snap mutant fails the check ${id}`)
     }
   }
 }

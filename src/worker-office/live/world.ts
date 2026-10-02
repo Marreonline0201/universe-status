@@ -6,6 +6,7 @@
 //   const world = new WorkerWorld(layout, core, planner)   core: new ObserverCore(layout, { bodySignals: true })
 //   world.ingest(line, now)    a spool line read at sim time `now`
 //   world.step(now)            the core's timers, its commands, the beats, the planner, the body signals
+//   world.snap(now, lines)     the §4.6 snap (below): the clock jumps, the backlog is applied, every body is re-placed
 //   world.workers              per worker: what the core wants, where its body is, which beat it is in
 //   world.dispose()            the core, the planner and every worker go
 // The core and the planner are passed in (the checks pass patched copies); this module imports neither class.
@@ -23,6 +24,21 @@
 //   - settled between calls, at a hold, at a seat: the exit beat at once.
 // Every beat is × the worker's tempo τ (0.85-1.15, from its seed) × a ±20 % jitter per occurrence (seed + count). A
 // worker 3 s or more behind its target gets the fast beats (0.3 s entry, 0.25 s exit). Leaving is final.
+//
+// THE SNAP (plan §4.6 "On reconnect, a hidden tab or a freeze: snap everyone to place and rebuild the bookings. Walks
+// are never replayed"; §4.7 "Hidden tab -> snap on return"). snap(now, lines):
+//   1. the clock jumps to `now` (the caller's wall time);
+//   2. the backlog `lines` (read while the page did not run) and the core's timers up to its frontier are applied with
+//      the bodies TELEPORTED: no walk is planned; each booking counts as reached at once (the core is told 'arrived'
+//      at its own clock, so its pulls end and its hand-ins run as in a replay), a body that books a place leaves its
+//      sidewalk slot at once, and a leaving worker is gone;
+//   3. every body is cancelled and re-placed where the core's book has it: on its place's own tile (a seat: on its
+//      sitFrom, then the one step onto the seat, the planner's rule), on its sidewalk slot when it has no place yet,
+//      off screen when it was held there; its old trajectory and bookings are gone (the planner's table is rebuilt);
+//   4. the arrivals and the slot claims are reported again: each re-placed body arrives through the usual path (the
+//      entry beat, fast when behind, and 'arrived' to the core), and every claim whose body is no longer on its slot
+//      is released to the core at once (a worker held off screen gets the slot).
+// The caller decides when (live/liveFeed.ts: on tab return, on (re)connect, and when the clock trails the wall).
 //
 // BODY SIGNALS back to the core (lead rulings 3, 5, 6, decisions.md 2026-10-01 23:13):
 //   - slotLeft: a slot's claimant body has left the tile (or never will stand on it) and the planner says nobody
@@ -154,6 +170,8 @@ export class WorkerWorld {
   readonly #slotTiles: readonly Tile[]
   #now = -Infinity
   #disposed = false
+  /** Inside snap(): the backlog's commands move no body (THE SNAP, step 2). */
+  #snapping = false
   readonly #scratch: BodyPose = { x: 0, y: 0, moving: false, facing: 'W', walked: 0 }
 
   constructor(layout: PlaceLayout, core: ObserverCore, planner: PathPlanner, opts: WorldOptions = {}) {
@@ -168,6 +186,12 @@ export class WorkerWorld {
 
   get now(): number { return this.#now }
   get disposed(): boolean { return this.#disposed }
+  /** The sidewalk slot a worker's body claims, or null (checks). */
+  slotClaimOf(key: WorkerKey): number | null {
+    for (const [s, k] of this.#claims) if (k === key) return s
+    return null
+  }
+
   /** Workers whose body is on the grid or on its way (not the ones held off screen). */
   get onScreen(): number { let n = 0; for (const w of this.workers.values()) if (w.onGrid) n++; return n }
 
@@ -187,6 +211,22 @@ export class WorkerWorld {
     this.planner.tick(this.#now)
     for (const w of [...this.workers.values()]) this.#watch(w)
     this.#releaseSlots()
+  }
+
+  /** THE SNAP (header): jump to `now`, apply the backlog with the bodies teleported, re-place every body where the
+   *  core's book has it, report the arrivals and slot claims again. Walks are never replayed. */
+  snap(now: number, lines: readonly string[] = []) {
+    if (this.#disposed) return
+    this.#advanceTo(now)
+    this.#snapping = true
+    try {
+      for (const line of lines) this.#route(this.core.ingest(line, now))
+      this.#route(this.core.tick(now))
+    } finally {
+      this.#snapping = false
+    }
+    this.#replace()
+    this.step(now)
   }
 
   dispose() {
@@ -213,7 +253,7 @@ export class WorkerWorld {
         case 'slotted': {
           const w = this.workers.get(c.key)
           this.#claims.set(c.slot, c.key)
-          if (w !== undefined && w.phase === 'offscreen') this.#appear(w, c.slot)
+          if (w !== undefined && w.phase === 'offscreen' && !this.#snapping) this.#appear(w, c.slot)
           break
         }
         case 'walkTo': {
@@ -221,6 +261,7 @@ export class WorkerWorld {
           if (w === undefined || w.leaving !== null) break
           w.place = c.place
           w.targetAt = this.#now
+          if (this.#snapping) { this.#teleport(w, c.place); break }
           this.#want(w)
           break
         }
@@ -231,7 +272,7 @@ export class WorkerWorld {
           w.exitReason = c.reason
           w.place = null
           w.targetAt = this.#now
-          if (w.phase === 'offscreen' || (w.phase === 'appearing' && !w.onGrid)) this.#drop(w)
+          if (this.#snapping || w.phase === 'offscreen' || (w.phase === 'appearing' && !w.onGrid)) { this.#drop(w); this.#leaveSlots(w.key) }
           else this.#want(w)
           break
         }
@@ -240,7 +281,7 @@ export class WorkerWorld {
           if (w === undefined) break
           w.exitReason = c.reason
           w.leaving = 'direct'
-          if (!w.onGrid) { this.#drop(w); break }
+          if (this.#snapping || !w.onGrid) { this.#drop(w); this.#leaveSlots(w.key); break }
           w.phase = 'fading'
           w.fadeAt = this.#now
           break
@@ -309,8 +350,74 @@ export class WorkerWorld {
     this.workers.set(key, w)
     if (slot >= 0) {
       this.#claims.set(slot, key)
-      this.#appear(w, slot)
+      if (!this.#snapping) this.#appear(w, slot)
     }
+  }
+
+  // ── the snap (THE SNAP in the header) ─────────────────────────────────────────────────────────────────────────
+  /** Step 2: a booking during the backlog counts as reached at once: the body leaves its slot, the core hears it
+   *  arrived (at the core's own clock, so a pull or a hand-in runs as in a replay). */
+  #teleport(w: WorkerState, place: PlaceId) {
+    this.#leaveSlots(w.key)
+    this.trace.arrived?.(w.key, place, this.#now)
+    this.#route(this.core.arrived(w.key, place))
+  }
+
+  /** Release every sidewalk slot a worker's body claims (it is no longer on it): the core gives it to whoever waits. */
+  #leaveSlots(key: WorkerKey) {
+    for (const [slot, k] of [...this.#claims]) {
+      if (k !== key) continue
+      this.#claims.delete(slot)
+      this.trace.slotLeft?.(key, slot, this.#now)
+      this.#route(this.core.slotLeft(key, slot))
+    }
+  }
+
+  /** Step 3: cancel every body and put it where the core's book has it; the usual watch then re-reports each arrival
+   *  (step 4) and the claims of bodies that left their slots are released at once. */
+  #replace() {
+    const now = this.#now
+    for (const w of [...this.workers.values()]) {
+      if (this.workers.get(w.key) !== w) continue
+      if (w.leaving !== null || w.phase === 'fading') { this.#drop(w); this.#leaveSlots(w.key); continue }
+      if (this.planner.state(w.key) !== null) { this.planner.cancel(w.key); this.trace.cancel?.(w.key, now) }
+      w.moveWanted = false
+      w.pendingSince = null
+      w.fadeAt = null
+      let slot: number | null = null
+      for (const [s, k] of this.#claims) if (k === w.key) { slot = s; break }
+      if (w.place !== null) {
+        const p = this.layout.place(w.place)
+        const seat = p.type === 'point' && p.how === 'sit'
+        const from = seat && p.type === 'point' ? p.sitFrom! : { x: p.x, y: p.y }
+        w.phase = 'appearing'
+        this.#plan(w, { kind: 'place', place: w.place }, { x: p.x, y: p.y }, from)
+        this.#putBody(w, from, now)
+        this.#leaveSlots(w.key)
+      } else if (slot !== null) {
+        const t = this.#slotTiles[slot]
+        w.phase = 'appearing'
+        this.#plan(w, { kind: 'slot', slot }, t, t)
+        this.#putBody(w, t, now)
+      } else {
+        w.phase = 'offscreen'
+        w.goal = null
+        w.onGrid = false
+      }
+    }
+  }
+
+  /** Draw a re-placed body on its tile at once (the planner has it there from its next step on, a new body that has
+   *  walked nothing yet). */
+  #putBody(w: WorkerState, t: Tile, now: number) {
+    const pos = w.pos
+    pos.x = t.x
+    pos.y = t.y
+    pos.moving = false
+    pos.facing = 'N'
+    pos.walked = 0
+    w.onGrid = true
+    w.appearedAt ??= now
   }
 
   /** Put a body on its sidewalk slot (it appears once the tile is clear; the core named a clear one). */
@@ -355,12 +462,15 @@ export class WorkerWorld {
     this.#plan(w, { kind: 'place', place: w.place }, { x: p.x, y: p.y })
   }
 
-  #plan(w: WorkerState, goal: Goal, tile: Tile | null) {
+  /** Give the planner the worker's newest goal. `from`: where a body the planner does not know appears (a snap's
+   *  re-placed body: its place's tile, a seat's sitFrom, its slot); null: from where it is. */
+  #plan(w: WorkerState, goal: Goal, tile: Tile | null, from: Tile | null = null) {
     w.goal = goal
     w.pendingSince = null
     this.trace.plan?.(w.key, goal, this.#now)
     const known = this.planner.state(w.key) !== null
-    if (goal.kind === 'slot') this.planner.plan(w.key, known ? null : tile, tile!, this.#now)
+    if (from !== null && !known) this.planner.plan(w.key, from, goal.kind === 'exit' ? EXIT : tile!, this.#now)
+    else if (goal.kind === 'slot') this.planner.plan(w.key, known ? null : tile, tile!, this.#now)
     else this.planner.plan(w.key, null, goal.kind === 'exit' ? EXIT : tile!, this.#now)
   }
 
