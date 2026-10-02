@@ -13,8 +13,11 @@
 //    a node process that fails on a missing file.
 //  - The self-check runs the INSTALLED hook once, on a synthetic PreToolUse payload, with its spool redirected to a
 //    throwaway temp folder (the real spool is not touched), and requires: exit 0, nothing on stdout or stderr,
-//    exactly one record with the expected category, the agent id without its "agent-" prefix, the agent type, and the
-//    per-record cost fields (dur cpu rss, integers) — so a PASS also shows that the installed hook is this version.
+//    exactly one record with the expected category, the agent id without its "agent-" prefix, the agent type, and
+//    exactly the keys v ts sid ev aid at k a tu in that order: no run, although the payload's transcript_path has the
+//    own-transcript shape the stage-0 hook read a run from (lead ruling F1, 2026-10-01), and no cost fields dur cpu
+//    rss, which the stage-0 hook wrote on every record (lead ruling F2) — so a PASS also shows that the installed
+//    hook is this version.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, readdirSync, unlinkSync, rmdirSync, mkdtempSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -67,6 +70,7 @@ function selfCheck() {
   const payload = JSON.stringify({
     session_id: 'install-check', hook_event_name: 'PreToolUse', agent_id: 'agent-installcheck', agent_type: 'install-check',
     tool_name: 'Bash', tool_input: { command: 'git status' }, tool_use_id: 'toolu_install_check',
+    transcript_path: 'C:/install-check/subagents/workflows/wf_installcheck/agent-installcheck.jsonl',
   });
   const problems = [];
   try {
@@ -81,9 +85,8 @@ function selfCheck() {
     if (lines.length !== 1) problems.push(`expected 1 spool line, found ${lines.length}`);
     else {
       const rec = JSON.parse(lines[0]);
-      const costs = ['dur', 'cpu', 'rss'].every((k) => Number.isInteger(rec[k]) && rec[k] >= 0);
-      if (rec.ev !== 'PreToolUse' || rec.aid !== 'installcheck' || rec.at !== 'install-check' || rec.k !== 'historyShelf'
-          || rec.a !== 'glance' || !costs) {
+      if (Object.keys(rec).join(' ') !== 'v ts sid ev aid at k a tu' || rec.ev !== 'PreToolUse' || rec.aid !== 'installcheck'
+          || rec.at !== 'install-check' || rec.k !== 'historyShelf' || rec.a !== 'glance') {
         problems.push(`unexpected record ${lines[0]}`);
       }
     }

@@ -15,14 +15,16 @@
 // Memory: the hook runs with a --import preload that writes the process's peak working set (maxRSS) to a temp file
 // on exit; chained assignments and a command at the classification cap must stay near a `git status` firing.
 // Step 4 stage 0 (2026-10-01; checks labelled "S4"): ids without the agent- prefix (every leading one: agent-agent-x
-// is x, review finding 4); at on the tool events; the run token taken ONLY from a workflow agent's own transcript path
-// (each near-miss paired with the path it differs from by one part, so every check also fails on the old hook; the
-// documented payloads never carry that path, review finding 1, so those are regex tests on an undocumented shape, and
-// the live-shaped Start / Pre write no run); tus on PostToolBatch (ordered, paired with Pre's tu, cut to fit 4,096
-// bytes); dur / cpu / rss on every record (ts + dur inside the spawn window, plausible units); the value cap (review
-// finding 3: more than MAX_VALUES '{' '[' ',' outside strings is a parse_error, exact at the boundary, never tripped by
-// a string, its escapes handled both ways; in the memory section, tiny objects over the cap stay near the baseline). The
-// S4 checks are then run against planted mutants of the hook, and each mutant must fail them.
+// is x, review finding 4); at on the tool events; tus on PostToolBatch (ordered, paired with Pre's tu, cut to fit 4,096
+// bytes); the value cap (review finding 3: more than MAX_VALUES '{' '[' ',' outside strings is a parse_error, exact at
+// the boundary, never tripped by a string, its escapes handled both ways; in the memory section, tiny objects over the
+// cap stay near the baseline). The S4 checks are then run against planted mutants of the hook, and each mutant must
+// fail them. The lead's rulings on the stage-0 review (2026-10-01; checks labelled "F1" / "F2"): no record carries run
+// (F1: every event gives the same record with and without transcript_path / agent_transcript_path set to a planted
+// path in the own-transcript shape the stage-0 hook read a run from, and no part of that path; a Workflow's runId is
+// not written; the hook's code names no path field), and no record carries dur / cpu / rss (F2: they grew with the
+// payload's size; the same event with 0 B and 4 MB of tool input, a 4 MB tool response or 4 MB of garbage gives the
+// same line apart from ts). validate() checks that no line carries run, dur, cpu or rss, on every line of the suite.
 import { spawnSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync, statSync, existsSync, rmSync, copyFileSync } from 'node:fs';
 import { tmpdir, freemem } from 'node:os';
@@ -79,10 +81,11 @@ function childEnv(home, extra = {}) {
 }
 
 // ------------------------------------------------------------------------------------------------ spool + firing
-const ALLOWED = ['v', 'ts', 'sid', 'ev', 'aid', 'at', 'k', 'a', 'tsr', 'tu', 'tus', 'bg', 'to', 'st', 'ch', 'tid', 'run', 'err', 'sz',
-  'intr', 'n', 'bt', 'r', 'dur', 'cpu', 'rss'];
+const ALLOWED = ['v', 'ts', 'sid', 'ev', 'aid', 'at', 'k', 'a', 'tsr', 'tu', 'tus', 'bg', 'to', 'st', 'ch', 'tid', 'err', 'sz',
+  'intr', 'n', 'bt', 'r'];
+/** Keys that left the allowlist on the lead's rulings of 2026-10-01: run (F1) and the cost fields dur cpu rss (F2). */
+const GONE = [['run', 'F1'], ['dur', 'F2'], ['cpu', 'F2'], ['rss', 'F2']];
 const AT_EVENTS = new Set(['SubagentStart', 'SubagentStop', 'PreToolUse', 'PostToolBatch', 'PostToolUse', 'PostToolUseFailure']);
-const RE_RUN_TOKEN = /^wf_[A-Za-z0-9_-]{1,61}$/;
 const RE_TU = /^[0-9a-f]{10}$/;
 const EVENTS = new Set(['SubagentStart', 'SubagentStop', 'PreToolUse', 'PostToolBatch', 'PostToolUse', 'PostToolUseFailure',
   'Stop', 'SessionEnd', 'PermissionRequest', 'StopFailure', 'SessionStart', 'UserPromptSubmit', 'Notification', 'PreCompact',
@@ -155,25 +158,18 @@ function validate(line, what, r) {
   ok(rec.v === 1, `${what}: v = 1`);
   ok(Number.isInteger(rec.ts) && (!r || (rec.ts >= r.t0 - 50 && rec.ts <= r.t1)), `${what}: ts ${rec.ts} inside the spawn window`);
   ok(EVENTS.has(rec.ev), `${what}: ev "${rec.ev}" is a known event, other or parse_error`);
-  for (const k of ['sid', 'aid', 'ch', 'tid', 'run']) if (k in rec) ok(isIdOut(rec[k]), `${what}: ${k} format "${rec[k]}"`);
-  for (const k of ['sid', 'aid', 'ch', 'tid', 'run']) if (k in rec) ok(!String(rec[k]).startsWith('agent-'), `${what}: ${k} carries no agent- prefix`);
+  for (const k of ['sid', 'aid', 'ch', 'tid']) if (k in rec) ok(isIdOut(rec[k]), `${what}: ${k} format "${rec[k]}"`);
+  for (const k of ['sid', 'aid', 'ch', 'tid']) if (k in rec) ok(!String(rec[k]).startsWith('agent-'), `${what}: ${k} carries no agent- prefix`);
   for (const e of Array.isArray(rec.bt) ? rec.bt : []) if (e && 'id' in e) ok(!String(e.id).startsWith('agent-'), `${what}: bt.id carries no agent- prefix`);
   if ('at' in rec) ok((rec.at === '' || RE_ID.test(rec.at)) && AT_EVENTS.has(rec.ev), `${what}: at format, on a subagent start / stop or a tool event only`);
-  if ('run' in rec) {
-    ok(['SubagentStart', 'PreToolUse', 'PostToolUse'].includes(rec.ev), `${what}: run only on SubagentStart, PreToolUse and PostToolUse(Workflow)`);
-    if (rec.ev !== 'PostToolUse') ok(RE_RUN_TOKEN.test(rec.run), `${what}: a run from a path is a wf_ token "${rec.run}"`);
-  }
+  // the lead's rulings of 2026-10-01, on EVERY line: no run (F1: no path is read, a Workflow's runId is not written)
+  // and no cost field (F2: dur / cpu / rss grew with the payload's size, a size side channel against decision D11)
+  for (const [k, ruling] of GONE) ok(!(k in rec), `${what}: ${ruling} no ${k} key on any record (${ruling === 'F1' ? 'run' : 'cost field'}: lead ruling ${ruling})`);
   if ('tus' in rec) {
     ok(rec.ev === 'PostToolBatch' && Array.isArray(rec.tus) && rec.tus.every((x) => typeof x === 'string' && RE_TU.test(x)),
       `${what}: tus is a list of 10-hex hashes, on a PostToolBatch only`);
     ok(Number.isInteger(rec.n) && Array.isArray(rec.tus) && rec.tus.length <= rec.n, `${what}: tus has at most n entries`);
   }
-  // the cost fields, on EVERY record (parse_error too): integers in ms / ms / MB. dur runs from the process start (ts)
-  // to the write, so ts + dur cannot be after the spawn ended; a KB rss (~45,000) or a microsecond cpu fails the bounds
-  ok(['dur', 'cpu', 'rss'].every((k) => Number.isInteger(rec[k])), `${what}: dur / cpu / rss are integers (${rec.dur} / ${rec.cpu} / ${rec.rss})`);
-  ok(rec.dur >= 1 && (!r || rec.ts + rec.dur <= r.t1 + 50), `${what}: dur ${rec.dur} ms: ts + dur is inside the spawn window`);
-  ok(rec.cpu >= 1 && rec.cpu <= 10_000, `${what}: cpu ${rec.cpu} ms is plausible`);
-  ok(rec.rss >= 5 && rec.rss <= 4096, `${what}: rss ${rec.rss} MB is a plausible peak working set`);
   if ('k' in rec) ok(C.KINDS.has(rec.k), `${what}: k in the closed kind set`);
   if ('a' in rec) ok(C.ACTIVITY_BY_ID.has(rec.a), `${what}: a in the closed activity-id set`);
   if ('tsr' in rec) ok(rec.tsr === true && rec.ev === 'PostToolBatch', `${what}: tsr is true when present, on a Batch only`);
@@ -204,11 +200,10 @@ function fireExpect(home, input, what, expectLines = 1, extraEnv) {
   ok(lines.length === expectLines, `${what}: expected ${expectLines} new spool line(s), got ${lines.length}`);
   return lines.map((l) => validate(l, what, r));
 }
-/** The record minus v / ts and the cost fields (dur cpu rss: checked by validate on every line) must equal `want`
- *  exactly (no missing and no extra fields). */
+/** The record minus v / ts must equal `want` exactly (no missing and no extra fields: a run or a cost field fails it). */
 function exact(rec, want, what) {
   if (!rec) return ok(false, `${what}: no record`);
-  const { v, ts, dur, cpu, rss, ...rest } = rec;                   // eslint-disable-line no-unused-vars
+  const { v, ts, ...rest } = rec;                                  // eslint-disable-line no-unused-vars
   return ok(isDeepStrictEqual(rest, want), `${what}:\n       got  ${JSON.stringify(rest)}\n       want ${JSON.stringify(want)}`);
 }
 
@@ -230,27 +225,22 @@ const AT = SUB.agent_type;                      // at: on the subagent's start /
 const bashInput = (command, more = {}) => ({ command, description: txt('desc'), ...more });
 
 // ------------------------------------------------------------------------------------------------ step 4 stage 0 (S4)
-// Run on the installed hook (all must pass), on HEAD's hook (WO_OBSERVER_DIR: all must fail) and, group by group, on
-// the planted mutants below (each mutant must fail its group). groups: ids, at, run, tus, cost, cap (null = all).
-const WF = 'wf_6e02fbec-6b6';                   // the shape of a real run folder (wf_ + 8 hex + - + 3 hex)
+// Run on the installed hook (all must pass), on an older hook (WO_OBSERVER_DIR) and, group by group, on the planted
+// mutants below (each mutant must fail its group). groups: ids, at, tus, cap, and the lead's rulings of 2026-10-01:
+// norun (F1), nosize (F2) (null = all).
 const WA = { agent_id: 'a1b2c3', agent_type: 'workflow-subagent' };
-/** A workflow agent's own transcript (.../<sid>/subagents/workflows/wf_<id>/agent-<aid>.jsonl); the marker only in
- *  the parts that must never be written. */
-const winPath = (tail) => `C:\\Users\\${MARK}\\.claude\\projects\\C--${MARK}-proj\\${SID}\\${tail}`;
-const runPath = {
-  win: (aid = WA.agent_id, wf = WF) => winPath(`subagents\\workflows\\${wf}\\agent-${aid}.jsonl`),
-  posix: (aid = WA.agent_id, wf = WF) => `/home/${MARK}/.claude/projects/-home-${MARK}/${SID}/subagents/workflows/${wf}/agent-${aid}.jsonl`,
-  mixed: (aid = WA.agent_id, wf = WF) => `C:/Users/${MARK}\\.claude/projects\\x/${SID}\\subagents/workflows\\${wf}/agent-${aid}.jsonl`,
-};
-/** Fire one payload; require silence and exactly one new line; return {rec, line} (the raw line for byte checks). */
+/** Fire one payload (an object, sent as JSON; or raw stdin, a string or a Buffer); require silence and exactly one new
+ *  line; return {rec, line} (the raw line for byte checks). */
 function fireOne(home, payload, what) {
-  const r = fire(home, JSON.stringify(payload));
+  const r = fire(home, typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload));
   assertSilent(r, what);
   const lines = newLines(home);
   ok(lines.length === 1, `${what}: expected 1 new spool line, got ${lines.length}`);
   return lines.length === 1 ? { rec: validate(lines[0], what, r), line: lines[0] } : { rec: null, line: '' };
 }
-const preIn = (extra) => ({ ...COMMON, hook_event_name: 'PreToolUse', ...WA, tool_name: 'Read', tool_input: { file_path: path('s4') }, tool_use_id: 'u6', ...extra });
+/** Two spool lines are the same apart from ts (the hook's start time): the same bytes after the leading v and ts. */
+const sameApartFromTs = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length > 0
+  && a.replace(/^\{"v":1,"ts":\d+,/, '') === b.replace(/^\{"v":1,"ts":\d+,/, '');
 
 function s4Checks(home, groups = null) {
   const want = (g) => groups === null || groups.has(g);
@@ -273,7 +263,8 @@ function s4Checks(home, groups = null) {
       'S4 ids: agent-agent-x is written x (sid, aid, ch; a triple prefix too)');
     ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: {}, tool_use_id: 'u13',
       tool_response: { status: 'async_launched', taskId: 'agent-agent-w5', runId: 'agent-agent-wf_9' } }, 'S4 fire: Post(Workflow), doubly prefixed ids'));
-    exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('u13'), st: 'async_launched', tid: 'w5', run: 'wf_9' }, 'S4 ids: tid and run without any agent- prefix');
+    exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('u13'), st: 'async_launched', tid: 'w5' },
+      'S4 ids: tid without any agent- prefix (the runId is not written: lead ruling F1)');
     ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'Stop', background_tasks: [{ id: 'agent-agent-a7f6', type: 'subagent', status: 'running' },
       { id: 'agent-agent-', type: 'subagent', status: 'running' }, { id: `agent-agent-${MARK} y`, type: 'subagent', status: 'running' }] }, 'S4 fire: Stop, doubly prefixed task ids'));
     exact(rec, { sid: SID, ev: 'Stop', bt: [{ id: 'a7f6', type: 'subagent', status: 'running' }, { id: hid('agent-agent-'), type: 'subagent', status: 'running' },
@@ -302,83 +293,70 @@ function s4Checks(home, groups = null) {
     ok(isDeepStrictEqual(got, ['general-purpose', null, '', null, null]),
       `S4 at on a tool event: a valid type is written, none / free text / over 64 chars give none, '' stays '' | got ${JSON.stringify(got)}`);
   }
-  if (want('run')) {
-    // the run token: ONLY from the agent's own transcript path (.../subagents/workflows/wf_<id>/agent-<aid>.jsonl).
-    // The DOCUMENTED payloads never carry that path where the hook looks (review finding 1; the lead's ruling is
-    // pending): hooks.md gives SubagentStart only agent_id and agent_type, agent_transcript_path only on SubagentStop,
-    // and a subagent's tool events carry the PARENT's transcript_path. Live, 0 of the 513 records written from the 18:32
-    // install to 19:15 (3 workflow Starts, 276 workflow Pres) have run. So:
-    //  - the live-shaped cases first: a Start and a Pre whose only path is the parent session's transcript write nothing;
-    //  - every case after them is a REGEX test on an undocumented payload shape: it pins what the hook would do with
-    //    such a path, not that the feature works.
-    const full = (ev, extra) => ({ sid: SID, ev, aid: 'a1b2c3', at: 'workflow-subagent', ...extra });
-    const preRec = { k: 'fileCabinet', a: 'read', tu: h10('u6') };
-    const parentTranscript = `C:\\Users\\${MARK}\\.claude\\projects\\C--${MARK}-proj\\${SID}.jsonl`;
-    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, transcript_path: parentTranscript }, 'S4 fire: Start, live-shaped (the parent\'s transcript_path only)'));
-    exact(rec, full('SubagentStart', {}), 'S4 run, live-shaped: a workflow agent\'s Start as documented (agent_id, agent_type, the parent\'s transcript_path) writes no run');
-    ({ rec } = fireOne(home, preIn({ transcript_path: parentTranscript }), 'S4 fire: Pre, live-shaped (the parent\'s transcript_path only)'));
-    exact(rec, full('PreToolUse', preRec), 'S4 run, live-shaped: a workflow agent\'s Pre as documented (the parent\'s transcript_path) writes no run');
-    ({ rec } = fireOne(home, preIn({ transcript_path: runPath.win() }), 'S4 fire: Pre, a Windows transcript path'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre in a workflow agent, Windows path (\\)');
-    ({ rec } = fireOne(home, preIn({ transcript_path: runPath.posix() }), 'S4 fire: Pre, a POSIX transcript path'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre, POSIX path (/)');
-    ({ rec } = fireOne(home, preIn({ transcript_path: runPath.mixed() }), 'S4 fire: Pre, mixed separators'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex, an undocumented shape): Pre, mixed separators');
-    ({ rec } = fireOne(home, preIn({ agent_id: 'agent-a1b2c3', transcript_path: runPath.win() }), 'S4 fire: Pre, a prefixed agent_id'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): the file name is matched against the agent_id without its agent- prefix');
-    // review finding 4 in the file-name comparison: both sides lose EVERY leading agent- before they are compared
-    ({ rec } = fireOne(home, preIn({ agent_id: 'agent-agent-a1b2c3', transcript_path: runPath.win() }), 'S4 fire: Pre, a doubly prefixed agent_id'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): agent_id agent-agent-a1b2c3 matches the file agent-a1b2c3.jsonl');
-    ({ rec } = fireOne(home, preIn({ transcript_path: runPath.win('agent-a1b2c3') }), 'S4 fire: Pre, a doubly prefixed file name'));
-    exact(rec, full('PreToolUse', { ...preRec, run: WF }), 'S4 run (regex): the file agent-agent-a1b2c3.jsonl matches agent_id a1b2c3');
-    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, agent_transcript_path: runPath.win() }, 'S4 fire: Start, agent_transcript_path'));
-    exact(rec, full('SubagentStart', { run: WF }), 'S4 run (regex, an undocumented shape: hooks.md lists agent_transcript_path on SubagentStop only): SubagentStart, from agent_transcript_path');
-    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SubagentStart', ...WA, agent_transcript_path: path('atp'), transcript_path: runPath.posix() }, 'S4 fire: Start, transcript_path'));
-    exact(rec, full('SubagentStart', { run: WF }), 'S4 run (regex, an undocumented shape): SubagentStart, from transcript_path when agent_transcript_path does not match');
-    // near-misses: each differs from the matching path by one part, and must write nothing; the twin (the matching
-    // path, same payload otherwise) is fired once and checked with each, so each check also fails on the old hook
-    const runOf = (payload, what) => { const { rec: x } = fireOne(home, payload, what); return x === null ? 'no record' : (x.run ?? null); };
-    const twin = runOf(preIn({ transcript_path: runPath.win() }), 'S4 fire: run twin');
-    for (const [what, payload] of [
-      ['wf_ elsewhere: no subagents / workflows parts', preIn({ transcript_path: winPath(`${WF}\\agent-a1b2c3.jsonl`) })],
-      ['the workflows part missing', preIn({ transcript_path: winPath(`subagents\\${WF}\\agent-a1b2c3.jsonl`) })],
-      ['the subagents part missing', preIn({ transcript_path: winPath(`workflows\\${WF}\\agent-a1b2c3.jsonl`) })],
-      ['a folder between workflows and the run', preIn({ transcript_path: winPath(`subagents\\workflows\\x\\${WF}\\agent-a1b2c3.jsonl`) })],
-      ['a folder between the run and the file', preIn({ transcript_path: winPath(`subagents\\workflows\\${WF}\\sub\\agent-a1b2c3.jsonl`) })],
-      ['no agent- file: the run folder itself', preIn({ transcript_path: winPath(`subagents\\workflows\\${WF}\\`) })],
-      ['no agent- file: another file of the run folder', preIn({ transcript_path: winPath(`subagents\\workflows\\${WF}\\journal.jsonl`) })],
-      ['the transcript of ANOTHER agent', preIn({ transcript_path: runPath.win('a9e8d7') })],
-      ['the agent\'s .meta.json, not its transcript', preIn({ transcript_path: winPath(`subagents\\workflows\\${WF}\\agent-a1b2c3.meta.json`) })],
-      ['a longer extension', preIn({ transcript_path: `${runPath.win()}.bak` })],
-      ['a part that only ends in subagents', preIn({ transcript_path: winPath(`xsubagents\\workflows\\${WF}\\agent-a1b2c3.jsonl`) })],
-      ['a case variant (Subagents)', preIn({ transcript_path: winPath(`Subagents\\workflows\\${WF}\\agent-a1b2c3.jsonl`) })],
-      ['a run part that is not a token (a space)', preIn({ transcript_path: runPath.win(undefined, `wf_${MARK} secret`) })],
-      ['a run part over 64 characters', preIn({ transcript_path: runPath.win(undefined, 'wf_' + 'a'.repeat(62)) })],
-      ['a plain helper\'s transcript (subagents/agent-<id>.jsonl, no workflow)', preIn({ transcript_path: winPath('subagents\\agent-a1b2c3.jsonl') })],
-      ['the main thread (no agent_id)', (() => { const p = preIn({ transcript_path: runPath.win() }); delete p.agent_id; delete p.agent_type; return p; })()],
-      ['not a string', preIn({ transcript_path: { path: runPath.win() }, agent_transcript_path: [runPath.win()] })],
+  if (want('norun')) {
+    // F1 (the lead's ruling of 2026-10-01): the SubagentStart and PreToolUse payloads carry no own-transcript path (live,
+    // 0 of 513 records had a run, 3 of 3 workflow Starts included), so the hook reads no path and NO record carries
+    // run: not from a path, and not from a Workflow's tool_response.runId either. Every event is fired without the path
+    // fields, then with transcript_path / agent_transcript_path set to a PLANTED path in the own-transcript shape the
+    // stage-0 hook took a run from (.../subagents/workflows/wf_<id>/agent-<agent_id>.jsonl, the file's id = the
+    // payload's agent_id; Windows and POSIX separators). Each record must be exactly the expected one (no run), the same
+    // line apart from ts with and without the paths (nothing in it depends on them), and hold no part of the path.
+    const PM = 'ZZPATHMARKZZ';
+    const planted = {
+      win: (id) => `C:\\Users\\${PM}-user\\.claude\\projects\\C--${PM}-proj\\${PM}-session\\subagents\\workflows\\wf_${PM}-run\\agent-${id}.jsonl`,
+      posix: (id) => `/home/${PM}-user/.claude/projects/-home-${PM}-proj/${PM}-session/subagents/workflows/wf_${PM}-run/agent-${id}.jsonl`,
+    };
+    const noPaths = (p) => { const q = { ...p }; delete q.transcript_path; delete q.agent_transcript_path; return q; };
+    const sub = { aid: 'a1b2c3', at: 'workflow-subagent' };
+    const pre = { hook_event_name: 'PreToolUse', ...WA, tool_name: 'Read', tool_input: { file_path: path('f1') }, tool_use_id: 'n1' };
+    const preRec = { sid: SID, ev: 'PreToolUse', ...sub, k: 'fileCabinet', a: 'read', tu: h10('n1') };
+    const mainPre = { ...pre };
+    delete mainPre.agent_id;
+    delete mainPre.agent_type;
+    for (const [what, payload, wantRec] of [
+      ['SubagentStart', { hook_event_name: 'SubagentStart', ...WA }, { sid: SID, ev: 'SubagentStart', ...sub }],
+      ['PreToolUse', pre, preRec],
+      ['PreToolUse, agent_id agent-agent-a1b2c3', { ...pre, agent_id: 'agent-agent-a1b2c3' }, preRec],
+      ['PreToolUse on the main thread (no agent_id)', mainPre, { sid: SID, ev: 'PreToolUse', k: 'fileCabinet', a: 'read', tu: h10('n1') }],
+      ['SubagentStop', { hook_event_name: 'SubagentStop', ...WA, background_tasks: [], last_assistant_message: txt('l') }, { sid: SID, ev: 'SubagentStop', ...sub, bt: [] }],
+      ['PostToolBatch', { hook_event_name: 'PostToolBatch', ...WA, tool_calls: [{ tool_name: 'Read', tool_input: {}, tool_use_id: 'n2', tool_response: txt('r') }] },
+        { sid: SID, ev: 'PostToolBatch', ...sub, k: 'fileCabinet', a: 'read', tus: [h10('n2')], n: 1 }],
+      ['PostToolUse(SubagentHandback)', { hook_event_name: 'PostToolUse', ...WA, tool_name: 'SubagentHandback', tool_input: { report: txt('rep') }, tool_use_id: 'n3',
+        tool_response: txt('hb') }, { sid: SID, ev: 'PostToolUse', ...sub, k: 'printer', a: 'report', tu: h10('n3') }],
+      ['PostToolUse(Workflow), runId wf_42', { hook_event_name: 'PostToolUse', ...WA, tool_name: 'Workflow', tool_input: { script: txt('s') }, tool_use_id: 'n4',
+        tool_response: { status: 'async_launched', taskId: 'w9', runId: 'wf_42' } },
+      { sid: SID, ev: 'PostToolUse', ...sub, k: 'kanbanBoard', a: 'tasks', tu: h10('n4'), st: 'async_launched', tid: 'w9' }],
+      ['PostToolUse(Workflow), a runId that is not an id', { hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: {}, tool_use_id: 'n5',
+        tool_response: { status: 'async_launched', taskId: 'w8', runId: `C:/${PM}/run` } },
+      { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('n5'), st: 'async_launched', tid: 'w8' }],
+      ['PostToolUseFailure', { hook_event_name: 'PostToolUseFailure', ...WA, tool_name: 'Read', tool_input: {}, tool_use_id: 'n6', error: txt('e'), is_interrupt: true },
+        { sid: SID, ev: 'PostToolUseFailure', ...sub, k: 'fileCabinet', a: 'read', tu: h10('n6'), intr: true }],
+      ['Stop', { hook_event_name: 'Stop', background_tasks: [] }, { sid: SID, ev: 'Stop', bt: [] }],
+      ['SessionEnd', { hook_event_name: 'SessionEnd', reason: 'other' }, { sid: SID, ev: 'SessionEnd', r: 'other' }],
+      ['an unknown event', { hook_event_name: 'FutureEventName', ...WA }, { sid: SID, ev: 'other', aid: 'a1b2c3' }],
     ]) {
-      const miss = runOf(payload, `S4 fire: run near-miss: ${what}`);
-      ok(twin === WF && miss === null, `S4 run near-miss "${what}": the matching twin writes ${WF}, the near-miss writes nothing | twin ${twin}, near-miss ${miss}`);
+      const fileId = typeof payload.agent_id === 'string' ? payload.agent_id : WA.agent_id;   // the agent's OWN transcript
+      const base = noPaths({ ...COMMON, ...payload });
+      const without = fireOne(home, base, `F1 fire: ${what}, no path fields`);
+      exact(without.rec, wantRec, `F1 no run: ${what}, without the path fields: exactly the expected record`);
+      for (const [how, fields] of [
+        ['both path fields, Windows separators', { transcript_path: planted.win(fileId), agent_transcript_path: planted.win(fileId) }],
+        ['transcript_path only, POSIX separators', { transcript_path: planted.posix(fileId) }],
+        ['agent_transcript_path only, POSIX separators', { agent_transcript_path: planted.posix(fileId) }],
+      ]) {
+        const x = fireOne(home, { ...base, ...fields }, `F1 fire: ${what}, ${how}`);
+        // a part: every piece of the path between separators (3 characters or more), the marker, a separator itself
+        const parts = [...new Set(Object.values(fields).flatMap((p) => p.split(/[\\/]/)))].filter((s) => s.length >= 3);
+        const leaked = parts.filter((s) => x.line.includes(s)).length + (x.line.includes(PM) ? 1 : 0) + (/[\\/]/.test(x.line) ? 1 : 0);
+        const same = x.rec !== null && sameApartFromTs(x.line, without.line);
+        ok(x.rec !== null && !('run' in x.rec) && same && leaked === 0,
+          `F1 no run: ${what}, ${how}: no run, the same line as without the paths apart from ts, no part of the path | run ${x.rec ? (x.rec.run ?? 'none') : 'no record'}, same ${same}, path parts in the line ${leaked}`);
+      }
     }
-    // never on another event, even with matching paths in both fields (again paired with the twin)
-    const both = { ...WA, transcript_path: runPath.win(), agent_transcript_path: runPath.posix() };
-    for (const [ev, extra] of [
-      ['SubagentStop', { background_tasks: [], last_assistant_message: txt('l') }],
-      ['PostToolBatch', { tool_calls: [{ tool_name: 'Read', tool_input: {}, tool_use_id: 'u8', tool_response: txt('r') }] }],
-      ['PostToolUse', { tool_name: 'SubagentHandback', tool_input: {}, tool_use_id: 'u9', tool_response: txt('hb') }],
-      ['PostToolUseFailure', { tool_name: 'Read', tool_input: {}, tool_use_id: 'u10', error: txt('e'), is_interrupt: true }],
-      ['Stop', { background_tasks: [] }],
-      ['FutureEventName', {}],
-    ]) {
-      const miss = runOf({ ...COMMON, hook_event_name: ev, ...both, ...extra }, `S4 fire: run on ${ev}`);
-      ok(twin === WF && miss === null, `S4 run: none on ${ev} (paths match; only SubagentStart and PreToolUse read them) | twin ${twin}, got ${miss}`);
-    }
-    // a Workflow launch keeps the run it LAUNCHED (tool_response.runId), never its caller's path token
-    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'PostToolUse', ...both, tool_name: 'Workflow', tool_input: { script: txt('s') }, tool_use_id: 'u11',
-      tool_response: { status: 'async_launched', taskId: 'w9', runId: 'wf_42' } }, 'S4 fire: Post(Workflow) inside a workflow agent'));
-    exact(rec, full('PostToolUse', { k: 'kanbanBoard', a: 'tasks', tu: h10('u11'), st: 'async_launched', tid: 'w9', run: 'wf_42' }),
-      'S4 run: Post(Workflow) writes the launched runId, not the path token');
+    // ...and the hook's code names no path field (the stage-0 hook named both transcript fields to read its run token)
+    const code = readFileSync(join(home, 'bin', 'spool-hook.mjs'), 'utf8');
+    const named = code.match(/['"`](?:agent_transcript_path|transcript_path|cwd)['"`]|\.(?:agent_)?transcript_path\b/g) || [];
+    ok(named.length === 0, `F1 no run: the hook's code names no path field, quoted or as a property, so it reads none | found ${named.length}: ${named.join(' ')}`);
   }
   if (want('tus')) {
     // tus: each call's tu, in order; the same hash as the call's Pre tu (so a Pre and its Batch pair exactly)
@@ -404,14 +382,44 @@ function s4Checks(home, groups = null) {
     ok(rec !== null && line.length + 1 <= 4096 && tus.length >= 250 && isDeepStrictEqual(tus, all.slice(0, tus.length)) && line.length + 1 + 13 > 4096 && rec.n === 1000,
       `S4 tus capped: the line within 4,096 bytes, an ordered prefix of at least 250 hashes, one more would not fit, n = 1000 | line ${line.length + 1} bytes, ${tus.length} hashes`);
   }
-  if (want('cost')) {
-    // dur cpu rss on EVERY record (validate checks units and the spawn window): a parse_error and a SessionEnd too
-    ({ rec } = fireOne(home, `${MARK} garbage {`, 'S4 fire: parse_error'));
-    ok(rec !== null && rec.ev === 'parse_error' && isDeepStrictEqual(Object.keys(rec), ['v', 'ts', 'ev', 'dur', 'cpu', 'rss']),
-      `S4 cost: a parse_error record is v, ts, ev and the three cost fields, nothing else | ${rec && Object.keys(rec)}`);
-    ({ rec } = fireOne(home, { ...COMMON, hook_event_name: 'SessionEnd', reason: 'other' }, 'S4 fire: SessionEnd'));
-    ok(rec !== null && ['dur', 'cpu', 'rss'].every((k) => Number.isInteger(rec[k])) && Object.keys(rec).slice(-3).join() === 'dur,cpu,rss',
-      `S4 cost: dur, cpu, rss are the last three keys of a SessionEnd record | ${rec && Object.keys(rec)}`);
+  if (want('nosize')) {
+    // F2 (the lead's ruling of 2026-10-01): the cost fields dur / cpu / rss grew with the size of the payload (a 4 MB
+    // Write: rss 56 MB vs 39), a size side channel against owner decision D11 (no size bucket), so no record carries
+    // them, and a record's bytes must not grow with the payload: the same event with 0 B and with 4 MB of tool input
+    // (a Write's content, an Agent's prompt), of tool response, or of garbage (a parse_error) gives the same keys in the
+    // same order and the same values apart from ts, so the same bytes. Bash / PowerShell are left out on purpose: a
+    // command over 65,536 characters is not classified (no k / a), a size threshold the hook keeps by design (step 4).
+    const FOUR_MB = 4 * 1024 * 1024;
+    const big = `${MARK} `.repeat(Math.ceil(FOUR_MB / (MARK.length + 1))).slice(0, FOUR_MB);
+    const sameSize = (a, b, what) => {
+      const sameKeys = a.rec !== null && b.rec !== null && isDeepStrictEqual(Object.keys(a.rec), Object.keys(b.rec));
+      const sameValues = a.rec !== null && b.rec !== null && isDeepStrictEqual({ ...a.rec, ts: 0 }, { ...b.rec, ts: 0 });
+      const sameBytes = sameApartFromTs(a.line, b.line);
+      const costs = [a.rec, b.rec].filter((x) => x !== null && ['dur', 'cpu', 'rss'].some((k) => k in x)).length;
+      ok(sameKeys && sameValues && sameBytes && costs === 0,
+        `F2 size: ${what}, 0 B vs 4 MB: no dur / cpu / rss, the same keys in the same order, the same values and bytes apart from ts | records with a cost field ${costs}, keys ${sameKeys}, values ${sameValues}, bytes ${sameBytes} (${a.line.length} vs ${b.line.length})`);
+    };
+    for (const [what, mk] of [
+      ['PreToolUse(Write), its content', (s) => ({ hook_event_name: 'PreToolUse', ...WA, tool_name: 'Write', tool_input: { file_path: path('w'), content: s },
+        tool_use_id: 'z1' })],
+      ['PostToolUseFailure(Write), its content', (s) => ({ hook_event_name: 'PostToolUseFailure', ...WA, tool_name: 'Write', tool_input: { file_path: path('w'), content: s },
+        tool_use_id: 'z2', error: txt('e'), is_interrupt: false })],
+      ['PostToolBatch, a Write call\'s content', (s) => ({ hook_event_name: 'PostToolBatch', ...WA, tool_calls: [{ tool_name: 'Write',
+        tool_input: { file_path: path('w'), content: s }, tool_use_id: 'z3', tool_response: txt('r') }] })],
+      ['PostToolUse(Agent), its prompt', (s) => ({ hook_event_name: 'PostToolUse', ...WA, tool_name: 'Agent', tool_input: { prompt: s, run_in_background: true },
+        tool_use_id: 'z4', tool_response: { status: 'async_launched', agentId: 'agent-a7f9' } })],
+      ['PostToolBatch, a Read call\'s tool_response', (s) => ({ hook_event_name: 'PostToolBatch', ...WA, tool_calls: [{ tool_name: 'Read',
+        tool_input: { file_path: path('r') }, tool_use_id: 'z5', tool_response: s }] })],
+    ]) {
+      const a = fireOne(home, { ...COMMON, ...mk('') }, `F2 fire: ${what}, 0 B`);
+      const b = fireOne(home, { ...COMMON, ...mk(big) }, `F2 fire: ${what}, 4 MB`);
+      sameSize(a, b, what);
+    }
+    const a = fireOne(home, '', 'F2 fire: parse_error, an empty stdin');
+    const b = fireOne(home, big, 'F2 fire: parse_error, 4 MB of garbage');
+    ok(a.rec !== null && a.rec.ev === 'parse_error' && isDeepStrictEqual(Object.keys(a.rec), ['v', 'ts', 'ev']),
+      `F2 size: a parse_error record is v, ts, ev and nothing else | ${a.rec ? Object.keys(a.rec) : 'no record'}`);
+    sameSize(a, b, 'parse_error, an empty stdin vs 4 MB of garbage');
   }
   if (want('cap')) {
     // the value cap (review finding 3): memory grows with the NUMBER of JSON values, not only with bytes (1M empty
@@ -459,34 +467,12 @@ const HOOK_MUTANTS = [
     "  const s = stripAgent(x);\n  return RE_ID.test(s) ? s : '#' + sha(s).slice(0, 12);", "  return RE_ID.test(x) ? x : '#' + sha(stripAgent(x)).slice(0, 12);"]]],
   ['ids', 'only the first agent- prefix stripped (the stage-0 stripAgent; review finding 4)', [[
     "const stripAgent = (s) => s.replace(/^(?:agent-)+/, '');", "const stripAgent = (s) => (s.startsWith('agent-') ? s.slice(6) : s);"]]],
-  ['run', 'run: the wf_ part found anywhere before the agent\'s file (no subagents / workflows parts)', [[
-    'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
-    'const RE_RUN_PATH = /[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/](?:[^\\\\/]*[\\\\/])*agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;']]],
-  ['run', 'run: forward slash only', [[
-    'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
-    'const RE_RUN_PATH = /(?:^|\\/)subagents\\/workflows\\/(wf_[A-Za-z0-9_-]{1,61})\\/agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;']]],
-  ['run', 'run: no agent- file required (any path inside the run folder)', [
-    ['const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
-      'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})(?:[\\\\/]|$)/;'],
-    ['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m) return m[1];']]],
-  ['run', 'run: any agent\'s transcript (no own-id match)', [['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m) return m[1];']]],
-  ['run', 'run: the file\'s id compared with its agent- prefixes kept (review finding 4)', [['    if (m && stripAgent(m[2]) === aid) return m[1];', '    if (m && m[2] === aid) return m[1];']]],
-  ['run', 'run: the wf_ part not checked as a token', [[
-    'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[A-Za-z0-9_-]{1,61})[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;',
-    'const RE_RUN_PATH = /(?:^|[\\\\/])subagents[\\\\/]workflows[\\\\/](wf_[^\\\\/]+)[\\\\/]agent-([A-Za-z0-9_.:-]{1,64})\\.jsonl$/;']]],
-  ['run', 'run also written on SubagentStop', [[
-    "    case 'SubagentStop':\n      setBackgroundTasks(rec, own(ev, 'background_tasks'));",
-    "    case 'SubagentStop':\n      setRun(rec, ev);\n      setBackgroundTasks(rec, own(ev, 'background_tasks'));"]]],
   ['tus', 'tus never cut (an over-long Batch line is dropped)', [[
     '    if (Array.isArray(rec.tus) && rec.tus.length) {\n      rec.tus.length = Math.max(0, rec.tus.length - Math.ceil((line.length + 1 - MAX_LINE) / TU_BYTES));\n    } else if (Array.isArray(rec.bt) && rec.bt.length) {',
     '    if (Array.isArray(rec.bt) && rec.bt.length) {']]],
   ['tus', 'tus not hashed (the raw tool_use_ids)', [[
     "    const tu = isDict(c) ? toolUseHash(own(c, 'tool_use_id')) : undefined;", "    const tu = isDict(c) ? own(c, 'tool_use_id') : undefined;"]]],
   ['tus', 'tus in reverse call order', [['  rec.tus = out;\n', '  rec.tus = out.reverse();\n']]],
-  ['cost', 'rss in KB, not MB', [['    rec.rss = Math.round(process.resourceUsage().maxRSS / 1024);', '    rec.rss = process.resourceUsage().maxRSS;']]],
-  ['cost', 'cpu in microseconds, not ms', [['    rec.cpu = Math.round((u.user + u.system) / 1000);', '    rec.cpu = u.user + u.system;']]],
-  ['cost', 'dur as an epoch time (performance.timeOrigin + now), not a duration', [['    rec.dur = Math.round(performance.now());', '    rec.dur = Math.round(performance.timeOrigin + performance.now());']]],
-  ['cost', 'no cost fields on a parse_error record', [['function append(rec) {\n  measure(rec);', "function append(rec) {\n  if (rec.ev !== 'parse_error') measure(rec);"]]],
   // the value cap (review finding 3)
   ['cap', 'no value cap (the stage-0 hook)', [['  finish(size > MAX_VALUES && overValueCap(buf) ? null : buf);', '  finish(buf);']]],
   ['cap', 'the cap exclusive (a payload of exactly MAX_VALUES values refused)', [['&& ++values > MAX_VALUES) return true;', '&& ++values >= MAX_VALUES) return true;']]],
@@ -647,14 +633,12 @@ try {
   [rec] = fireExpect(HOME, { ...COMMON, hook_event_name: 'PostToolUse', ...SUB, tool_name: 'Workflow', tool_input: { script: txt('script') }, tool_use_id: 'toolu_wf',
     tool_response: { status: 'async_launched', taskId: 'w7k2m9', taskType: 'local_workflow', runId: 'wf_42', workflowName: txt('wf'),
       summary: txt('sum'), transcriptDir: path('td'), scriptPath: path('sp'), warning: txt('warn') } }, 'PostToolUse Workflow');
-  exact(rec, { sid: SID, ev: 'PostToolUse', aid: AID, at: AT, k: 'kanbanBoard', a: 'tasks', tu: h10('toolu_wf'), st: 'async_launched', tid: 'w7k2m9', run: 'wf_42' }, 'Post Workflow record');
-  [rec] = fireExpect(HOME, { ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: {}, tool_use_id: 'toolu_wf2',
-    tool_response: { status: 'async_launched', taskId: 'w8', runId: `C:/${MARK}/run`, transcriptDir: path('td2') } }, 'PostToolUse Workflow, bad runId');
-  exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('toolu_wf2'), st: 'async_launched', tid: 'w8', run: hid(`C:/${MARK}/run`) }, 'a runId that is not an id is hashed');
+  exact(rec, { sid: SID, ev: 'PostToolUse', aid: AID, at: AT, k: 'kanbanBoard', a: 'tasks', tu: h10('toolu_wf'), st: 'async_launched', tid: 'w7k2m9' },
+    'Post Workflow record (the runId is not written: lead ruling F1)');
   for (const [error, err, what] of [[`SyntaxError: ${txt('e')}`, true, 'syntax error'], ['', false, 'empty error'], [42, false, 'non-string error']]) {
     [rec] = fireExpect(HOME, { ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: { script: txt('s') }, tool_use_id: 'toolu_wfe',
       tool_response: { status: 'async_launched', taskId: 'w7k2m9', taskType: 'local_workflow', runId: 'run_5f3a', error } }, `PostToolUse Workflow, ${what}`);
-    exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('toolu_wfe'), st: 'async_launched', tid: 'w7k2m9', run: 'run_5f3a', ...(err ? { err: true } : {}) },
+    exact(rec, { sid: SID, ev: 'PostToolUse', k: 'kanbanBoard', a: 'tasks', tu: h10('toolu_wfe'), st: 'async_launched', tid: 'w7k2m9', ...(err ? { err: true } : {}) },
       `Workflow ${what}: err ${err} (the text is never written)`);
   }
   [rec] = fireExpect(HOME, { ...COMMON, hook_event_name: 'PostToolUse', tool_name: 'Workflow', tool_input: {}, tool_use_id: 'toolu_wfr',
@@ -752,7 +736,7 @@ try {
   [rec] = fireExpect(HOME, { ...COMMON, hook_event_name: 'SubagentStart', agent_id: 'agent-abc123', agent_type: 'Explore' }, 'docs example SubagentStart id');
   exact(rec, { sid: SID, ev: 'SubagentStart', aid: 'abc123', at: 'Explore' }, 'S4: the agent- prefix is stripped (plan 5.2)');
 
-  section('step 4 stage 0 (S4): ids without agent-, at on tool events, the run token, tus, dur / cpu / rss');
+  section('step 4 stage 0 (S4): ids without agent-, at on tool events, tus, the value cap; F1: no run, no path read; F2: no cost fields, no growth with size');
   s4Checks(HOME);
 
   section('classification cap: shell commands over 65,536 characters are not classified');
@@ -1004,7 +988,7 @@ try {
         lines += raw.toString('latin1').split('\n').filter(Boolean).length;
         const low = raw.toString('latin1').toLowerCase();
         ok(!low.includes(MARK.toLowerCase()), `${basename(h)}/${f}: marker must not appear`);
-        for (const needle of ['secret', 'id_rsa', 'token', 'example.com', 'http', 'c:/', 'c:\\', '/users/', ' && ', 'curl']) {
+        for (const needle of ['secret', 'id_rsa', 'token', 'example.com', 'http', 'c:/', 'c:\\', '/users/', ' && ', 'curl', 'zzpathmarkzz']) {
           ok(!low.includes(needle), `${basename(h)}/${f}: "${needle}" must not appear`);
         }
       }
