@@ -324,7 +324,7 @@ export class ObserverCore {
   ingest(line: string, wall: number): Cmd[] {
     if (this.#disposed) { this.stats.afterDispose++; return [] }
     this.stats.lines++
-    const p = parseRecord(line, this.#seq++)
+    const p = parseRecord(line, this.#seq++, wall)
     if (!p.ok) { this.stats[p.why]++; return [] }
     for (const r of this.#reorder.add(p.rec, wall)) this.#release(r)
     return this.#take()

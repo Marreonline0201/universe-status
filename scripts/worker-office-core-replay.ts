@@ -574,6 +574,29 @@ S.push(
       return st.relocated === 2 && st.blockedStale === 1 ? [] : [`relocated ${st.relocated} blockedStale ${st.blockedStale} blockedStay ${st.blockedStay}`]
     },
   },
+  {
+    name: 'S17-timestamp-window',
+    what: 'security review L3: a line whose ts lies a year ahead of the reader\'s wall clock, 60 h behind it, or is not an integer is rejected and counted under shape. One such line no longer blinds the office: the core\'s clock never runs ahead of the wall, nobody is faded, no office-cleared banner, and the helper\'s next calls are applied on time.',
+    lines: () => [
+      start(0, A), pre(1, A, 'read', 'w1'), batch(3, A),
+      JSON.stringify({ v: 1, ts: at(4) + 365 * 86_400_000, sid: SA, ev: 'PreToolUse', aid: A, k: 'pcDesk', a: 'write', tu: 'wf' }),
+      JSON.stringify({ v: 1, ts: at(4) - 60 * 3_600_000, sid: SA, ev: 'PreToolUse', aid: A, k: 'pcDesk', a: 'write', tu: 'wp' }),
+      JSON.stringify({ v: 1, ts: at(4) + 0.5, sid: SA, ev: 'PreToolUse', aid: A, k: 'pcDesk', a: 'write', tu: 'wh' }),
+      pre(8, A, 'write', 'w2'), batch(12, A), sstop(30, A, 'workflow-subagent'),
+    ],
+    opts: { tailS: 10 },
+    extra: run => {
+      const st = run.core.stats
+      const out: string[] = []
+      if (st.shape !== 3) out.push(`${st.shape} lines counted as shape (the 3 outside the window or not an integer must be)`)
+      const ahead = run.cmds.filter(c => c.t > at(30) + 15_000)
+      if (ahead.length > 0) out.push(`${ahead.length} commands stamped past the wall clock (the first ${ahead[0].op} at +${((ahead[0].t - T0) / 86_400_000).toFixed(1)} days): the clock ran ahead`)
+      if (run.cmds.some(c => c.op === 'fade' || (c.op === 'banner' && c.label === 'officeCleared'))) out.push('the office was cleared (a fade or the office-cleared banner)')
+      const write = run.cmds.find(c => c.op === 'act' && c.inCall && c.activity === 'write')
+      if (write === undefined || Math.abs(write.t - at(8)) > 1500) out.push(`the write at 8 s ${write === undefined ? 'never came' : `came at +${((write.t - T0) / 1000).toFixed(1)} s`}`)
+      return out
+    },
+  },
 )
 
 /** S2's file order: the lines as the hooks wrote them. */
@@ -1517,6 +1540,28 @@ const EXPECTED: Record<string, string> = {
 3.900 walkTo #2 lectern-E.1
 5.100 pose #2 readU
 6.000 leave #3 sessionEnded out`,
+  'S17-timestamp-window': `0.000 spawn #1 slot0
+0.000 walkTo #1 inout-board.1
+0.000 pose #1 standU
+0.000 bubble #1 arrivalHold
+1.000 walkTo #1 cab-18.1
+1.000 pose #1 readU+folder
+1.000 bubble #1 act:read
+1.000 act #1 in fileCabinet read seq1
+3.000 bubble #1 between
+3.000 act #1 out fileCabinet read seq1
+8.000 walkTo #1 desk-1.1
+8.000 pose #1 type0
+8.000 bubble #1 act:write
+8.000 act #1 in pcDesk write seq2
+12.000 pose #1 sitBack
+12.000 bubble #1 between
+12.000 act #1 out pcDesk write seq2
+13.000 callEnd #1 ok seq2 desk-1.1
+22.000 pose #1 sitBackLean filler
+30.000 walkTo #1 front-desk.2
+30.000 pose #1 useU0
+30.000 bubble #1 signOut`,
 }
 
 // ── static checks ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1616,6 +1661,8 @@ const MUTANTS: Mutant[] = [
     from: 'const at = signals ? (o.bodyAt === c.to ? this.#clock + PULL_MS : Infinity) : this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS',
     to: 'const at = this.#clock + walkMs(this.layout, c.from, c.to) + PULL_MS' },
   { id: 'M34 the hand-back skips the printer: the carry starts at the Post', file: 'reducer.ts', why: 'S1b', from: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'collect'\n        w.collectAt = this.#collectStart(w)\n      }\n", to: "      if (w.fin === 'report' && w.finStep === 'printing') {\n        w.finStep = 'carry'\n        if (this.#assign(w, 'frontDesk', 'report') === 'stay') this.#finAtDesk(w)\n      }\n" },
+  { id: 'M35 no timestamp window: a far-future line moves the clock (security review L3)', file: 'reorder.ts', why: 'S17',
+    from: '  if (!Number.isInteger(ts) || ts < wall - TS_PAST_MS || ts > wall + TS_FUTURE_MS) return { ok: false, why: \'shape\' }\n', to: '' },
   { id: 'M33 a blocked report re-books nothing (ruling 6)', file: 'reducer.ts', why: 'S16',
     from: '    const res = this.#book.relocate(key, at, w.place)\n', to: '    const res: { place: PlaceId | null; changes: readonly Change[] } = { place: null, changes: [] }\n' },
   { id: 'M28 commands for workers that left', file: 'reducer.ts', why: 'I5',

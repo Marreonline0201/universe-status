@@ -104,8 +104,10 @@ export class ExamplePlayer {
   readonly records: readonly ExampleRecord[]
   #next = 0
 
+  /** base: the example's own clock at its start (the engine's sim clock, which is also the wall time its lines are read
+   *  at), in whole ms: a spool ts is always an integer (core/reorder.ts rejects any other). */
   constructor(base: number, records: readonly ExampleRecord[] = exampleRecords()) {
-    this.base = base
+    this.base = Math.floor(base)
     this.records = records
   }
 

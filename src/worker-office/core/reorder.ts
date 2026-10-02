@@ -2,7 +2,11 @@
 // "Ordering", probe 7, lead ruling decisions.md 2026-10-01 21:14 #2).
 //
 // parseRecord is tolerant: a torn or non-JSON line, a record without a numeric ts or a string ev, or a version other
-// than 1 is skipped (and counted by the caller); unknown fields (the legacy run / dur / cpu / rss of the first hook
+// than 1 is skipped (and counted by the caller). So is a record whose ts is not an integer (the hook writes whole ms) or
+// lies outside [wall - TS_PAST_MS, wall + TS_FUTURE_MS] of the reader's wall clock (security review L3): one line
+// stamped far in the future would otherwise move the core's clock past the wall and clear the office, and one far in
+// the past would be applied as if new. The window holds everything the page reads: yesterday's and today's day files
+// (at most 48 h old) and a clock between processes a little off. Counted under shape. Unknown fields (the legacy run / dur / cpu / rss of the first hook
 // version, anything a later version adds) are ignored; a field with the wrong type reads as absent. Every agent id is
 // joined WITHOUT any leading "agent-" (probe 3, ruling 6): aid, ch and the task-list ids.
 //
@@ -45,19 +49,24 @@ export type ParseResult = { readonly ok: true; readonly rec: SpoolRecord } | { r
 
 export const WATERMARK_MS = 500
 export const QUIET_FLUSH_MS = 1000
+/** The accepted ts window around the reader's wall clock (security review L3). */
+export const TS_PAST_MS = 50 * 3_600_000
+export const TS_FUTURE_MS = 5 * 60_000
 
 const str = (o: Record<string, unknown>, k: string): string | null => (typeof o[k] === 'string' ? (o[k] as string) : null)
 const num = (o: Record<string, unknown>, k: string): number | null => (typeof o[k] === 'number' && Number.isFinite(o[k]) ? (o[k] as number) : null)
 /** An agent id as joined: every leading "agent-" stripped (the hook strips it since stage 0; older lines may not). */
 export const stripAgent = (id: string | null): string | null => (id === null ? null : id.replace(/^(?:agent-)+/, '') || null)
 
-export function parseRecord(line: string, seq: number): ParseResult {
+/** One spool line read at wall time `wall` (ms since the epoch). */
+export function parseRecord(line: string, seq: number, wall: number): ParseResult {
   let raw: unknown
   try { raw = JSON.parse(line) } catch { return { ok: false, why: 'torn' } }
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: 'shape' }
   const o = raw as Record<string, unknown>
   const ts = num(o, 'ts'), ev = str(o, 'ev')
   if (ts === null || ev === null) return { ok: false, why: 'shape' }
+  if (!Number.isInteger(ts) || ts < wall - TS_PAST_MS || ts > wall + TS_FUTURE_MS) return { ok: false, why: 'shape' }
   if (o.v !== 1) return { ok: false, why: 'version' }
   let bt: BtEntry[] | null = null
   if (Array.isArray(o.bt)) {
