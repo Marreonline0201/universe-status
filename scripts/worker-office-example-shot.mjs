@@ -102,7 +102,7 @@ try {
     check(st.feed === 'example' && st.banner === EXAMPLE && st.workers >= s.min && st.figures >= s.min,
       `${s.at} s (${s.name}): the note "${st.banner}", ${st.workers} workers on screen, ${st.figures} figures drawn, scale ${st.scale} -> ${path.relative(ROOT, file)}`)
     console.log(`       object states: ${kinds(st.objects)}`)
-    console.log(`       at tiles: ${st.objects.join(' ') || '-'}`)
+    console.log(`       at tiles (#worker): ${st.objects.join(' ') || '-'}`)
   }
   await page.click('[data-wo="example"]')
   await page.waitForTimeout(800)

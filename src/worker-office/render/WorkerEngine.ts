@@ -34,7 +34,7 @@ import { DOOR_SLIDE_MAX, doorLeaves, drawInTray, drawMagnets, drawOutStack, stat
 import { type LabelPlacement, type OfficeScene, labelFont, placeLabels, prerenderBuilds, texel } from './prerender.ts'
 import { WheelZoom, fitCamera } from './camera.ts'
 import { figureSet, lookOf, type FigureSet } from './figures.ts'
-import { ICON_ONLY, MAX_TEXT_BUBBLES, TEXT_BUBBLE_MS, bubbleText, drawIconBubble, drawWorker, iconOf, newView, spriteView, type SpriteView } from './WorkerSprite.ts'
+import { ICON_ONLY, MAX_TEXT_BUBBLES, TEXT_BUBBLE_MS, bubbleText, drawIconBubble, drawWorker, iconBubbleBox, iconOf, newView, spriteView, type SpriteView } from './WorkerSprite.ts'
 import type { PlaceLayout } from '../map/places.ts'
 import { ObserverCore } from '../core/reducer.ts'
 import { PathPlanner } from '../move/planner.ts'
@@ -103,8 +103,11 @@ export interface WorkerOfficeDebug {
   /** the sim clock, ms since the epoch (live: the wall clock) */
   readonly simMs: number
   readonly figuresDrawn: number
-  /** The object states drawn in the last frame (live/objects.ts), as `tile|state@x,y` (checks, screenshots). */
+  /** The object states drawn in the last frame (live/objects.ts), as `tile|state@x,y#n` (n: the worker whose use it
+   *  shows; checks, screenshots). */
   readonly objectStates: readonly string[]
+  /** The bubbles drawn in the last frame, device px, with their worker's ordinal (checks). */
+  readonly bubbles: readonly { readonly n: number; readonly x: number; readonly y: number; readonly w: number; readonly h: number }[]
   readonly floorTexel: (x: number, y: number) => string
   readonly mapTexel: (x: number, y: number) => string
 }
@@ -165,6 +168,8 @@ export class WorkerEngine {
   private readonly sets = new Map<string, FigureSet>()
   private readonly order: { key: string; v: SpriteView; w: WorkerState }[] = []
   private readonly magnetStates: MagnetState[] = []
+  /** The last frame's bubbles (device px) and their workers, for the debug view. */
+  private bubbleRects: { n: number; x: number; y: number; w: number; h: number }[] = []
   /** The object states of the feed's workers (null: no feed), and the observer's bookings they read. */
   private objects: ObjectStates | null = null
   private readonly bookOf: BookLookup = key => this.world?.core.book.holding(key) ?? null
@@ -620,10 +625,16 @@ export class WorkerEngine {
     this.figuresDrawn = order.length
     // bubbles: the newest labels as text (at most 4, never two over each other), an icon for every other worker
     const texts = this.placeTextBubbles(order, now)
+    const rects = this.bubbleRects
+    rects.length = 0
     for (const e of order) {
-      if (texts.some(b => b.key === e.key)) continue
+      const t = texts.find(b => b.key === e.key)
+      if (t !== undefined) { rects.push({ n: e.w.n, x: t.x, y: t.y, w: t.w, h: t.h }); continue }
       const icon = iconOf(e.w)
-      if (icon !== null) drawIconBubble(ctx, e.v, icon)
+      if (icon === null) continue
+      drawIconBubble(ctx, e.v, icon)
+      const b = iconBubbleBox(e.v), s = this.scale
+      rects.push({ n: e.w.n, x: this.offX + b.x * s, y: this.offY + b.y * s, w: b.size * s, h: b.size * s })
     }
     if (texts.length > 0) this.drawTextBubbles(texts)
   }
@@ -708,9 +719,10 @@ export class WorkerEngine {
       objectStates: () => {
         const o = this.objects
         const out: string[] = []
-        if (o !== null) for (let i = 0; i < o.count; i++) { const l = o.layers[i]; out.push(`${l.art.tile}|${l.art.state}@${l.x},${l.y}`) }
+        if (o !== null) for (let i = 0; i < o.count; i++) { const l = o.layers[i]; out.push(`${l.art.tile}|${l.art.state}@${l.x},${l.y}#${this.world?.workers.get(l.key)?.n ?? '?'}`) }
         return out
       },
+      bubbles: () => this.bubbleRects.map(b => ({ ...b })),
     }
     const dbg = {
       floorTexel: (x: number, y: number) => texel(this.scene.floorLayer, x, y),

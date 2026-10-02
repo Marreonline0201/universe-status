@@ -209,9 +209,14 @@ export function iconOf(w: WorkerState): IconId | null {
 /** The text of a worker's label (a fixed phrase; {n} and {st} from closed sets). */
 export const bubbleText = (w: WorkerState): string => labelText(w.label, { n: w.labelN, st: w.labelSt })
 
+/** Where a worker's icon bubble goes (world texels): a 9×9 box centred above the frame, raised by bubbleLift. */
+export function iconBubbleBox(v: SpriteView): { readonly x: number; readonly y: number; readonly size: number } {
+  return { x: v.x + Math.floor((FIGURE - ICON_SIZE - 2) / 2), y: v.y - v.bubbleLift - ICON_SIZE - 3, size: ICON_SIZE + 2 }
+}
+
 /** Icon bubbles over the heads (world texels: a 9×9 dark box with the 7×7 icon, centred above the frame). */
 export function drawIconBubble(g: Ctx, v: SpriteView, icon: IconId) {
-  const bx = v.x + Math.floor((FIGURE - ICON_SIZE - 2) / 2), by = v.y - v.bubbleLift - ICON_SIZE - 3
+  const { x: bx, y: by } = iconBubbleBox(v)
   g.globalAlpha = v.alpha
   g.fillStyle = BUBBLE_BG
   g.fillRect(bx, by, ICON_SIZE + 2, ICON_SIZE + 2)
