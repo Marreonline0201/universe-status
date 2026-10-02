@@ -1,5 +1,6 @@
-// Canvas host of the worker office (plan §6.1, §6.4). It draws the building, and the workers of a feed: today only the
-// EXAMPLE feed (live/example.ts, labelled as an example by the tab); the live feed comes later and plays through the same
+// Canvas host of the worker office (plan §6.1, §6.4). It draws the building, and the workers of a feed: the EXAMPLE
+// (live/example.ts, labelled as an example by the tab) or the LIVE feed (the owner's spool lines, read by
+// feed/useWorkerFeed.ts; live/liveFeed.ts runs them on the wall clock and snaps, plan §4.6). Both play through the same
 // path (live/world.ts: the observer core -> the Path A planner -> the bodies and their beats).
 //
 // Pixel rules:
@@ -15,8 +16,11 @@
 // animation callbacks and before its paint, so a redraw left to the next frame would show a blank map for every step of
 // a sidebar drag or window resize. With no feed, draw() allocates nothing; with workers it sorts a few small arrays.
 // WORKERS (plan §4.7 "one simulation clock"): one sim clock drives the feed, the observer core, the planner and the
-// drawing; each frame advances it by the frame's time, at most 50 ms. While the tab is hidden nothing runs and the clock
-// stands still, so the workers carry on where they were when it is shown again (the engine survives tab switches).
+// drawing; each frame advances it by the frame's time, at most 50 ms. The EXAMPLE's clock is its own: while the tab is
+// hidden nothing runs and it stands still, so its workers carry on where they were when it is shown again (the engine
+// survives tab switches). The LIVE clock is the wall clock (live/liveFeed.ts): shown again (the tab, or the browser
+// window after it was hidden), it snaps to the wall: the lines read meanwhile are applied and every body is re-placed
+// (plan §4.6); it also snaps when frames are too slow for the 50 ms cap to keep up.
 // Workers are drawn in texel space at the engine's integer scale (exact texel blocks), in the painter's order of their
 // feet, over the room labels; then their bubbles: an icon each, the newest labels as text (at most 4, plan §4.8).
 // Input: drag to pan; the wheel and a two-finger pinch zoom in whole steps; double-click fits. With keyboard focus
@@ -36,6 +40,7 @@ import { ObserverCore } from '../core/reducer.ts'
 import { PathPlanner } from '../move/planner.ts'
 import { WorkerWorld, type WorkerState } from '../live/world.ts'
 import { ExamplePlayer } from '../live/example.ts'
+import { LiveFeed } from '../live/liveFeed.ts'
 import { ObjectStates, type BookLookup } from '../live/objects.ts'
 
 const VOID = '#05070f'          // the app chrome around the building
@@ -62,7 +67,7 @@ const BUBBLE_EDGE = 'rgba(77,159,255,0.55)'
 interface TextBubble { readonly key: string; readonly alpha: number; readonly lines: readonly string[]; readonly x: number; readonly y: number; readonly w: number; readonly h: number; readonly pad: number; readonly lh: number }
 
 /** What the tab shows about the feed (WorkerOffice.tsx). */
-export type FeedState = 'none' | 'example'
+export type FeedState = 'none' | 'example' | 'live'
 export interface WorkerLine { readonly n: number; readonly text: string }
 export interface FeedSummary { readonly feed: FeedState; readonly workers: number; readonly lines: readonly WorkerLine[]; readonly seconds: number }
 
@@ -88,9 +93,15 @@ export interface WorkerOfficeDebug {
   readonly draws: number
   readonly labels: readonly string[]
   readonly workers: number
-  /** the feed playing ('none' or 'example'), its sim time in s, the figure frames drawn this frame */
+  /** the feed playing ('none', 'example' or 'live'), its sim time in s, the figure frames drawn this frame */
   readonly feed: FeedState
   readonly feedSeconds: number
+  /** live: the backlog has been read; the snaps so far ('connect' | 'return' | 'behind'); the lines given to the world */
+  readonly liveReady: boolean
+  readonly liveSnaps: readonly string[]
+  readonly liveLines: number
+  /** the sim clock, ms since the epoch (live: the wall clock) */
+  readonly simMs: number
   readonly figuresDrawn: number
   /** The object states drawn in the last frame (live/objects.ts), as `tile|state@x,y` (checks, screenshots). */
   readonly objectStates: readonly string[]
@@ -141,8 +152,12 @@ export class WorkerEngine {
   // the feed's workers (null: no feed)
   private world: WorkerWorld | null = null
   private player: ExamplePlayer | null = null
+  private live: LiveFeed | null = null
+  private liveStart = 0
   private feed: FeedState = 'none'
-  private sim = Date.now()
+  /** The wall clock (the checks pass their own). */
+  private readonly now: () => number
+  private sim: number
   private lastFrame: number | null = null
   private loop = 0
   private figuresDrawn = 0
@@ -158,8 +173,10 @@ export class WorkerEngine {
   private readonly boardOrigin: [number, number] | null
   private readonly deskOrigin: [number, number] | null
 
-  constructor(canvas: HTMLCanvasElement, scene: OfficeScene) {
+  constructor(canvas: HTMLCanvasElement, scene: OfficeScene, opts: { readonly now?: () => number } = {}) {
     engines++
+    this.now = opts.now ?? (() => Date.now())
+    this.sim = this.now()
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('2D canvas unavailable')
@@ -180,6 +197,7 @@ export class WorkerEngine {
     canvas.addEventListener('wheel', this.onWheel, { passive: false })
     canvas.addEventListener('dblclick', this.onDblClick)
     canvas.addEventListener('keydown', this.onKeyDown)
+    document.addEventListener?.('visibilitychange', this.onVisibility)
     // the label metrics change once the web font has loaded: place them again
     void document.fonts?.ready.then(() => { if (this.destroyed) return; this.relabel(); this.requestDraw() })
     this.debug = this.makeDebug()
@@ -196,9 +214,11 @@ export class WorkerEngine {
     this.world?.dispose()
     this.world = null
     this.player = null
+    this.live = null
     this.views.clear()
     this.sets.clear()
     this.ro.disconnect()
+    document.removeEventListener?.('visibilitychange', this.onVisibility)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
@@ -212,11 +232,12 @@ export class WorkerEngine {
     if (w.__workerOffice === this.debug) delete w.__workerOffice
   }
 
-  /** The tab is showing (draw) or hidden (draw nothing; keep the world as it is: its clock stands still). */
+  /** The tab is showing (draw) or hidden (draw nothing; keep the world as it is: its clock stands still). Shown again,
+   *  a live feed snaps to the wall clock (plan §4.6). */
   setActive(active: boolean) {
     if (this.destroyed) return
     this.active = active
-    if (active) { this.requestDraw(); this.startLoop() }
+    if (active) { this.live?.requestSnap('return'); this.requestDraw(); this.startLoop() }
     else { cancelAnimationFrame(this.raf); this.raf = 0; cancelAnimationFrame(this.loop); this.loop = 0; this.lastFrame = null }
   }
 
@@ -233,12 +254,34 @@ export class WorkerEngine {
     this.startLoop()
   }
 
+  /** Start the LIVE feed: a new world (the observer core with the page's body signals, the planner, the bodies) on the
+   *  wall clock. Nothing runs until liveCaughtUp(): then the first frame snaps to the backlog (plan §4.6). A feed already
+   *  playing (the example) is disposed first. */
+  startLive(layout: PlaceLayout) {
+    if (this.destroyed) return
+    this.stopFeed()
+    this.world = new WorkerWorld(layout, new ObserverCore(layout, { bodySignals: true }), new PathPlanner(layout))
+    this.objects = new ObjectStates(layout)
+    this.live = new LiveFeed(this.world, this.now)
+    this.sim = this.live.sim
+    this.liveStart = this.sim
+    this.feed = 'live'
+    this.startLoop()
+  }
+
+  /** Spool lines the live reader read (applied on the next frame, or at the next snap). */
+  pushLines(lines: readonly string[]) { this.live?.push(lines) }
+
+  /** The live reader has read the log to its end once: the backlog is complete. */
+  liveCaughtUp() { this.live?.caughtUp() }
+
   /** Stop the feed: its world (core, planner, workers) is disposed and the building is empty again. */
   stopFeed() {
     this.world?.dispose()
     this.world = null
     this.objects = null
     this.player = null
+    this.live = null
     this.feed = 'none'
     this.views.clear()
     this.doorOpen = 0
@@ -250,7 +293,18 @@ export class WorkerEngine {
     const lines: WorkerLine[] = []
     if (this.world) for (const w of this.world.workers.values()) lines.push({ n: w.n, text: w.onGrid ? bubbleText(w) : 'arrived: waiting outside (display limit)' })
     lines.sort((a, b) => a.n - b.n)
-    return { feed: this.feed, workers: lines.length, lines, seconds: this.player ? Math.max(0, (this.sim - this.player.base) / 1000) : 0 }
+    return { feed: this.feed, workers: lines.length, lines, seconds: this.feedSeconds() }
+  }
+
+  private feedSeconds(): number {
+    if (this.player) return Math.max(0, (this.sim - this.player.base) / 1000)
+    if (this.live) return Math.max(0, (this.sim - this.liveStart) / 1000)
+    return 0
+  }
+
+  /** The browser shows the page again: a live feed snaps (the frames stopped while it was hidden). */
+  private onVisibility = () => {
+    if (document.visibilityState === 'visible') this.live?.requestSnap('return')
   }
 
   private startLoop() {
@@ -263,6 +317,15 @@ export class WorkerEngine {
   private frame = (ts?: number) => {
     this.loop = 0
     if (!this.active || this.destroyed || this.world === null) return
+    if (this.live !== null) {
+      // the live clock: the wall clock, at most 50 ms a frame, or a snap (live/liveFeed.ts)
+      const dt = this.live.frame()
+      this.sim = this.live.sim
+      this.stepDoor(dt)
+      this.drawNow()
+      this.loop = requestAnimationFrame(this.frame)
+      return
+    }
     const t = typeof ts === 'number' && Number.isFinite(ts) ? ts : performance.now()
     const dt = this.lastFrame === null ? 0 : Math.min(MAX_FRAME_MS, Math.max(0, t - this.lastFrame))
     this.lastFrame = t
@@ -627,7 +690,11 @@ export class WorkerEngine {
       labels: () => this.labelTexts,
       workers: () => this.world?.onScreen ?? 0,
       feed: () => this.feed,
-      feedSeconds: () => (this.player ? Math.max(0, (this.sim - this.player.base) / 1000) : 0),
+      feedSeconds: () => this.feedSeconds(),
+      liveReady: () => this.live?.ready ?? false,
+      liveSnaps: () => this.live?.snaps.map(x => x.why) ?? [],
+      liveLines: () => this.live?.lines ?? 0,
+      simMs: () => this.sim,
       figuresDrawn: () => this.figuresDrawn,
       objectStates: () => {
         const o = this.objects

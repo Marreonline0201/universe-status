@@ -31,6 +31,8 @@ import { hasFurnitureArt } from '../src/worker-office/render/furniture.ts'
 import { WorkerEngine, type WorkerOfficeDebug } from '../src/worker-office/render/WorkerEngine.ts'
 import { buildPlaceLayout } from '../src/worker-office/map/places.ts'
 import { STATE_ART, stateFrames } from '../src/worker-office/render/stateLayer.ts'
+import { exampleRecords } from '../src/worker-office/live/example.ts'
+import { SNAP_LAG_MS } from '../src/worker-office/live/liveFeed.ts'
 import type { ObjectTileKind } from '../src/worker-office/map/loadMap.ts'
 
 const file = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
@@ -765,7 +767,68 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
   }
 }
 
-ok(st().engines === 2 && st().prerenders === 1 && st().workers === 0, `two engines in this check, pre-rendered once, zero workers (engines ${st().engines}, prerenders ${st().prerenders})`)
+// ── a LIVE feed: synthetic lines on the check's own wall clock (live/liveFeed.ts, plan §4.6) ─────────────────────
+{
+  console.log('engine with a live feed (synthetic lines, the check\'s wall clock)')
+  const layout = buildPlaceLayout(map)
+  let wall = Date.UTC(2026, 9, 2, 14, 0, 0), ts = 5_000_000
+  const c3 = new StubCanvas()
+  const e3 = new WorkerEngine(c3 as unknown as HTMLCanvasElement, scene, { now: () => wall })
+  type LiveApi = { debug: WorkerOfficeDebug; startLive(l: unknown): void; pushLines(l: readonly string[]): void; liveCaughtUp(): void; playExample(l: unknown): void; stopFeed(): void; setActive(a: boolean): void; destroy(): void }
+  const L3 = e3 as unknown as LiveApi
+  const d3 = () => ({ ...L3.debug })
+  e3.setActive(true); sendResize(c3, 1134, 864, 1); flush()
+  // the example's records as a spool on the wall clock (made-up helpers): the reader pushes a line 300 ms after its time
+  const base = wall - 40_000
+  const all = exampleRecords().map(r => ({ at: base + r.at, line: JSON.stringify({ v: 1, ts: base + r.at, ...r.rec }) }))
+  let li = 0
+  const read = () => { const out: string[] = []; while (li < all.length && all[li].at + 300 <= wall) out.push(all[li++].line); if (out.length) L3.pushLines(out) }
+  const frame3 = (wallStep: number) => { wall += wallStep; ts += wallStep; read(); const q = rafQueue; rafQueue = new Map(); for (const cb of q.values()) (cb as (t: number) => void)(ts) }
+  L3.startLive(layout)
+  read()
+  const backlog = li
+  for (let i = 0; i < 10; i++) frame3(1000 / 60)
+  const early = d3()
+  ok(early.feed === 'live' && !early.liveReady && early.liveLines === 0 && early.workers === 0,
+    `L1 live: until the reader has read the log so far, nothing runs (${early.liveLines} lines applied, ${early.workers} workers; ${backlog} backlog lines waiting)`)
+  L3.liveCaughtUp()
+  frame3(1000 / 60)
+  const c = d3()
+  ok(c.liveSnaps.join() === 'connect' && c.simMs === wall && c.liveLines === li && c.workers > 0,
+    `L2 the connect snap: the backlog (${c.liveLines} lines) applied at once, the clock at the wall, ${c.workers} workers re-placed where the observer has them`)
+  let maxDiff = 0
+  for (let i = 0; i < 300; i++) { frame3(1000 / 60); maxDiff = Math.max(maxDiff, Math.abs(d3().simMs - wall)) }
+  ok(maxDiff < 1e-6 && d3().liveSnaps.length === 1 && d3().liveLines === li,
+    `L3 at 60 frames a second the live clock IS the wall clock (largest gap ${maxDiff} ms over 300 frames), no snap, every line read applied (${d3().liveLines})`)
+  e3.setActive(false); sendResize(c3, 0, 0, 1)
+  for (let i = 0; i < 3600; i++) { wall += 1000 / 60; read() }          // a minute hidden: the reader reads on, no frame runs
+  const hiddenLines = li - d3().liveLines
+  e3.setActive(true); sendResize(c3, 1134, 864, 1)
+  frame3(1000 / 60)
+  const r = d3()
+  ok(r.liveSnaps[r.liveSnaps.length - 1] === 'return' && r.simMs === wall && r.liveLines === li && hiddenLines > 0,
+    `L4 shown again after a minute: the first frame snaps ('${r.liveSnaps[r.liveSnaps.length - 1]}'), the clock jumps to the wall, the ${hiddenLines} lines read meanwhile are applied`)
+  wall += 10_000; read()                                                // the browser stopped the frames for 10 s, unseen
+  frame3(1000 / 60)
+  const b = d3()
+  ok(b.liveSnaps[b.liveSnaps.length - 1] === 'behind' && b.simMs === wall, `L5 frames stopped for 10 s without a hide: the next frame finds the clock ${SNAP_LAG_MS / 1000} s+ behind and snaps ('${b.liveSnaps[b.liveSnaps.length - 1]}') to the wall`)
+  let maxLag = 0
+  const before = b.liveSnaps.length
+  for (let i = 0; i < 100; i++) { frame3(200); maxLag = Math.max(maxLag, wall - d3().simMs) }
+  const jank = d3().liveSnaps.slice(before)
+  ok(jank.length > 0 && jank.every(x => x === 'behind') && maxLag <= SNAP_LAG_MS + 200,
+    `L6 jank (a frame every 200 ms: the 50 ms cap falls behind): ${jank.length} snaps, the lag never above ${(maxLag / 1000).toFixed(2)} s (limit ${SNAP_LAG_MS / 1000} s + one frame)`)
+  L3.playExample(layout)
+  const ex = d3()
+  L3.startLive(layout)
+  const lv = d3()
+  ok(ex.feed === 'example' && !ex.liveReady && ex.liveSnaps.length === 0 && lv.feed === 'live' && lv.liveLines === 0 && lv.workers === 0,
+    `L7 the example and live never play together: the example replaces the live world (feed ${ex.feed}), a new live start replaces the example (feed ${lv.feed}, a fresh world)`)
+  L3.stopFeed()
+  L3.destroy()
+}
+
+ok(st().engines === 3 && st().prerenders === 1 && st().workers === 0, `three engines in this check, pre-rendered once, zero workers (engines ${st().engines}, prerenders ${st().prerenders})`)
 engine.destroy()
 ok(canvas.listeners.size === 0 && !roByCanvas.has(canvas), 'destroy() removes every listener and the observer')
 

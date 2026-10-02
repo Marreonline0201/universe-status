@@ -25,10 +25,14 @@ export const WO = {
   exampleText: '#ffe08a',
   exampleBg: 'rgba(38,26,4,0.94)',
   exampleEdge: 'rgba(250,176,5,0.6)',
-  /** the Play / Stop example button */
+  /** the Play / Stop example button, Connect log folder, Reconnect */
   buttonText: '#e6eefc',
   buttonBg: 'rgba(22,44,78,0.95)',
   buttonEdge: 'rgba(116,192,252,0.5)',
+  /** the LIVE note while the owner's own log is shown: green, never mistaken for the example's amber */
+  liveText: '#b8f5c8',
+  liveBg: 'rgba(6,34,18,0.94)',
+  liveEdge: 'rgba(64,192,112,0.6)',
 } as const
 
 /** Every text colour of the tab with the background it sits on: [what, text colour, background]. */
@@ -39,5 +43,6 @@ export const WO_TEXT_ON: readonly (readonly [what: string, text: string, backgro
   ['WORKERS chip', WO.chipText, WO.chipBg],
   ['no-live-feed note', WO.bannerText, WO.bannerBg],
   ['example note', WO.exampleText, WO.exampleBg],
-  ['example button', WO.buttonText, WO.buttonBg],
+  ['example button, Connect log folder, Reconnect', WO.buttonText, WO.buttonBg],
+  ['live note', WO.liveText, WO.liveBg],
 ]
