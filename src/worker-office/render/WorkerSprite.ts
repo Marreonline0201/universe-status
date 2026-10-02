@@ -46,6 +46,10 @@ const DOT_GLOW_ALPHA = 0.3
 export type DotState = 'working' | 'idle' | 'offline'
 const DOT_COLOUR: Readonly<Record<DotState, string>> = { working: STATUS_WORKING, idle: STATUS_IDLE, offline: STATUS_OFFLINE }
 const QUIET_LABELS: ReadonlySet<LabelId> = new Set<LabelId>(['quiet', 'suspect', 'stuck'])
+/** A fetch-then-read pull's pose at the shelf (reachU with a volume, the card catalog's useU0 with a call slip): the
+ *  item is pulled there, so it is not in the hand on the way. */
+const isPull = (pose: PoseName, prop: PropId | null) =>
+  (pose === 'reachU' && (prop === 'ledger' || prop === 'book')) || (pose === 'useU0' && prop === 'callSlip')
 
 /** What one worker shows this frame (world texels; filled in place, no allocation per frame). */
 export interface SpriteView {
@@ -117,7 +121,9 @@ export function spriteView(w: WorkerState, now: number, v: SpriteView): SpriteVi
   v.alpha = a
   v.shadow = drawsContactShadow(pose)
   const inUnit = w.phase === 'settled' && now < w.unitUntil && w.unitPose !== null
-  const prop = inUnit ? w.unitProp : w.phase === 'exit' && w.exitPose !== null ? w.exitProp : w.prop
+  const walking = w.phase === 'walking' || w.phase === 'appearing'
+  const prop = inUnit ? w.unitProp : w.phase === 'exit' && w.exitPose !== null ? w.exitProp
+    : walking && isPull(w.pose, w.prop) ? null : w.prop
   const hands = HAND[pose]
   v.prop = null
   v.propView = null
@@ -167,6 +173,9 @@ export function drawWorker(g: Ctx, v: SpriteView, set: FigureSet) {
 // ── bubbles (plan §4.8, §4.10: fixed labels only; at most 4 text bubbles office-wide, icons for the rest) ──────────
 /** At most this many workers show their label as text at once; the others show an icon. */
 export const MAX_TEXT_BUBBLES = 4
+/** Labels that never show as text: the between-calls label is most of a worker's time (plan §4.5), so its bubble is
+ *  the thinking icon; the room key lists the full phrase. */
+export const ICON_ONLY: ReadonlySet<LabelId> = new Set<LabelId>(['between'])
 /** A label shows as text for this long after it changes (plan §4.8 "≥ 2 s; for the call + 2.5 s"). */
 export const TEXT_BUBBLE_MS = 3000
 

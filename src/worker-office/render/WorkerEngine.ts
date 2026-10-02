@@ -30,7 +30,7 @@ import { DOOR_SLIDE_MAX, doorLeaves, drawInTray, drawMagnets, drawOutStack, type
 import { type LabelPlacement, type OfficeScene, labelFont, placeLabels, prerenderBuilds, texel } from './prerender.ts'
 import { WheelZoom, fitCamera } from './camera.ts'
 import { figureSet, lookOf, type FigureSet } from './figures.ts'
-import { MAX_TEXT_BUBBLES, TEXT_BUBBLE_MS, bubbleText, drawIconBubble, drawWorker, iconOf, newView, spriteView, type SpriteView } from './WorkerSprite.ts'
+import { ICON_ONLY, MAX_TEXT_BUBBLES, TEXT_BUBBLE_MS, bubbleText, drawIconBubble, drawWorker, iconOf, newView, spriteView, type SpriteView } from './WorkerSprite.ts'
 import type { PlaceLayout } from '../map/places.ts'
 import { ObserverCore } from '../core/reducer.ts'
 import { PathPlanner } from '../move/planner.ts'
@@ -56,6 +56,9 @@ const BUBBLE_FONT_PX = 16
 const BUBBLE_WRAP = 30
 const BUBBLE_INK = '#e8ecf2'
 const BUBBLE_EDGE = 'rgba(77,159,255,0.55)'
+
+/** A text bubble placed over a worker's head, device pixels. */
+interface TextBubble { readonly key: string; readonly alpha: number; readonly lines: readonly string[]; readonly x: number; readonly y: number; readonly w: number; readonly h: number; readonly pad: number; readonly lh: number }
 
 /** What the tab shows about the feed (WorkerOffice.tsx). */
 export type FeedState = 'none' | 'example'
@@ -271,7 +274,7 @@ export class WorkerEngine {
     let near = false
     if (this.world) {
       for (const w of this.world.workers.values()) {
-        if (!w.onGrid) continue
+        if (!w.onGrid || (w.phase !== 'walking' && w.phase !== 'appearing' && w.phase !== 'leaving')) continue   // walkers only
         const dx = Math.max(0, d.x - w.pos.x, w.pos.x - (d.x + d.w - 1)), dy = Math.abs(w.pos.y - d.y)
         if (Math.max(dx, dy) <= d.senseTiles) { near = true; break }
       }
@@ -534,47 +537,55 @@ export class WorkerEngine {
       drawWorker(ctx, e.v, set)
     }
     this.figuresDrawn = order.length
-    // bubbles: the newest labels as text (at most 4), an icon for every other worker that has one
-    let texts = 0
-    const byNew = order.slice().sort((a, b) => b.w.labelAt - a.w.labelAt)
-    const text = new Set<string>()
-    for (const e of byNew) {
-      if (texts >= MAX_TEXT_BUBBLES || now - e.w.labelAt > TEXT_BUBBLE_MS) break
-      text.add(e.key)
-      texts++
-    }
+    // bubbles: the newest labels as text (at most 4, never two over each other), an icon for every other worker
+    const texts = this.placeTextBubbles(order, now)
     for (const e of order) {
-      if (text.has(e.key)) continue
+      if (texts.some(b => b.key === e.key)) continue
       const icon = iconOf(e.w)
       if (icon !== null) drawIconBubble(ctx, e.v, icon)
     }
-    if (texts > 0) this.drawTextBubbles(byNew.slice(0, texts))
+    if (texts.length > 0) this.drawTextBubbles(texts)
   }
 
-  /** Text bubbles in device pixels (crisp at any scale), over each worker's head. */
-  private drawTextBubbles(list: readonly { v: SpriteView; w: WorkerState }[]) {
+  /** The text bubbles to show: the newest label changes first (within TEXT_BUBBLE_MS; never ICON_ONLY labels), at most
+   *  MAX_TEXT_BUBBLES, each placed over its worker's head in device pixels and skipped when it would overlap one
+   *  already placed (that worker keeps its icon). */
+  private placeTextBubbles(order: readonly { key: string; v: SpriteView; w: WorkerState }[], now: number): TextBubble[] {
     const { ctx } = this
     const s = this.scale, k = this.devicePerCss()
     const fpx = Math.round(BUBBLE_FONT_PX * this.fontScale * k)
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.font = `${fpx}px ${LABEL_FONT_FAMILY}`
-    ctx.textBaseline = 'top'
-    ctx.textAlign = 'left'
-    const pad = Math.round(4 * k), lh = Math.round(fpx * 1.25)
-    for (const { v, w } of list) {
+    const pad = Math.round(4 * k), lh = Math.round(fpx * 1.25), gap = Math.round(3 * k)
+    const out: TextBubble[] = []
+    const byNew = order.filter(e => now - e.w.labelAt <= TEXT_BUBBLE_MS && !ICON_ONLY.has(e.w.label)).sort((a, b) => b.w.labelAt - a.w.labelAt)
+    for (const { key, v, w } of byNew) {
+      if (out.length >= MAX_TEXT_BUBBLES) break
       const lines = wrap(`#${w.n} ${bubbleText(w)}`, BUBBLE_WRAP)
       let width = 0
       for (const l of lines) width = Math.max(width, ctx.measureText(l).width)
       const bw = Math.ceil(width) + 2 * pad, bh = lines.length * lh + 2 * pad
       const cx = this.offX + (v.x + 8) * s, top = this.offY + (v.y - 2) * s - bh
-      const bx = Math.round(Math.min(Math.max(cx - bw / 2, 0), this.bw - bw)), by = Math.round(Math.max(top, 0))
-      ctx.globalAlpha = v.alpha
+      const x = Math.round(Math.min(Math.max(cx - bw / 2, 0), this.bw - bw)), y = Math.round(Math.max(top, 0))
+      if (out.some(b => x < b.x + b.w + gap && b.x < x + bw + gap && y < b.y + b.h + gap && b.y < y + bh + gap)) continue
+      out.push({ key, alpha: v.alpha, lines, x, y, w: bw, h: bh, pad, lh })
+    }
+    return out
+  }
+
+  /** Text bubbles in device pixels (crisp at any scale). */
+  private drawTextBubbles(list: readonly TextBubble[]) {
+    const { ctx } = this
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.textBaseline = 'top'
+    ctx.textAlign = 'left'
+    for (const b of list) {
+      ctx.globalAlpha = b.alpha
       ctx.fillStyle = BUBBLE_EDGE
-      ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2)
+      ctx.fillRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2)
       ctx.fillStyle = BUBBLE_BG_DOM
-      ctx.fillRect(bx, by, bw, bh)
+      ctx.fillRect(b.x, b.y, b.w, b.h)
       ctx.fillStyle = BUBBLE_INK
-      lines.forEach((l, i) => ctx.fillText(l, bx + pad, by + pad + i * lh))
+      b.lines.forEach((l, i) => ctx.fillText(l, b.x + b.pad, b.y + b.pad + i * b.lh))
     }
     ctx.globalAlpha = 1
   }
