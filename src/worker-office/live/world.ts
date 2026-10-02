@@ -172,6 +172,8 @@ export class WorkerWorld {
   #disposed = false
   /** Inside snap(): the backlog's commands move no body (THE SNAP, step 2). */
   #snapping = false
+  /** Spool lines skipped because applying them threw (security review I2: one bad line never stops the office). */
+  lineErrors = 0
   readonly #scratch: BodyPose = { x: 0, y: 0, moving: false, facing: 'W', walked: 0 }
 
   constructor(layout: PlaceLayout, core: ObserverCore, planner: PathPlanner, opts: WorldOptions = {}) {
@@ -195,11 +197,15 @@ export class WorkerWorld {
   /** Workers whose body is on the grid or on its way (not the ones held off screen). */
   get onScreen(): number { let n = 0; for (const w of this.workers.values()) if (w.onGrid) n++; return n }
 
-  /** One spool line, read at sim time `now`. */
+  /** One spool line, read at sim time `now`. A line whose handling throws is skipped and counted (lineErrors). */
   ingest(line: string, now: number) {
     if (this.#disposed) return
     this.#advanceTo(now)
-    this.#route(this.core.ingest(line, now))
+    this.#apply(line, now)
+  }
+
+  #apply(line: string, now: number) {
+    try { this.#route(this.core.ingest(line, now)) } catch { this.lineErrors++ }
   }
 
   /** Advance to `now`: the core's timers, the beats, the planner, the body signals. */
@@ -220,7 +226,7 @@ export class WorkerWorld {
     this.#advanceTo(now)
     this.#snapping = true
     try {
-      for (const line of lines) this.#route(this.core.ingest(line, now))
+      for (const line of lines) this.#apply(line, now)
       this.#route(this.core.tick(now))
     } finally {
       this.#snapping = false

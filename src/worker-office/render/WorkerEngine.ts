@@ -102,6 +102,8 @@ export interface WorkerOfficeDebug {
   readonly liveLines: number
   /** the sim clock, ms since the epoch (live: the wall clock) */
   readonly simMs: number
+  /** the note shown after a frame failed (the feed is stopped), else null */
+  readonly failure: string | null
   readonly figuresDrawn: number
   /** The object states drawn in the last frame (live/objects.ts), as `tile|state@x,y#n` (n: the worker whose use it
    *  shows; checks, screenshots). */
@@ -160,6 +162,9 @@ export class WorkerEngine {
   private feed: FeedState = 'none'
   /** The wall clock (the checks pass their own). */
   private readonly now: () => number
+  /** A frame failed: the short note the tab shows (security review I2), and who is told. */
+  private failure: string | null = null
+  private readonly onFailure: ((note: string) => void) | null
   private sim: number
   private lastFrame: number | null = null
   private loop = 0
@@ -178,9 +183,10 @@ export class WorkerEngine {
   private readonly boardOrigin: [number, number] | null
   private readonly deskOrigin: [number, number] | null
 
-  constructor(canvas: HTMLCanvasElement, scene: OfficeScene, opts: { readonly now?: () => number } = {}) {
+  constructor(canvas: HTMLCanvasElement, scene: OfficeScene, opts: { readonly now?: () => number; readonly onFailure?: (note: string) => void } = {}) {
     engines++
     this.now = opts.now ?? (() => Date.now())
+    this.onFailure = opts.onFailure ?? null
     this.sim = this.now()
     this.canvas = canvas
     const ctx = canvas.getContext('2d')
@@ -252,6 +258,7 @@ export class WorkerEngine {
   playExample(layout: PlaceLayout) {
     if (this.destroyed) return
     this.stopFeed()
+    this.failure = null
     this.world = new WorkerWorld(layout, new ObserverCore(layout, { bodySignals: true }), new PathPlanner(layout))
     this.objects = new ObjectStates(layout)
     this.player = new ExamplePlayer(this.sim)
@@ -265,6 +272,7 @@ export class WorkerEngine {
   startLive(layout: PlaceLayout) {
     if (this.destroyed) return
     this.stopFeed()
+    this.failure = null
     this.world = new WorkerWorld(layout, new ObserverCore(layout, { bodySignals: true }), new PathPlanner(layout))
     this.objects = new ObjectStates(layout)
     this.live = new LiveFeed(this.world, this.now)
@@ -318,30 +326,46 @@ export class WorkerEngine {
   }
 
   /** One animation frame of a feed: advance the one sim clock, step the world, draw. Ends when the feed is over and the
-   *  building is empty (the tab shows the no-feed note again). */
+   *  building is empty (the tab shows the no-feed note again). A frame that throws stops the feed and leaves a short
+   *  note (security review I2) instead of a canvas frozen on its last picture. */
   private frame = (ts?: number) => {
     this.loop = 0
     if (!this.active || this.destroyed || this.world === null) return
+    let more: boolean
+    try { more = this.runFrame(ts) } catch (e) { this.fail(e); return }
+    if (more) this.loop = requestAnimationFrame(this.frame)
+  }
+
+  /** The body of a frame: false when the feed has ended. */
+  private runFrame(ts?: number): boolean {
     if (this.live !== null) {
       // the live clock: the wall clock, at most 50 ms a frame, or a snap (live/liveFeed.ts)
       const dt = this.live.frame()
       this.sim = this.live.sim
       this.stepDoor(dt)
       this.drawNow()
-      this.loop = requestAnimationFrame(this.frame)
-      return
+      return true
     }
     const t = typeof ts === 'number' && Number.isFinite(ts) ? ts : performance.now()
     const dt = this.lastFrame === null ? 0 : Math.min(MAX_FRAME_MS, Math.max(0, t - this.lastFrame))
     this.lastFrame = t
     this.sim += dt
-    const world = this.world, sim = this.sim
+    const world = this.world!, sim = this.sim
     this.player?.deliver(sim, line => world.ingest(line, sim))
     world.step(sim)
     this.stepDoor(dt)
     this.drawNow()
-    if (this.player !== null && this.player.done && world.workers.size === 0) { this.stopFeed(); return }
-    this.loop = requestAnimationFrame(this.frame)
+    if (this.player !== null && this.player.done && world.workers.size === 0) { this.stopFeed(); return false }
+    return true
+  }
+
+  /** A frame threw: stop the feed, keep the building on screen, and tell the tab (a short note, no stack). */
+  private fail(e: unknown) {
+    const msg = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, ' ').slice(0, 120)
+    this.failure = `The office stopped after an error (${msg}). Play the example, or reload the page, to start again.`
+    try { this.stopFeed() } catch { this.world = null; this.objects = null; this.player = null; this.live = null; this.feed = 'none' }
+    try { this.drawNow() } catch { /* the building could not be drawn either: the note still shows */ }
+    try { this.onFailure?.(this.failure) } catch { /* the tab's own problem */ }
   }
 
   /** The door opens only for a real walker within its sense range (plan §1.2). */
@@ -715,6 +739,7 @@ export class WorkerEngine {
       liveSnaps: () => this.live?.snaps.map(x => x.why) ?? [],
       liveLines: () => this.live?.lines ?? 0,
       simMs: () => this.sim,
+      failure: () => this.failure,
       figuresDrawn: () => this.figuresDrawn,
       objectStates: () => {
         const o = this.objects

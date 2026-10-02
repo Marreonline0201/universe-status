@@ -787,7 +787,8 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
   const layout = buildPlaceLayout(map)
   let wall = Date.UTC(2026, 9, 2, 14, 0, 0), ts = 5_000_000
   const c3 = new StubCanvas()
-  const e3 = new WorkerEngine(c3 as unknown as HTMLCanvasElement, scene, { now: () => wall })
+  const notes3: string[] = []
+  const e3 = new WorkerEngine(c3 as unknown as HTMLCanvasElement, scene, { now: () => wall, onFailure: (m: string) => notes3.push(m) } as { now: () => number })
   type LiveApi = { debug: WorkerOfficeDebug; startLive(l: unknown): void; pushLines(l: readonly string[]): void; liveCaughtUp(): void; playExample(l: unknown): void; stopFeed(): void; setActive(a: boolean): void; destroy(): void }
   const L3 = e3 as unknown as LiveApi
   const d3 = () => ({ ...L3.debug })
@@ -832,6 +833,23 @@ ok(p.offset[0] === Math.round(z.offset[0] + 37.3) && p.offset[1] === Math.round(
   const jank = d3().liveSnaps.slice(before)
   ok(jank.length > 0 && jank.every(x => x === 'behind') && maxLag <= SNAP_LAG_MS + 200,
     `L6 jank (a frame every 200 ms: the 50 ms cap falls behind): ${jank.length} snaps, the lag never above ${(maxLag / 1000).toFixed(2)} s (limit ${SNAP_LAG_MS / 1000} s + one frame)`)
+  // L8 error containment (security review I2): a frame that throws stops the feed with a short note; nothing escapes,
+  // no further frame is scheduled, the building is still drawn
+  {
+    L3.startLive(layout)
+    L3.pushLines(all.slice(0, 12).map(x => x.line))
+    L3.liveCaughtUp()
+    frame3(1000 / 60)
+    const w3 = (e3 as unknown as { world: { step: (now: number) => void } | null }).world
+    if (w3 !== null) w3.step = () => { throw new Error('planted failure') }
+    const drawsBefore = d3().draws
+    let escaped: string | null = null
+    try { frame3(1000 / 60) } catch (e) { escaped = String(e).split('\n')[0] }
+    const f = d3() as unknown as { failure?: string | null; feed: string; draws: number }
+    const scheduled = (e3 as unknown as { loop: number }).loop
+    ok(escaped === null && typeof f.failure === 'string' && f.failure.includes('planted failure') && f.feed === 'none' && f.draws > drawsBefore && scheduled === 0 && rafQueue.size === 0 && notes3.length === 1,
+      `L8 a frame that throws: ${escaped === null ? 'nothing escapes' : `it escapes (${escaped})`}; the note "${f.failure ?? '(none)'}", the feed ${f.feed}, ${f.draws - drawsBefore} draws after it, ${scheduled} frames scheduled, the tab told ${notes3.length} time(s)`)
+  }
   L3.playExample(layout)
   const ex = d3()
   L3.startLive(layout)

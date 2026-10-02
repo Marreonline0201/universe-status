@@ -1471,6 +1471,48 @@ if (!SNAP_ONLY) {
   }
 }
 
+// ── error containment (security review I2): a line the core throws on is skipped and counted ───────────────────
+//   E1 world.ingest: the line is skipped (world.lineErrors counts it), nothing escapes, the next lines are applied;
+//   E2 world.snap: the same inside a backlog, the rest of the backlog applied and the bodies re-placed.
+{
+  console.log('error containment (live/world.ts): a core that throws on one line')
+  const mk = () => {
+    const world = new realWorld.WorkerWorld(LAYOUT, new realCore.ObserverCore(LAYOUT, { bodySignals: true }), new realPlanner.PathPlanner(LAYOUT))
+    const core = world.core as unknown as { ingest: (line: string, wall: number) => Cmd[] }
+    const real = core.ingest.bind(world.core)
+    core.ingest = (line, wall) => { if (line.includes('"tu":"boom"')) throw new Error('boom'); return real(line, wall) }
+    return world
+  }
+  const A = aidOf('x', 1), B = aidOf('x', 2)
+  const lines = [
+    L(0.2, 'SubagentStart', SA, { aid: A, at: 'workflow-subagent' }),
+    L(1, 'PreToolUse', SA, { aid: A, k: 'fileCabinet', a: 'read', tu: 'boom' }),
+    L(2, 'SubagentStart', SA, { aid: B, at: 'workflow-subagent' }),
+    L(3, 'PreToolUse', SA, { aid: B, k: 'fileCabinet', a: 'read', tu: 'b1' }),
+  ]
+  const errs = (w: World) => (w as unknown as { lineErrors?: number }).lineErrors
+  {
+    const world = mk()
+    let escaped: string | null = null
+    try { for (const l of lines) { world.ingest(l.line, l.ts + 300); world.step(l.ts + 300) } world.step(T0 + 8000) } catch (e) { escaped = String(e).split('\n')[0] }
+    const inside = world.workers.size
+    const ok = escaped === null && errs(world) === 1 && inside === 2
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} E1 ingest: ${escaped === null ? 'nothing escaped' : `escaped: ${escaped}`}, ${errs(world) ?? 'no'} line errors counted, ${inside} of 2 workers inside`)
+    if (!ok) fail('E1 a line the core throws on must be skipped and counted, the rest applied')
+    world.dispose()
+  }
+  {
+    const world = mk()
+    let escaped: string | null = null
+    try { world.snap(T0 + 20_000, lines.map(l => l.line)); world.step(T0 + 21_000) } catch (e) { escaped = String(e).split('\n')[0] }
+    const placed = [...world.workers.values()].filter(w => w.onGrid).length
+    const ok = escaped === null && errs(world) === 1 && placed === 2
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} E2 snap backlog: ${escaped === null ? 'nothing escaped' : `escaped: ${escaped}`}, ${errs(world) ?? 'no'} line errors counted, ${placed} of 2 bodies re-placed`)
+    if (!ok) fail('E2 a backlog line the core throws on must be skipped and counted, the rest applied')
+    world.dispose()
+  }
+}
+
 // ── the snap: the run, then each check shown able to fail ─────────────────────────────────────────────────────
 {
   const checks = ['S1', 'S1b', 'S2', 'S2b', 'S3', 'S4', 'S5a', 'S5b', 'S5c', 'S6']

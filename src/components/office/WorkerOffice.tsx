@@ -88,17 +88,21 @@ function WorkerOfficeView({ active }: { active: boolean }) {
   const keyId = useId()
   const map = getOfficeMap()   // throws on a bad floorplan: the boundary below catches it
   const [summary, setSummary] = useState<FeedSummary>(NO_SUMMARY)
+  /** The engine's note after a frame failed (security review I2), until a feed starts again. */
+  const [failure, setFailure] = useState<string | null>(null)
   const playing = summary.feed !== 'none'
   const example = summary.feed === 'example'
   const live = useWorkerFeed({
-    start: () => { const e = engineRef.current; if (!e) return; e.startLive(getPlaceLayout()); setSummary(e.summary()) },
+    start: () => { const e = engineRef.current; if (!e) return; setFailure(null); e.startLive(getPlaceLayout()); setSummary(e.summary()) },
     lines: lines => engineRef.current?.pushLines(lines),
     caughtUp: () => engineRef.current?.liveCaughtUp(),
     stop: () => { const e = engineRef.current; if (!e) return; e.stopFeed(); setSummary(e.summary()) },
   })
 
   useEffect(() => {
-    const engine = new WorkerEngine(canvasRef.current!, getOfficeScene())
+    const engine = new WorkerEngine(canvasRef.current!, getOfficeScene(), {
+      onFailure: note => { setFailure(note); setSummary(engine.summary()) },
+    })
     engineRef.current = engine
     return () => { engine.destroy(); engineRef.current = null }
   }, [])
@@ -114,6 +118,7 @@ function WorkerOfficeView({ active }: { active: boolean }) {
     const e = engineRef.current
     if (!e) return
     live.pause()
+    setFailure(null)
     e.playExample(getPlaceLayout())
     setSummary(e.summary())
   }
@@ -169,6 +174,12 @@ function WorkerOfficeView({ active }: { active: boolean }) {
         }}>
           <div style={{ alignSelf: 'flex-start' }}><Chip label={`WORKERS ${workers}`} /></div>
           <Banner feed={summary.feed} />
+          {failure !== null && (
+            <div data-wo="failure" role="alert" style={{
+              maxWidth: '100%', padding: '6px 14px', borderRadius: 4, background: WO.bannerBg, border: `1px solid ${WO.bannerEdge}`,
+              color: WO.bannerText, fontSize: 'calc(11px * var(--font-scale, 1))', lineHeight: 1.35, textAlign: 'center',
+            }}>{failure}</div>
+          )}
         </div>
       </div>
 
